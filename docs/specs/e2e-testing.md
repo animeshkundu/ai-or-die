@@ -189,6 +189,7 @@ function sendAndWait(ws, message, expectedType, timeoutMs) { ... }
 | Resize terminal | Send `resize` with new cols/rows -> no error |
 | Stop terminal session | Send `stop` -> receive `exit` message |
 | Cannot start two tools in same session | Start terminal, then start terminal again -> receive `error` |
+| Echo unique marker through terminal (cross-platform) | Start terminal -> drain initial output -> send `echo MARKER` -> verify marker in collected output -> stop |
 
 ### 3.6 Input/Output Round-Trip (`describe('I/O round-trip')`)
 

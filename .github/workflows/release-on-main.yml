@@ -4,6 +4,10 @@ on:
   push:
     branches: [ main ]
 
+concurrency:
+  group: release-on-main
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Tag, Release, and Publish
@@ -11,6 +15,7 @@ jobs:
     permissions:
       contents: write
       packages: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,7 +23,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Read version
@@ -53,9 +58,16 @@ jobs:
         if: ${{ steps.check.outputs.exists == 'false' }}
         run: npm ci
 
-      - name: Publish to npm
+      - name: Publish ai-or-die to npm
         if: ${{ steps.check.outputs.exists == 'false' }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: Publish aiordie alias to npm
+        if: ${{ steps.check.outputs.exists == 'false' }}
         run: |
+          node -e "
+            const pkg = require('./package.json');
+            pkg.name = 'aiordie';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
           npm publish --access public
