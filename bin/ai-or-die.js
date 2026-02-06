@@ -122,57 +122,20 @@ async function main() {
       }
     }
 
-    // Dev tunnel setup
-    let tunnelProcess = null;
-    let publicUrl = null;
+    // Dev tunnel or browser open
+    let tunnel = null;
     if (options.tunnel) {
-      console.log('\n\x1b[36m  Connecting dev tunnel...\x1b[0m');
-      try {
-        const { spawn: cpSpawn, execFileSync } = require('child_process');
-
-        // Check if devtunnel CLI is available
-        const devtunnelCmd = process.platform === 'win32' ? 'where' : 'which';
-        try {
-          execFileSync(devtunnelCmd, ['devtunnel'], { stdio: 'ignore' });
-        } catch (_) {
-          const isWin = process.platform === 'win32';
-          console.error('\n\x1b[31m  devtunnel CLI not found.\x1b[0m\n');
-          console.error('  Install it with a single command:');
-          if (isWin) {
-            console.error('  \x1b[1mwinget install Microsoft.devtunnel\x1b[0m');
-          } else if (process.platform === 'darwin') {
-            console.error('  \x1b[1mbrew install --cask devtunnel\x1b[0m');
-          } else {
-            console.error('  \x1b[1mcurl -sL https://aka.ms/DevTunnelCliInstall | bash\x1b[0m');
-          }
-          console.error('\n  Then run: \x1b[1mdevtunnel user login\x1b[0m (one-time)\n');
-          process.exit(1);
+      const { TunnelManager } = require('../src/tunnel-manager');
+      tunnel = new TunnelManager({
+        port,
+        allowAnonymous: options.tunnelAllowAnonymous,
+        dev: options.dev,
+        onUrl: (tunnelUrl) => {
+          console.log(`\n  \x1b[1m\x1b[32mTunnel ready:\x1b[0m \x1b[1m\x1b[4m${tunnelUrl}\x1b[0m\n`);
+          if (open && options.open) open(tunnelUrl).catch(() => {});
         }
-
-        const tunnelArgs = ['host', '-p', String(port)];
-        if (options.tunnelAllowAnonymous) tunnelArgs.push('--allow-anonymous');
-        tunnelProcess = cpSpawn('devtunnel', tunnelArgs, { stdio: ['pipe', 'pipe', 'pipe'] });
-
-        tunnelProcess.stdout.on('data', (data) => {
-          const match = data.toString().match(/https:\/\/[\w.-]+\.devtunnels\.ms\S*/);
-          if (match && !publicUrl) {
-            publicUrl = match[0].trim();
-            console.log(`\n  \x1b[1m\x1b[32mTunnel ready:\x1b[0m \x1b[1m\x1b[4m${publicUrl}\x1b[0m\n`);
-            if (options.open) {
-              if (open) open(publicUrl).catch(() => {});
-            }
-          }
-        });
-        tunnelProcess.stderr.on('data', (data) => {
-          const output = data.toString().trim();
-          if (output && options.dev) console.log(`  [devtunnel] ${output}`);
-        });
-        tunnelProcess.on('error', () => {
-          console.error('\n  \x1b[31mDev tunnel process failed to start.\x1b[0m');
-        });
-      } catch (error) {
-        console.error('  Failed to start dev tunnel:', error.message);
-      }
+      });
+      await tunnel.start();
     } else if (options.open) {
       try { if (open) await open(url); } catch (error) {
         console.warn('  Could not automatically open browser:', error.message);
@@ -183,8 +146,7 @@ async function main() {
 
     const shutdown = async () => {
       console.log('\nShutting down server...');
-      // Close dev tunnel first if active
-      if (tunnelProcess) { try { tunnelProcess.kill(); } catch (_) {} }
+      if (tunnel) await tunnel.stop();
       server.close(() => {
         console.log('Server closed');
         process.exit(0);
