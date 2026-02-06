@@ -912,7 +912,12 @@ class ClaudeCodeWebInterface {
             }
         }, 45000);
 
-        this.send({ type: `start_${toolId}`, options });
+        this.send({
+            type: `start_${toolId}`,
+            options,
+            cols: this.terminal ? this.terminal.cols : 80,
+            rows: this.terminal ? this.terminal.rows : 24
+        });
     }
 
     clearTerminal() {
@@ -1011,6 +1016,7 @@ class ClaudeCodeWebInterface {
         const themeSelect = document.getElementById('themeSelect');
         if (themeSelect) themeSelect.value = settings.theme === 'light' ? 'light' : 'dark';
         document.getElementById('showTokenStats').checked = settings.showTokenStats;
+        document.getElementById('dangerousMode').checked = settings.dangerousMode || false;
     }
 
     hideSettings() {
@@ -1026,7 +1032,8 @@ class ClaudeCodeWebInterface {
         const defaults = {
             fontSize: 14,
             showTokenStats: true,
-            theme: 'dark'
+            theme: 'dark',
+            dangerousMode: false
         };
         
         try {
@@ -1042,7 +1049,8 @@ class ClaudeCodeWebInterface {
         const settings = {
             fontSize: parseInt(document.getElementById('fontSize').value),
             showTokenStats: document.getElementById('showTokenStats').checked,
-            theme: (document.getElementById('themeSelect')?.value) || 'dark'
+            theme: (document.getElementById('themeSelect')?.value) || 'dark',
+            dangerousMode: document.getElementById('dangerousMode').checked
         };
         
         try {

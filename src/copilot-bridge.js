@@ -21,7 +21,8 @@ class CopilotBridge extends BaseBridge {
           '{HOME}\\AppData\\Roaming\\npm\\copilot'
         ]
       },
-      defaultCommand: 'copilot'
+      defaultCommand: 'copilot',
+      dangerousFlag: '--yolo'
     });
   }
 }
