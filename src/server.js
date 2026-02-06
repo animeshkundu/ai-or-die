@@ -94,9 +94,7 @@ class ClaudeCodeWebServer {
   }
   
   async saveSessionsToDisk() {
-    if (this.claudeSessions.size > 0) {
-      await this.sessionStore.saveSessions(this.claudeSessions);
-    }
+    await this.sessionStore.saveSessions(this.claudeSessions);
   }
   
   async handleShutdown() {
@@ -345,7 +343,7 @@ class ClaudeCodeWebServer {
     });
 
     // Delete a Claude session
-    this.app.delete('/api/sessions/:sessionId', (req, res) => {
+    this.app.delete('/api/sessions/:sessionId', async (req, res) => {
       const sessionId = req.params.sessionId;
       const session = this.claudeSessions.get(sessionId);
       
@@ -374,10 +372,10 @@ class ClaudeCodeWebServer {
       });
       
       this.claudeSessions.delete(sessionId);
-      
-      // Save sessions after deletion
-      this.saveSessionsToDisk();
-      
+
+      // Save sessions after deletion — await to ensure persistence
+      await this.saveSessionsToDisk();
+
       res.json({ success: true, message: 'Session deleted' });
     });
 
