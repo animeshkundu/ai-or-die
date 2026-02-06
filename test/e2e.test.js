@@ -689,3 +689,136 @@ describe('E2E: Multi-session isolation', function () {
     await Promise.all([closeWs(wsA), closeWs(wsB)]);
   });
 });
+
+
+describe('E2E: Multi-session tool start from same WebSocket', function () {
+  this.timeout(60000);
+
+  let server;
+  let port;
+
+  before(async function () {
+    server = new ClaudeCodeWebServer({ port: 0, noAuth: true });
+    const httpServer = await server.start();
+    port = httpServer.address().port;
+  });
+
+  after(function () {
+    server.close();
+  });
+
+  it('should start tools in two different sessions from the same WebSocket', async function () {
+    const { ws } = await connectWs(port);
+
+    // Create Session A (implicitly joins)
+    wsSend(ws, { type: 'create_session', name: 'Multi-Start A' });
+    const createdA = await waitForMessage(ws, 'session_created');
+    const sessionIdA = createdA.sessionId;
+    assert(sessionIdA, 'Expected sessionId for Session A');
+
+    // Start terminal in Session A
+    wsSend(ws, { type: 'start_terminal' });
+    await waitForMessage(ws, 'terminal_started', 15000);
+    await collectMessages(ws, 'output', 1500);
+
+    // Create Session B (implicitly leaves A and joins B)
+    wsSend(ws, { type: 'create_session', name: 'Multi-Start B' });
+    const createdB = await waitForMessage(ws, 'session_created');
+    const sessionIdB = createdB.sessionId;
+    assert(sessionIdB, 'Expected sessionId for Session B');
+    assert.notStrictEqual(sessionIdA, sessionIdB, 'Sessions should have different IDs');
+
+    // Start terminal in Session B — this is the regression target
+    wsSend(ws, { type: 'start_terminal' });
+    const startedB = await waitForMessage(ws, 'terminal_started', 15000);
+    assert.strictEqual(startedB.type, 'terminal_started');
+
+    // Verify Session B is functional
+    const markerB = `SESSION_B_${Date.now()}`;
+    await collectMessages(ws, 'output', 1500);
+    wsSend(ws, { type: 'input', data: `echo ${markerB}\n` });
+    const outputsB = await collectMessages(ws, 'output', 3000);
+    const combinedB = outputsB.map(m => m.data).join('');
+    assert(combinedB.includes(markerB), `Expected Session B output to contain "${markerB}"`);
+
+    // Cleanup: stop Session B
+    wsSend(ws, { type: 'stop' });
+    await waitForMessage(ws, 'exit', 10000).catch(() => {});
+
+    // Switch back to A and stop it
+    wsSend(ws, { type: 'join_session', sessionId: sessionIdA });
+    await waitForMessage(ws, 'session_joined', 5000);
+    wsSend(ws, { type: 'stop' });
+    await waitForMessage(ws, 'exit', 10000).catch(() => {});
+
+    await closeWs(ws);
+  });
+
+  it('should start a tool after explicit leave/join with REST-created session', async function () {
+    const { ws } = await connectWs(port);
+
+    // Create Session A via WS
+    wsSend(ws, { type: 'create_session', name: 'Leave-Join A' });
+    const createdA = await waitForMessage(ws, 'session_created');
+
+    // Start terminal in A
+    wsSend(ws, { type: 'start_terminal' });
+    await waitForMessage(ws, 'terminal_started', 15000);
+
+    // Create Session B via REST (different creation path)
+    const createRes = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {
+      body: { name: 'Leave-Join B' }
+    });
+    assert.strictEqual(createRes.statusCode, 200);
+    const sessionIdB = createRes.body.sessionId;
+    assert(sessionIdB, 'Expected sessionId from REST create');
+
+    // Leave A, join B
+    wsSend(ws, { type: 'leave_session' });
+    await waitForMessage(ws, 'session_left');
+    wsSend(ws, { type: 'join_session', sessionId: sessionIdB });
+    const joined = await waitForMessage(ws, 'session_joined');
+    assert.strictEqual(joined.sessionId, sessionIdB);
+
+    // Start terminal in B (REST-created session)
+    wsSend(ws, { type: 'start_terminal' });
+    const startedB = await waitForMessage(ws, 'terminal_started', 15000);
+    assert.strictEqual(startedB.type, 'terminal_started');
+
+    // Cleanup: stop B
+    wsSend(ws, { type: 'stop' });
+    await waitForMessage(ws, 'exit', 10000).catch(() => {});
+
+    // Stop A
+    wsSend(ws, { type: 'join_session', sessionId: createdA.sessionId });
+    await waitForMessage(ws, 'session_joined', 5000);
+    wsSend(ws, { type: 'stop' });
+    await waitForMessage(ws, 'exit', 10000).catch(() => {});
+
+    await closeWs(ws);
+  });
+
+  it('should send error when session is deleted before tool start', async function () {
+    // Create a session via REST (no WS attached) then try to start a tool after deletion
+    const createRes = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {
+      body: { name: 'Ghost Session' }
+    });
+    assert.strictEqual(createRes.statusCode, 200);
+    const ghostId = createRes.body.sessionId;
+
+    // Delete it immediately via REST
+    const delRes = await httpRequest('DELETE', `http://127.0.0.1:${port}/api/sessions/${ghostId}`);
+    assert.strictEqual(delRes.statusCode, 200);
+
+    // Now connect a WS and try to join the deleted session
+    const { ws } = await connectWs(port);
+    wsSend(ws, { type: 'join_session', sessionId: ghostId });
+    const errMsg = await waitForMessage(ws, 'error', 5000);
+    assert(
+      errMsg.message.includes('not found') || errMsg.message.includes('Session not found'),
+      `Expected session-not-found error, got: ${errMsg.message}`
+    );
+
+    await closeWs(ws);
+  });
+});

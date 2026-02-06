@@ -14,12 +14,25 @@ class TerminalBridge extends BaseBridge {
   getDefaultShell() {
     if (this.isWindows) {
       // Prefer PowerShell 7 (pwsh), fall back to Windows PowerShell, then cmd.exe
-      if (this.commandExists('pwsh')) {
-        return 'pwsh';
-      }
-      return process.env.COMSPEC || 'powershell.exe';
+      // Use full paths — some node-pty builds require them on Windows
+      const pwshPath = this.resolveCommand('pwsh');
+      if (pwshPath) return pwshPath;
+      return process.env.COMSPEC || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
     }
     return process.env.SHELL || '/bin/bash';
+  }
+
+  resolveCommand(command) {
+    try {
+      const result = require('child_process').execFileSync('where', [command], {
+        encoding: 'utf8',
+        timeout: 5000
+      });
+      const firstLine = result.trim().split(/\r?\n/)[0];
+      return firstLine || null;
+    } catch (_) {
+      return null;
+    }
   }
 
   isAvailable() {

@@ -276,6 +276,15 @@ class ClaudeCodeWebServer {
         workingDir: validWorkingDir,
         connections: new Set(),
         outputBuffer: [],
+        sessionStartTime: null,
+        sessionUsage: {
+          requests: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheTokens: 0,
+          totalCost: 0,
+          models: {}
+        },
         maxBufferSize: 1000
       };
       
@@ -873,16 +882,19 @@ class ClaudeCodeWebServer {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo || !wsInfo.claudeSessionId) return;
 
-    const session = this.claudeSessions.get(wsInfo.claudeSessionId);
+    const leftSessionId = wsInfo.claudeSessionId;
+
+    const session = this.claudeSessions.get(leftSessionId);
     if (session) {
       session.connections.delete(wsId);
       session.lastActivity = new Date();
     }
 
     wsInfo.claudeSessionId = null;
-    
+
     this.sendToWebSocket(wsInfo.ws, {
-      type: 'session_left'
+      type: 'session_left',
+      sessionId: leftSessionId
     });
   }
 
@@ -900,9 +912,14 @@ class ClaudeCodeWebServer {
   async startToolSession(wsId, toolName, bridge, options) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) {
+      console.warn(`startToolSession(${toolName}): wsInfo not found for wsId=${wsId}`);
       return;
     }
+
+    console.log(`startToolSession(${toolName}): wsId=${wsId}, claudeSessionId=${wsInfo.claudeSessionId}`);
+
     if (!wsInfo.claudeSessionId) {
+      console.warn(`startToolSession(${toolName}): no claudeSessionId on wsInfo`);
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
         message: 'No session joined. Please create or join a session first.'
@@ -911,9 +928,17 @@ class ClaudeCodeWebServer {
     }
 
     const session = this.claudeSessions.get(wsInfo.claudeSessionId);
-    if (!session) return;
+    if (!session) {
+      console.error(`startToolSession(${toolName}): session ${wsInfo.claudeSessionId} not found (map size: ${this.claudeSessions.size})`);
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'error',
+        message: 'Session not found. It may have been deleted. Please create a new session.'
+      });
+      return;
+    }
 
     if (session.active) {
+      console.warn(`startToolSession(${toolName}): session ${wsInfo.claudeSessionId} already has agent '${session.agent}' running`);
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
         message: 'An agent is already running in this session'
@@ -924,6 +949,7 @@ class ClaudeCodeWebServer {
     const sessionId = wsInfo.claudeSessionId;
 
     if (!bridge.isAvailable()) {
+      console.warn(`startToolSession(${toolName}): bridge reports tool not available`);
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
         message: `${toolName} is not available. Please ensure the ${toolName} CLI is installed and accessible on your PATH.`
@@ -932,6 +958,7 @@ class ClaudeCodeWebServer {
     }
 
     try {
+      console.log(`startToolSession(${toolName}): spawning in session ${sessionId}, workingDir=${session.workingDir}`);
       await bridge.startSession(sessionId, {
         workingDir: session.workingDir,
         onOutput: (data) => {

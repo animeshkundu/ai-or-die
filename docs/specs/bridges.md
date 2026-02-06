@@ -73,6 +73,8 @@ After a PTY process is spawned, a 30-second watchdog timer starts. If no data, e
 
 `isAvailable()` returns `true` if the resolved command differs from the fallback default (meaning a specific path was found), or if the fallback command exists on PATH. The server checks `isAvailable()` before attempting to spawn a tool session, returning an immediate error to the client if the CLI is not installed.
 
+The result is cached for 60 seconds (`_availableCache` / `_availableCacheTime`) to avoid repeated synchronous `where`/`which` calls that block the Node.js event loop. On Windows, `where.exe` can take several seconds when scanning large PATH variables or network-mapped drives, which would stall all WebSocket message processing during concurrent session starts.
+
 ---
 
 ## ClaudeBridge

@@ -1,4 +1,4 @@
-const { spawn } = require('node-pty');
+const { spawn } = require('@lydell/node-pty');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -14,15 +14,31 @@ class BaseBridge {
     this.dangerousFlag = options.dangerousFlag || null;
     this.autoAcceptTrust = options.autoAcceptTrust || false;
 
+    this._availableCache = null;
+    this._availableCacheTime = 0;
+
     this.command = this.findCommand();
   }
 
   isAvailable() {
-    // Check if the resolved command is actually found (not just the fallback default)
-    if (this.command === this.defaultCommand) {
-      return this.commandExists(this.command);
+    // Return cached result if fresh (avoids repeated synchronous where/which calls
+    // that block the event loop for up to 5s each on Windows)
+    const CACHE_TTL_MS = 60000;
+    const now = Date.now();
+    if (this._availableCache !== null && (now - this._availableCacheTime) < CACHE_TTL_MS) {
+      return this._availableCache;
     }
-    return true;
+
+    let result;
+    if (this.command === this.defaultCommand) {
+      result = this.commandExists(this.command);
+    } else {
+      result = true;
+    }
+
+    this._availableCache = result;
+    this._availableCacheTime = now;
+    return result;
   }
 
   commandExists(command) {
@@ -35,6 +51,20 @@ class BaseBridge {
       return true;
     } catch (error) {
       return false;
+    }
+  }
+
+  resolveFullPath(command) {
+    try {
+      const checker = this.isWindows ? 'where' : 'which';
+      const result = require('child_process').execFileSync(checker, [command], {
+        encoding: 'utf8',
+        timeout: 5000
+      });
+      const firstLine = result.trim().split(/\r?\n/)[0];
+      return firstLine || null;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -59,10 +89,12 @@ class BaseBridge {
               return candidate;
             }
           } else {
-            // For bare command names, use PATH lookup
+            // For bare command names, use PATH lookup and resolve to full path
+            // (some node-pty builds require full paths on Windows)
             if (this.commandExists(candidate)) {
-              console.log(`Found ${this.toolName} command at: ${candidate}`);
-              return candidate;
+              const resolved = this.resolveFullPath(candidate);
+              console.log(`Found ${this.toolName} command at: ${resolved || candidate}`);
+              return resolved || candidate;
             }
           }
         }
@@ -257,11 +289,22 @@ class BaseBridge {
       }
 
       if (session.active && session.process) {
-        session.process.kill('SIGTERM');
+        // On Windows, SIGTERM/SIGKILL are not supported by some node-pty builds.
+        // Use kill() without arguments which triggers the platform-appropriate termination.
+        try {
+          session.process.kill();
+        } catch (e) {
+          // Fallback: try SIGTERM for Unix compatibility
+          try { session.process.kill('SIGTERM'); } catch (_) { /* ignore */ }
+        }
 
         session.killTimeout = setTimeout(() => {
           if (session.active && session.process) {
-            session.process.kill('SIGKILL');
+            try {
+              session.process.kill();
+            } catch (_) {
+              try { session.process.kill('SIGKILL'); } catch (__) { /* ignore */ }
+            }
           }
         }, 5000);
       }

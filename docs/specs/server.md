@@ -218,6 +218,17 @@ All messages are JSON. The `type` field determines the handler.
 | `start_copilot` | Launch Copilot CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
 | `start_gemini` | Launch Gemini CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
 | `start_terminal` | Launch a terminal shell in the current session. Fields: `options` (optional). Pre-checks tool availability. |
+
+**`start_*` Error Handling**: All tool start messages go through `startToolSession`, which sends an `error` message for every failure path:
+
+| Condition | Error message |
+|-----------|--------------|
+| No session joined | "No session joined. Please create or join a session first." |
+| Session not in map | "Session not found. It may have been deleted. Please create a new session." |
+| Agent already running | "An agent is already running in this session" |
+| Tool not available | "{tool} is not available. Please ensure the {tool} CLI is installed..." |
+| Spawn failure | "Failed to start {tool}: {error}" |
+
 | `input` | Send raw terminal input to the running agent. Fields: `data`. |
 | `resize` | Resize the pty. Fields: `cols`, `rows`. |
 | `stop` | Terminate the running agent process. |
@@ -229,7 +240,7 @@ All messages are JSON. The `type` field determines the handler.
 | `connected` | Initial connection acknowledgment with `connectionId`. |
 | `session_created` | Session successfully created. Fields: `sessionId`, `sessionName`, `workingDir`. |
 | `session_joined` | Joined an existing session. Fields: `sessionId`, `sessionName`, `workingDir`, `active`, `outputBuffer`. |
-| `session_left` | Successfully left the session. |
+| `session_left` | Successfully left the session. Fields: `sessionId`. |
 | `session_deleted` | Session was deleted by another client or via REST API. |
 | `claude_started` / `codex_started` / `agent_started` | Agent process launched. |
 | `claude_stopped` / `codex_stopped` / `agent_stopped` | Agent process terminated. |
