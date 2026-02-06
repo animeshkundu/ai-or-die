@@ -257,14 +257,16 @@ class BaseBridge {
           dataBuffer = dataBuffer.slice(-5000);
         }
 
-        // Batch output: coalesce rapid PTY data chunks into fewer WebSocket frames
+        // Batch output: coalesce PTY data chunks from the same I/O cycle
+        // setImmediate flushes on the next tick — no arbitrary time boundary
+        // that could split ANSI escape sequences or multi-byte UTF-8 characters
         outputBatch += data;
         if (!flushTimer) {
-          flushTimer = setTimeout(() => {
+          flushTimer = setImmediate(() => {
             onOutput(outputBatch);
             outputBatch = '';
             flushTimer = null;
-          }, 16);
+          });
         }
       });
 
