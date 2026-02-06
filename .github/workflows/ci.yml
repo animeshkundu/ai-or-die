@@ -46,16 +46,22 @@ jobs:
       - run: npm ci
       - name: Build SEA binary
         run: node scripts/build-sea.js
-      - name: Smoke test
+      - name: Smoke test (--help)
         shell: bash
         run: |
           if [ "${{ matrix.platform }}" = "win32" ]; then
-            ./dist/ai-or-die.exe --version || true
             ./dist/ai-or-die.exe --help || true
           else
             chmod +x ./dist/ai-or-die
-            ./dist/ai-or-die --version || true
             ./dist/ai-or-die --help || true
+          fi
+      - name: E2E test against binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "win32" ]; then
+            node scripts/smoke-test-binary.js ./dist/ai-or-die.exe
+          else
+            node scripts/smoke-test-binary.js ./dist/ai-or-die
           fi
       - name: Upload artifact
         uses: actions/upload-artifact@v4
