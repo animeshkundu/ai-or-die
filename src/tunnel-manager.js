@@ -122,26 +122,48 @@ class TunnelManager {
   }
 
   /**
-   * Create the named tunnel if it doesn't already exist.
+   * Create the named tunnel and configure its port.
+   * Steps: devtunnel create <id> → devtunnel port create <id> -p <port>
+   * Both are idempotent — "Conflict" means it already exists, which is fine.
    */
   async _ensureTunnel() {
-    console.log(`  Creating tunnel "${this.tunnelId}"...`);
+    // Step 1: Create the tunnel
+    const tunnelCreated = await this._execDevtunnel(
+      ['create', this.tunnelId, ...(this.allowAnonymous ? ['--allow-anonymous'] : [])],
+      `Creating tunnel "${this.tunnelId}"...`,
+      `Tunnel "${this.tunnelId}" ready.`
+    );
+    if (!tunnelCreated) return false;
+
+    // Step 2: Configure the port
+    const portCreated = await this._execDevtunnel(
+      ['port', 'create', this.tunnelId, '-p', String(this.port)],
+      `  Configuring port ${this.port}...`,
+      `  Port ${this.port} configured.`
+    );
+    if (!portCreated) return false;
+
+    return true;
+  }
+
+  /**
+   * Run a devtunnel command. Returns true on success or "Conflict" (already exists).
+   */
+  async _execDevtunnel(args, startMsg, successMsg) {
+    console.log(`  ${startMsg}`);
     return new Promise((resolve) => {
-      const args = ['create', this.tunnelId];
-      if (this.allowAnonymous) args.push('--allow-anonymous');
       execFile('devtunnel', args, { timeout: 15000 }, (err, stdout, stderr) => {
         if (err) {
           const output = (stderr || stdout || '').toString();
-          // "already exists" is fine — we reuse it
-          if (output.includes('already exists') || output.includes('already in use')) {
-            console.log(`  Reusing existing tunnel "${this.tunnelId}".`);
+          if (output.includes('Conflict')) {
+            // Already exists — that's fine
             resolve(true);
           } else {
-            console.error(`  [devtunnel] Failed to create tunnel: ${output || err.message}`);
+            console.error(`  [devtunnel] ${output || err.message}`);
             resolve(false);
           }
         } else {
-          console.log(`  Tunnel "${this.tunnelId}" created.`);
+          console.log(`  ${successMsg}`);
           resolve(true);
         }
       });
@@ -150,10 +172,10 @@ class TunnelManager {
 
   /**
    * Spawn the devtunnel host process and wait for the public URL.
+   * No -p flag needed — port is already configured via _ensureTunnel().
    */
   async _spawn() {
-    const args = ['host', this.tunnelId, '-p', String(this.port)];
-    if (this.allowAnonymous) args.push('--allow-anonymous');
+    const args = ['host', this.tunnelId];
 
     return new Promise((resolve) => {
       this.process = spawn('devtunnel', args, {
