@@ -198,20 +198,17 @@ class BaseBridge {
 
       const env = {
         ...process.env,
-        TERM: this.isWindows ? 'xterm' : 'xterm-256color',
-        FORCE_COLOR: '1'
+        TERM: 'xterm-256color',
+        FORCE_COLOR: '1',
+        COLORTERM: 'truecolor'
       };
-      if (!this.isWindows) {
-        env.COLORTERM = 'truecolor';
-      }
 
       const ptyProcess = spawn(this.command, args, {
         cwd: workingDir,
         env,
         cols,
         rows,
-        name: this.isWindows ? 'xterm' : 'xterm-color',
-        useConpty: this.isWindows
+        name: 'xterm-256color'
       });
 
       const session = {
@@ -238,6 +235,8 @@ class BaseBridge {
       }, SPAWN_TIMEOUT_MS);
 
       let dataBuffer = '';
+      let outputBatch = '';
+      let flushTimer = null;
 
       ptyProcess.onData((data) => {
         if (!receivedLifeSign) {
@@ -258,7 +257,17 @@ class BaseBridge {
           dataBuffer = dataBuffer.slice(-5000);
         }
 
-        onOutput(data);
+        // Batch output: coalesce PTY data chunks from the same I/O cycle
+        // setImmediate flushes on the next tick — no arbitrary time boundary
+        // that could split ANSI escape sequences or multi-byte UTF-8 characters
+        outputBatch += data;
+        if (!flushTimer) {
+          flushTimer = setImmediate(() => {
+            onOutput(outputBatch);
+            outputBatch = '';
+            flushTimer = null;
+          });
+        }
       });
 
       ptyProcess.onExit((exitCode, signal) => {

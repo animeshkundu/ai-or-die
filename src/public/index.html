@@ -107,6 +107,13 @@
             <div class="terminal-container" id="terminalContainer" data-view="single">
                 <div class="terminal-wrapper">
                     <div id="terminal"></div>
+                    <div id="termContextMenu" class="term-context-menu" style="display:none">
+                        <div class="ctx-item" data-action="copy">Copy</div>
+                        <div class="ctx-item" data-action="paste">Paste</div>
+                        <div class="ctx-sep"></div>
+                        <div class="ctx-item" data-action="selectAll">Select All</div>
+                        <div class="ctx-item" data-action="clear">Clear</div>
+                    </div>
                 </div>
             </div>
         </main>
@@ -155,6 +162,11 @@
                     <div class="setting-group">
                         <label for="showTokenStats">Show Token Stats:</label>
                         <input type="checkbox" id="showTokenStats" checked>
+                    </div>
+                    <div class="setting-group">
+                        <label for="dangerousMode">Autonomous Mode:</label>
+                        <input type="checkbox" id="dangerousMode">
+                        <small style="display:block;color:#e8a838;margin-top:4px">Skips permission prompts for Claude, Copilot, Gemini, Codex. Use in trusted environments only.</small>
                     </div>
                 </div>
                 <div class="modal-footer">

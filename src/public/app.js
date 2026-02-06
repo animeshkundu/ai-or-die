@@ -338,6 +338,7 @@ class ClaudeCodeWebInterface {
         
         this.terminal.open(document.getElementById('terminal'));
         this.fitTerminal();
+        this.setupTerminalContextMenu();
 
         this.terminal.onData((data) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -912,7 +913,12 @@ class ClaudeCodeWebInterface {
             }
         }, 45000);
 
-        this.send({ type: `start_${toolId}`, options });
+        this.send({
+            type: `start_${toolId}`,
+            options,
+            cols: this.terminal ? this.terminal.cols : 80,
+            rows: this.terminal ? this.terminal.rows : 24
+        });
     }
 
     clearTerminal() {
@@ -937,7 +943,13 @@ class ClaudeCodeWebInterface {
         if (this.fitAddon) {
             try {
                 this.fitAddon.fit();
-                
+
+                // Subtract 2 rows to account for tab bar / header not included in fit calculation
+                const adjustedRows = Math.max(1, this.terminal.rows - 2);
+                if (adjustedRows !== this.terminal.rows) {
+                    this.terminal.resize(this.terminal.cols, adjustedRows);
+                }
+
                 // On mobile, ensure terminal doesn't exceed viewport width
                 if (this.isMobile) {
                     const terminalElement = document.querySelector('.xterm');
@@ -957,6 +969,66 @@ class ClaudeCodeWebInterface {
                 console.error('Error fitting terminal:', error);
             }
         }
+    }
+
+    setupTerminalContextMenu() {
+        const menu = document.getElementById('termContextMenu');
+        if (!menu) return;
+
+        const termEl = document.getElementById('terminal');
+        termEl.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            // Position menu at cursor
+            menu.style.left = e.clientX + 'px';
+            menu.style.top = e.clientY + 'px';
+            menu.style.display = 'block';
+
+            // Disable copy if no selection
+            const copyItem = menu.querySelector('[data-action="copy"]');
+            if (copyItem) {
+                const hasSelection = this.terminal.hasSelection();
+                copyItem.classList.toggle('disabled', !hasSelection);
+            }
+        });
+
+        // Handle menu item clicks
+        menu.addEventListener('click', async (e) => {
+            const action = e.target.dataset.action;
+            if (!action) return;
+            menu.style.display = 'none';
+
+            switch (action) {
+                case 'copy': {
+                    const sel = this.terminal.getSelection();
+                    if (sel) await navigator.clipboard.writeText(sel);
+                    break;
+                }
+                case 'paste': {
+                    try {
+                        const text = await navigator.clipboard.readText();
+                        if (text && this.socket && this.socket.readyState === WebSocket.OPEN) {
+                            this.send({ type: 'input', data: text });
+                        }
+                    } catch { /* clipboard permission denied */ }
+                    break;
+                }
+                case 'selectAll':
+                    this.terminal.selectAll();
+                    break;
+                case 'clear':
+                    this.terminal.clear();
+                    break;
+            }
+            this.terminal.focus();
+        });
+
+        // Dismiss menu on click outside or scroll
+        document.addEventListener('click', (e) => {
+            if (!menu.contains(e.target)) menu.style.display = 'none';
+        });
+        document.addEventListener('keydown', () => { menu.style.display = 'none'; });
     }
 
     updateStatus(status) {
@@ -1011,6 +1083,7 @@ class ClaudeCodeWebInterface {
         const themeSelect = document.getElementById('themeSelect');
         if (themeSelect) themeSelect.value = settings.theme === 'light' ? 'light' : 'dark';
         document.getElementById('showTokenStats').checked = settings.showTokenStats;
+        document.getElementById('dangerousMode').checked = settings.dangerousMode || false;
     }
 
     hideSettings() {
@@ -1026,7 +1099,8 @@ class ClaudeCodeWebInterface {
         const defaults = {
             fontSize: 14,
             showTokenStats: true,
-            theme: 'dark'
+            theme: 'dark',
+            dangerousMode: false
         };
         
         try {
@@ -1042,7 +1116,8 @@ class ClaudeCodeWebInterface {
         const settings = {
             fontSize: parseInt(document.getElementById('fontSize').value),
             showTokenStats: document.getElementById('showTokenStats').checked,
-            theme: (document.getElementById('themeSelect')?.value) || 'dark'
+            theme: (document.getElementById('themeSelect')?.value) || 'dark',
+            dangerousMode: document.getElementById('dangerousMode').checked
         };
         
         try {

@@ -94,9 +94,7 @@ class ClaudeCodeWebServer {
   }
   
   async saveSessionsToDisk() {
-    if (this.claudeSessions.size > 0) {
-      await this.sessionStore.saveSessions(this.claudeSessions);
-    }
+    await this.sessionStore.saveSessions(this.claudeSessions);
   }
   
   async handleShutdown() {
@@ -345,7 +343,7 @@ class ClaudeCodeWebServer {
     });
 
     // Delete a Claude session
-    this.app.delete('/api/sessions/:sessionId', (req, res) => {
+    this.app.delete('/api/sessions/:sessionId', async (req, res) => {
       const sessionId = req.params.sessionId;
       const session = this.claudeSessions.get(sessionId);
       
@@ -374,10 +372,10 @@ class ClaudeCodeWebServer {
       });
       
       this.claudeSessions.delete(sessionId);
-      
-      // Save sessions after deletion
-      this.saveSessionsToDisk();
-      
+
+      // Save sessions after deletion — await to ensure persistence
+      await this.saveSessionsToDisk();
+
       res.json({ success: true, message: 'Session deleted' });
     });
 
@@ -390,8 +388,8 @@ class ClaudeCodeWebServer {
         tools: {
           claude: { alias: this.aliases.claude, available: this.claudeBridge.isAvailable(), hasDangerousMode: true },
           codex: { alias: this.aliases.codex, available: this.codexBridge.isAvailable(), hasDangerousMode: true },
-          copilot: { alias: this.aliases.copilot, available: this.copilotBridge.isAvailable(), hasDangerousMode: false },
-          gemini: { alias: this.aliases.gemini, available: this.geminiBridge.isAvailable(), hasDangerousMode: false },
+          copilot: { alias: this.aliases.copilot, available: this.copilotBridge.isAvailable(), hasDangerousMode: true },
+          gemini: { alias: this.aliases.gemini, available: this.geminiBridge.isAvailable(), hasDangerousMode: true },
           terminal: { alias: this.aliases.terminal, available: this.terminalBridge.isAvailable(), hasDangerousMode: false }
         }
       });
@@ -645,8 +643,15 @@ class ClaudeCodeWebServer {
       server = http.createServer(this.app);
     }
 
-    this.wss = new WebSocket.Server({ 
+    this.wss = new WebSocket.Server({
       server,
+      perMessageDeflate: {
+        serverNoContextTakeover: true,
+        clientNoContextTakeover: true,
+        serverMaxWindowBits: 13,
+        clientMaxWindowBits: 13,
+        zlibDeflateOptions: { level: 6 }
+      },
       verifyClient: (info) => {
         if (!this.noAuth && this.auth) {
           const url = new URL(info.req.url, 'ws://localhost');
@@ -753,19 +758,19 @@ class ClaudeCodeWebServer {
         break;
 
       case 'start_claude':
-        await this.startToolSession(wsId, 'claude', this.claudeBridge, data.options || {});
+        await this.startToolSession(wsId, 'claude', this.claudeBridge, data.options || {}, data.cols, data.rows);
         break;
       case 'start_codex':
-        await this.startToolSession(wsId, 'codex', this.codexBridge, data.options || {});
+        await this.startToolSession(wsId, 'codex', this.codexBridge, data.options || {}, data.cols, data.rows);
         break;
       case 'start_copilot':
-        await this.startToolSession(wsId, 'copilot', this.copilotBridge, data.options || {});
+        await this.startToolSession(wsId, 'copilot', this.copilotBridge, data.options || {}, data.cols, data.rows);
         break;
       case 'start_gemini':
-        await this.startToolSession(wsId, 'gemini', this.geminiBridge, data.options || {});
+        await this.startToolSession(wsId, 'gemini', this.geminiBridge, data.options || {}, data.cols, data.rows);
         break;
       case 'start_terminal':
-        await this.startToolSession(wsId, 'terminal', this.terminalBridge, data.options || {});
+        await this.startToolSession(wsId, 'terminal', this.terminalBridge, data.options || {}, data.cols, data.rows);
         break;
       
       case 'input':
@@ -969,7 +974,7 @@ class ClaudeCodeWebServer {
     return bridges[agentType] || null;
   }
 
-  async startToolSession(wsId, toolName, bridge, options) {
+  async startToolSession(wsId, toolName, bridge, options, cols, rows) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) {
       console.warn(`startToolSession(${toolName}): wsInfo not found for wsId=${wsId}`);
@@ -1021,6 +1026,8 @@ class ClaudeCodeWebServer {
       console.log(`startToolSession(${toolName}): spawning in session ${sessionId}, workingDir=${session.workingDir}`);
       await bridge.startSession(sessionId, {
         workingDir: session.workingDir,
+        cols: cols || 80,
+        rows: rows || 24,
         onOutput: (data) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;

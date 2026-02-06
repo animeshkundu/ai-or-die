@@ -18,7 +18,8 @@ class GeminiBridge extends BaseBridge {
           '{HOME}\\AppData\\Roaming\\npm\\gemini'
         ]
       },
-      defaultCommand: 'gemini'
+      defaultCommand: 'gemini',
+      dangerousFlag: '--yolo'
     });
   }
 }
