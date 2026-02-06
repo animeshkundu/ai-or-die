@@ -213,9 +213,11 @@ All messages are JSON. The `type` field determines the handler.
 | `create_session` | Create a new session and join it. Fields: `name`, `workingDir`. |
 | `join_session` | Join an existing session. Fields: `sessionId`. Replays the last 200 lines of the output buffer. |
 | `leave_session` | Disconnect from current session without stopping the agent. |
-| `start_claude` | Launch Claude CLI in the current session. Fields: `options` (optional). |
-| `start_codex` | Launch Codex CLI in the current session. Fields: `options` (optional). |
-| `start_agent` | Launch Cursor Agent in the current session. Fields: `options` (optional). |
+| `start_claude` | Launch Claude CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
+| `start_codex` | Launch Codex CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
+| `start_copilot` | Launch Copilot CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
+| `start_gemini` | Launch Gemini CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
+| `start_terminal` | Launch a terminal shell in the current session. Fields: `options` (optional). Pre-checks tool availability. |
 | `input` | Send raw terminal input to the running agent. Fields: `data`. |
 | `resize` | Resize the pty. Fields: `cols`, `rows`. |
 | `stop` | Terminate the running agent process. |

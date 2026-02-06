@@ -899,10 +899,13 @@ class ClaudeCodeWebServer {
 
   async startToolSession(wsId, toolName, bridge, options) {
     const wsInfo = this.webSocketConnections.get(wsId);
-    if (!wsInfo || !wsInfo.claudeSessionId) {
+    if (!wsInfo) {
+      return;
+    }
+    if (!wsInfo.claudeSessionId) {
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
-        message: 'No session joined'
+        message: 'No session joined. Please create or join a session first.'
       });
       return;
     }
@@ -919,6 +922,15 @@ class ClaudeCodeWebServer {
     }
 
     const sessionId = wsInfo.claudeSessionId;
+
+    if (!bridge.isAvailable()) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'error',
+        message: `${toolName} is not available. Please ensure the ${toolName} CLI is installed and accessible on your PATH.`
+      });
+      return;
+    }
+
     try {
       await bridge.startSession(sessionId, {
         workingDir: session.workingDir,

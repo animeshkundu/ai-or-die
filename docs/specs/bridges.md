@@ -58,7 +58,20 @@ The pty name is set to `xterm-color`.
 
 ### Command Discovery
 
-Each bridge's constructor calls a `find*Command()` method that iterates through an ordered list of candidate paths. For each candidate, it checks `fs.existsSync()` then falls back to `which` via `child_process.execFileSync`. The first match wins. If none are found, a fallback default command name is used.
+Each bridge's constructor calls `findCommand()` which iterates through platform-specific candidate paths. Discovery works differently depending on whether the candidate is an absolute path or a bare command name:
+
+- **Absolute paths:** Checked via `fs.existsSync()` only. On Windows, candidates are expanded with `.exe` and `.cmd` suffixes (e.g., `C:\Users\foo\.claude\local\claude` also checks `claude.exe` and `claude.cmd`).
+- **Bare command names:** Checked via `commandExists()`, which runs `which` (Linux/macOS) or `where` (Windows) with a 5-second timeout to prevent hangs on systems with large PATH or network-mapped drives.
+
+The first match wins. If none are found, a fallback default command name is used (e.g., `'claude'`).
+
+### Spawn Watchdog
+
+After a PTY process is spawned, a 30-second watchdog timer starts. If no data, exit, or error event fires within that period, the process is killed and an error is reported to the caller. This prevents zombie processes on Windows where ConPTY initialization can hang silently. The watchdog is cleared on the first `onData`, `onExit`, or `on('error')` event.
+
+### Availability Check
+
+`isAvailable()` returns `true` if the resolved command differs from the fallback default (meaning a specific path was found), or if the fallback command exists on PATH. The server checks `isAvailable()` before attempting to spawn a tool session, returning an immediate error to the client if the CLI is not installed.
 
 ---
 

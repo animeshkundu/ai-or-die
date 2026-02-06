@@ -697,6 +697,7 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'claude_started':
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 // Don't auto-focus to avoid focus tracking sequences
                 // User can click to focus when ready
@@ -710,6 +711,7 @@ class ClaudeCodeWebInterface {
                 }
                 break;
             case 'codex_started':
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 this.loadSessions();
                 this.requestUsageStats();
@@ -718,6 +720,7 @@ class ClaudeCodeWebInterface {
                 }
                 break;
             case 'agent_started':
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 this.loadSessions();
                 this.requestUsageStats();
@@ -726,6 +729,7 @@ class ClaudeCodeWebInterface {
                 }
                 break;
             case 'copilot_started':
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 this.loadSessions();
                 this.requestUsageStats();
@@ -734,6 +738,7 @@ class ClaudeCodeWebInterface {
                 }
                 break;
             case 'gemini_started':
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 this.loadSessions();
                 this.requestUsageStats();
@@ -742,6 +747,7 @@ class ClaudeCodeWebInterface {
                 }
                 break;
             case 'terminal_started':
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 this.loadSessions();
                 this.requestUsageStats();
@@ -784,6 +790,7 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'exit':
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} exited with code ${message.code}\x1b[0m`);
                 
                 // Mark session as error if non-zero exit code
@@ -796,6 +803,7 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'error':
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.showError(message.message);
                 
                 // Mark session as having an error
@@ -892,6 +900,18 @@ class ClaudeCodeWebInterface {
             ? `Starting ${toolAlias} (skipping permissions)...`
             : `Starting ${toolAlias}...`;
         document.getElementById('loadingSpinner').querySelector('p').textContent = loadingText;
+
+        // Safety net: dismiss spinner if server never responds
+        if (this._startToolTimeout) clearTimeout(this._startToolTimeout);
+        this._startToolTimeout = setTimeout(() => {
+            const overlay = document.getElementById('overlay');
+            const spinner = document.getElementById('loadingSpinner');
+            if (overlay && overlay.style.display !== 'none' &&
+                spinner && spinner.style.display !== 'none') {
+                this.showError(`${toolAlias} did not start within 45 seconds. The CLI tool may not be installed or is unresponsive.`);
+            }
+        }, 45000);
+
         this.send({ type: `start_${toolId}`, options });
     }
 

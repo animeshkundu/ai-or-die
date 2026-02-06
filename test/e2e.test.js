@@ -477,6 +477,24 @@ describe('E2E: Terminal tool session', function () {
     await closeWs(ws);
   });
 
+  it('should error when starting an unavailable tool', async function () {
+    const { ws } = await connectWs(port);
+
+    wsSend(ws, { type: 'create_session', name: 'Unavailable Tool Test' });
+    await waitForMessage(ws, 'session_created');
+
+    // Codex is unlikely to be installed in CI; if it is, skip this test
+    if (server.codexBridge.isAvailable()) {
+      this.skip();
+      return;
+    }
+
+    wsSend(ws, { type: 'start_codex' });
+    const msg = await waitForMessage(ws, 'error');
+    assert(msg.message.includes('not available'), `Expected "not available" error, got: ${msg.message}`);
+    await closeWs(ws);
+  });
+
   it('should error when starting a second tool in the same session', async function () {
     const { ws } = await connectWs(port);
 

@@ -1,6 +1,8 @@
 const assert = require('assert');
 const ClaudeBridge = require('../src/claude-bridge');
 
+const isWindows = process.platform === 'win32';
+
 describe('ClaudeBridge', function() {
   let bridge;
 
@@ -15,14 +17,15 @@ describe('ClaudeBridge', function() {
     });
 
     it('should find a claude command on initialization', function() {
-      assert(typeof bridge.claudeCommand === 'string');
-      assert(bridge.claudeCommand.length > 0);
+      assert(typeof bridge.command === 'string');
+      assert(bridge.command.length > 0);
     });
   });
 
   describe('commandExists', function() {
-    it('should return true for existing commands like "ls"', function() {
-      const result = bridge.commandExists('ls');
+    it('should return true for existing commands', function() {
+      const cmd = isWindows ? 'cmd' : 'ls';
+      const result = bridge.commandExists(cmd);
       assert.strictEqual(result, true);
     });
 
@@ -31,10 +34,23 @@ describe('ClaudeBridge', function() {
       assert.strictEqual(result, false);
     });
 
+    it('should return within the timeout period', function() {
+      const start = Date.now();
+      bridge.commandExists('nonexistentcommand12345');
+      const elapsed = Date.now() - start;
+      assert(elapsed < 6000, `commandExists took ${elapsed}ms, expected < 6000ms`);
+    });
+
     it('should handle command names with special characters safely', function() {
-      // This tests the security fix - commands with shell metacharacters should not break
       const result = bridge.commandExists('ls; echo "injected"');
       assert.strictEqual(result, false);
+    });
+  });
+
+  describe('isAvailable', function() {
+    it('should return a boolean', function() {
+      const result = bridge.isAvailable();
+      assert(typeof result === 'boolean');
     });
   });
 

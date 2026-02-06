@@ -104,9 +104,13 @@ A modal dialog for selecting working directories:
 When a session has no running agent, the UI presents buttons to start:
 - **Claude** -- sends `{ type: "start_claude" }`
 - **Codex** -- sends `{ type: "start_codex" }`
-- **Agent** -- sends `{ type: "start_agent" }`
+- **Copilot** -- sends `{ type: "start_copilot" }`
+- **Gemini** -- sends `{ type: "start_gemini" }`
+- **Terminal** -- sends `{ type: "start_terminal" }`
 
-Each button's label uses the configured alias from `/api/config`.
+Each button's label uses the configured alias from `/api/config`. Buttons are disabled for tools that are not available on the server.
+
+A 45-second client-side timeout acts as a safety net: if no `_started`, `error`, or `exit` message arrives from the server within that window, the loading spinner is replaced with an error message. This prevents the UI from getting permanently stuck if the server fails to respond (e.g., due to a process hang on Windows).
 
 ### Usage Dashboard
 

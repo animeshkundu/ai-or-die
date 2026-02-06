@@ -28,7 +28,10 @@ class BaseBridge {
   commandExists(command) {
     try {
       const checker = this.isWindows ? 'where' : 'which';
-      require('child_process').execFileSync(checker, [command], { stdio: 'ignore' });
+      require('child_process').execFileSync(checker, [command], {
+        stdio: 'ignore',
+        timeout: 5000
+      });
       return true;
     } catch (error) {
       return false;
@@ -49,9 +52,18 @@ class BaseBridge {
           ? [cmd, `${cmd}.exe`, `${cmd}.cmd`]
           : [cmd];
         for (const candidate of candidates) {
-          if (fs.existsSync(candidate) || this.commandExists(candidate)) {
-            console.log(`Found ${this.toolName} command at: ${candidate}`);
-            return candidate;
+          if (path.isAbsolute(candidate)) {
+            // For absolute paths, use fs.existsSync only (where/which don't work for absolute paths)
+            if (fs.existsSync(candidate)) {
+              console.log(`Found ${this.toolName} command at: ${candidate}`);
+              return candidate;
+            }
+          } else {
+            // For bare command names, use PATH lookup
+            if (this.commandExists(candidate)) {
+              console.log(`Found ${this.toolName} command at: ${candidate}`);
+              return candidate;
+            }
           }
         }
       } catch (error) {
@@ -117,9 +129,27 @@ class BaseBridge {
 
       this.sessions.set(sessionId, session);
 
+      // Spawn watchdog: if no data, exit, or error arrives within 30s, treat as failure
+      let receivedLifeSign = false;
+      const SPAWN_TIMEOUT_MS = 30000;
+      const spawnWatchdog = setTimeout(() => {
+        if (!receivedLifeSign && session.active) {
+          console.error(`${this.toolName} session ${sessionId}: no response within ${SPAWN_TIMEOUT_MS}ms, treating as spawn failure`);
+          session.active = false;
+          this.sessions.delete(sessionId);
+          try { ptyProcess.kill(); } catch (e) { /* ignore */ }
+          onError(new Error(`${this.toolName} process did not respond within ${SPAWN_TIMEOUT_MS / 1000} seconds. The command may not be installed or may have hung during startup.`));
+        }
+      }, SPAWN_TIMEOUT_MS);
+
       let dataBuffer = '';
 
       ptyProcess.onData((data) => {
+        if (!receivedLifeSign) {
+          receivedLifeSign = true;
+          clearTimeout(spawnWatchdog);
+        }
+
         if (process.env.DEBUG) {
           console.log(`${this.toolName} session ${sessionId} output:`, data);
         }
@@ -137,6 +167,10 @@ class BaseBridge {
       });
 
       ptyProcess.onExit((exitCode, signal) => {
+        if (!receivedLifeSign) {
+          receivedLifeSign = true;
+          clearTimeout(spawnWatchdog);
+        }
         console.log(`${this.toolName} session ${sessionId} exited with code ${exitCode}, signal ${signal}`);
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
@@ -148,6 +182,10 @@ class BaseBridge {
       });
 
       ptyProcess.on('error', (error) => {
+        if (!receivedLifeSign) {
+          receivedLifeSign = true;
+          clearTimeout(spawnWatchdog);
+        }
         console.error(`${this.toolName} session ${sessionId} error:`, error);
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
