@@ -11,6 +11,8 @@ concurrency:
 jobs:
   release:
     name: Tag, Release, and Publish
+    # Skip if the push was an automated version bump
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -19,6 +21,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -26,38 +30,47 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Read version
-        id: pkg
+      - name: Configure git
         run: |
-          echo "version=$(jq -r .version package.json)" >> $GITHUB_OUTPUT
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Check if tag exists
-        id: check
+      - name: Read current version
+        id: pkg
+        run: echo "version=$(jq -r .version package.json)" >> $GITHUB_OUTPUT
+
+      - name: Check if tag exists and bump if needed
+        id: version
         run: |
           git fetch --tags --force --quiet
-          if git rev-parse -q --verify "refs/tags/v${{ steps.pkg.outputs.version }}" >/dev/null; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Tag v${{ steps.pkg.outputs.version }} already exists. Skipping release."
+          CURRENT="${{ steps.pkg.outputs.version }}"
+          if git rev-parse -q --verify "refs/tags/v${CURRENT}" >/dev/null; then
+            echo "Tag v${CURRENT} exists — auto-bumping patch version..."
+            npm version patch --no-git-tag-version
+            NEW=$(jq -r .version package.json)
+            git add package.json package-lock.json
+            git commit -m "chore: bump version to ${NEW} [skip release]"
+            git push
+            echo "version=${NEW}" >> $GITHUB_OUTPUT
+            echo "bumped=true" >> $GITHUB_OUTPUT
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "version=${CURRENT}" >> $GITHUB_OUTPUT
+            echo "bumped=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create GitHub Release (also creates tag)
-        if: ${{ steps.check.outputs.exists == 'false' }}
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.pkg.outputs.version }}
-          name: v${{ steps.pkg.outputs.version }}
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
           body: |
-            Automated release for v${{ steps.pkg.outputs.version }}.
+            Automated release for v${{ steps.version.outputs.version }}.
             See CHANGELOG.md for details.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
-        if: ${{ steps.check.outputs.exists == 'false' }}
         run: npm ci
 
       - name: Publish to npm
-        if: ${{ steps.check.outputs.exists == 'false' }}
         run: npm publish --access public
