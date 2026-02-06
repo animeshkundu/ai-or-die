@@ -113,11 +113,20 @@ async function run() {
     env: { ...process.env, NODE_NO_WARNINGS: '1' }
   });
 
+  let serverOutput = '';
   child.stdout.on('data', (d) => {
+    serverOutput += d.toString();
     if (process.env.VERBOSE) process.stdout.write(`  [stdout] ${d}`);
   });
   child.stderr.on('data', (d) => {
-    if (process.env.VERBOSE) process.stderr.write(`  [stderr] ${d}`);
+    serverOutput += d.toString();
+    process.stderr.write(`  [binary] ${d}`);
+  });
+  child.on('exit', (code) => {
+    if (code !== null && code !== 0) {
+      console.error(`\nBinary exited early with code ${code}`);
+      console.error('Output:\n' + serverOutput.slice(-2000));
+    }
   });
 
   console.log('Waiting for server to be ready...');

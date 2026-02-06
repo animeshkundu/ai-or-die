@@ -2,8 +2,11 @@
 
 const { Command } = require('commander');
 const path = require('path');
-const open = require('open');
 const crypto = require('crypto');
+
+// Lazy-load open — may not be available in SEA binary
+let open;
+try { open = require('open'); } catch { open = null; }
 const { startServer } = require('../src/server');
 
 const program = new Command();
@@ -156,7 +159,7 @@ async function main() {
             publicUrl = match[0].trim();
             console.log(`\n  \x1b[1m\x1b[32mTunnel ready:\x1b[0m \x1b[1m\x1b[4m${publicUrl}\x1b[0m\n`);
             if (options.open) {
-              open(publicUrl).catch(() => {});
+              if (open) open(publicUrl).catch(() => {});
             }
           }
         });
@@ -171,7 +174,7 @@ async function main() {
         console.error('  Failed to start dev tunnel:', error.message);
       }
     } else if (options.open) {
-      try { await open(url); } catch (error) {
+      try { if (open) await open(url); } catch (error) {
         console.warn('  Could not automatically open browser:', error.message);
       }
     }
