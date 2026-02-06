@@ -82,18 +82,17 @@ jobs:
           NODE_AUTH_TOKEN: ""
 
       - name: Publish to GitHub Packages
+        continue-on-error: true
         run: |
-          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" > ~/.npmrc
-          echo "@animeshkundu:registry=https://npm.pkg.github.com" >> ~/.npmrc
-          # Temporarily scope the package for GitHub Packages
           node -e "
             const pkg = require('./package.json');
             pkg.name = '@animeshkundu/ai-or-die';
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
-          npm publish --access public
-          # Restore original package.json
+          npm publish --registry https://npm.pkg.github.com --access public
           git checkout -- package.json
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-binaries:
     name: Build ${{ matrix.artifact }}
