@@ -645,8 +645,15 @@ class ClaudeCodeWebServer {
       server = http.createServer(this.app);
     }
 
-    this.wss = new WebSocket.Server({ 
+    this.wss = new WebSocket.Server({
       server,
+      perMessageDeflate: {
+        serverNoContextTakeover: true,
+        clientNoContextTakeover: true,
+        serverMaxWindowBits: 13,
+        clientMaxWindowBits: 13,
+        zlibDeflateOptions: { level: 6 }
+      },
       verifyClient: (info) => {
         if (!this.noAuth && this.auth) {
           const url = new URL(info.req.url, 'ws://localhost');
