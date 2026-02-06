@@ -12,7 +12,7 @@ jobs:
   release:
     name: Tag, Release, and Publish
     # Skip if the push was an automated version bump
-    if: "!contains(github.event.head_commit.message, '[skip release]')"
+    if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -49,7 +49,7 @@ jobs:
             npm version patch --no-git-tag-version
             NEW=$(jq -r .version package.json)
             git add package.json package-lock.json
-            git commit -m "chore: bump version to ${NEW} [skip release]"
+            git commit -m "chore: bump version to ${NEW}"
             git push
             echo "version=${NEW}" >> $GITHUB_OUTPUT
             echo "bumped=true" >> $GITHUB_OUTPUT
