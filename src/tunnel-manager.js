@@ -33,6 +33,9 @@ class TunnelManager {
     const loggedIn = await this._checkLogin();
     if (!loggedIn) return;
 
+    const tunnelReady = await this._ensureTunnel();
+    if (!tunnelReady) return;
+
     await this._spawn();
   }
 
@@ -119,10 +122,37 @@ class TunnelManager {
   }
 
   /**
+   * Create the named tunnel if it doesn't already exist.
+   */
+  async _ensureTunnel() {
+    console.log(`  Creating tunnel "${this.tunnelId}"...`);
+    return new Promise((resolve) => {
+      const args = ['create', this.tunnelId];
+      if (this.allowAnonymous) args.push('--allow-anonymous');
+      execFile('devtunnel', args, { timeout: 15000 }, (err, stdout, stderr) => {
+        if (err) {
+          const output = (stderr || stdout || '').toString();
+          // "already exists" is fine — we reuse it
+          if (output.includes('already exists') || output.includes('already in use')) {
+            console.log(`  Reusing existing tunnel "${this.tunnelId}".`);
+            resolve(true);
+          } else {
+            console.error(`  [devtunnel] Failed to create tunnel: ${output || err.message}`);
+            resolve(false);
+          }
+        } else {
+          console.log(`  Tunnel "${this.tunnelId}" created.`);
+          resolve(true);
+        }
+      });
+    });
+  }
+
+  /**
    * Spawn the devtunnel host process and wait for the public URL.
    */
   async _spawn() {
-    const args = ['host', '-p', String(this.port), '--tunnel-id', this.tunnelId];
+    const args = ['host', this.tunnelId, '-p', String(this.port)];
     if (this.allowAnonymous) args.push('--allow-anonymous');
 
     return new Promise((resolve) => {
