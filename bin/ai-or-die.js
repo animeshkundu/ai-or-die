@@ -108,6 +108,9 @@ async function main() {
     const url = authToken ? `${baseUrl}?token=${authToken}` : baseUrl;
 
     console.log(`\n🚀 ai-or-die is running at: \x1b[1m\x1b[4m${url}\x1b[0m`);
+    if (authToken) {
+      console.log(`   Auth token: \x1b[1m\x1b[33m${authToken}\x1b[0m`);
+    }
 
     // Dev tunnel or browser open
     let tunnel = null;
