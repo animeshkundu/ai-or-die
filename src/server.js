@@ -621,8 +621,15 @@ class ClaudeCodeWebServer {
   }
 
   async start() {
-    // Ensure persisted sessions are loaded before accepting connections
-    await this._sessionsLoaded;
+    // Run session loading and command discovery in parallel
+    await Promise.all([
+      this._sessionsLoaded,
+      this.claudeBridge._commandReady,
+      this.codexBridge._commandReady,
+      this.copilotBridge._commandReady,
+      this.geminiBridge._commandReady,
+      this.terminalBridge._commandReady,
+    ]);
 
     let server;
 
