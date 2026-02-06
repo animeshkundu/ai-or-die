@@ -6,7 +6,7 @@
 //   node scripts/build-sea.js          -- full build (bundle + SEA binary)
 //   node scripts/build-sea.js bundle   -- bundle only (for testing)
 
-const { execFileSync } = require('child_process');
+const { execFileSync, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -22,9 +22,7 @@ function bundle() {
   console.log('Bundling application with esbuild...');
   fs.mkdirSync(DIST, { recursive: true });
 
-  const esbuildBin = path.join(ROOT, 'node_modules', '.bin', PLATFORM === 'win32' ? 'esbuild.cmd' : 'esbuild');
-
-  execFileSync(esbuildBin, [
+  const esbuildArgs = [
     path.join(ROOT, 'sea-bootstrap.js'),
     '--bundle',
     '--platform=node',
@@ -41,6 +39,12 @@ function bundle() {
     '--external:@lydell/node-pty-darwin-arm64',
     // open package uses import() which doesn't work in SEA
     '--external:open',
+  ];
+
+  // Use npx to run esbuild — avoids .cmd shell issues on Windows
+  execFileSync(process.execPath, [
+    path.join(ROOT, 'node_modules', 'esbuild', 'bin', 'esbuild'),
+    ...esbuildArgs
   ], { stdio: 'inherit', cwd: ROOT });
 
   console.log('Bundle created: dist/bundle.js');
@@ -134,9 +138,9 @@ function buildSea(configPath) {
   // Inject the blob using postject
   console.log('Injecting SEA blob...');
   const blobPath = path.join(DIST, 'sea-prep.blob');
-  const postjectBin = path.join(ROOT, 'node_modules', '.bin', PLATFORM === 'win32' ? 'postject.cmd' : 'postject');
 
   const postjectArgs = [
+    path.join(ROOT, 'node_modules', 'postject', 'dist', 'cli.js'),
     outputPath,
     'NODE_SEA_BLOB',
     blobPath,
@@ -146,7 +150,7 @@ function buildSea(configPath) {
     postjectArgs.push('--macho-segment-name', 'NODE_SEA');
   }
 
-  execFileSync(postjectBin, postjectArgs, { stdio: 'inherit', cwd: ROOT });
+  execFileSync(process.execPath, postjectArgs, { stdio: 'inherit', cwd: ROOT });
 
   // Re-sign on macOS
   if (PLATFORM === 'darwin') {
