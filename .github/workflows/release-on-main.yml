@@ -81,6 +81,13 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ""
 
+      - name: Setup Node.js (GitHub Packages)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@animeshkundu'
+
       - name: Publish to GitHub Packages
         continue-on-error: true
         run: |
@@ -89,7 +96,7 @@ jobs:
             pkg.name = '@animeshkundu/ai-or-die';
             require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
-          npm publish --registry https://npm.pkg.github.com --access public
+          npm publish --access public
           git checkout -- package.json
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
