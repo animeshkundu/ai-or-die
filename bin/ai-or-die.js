@@ -5,8 +5,12 @@ const path = require('path');
 const crypto = require('crypto');
 
 // Lazy-load open — may not be available in SEA binary
+// open v10+ uses ESM default export
 let open;
-try { open = require('open'); } catch { open = null; }
+try {
+  const openModule = require('open');
+  open = openModule.default || openModule;
+} catch { open = null; }
 const { startServer } = require('../src/server');
 
 const program = new Command();

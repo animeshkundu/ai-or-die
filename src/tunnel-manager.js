@@ -198,7 +198,7 @@ class TunnelManager {
         const output = data.toString();
         if (this.dev) process.stdout.write(`  [devtunnel] ${output}`);
 
-        const match = output.match(/https:\/\/[\w.-]+\.devtunnels\.ms\S*/);
+        const match = output.match(/https:\/\/[\w.-]+\.devtunnels\.ms[^\s,]*/);
         if (match && !this.publicUrl) {
           this.publicUrl = match[0].trim();
           urlResolved = true;
