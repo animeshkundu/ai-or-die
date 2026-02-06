@@ -1,6 +1,6 @@
 {
   "name": "ai-or-die",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Universal AI coding terminal — Claude, Copilot, Gemini & more in your browser",
   "main": "src/server.js",
   "bin": {
