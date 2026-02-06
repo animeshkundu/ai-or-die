@@ -54,15 +54,14 @@ async function main() {
     }
 
     // Handle authentication logic
+    // Tunnel mode disables auth — the tunnel itself controls access
     let authToken = null;
-    let noAuth = options.disableAuth === true;
+    let noAuth = options.disableAuth === true || options.tunnel === true;
 
     if (!noAuth) {
       if (options.auth) {
-        // Use provided token
         authToken = options.auth;
       } else {
-        // Generate random token
         authToken = generateRandomToken();
       }
     }
@@ -91,35 +90,26 @@ async function main() {
     console.log(`Plan: ${options.plan}`);
     console.log(`Aliases: Claude → "${serverOptions.claudeAlias}", Codex → "${serverOptions.codexAlias}", Copilot → "${serverOptions.copilotAlias}", Gemini → "${serverOptions.geminiAlias}", Terminal → "${serverOptions.terminalAlias}"`);
 
-    // Display authentication status prominently
-    if (noAuth) {
+    // Display authentication status
+    if (options.tunnel) {
+      console.log('\n🌍 TUNNEL MODE — authentication disabled (tunnel controls access)');
+    } else if (noAuth) {
       console.log('\n⚠️  AUTHENTICATION DISABLED - Server is accessible without a token');
       console.log('   (Use without --disable-auth flag for security in production)');
     } else {
       console.log('\n🔐 AUTHENTICATION ENABLED');
-      if (options.auth) {
-        console.log('   Using provided authentication token');
-      } else {
-        console.log('   Generated random authentication token:');
-        console.log(`   \x1b[1m\x1b[33m${authToken}\x1b[0m`);
-        console.log('   \x1b[2mSave this token - you\'ll need it to access the interface\x1b[0m');
-      }
     }
 
     const server = await startServer(serverOptions);
 
     const protocol = options.https ? 'https' : 'http';
-    const url = `${protocol}://localhost:${port}`;
+    const baseUrl = `${protocol}://localhost:${port}`;
+    // For localhost with auth, embed token in URL so user can just click it
+    const url = authToken ? `${baseUrl}?token=${authToken}` : baseUrl;
 
-    console.log(`\n🚀 ai-or-die is running at: ${url}`);
-
-    if (!noAuth) {
-      console.log('\n📋 Authentication Required:');
-      if (options.auth) {
-        console.log('   Use your provided authentication token to access the interface');
-      } else {
-        console.log(`   Enter this token when prompted: \x1b[1m\x1b[33m${authToken}\x1b[0m`);
-      }
+    console.log(`\n🚀 ai-or-die is running at: \x1b[1m\x1b[4m${url}\x1b[0m`);
+    if (authToken) {
+      console.log(`   Auth token: \x1b[1m\x1b[33m${authToken}\x1b[0m`);
     }
 
     // Dev tunnel or browser open
