@@ -190,6 +190,7 @@ function sendAndWait(ws, message, expectedType, timeoutMs) { ... }
 | Stop terminal session | Send `stop` -> receive `exit` message |
 | Cannot start two tools in same session | Start terminal, then start terminal again -> receive `error` |
 | Echo unique marker through terminal (cross-platform) | Start terminal -> drain initial output -> send `echo MARKER` -> verify marker in collected output -> stop |
+| Start terminal with custom cols/rows | Send `start_terminal` with cols=132, rows=50 -> verify terminal starts and responds to echo |
 
 ### 3.6 Input/Output Round-Trip (`describe('I/O round-trip')`)
 

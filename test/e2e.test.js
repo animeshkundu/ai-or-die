@@ -542,6 +542,30 @@ describe('E2E: Terminal tool session', function () {
     await closeWs(ws);
   });
 
+  it('should start terminal with custom cols/rows from client', async function () {
+    const { ws } = await connectWs(port);
+
+    wsSend(ws, { type: 'create_session', name: 'Custom Size Test' });
+    await waitForMessage(ws, 'session_created');
+
+    // Start terminal with explicit dimensions (instead of default 80x24)
+    const startedPromise = waitForMessage(ws, 'terminal_started', 15000);
+    wsSend(ws, { type: 'start_terminal', options: {}, cols: 132, rows: 50 });
+    await startedPromise;
+
+    // Verify terminal is responsive with a marker echo
+    await collectMessages(ws, 'output', 3000);
+    const marker = `SIZE_${Date.now()}`;
+    wsSend(ws, { type: 'input', data: `echo ${marker}\n` });
+    const outputs = await collectMessages(ws, 'output', 5000);
+    const combined = outputs.map(m => m.data).join('');
+    assert(combined.includes(marker), `Expected echo output with custom size, got: ${combined.slice(0, 300)}`);
+
+    wsSend(ws, { type: 'stop' });
+    await waitForMessage(ws, 'terminal_stopped', 10000);
+    await closeWs(ws);
+  });
+
   it('should echo a unique marker through the terminal (cross-platform)', async function () {
     const { ws } = await connectWs(port);
     wsSend(ws, { type: 'create_session', name: 'Cross-Platform Echo' });

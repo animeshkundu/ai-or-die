@@ -35,7 +35,9 @@ Every bridge implements the same public API:
 ```js
 {
   workingDir: string,                  // defaults to process.cwd()
-  dangerouslySkipPermissions: boolean, // defaults to false (Claude/Codex only)
+  dangerouslySkipPermissions: boolean, // defaults to false (Claude, Codex, Copilot, Gemini)
+  cols: number,                        // defaults to 80
+  rows: number,                        // defaults to 24
   onOutput: (data: string) => void,
   onExit: (code: number, signal: number) => void,
   onError: (error: Error) => void,
@@ -188,23 +190,26 @@ Each concrete bridge would extend `BaseBridge` and provide:
 - `buildArgs(options)` -- returns the CLI arguments array
 - `onDataHook(data, buffer)` -- optional per-bridge output processing (e.g., trust prompt handling)
 
-### CopilotBridge (Planned)
+### CopilotBridge
 
 - Command: `copilot`
-- Installation: `npm install -g @github/copilot`
+- Installation: `npm install -g @github/copilot`, `winget install GitHub.Copilot`
+- Dangerous flag: `--yolo` (auto-approve all tool executions)
 - Search paths: standard locations following the same pattern as existing bridges
 
-### GeminiBridge (Planned)
+### GeminiBridge
 
 - Command: `gemini`
 - Installation: `npm install -g @google/gemini-cli`
+- Dangerous flag: `--yolo` (disable sandbox, auto-approve commands)
 - Search paths: standard locations following the same pattern as existing bridges
 
-### TerminalBridge (Planned)
+### TerminalBridge
 
 Opens a raw shell session rather than an AI agent.
 
 - Linux/macOS: spawns `$SHELL` (defaults to `/bin/bash`)
-- Windows: spawns `powershell.exe` or `cmd.exe`
+- Windows: spawns PowerShell 7 (`pwsh`) or falls back to `$COMSPEC`
+- Async shell resolution via `resolveFullPathAsync()`
 - No `dangerouslySkipPermissions` or AI-specific flags
 - Useful for running manual commands alongside agent sessions
