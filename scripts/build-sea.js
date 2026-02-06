@@ -30,14 +30,19 @@ async function bundle() {
     target: 'node22',
     format: 'cjs',
     outfile: path.join(DIST, 'bundle.js'),
+    // Redirect @lydell/node-pty to our shim that handles SEA mode
+    alias: {
+      '@lydell/node-pty': path.join(ROOT, 'scripts', 'pty-sea-shim.js'),
+    },
     external: [
-      '@lydell/node-pty',
+      // Platform-specific packages are loaded dynamically by the shim
       '@lydell/node-pty-win32-x64',
       '@lydell/node-pty-win32-arm64',
       '@lydell/node-pty-linux-x64',
       '@lydell/node-pty-linux-arm64',
       '@lydell/node-pty-darwin-x64',
       '@lydell/node-pty-darwin-arm64',
+      // open uses dynamic import() — lazy-loaded in bin/ai-or-die.js
       'open',
     ],
   });
