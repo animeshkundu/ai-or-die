@@ -1,0 +1,48 @@
+{
+  "name": "cortex",
+  "version": "0.1.0",
+  "description": "Universal AI coding terminal — Claude, Copilot, Gemini & more in your browser",
+  "main": "src/server.js",
+  "bin": {
+    "cortex": "./bin/cortex.js"
+  },
+  "scripts": {
+    "start": "node bin/cortex.js",
+    "dev": "node bin/cortex.js --dev",
+    "test": "mocha test/*.test.js",
+    "release:pr": "bash scripts/release-pr.sh"
+  },
+  "keywords": [
+    "cortex",
+    "ai",
+    "terminal",
+    "claude",
+    "copilot",
+    "gemini",
+    "web",
+    "browser",
+    "remote"
+  ],
+  "author": "Animesh Kundu",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "node-pty": "^1.0.0",
+    "open": "^10.1.0",
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/animeshkundu/cortex.git"
+  },
+  "homepage": "https://github.com/animeshkundu/cortex#readme",
+  "devDependencies": {
+    "mocha": "^11.7.1"
+  }
+}
