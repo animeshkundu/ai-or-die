@@ -942,7 +942,13 @@ class ClaudeCodeWebInterface {
         if (this.fitAddon) {
             try {
                 this.fitAddon.fit();
-                
+
+                // Subtract 2 rows to account for tab bar / header not included in fit calculation
+                const adjustedRows = Math.max(1, this.terminal.rows - 2);
+                if (adjustedRows !== this.terminal.rows) {
+                    this.terminal.resize(this.terminal.cols, adjustedRows);
+                }
+
                 // On mobile, ensure terminal doesn't exceed viewport width
                 if (this.isMobile) {
                     const terminalElement = document.querySelector('.xterm');
