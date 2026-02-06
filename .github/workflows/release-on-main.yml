@@ -58,16 +58,6 @@ jobs:
         if: ${{ steps.check.outputs.exists == 'false' }}
         run: npm ci
 
-      - name: Publish ai-or-die to npm
+      - name: Publish to npm
         if: ${{ steps.check.outputs.exists == 'false' }}
         run: npm publish --access public
-
-      - name: Publish aiordie alias to npm
-        if: ${{ steps.check.outputs.exists == 'false' }}
-        run: |
-          node -e "
-            const pkg = require('./package.json');
-            pkg.name = 'aiordie';
-            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
-          npm publish --access public
