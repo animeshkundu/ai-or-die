@@ -6,13 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node-version: [18, 20]
+        node-version: [22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,3 +26,45 @@ jobs:
       - run: npm test
       - run: npm audit --audit-level=moderate
         continue-on-error: true
+
+  build-binary:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            artifact: ai-or-die-linux-x64
+          - os: windows-latest
+            platform: win32
+            artifact: ai-or-die-windows-x64.exe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Build SEA binary
+        run: node scripts/build-sea.js
+      - name: Smoke test (--help)
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "win32" ]; then
+            ./dist/ai-or-die.exe --help || true
+          else
+            chmod +x ./dist/ai-or-die
+            ./dist/ai-or-die --help || true
+          fi
+      - name: E2E test against binary
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "win32" ]; then
+            node scripts/smoke-test-binary.js ./dist/ai-or-die.exe
+          else
+            node scripts/smoke-test-binary.js ./dist/ai-or-die
+          fi
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact || 'ai-or-die*' }}

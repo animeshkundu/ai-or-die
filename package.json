@@ -10,7 +10,9 @@
   "scripts": {
     "start": "node bin/ai-or-die.js",
     "dev": "node bin/ai-or-die.js --dev",
-    "test": "mocha test/*.test.js",
+    "test": "mocha --exit test/*.test.js",
+    "build:bundle": "node scripts/build-sea.js bundle",
+    "build:sea": "node scripts/build-sea.js",
     "release:pr": "bash scripts/release-pr.sh"
   },
   "keywords": [
@@ -37,7 +39,7 @@
     "ws": "^8.18.0"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=22.0.0"
   },
   "repository": {
     "type": "git",
@@ -45,6 +47,8 @@
   },
   "homepage": "https://github.com/animeshkundu/ai-or-die#readme",
   "devDependencies": {
-    "mocha": "^11.7.1"
+    "esbuild": "^0.24.0",
+    "mocha": "^11.7.1",
+    "postject": "^1.0.0-alpha.6"
   }
 }

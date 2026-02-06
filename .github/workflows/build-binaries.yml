@@ -1,0 +1,76 @@
+name: Build Binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0)'
+        required: true
+
+concurrency:
+  group: build-binaries-${{ github.event.release.tag_name || github.event.inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+            artifact: ai-or-die-linux-x64
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            artifact: ai-or-die-windows-x64.exe
+
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build SEA binary
+        run: node scripts/build-sea.js
+
+      - name: Rename artifact
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "win32" ]; then
+            mv dist/ai-or-die.exe "dist/${{ matrix.artifact }}"
+          else
+            mv dist/ai-or-die "dist/${{ matrix.artifact }}"
+            chmod +x "dist/${{ matrix.artifact }}"
+          fi
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          ./dist/${{ matrix.artifact }} --version || true
+          ./dist/${{ matrix.artifact }} --help || true
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.artifact }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact (for workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}

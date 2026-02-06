@@ -1,4 +1,5 @@
 const { spawn } = require('@lydell/node-pty');
+const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -17,7 +18,17 @@ class BaseBridge {
     this._availableCache = null;
     this._availableCacheTime = 0;
 
-    this.command = this.findCommand();
+    // Start with default; resolved asynchronously via initCommand()
+    this.command = this.defaultCommand;
+    this._commandReady = this.initCommand();
+  }
+
+  /**
+   * Async command discovery — runs where/which without blocking the event loop.
+   * Called automatically from the constructor; await bridge._commandReady to ensure it's done.
+   */
+  async initCommand() {
+    this.command = await this.findCommandAsync();
   }
 
   isAvailable() {
@@ -100,6 +111,58 @@ class BaseBridge {
         }
       } catch (error) {
         continue;
+      }
+    }
+
+    console.error(`${this.toolName} command not found, using default "${this.defaultCommand}"`);
+    return this.defaultCommand;
+  }
+
+  commandExistsAsync(command) {
+    return new Promise((resolve) => {
+      const checker = this.isWindows ? 'where' : 'which';
+      execFile(checker, [command], { timeout: 5000 }, (err) => {
+        resolve(!err);
+      });
+    });
+  }
+
+  resolveFullPathAsync(command) {
+    return new Promise((resolve) => {
+      const checker = this.isWindows ? 'where' : 'which';
+      execFile(checker, [command], { encoding: 'utf8', timeout: 5000 }, (err, stdout) => {
+        if (err) return resolve(null);
+        const firstLine = stdout.trim().split(/\r?\n/)[0];
+        resolve(firstLine || null);
+      });
+    });
+  }
+
+  async findCommandAsync() {
+    const home = os.homedir();
+    const platformPaths = this.isWindows
+      ? this.commandPaths.win32 || []
+      : this.commandPaths.linux || [];
+
+    const resolvedPaths = platformPaths.map(p => p.replace(/\{HOME\}/g, home));
+
+    for (const cmd of resolvedPaths) {
+      const candidates = this.isWindows
+        ? [cmd, `${cmd}.exe`, `${cmd}.cmd`]
+        : [cmd];
+      for (const candidate of candidates) {
+        if (path.isAbsolute(candidate)) {
+          if (fs.existsSync(candidate)) {
+            console.log(`Found ${this.toolName} command at: ${candidate}`);
+            return candidate;
+          }
+        } else {
+          if (await this.commandExistsAsync(candidate)) {
+            const resolved = await this.resolveFullPathAsync(candidate);
+            console.log(`Found ${this.toolName} command at: ${resolved || candidate}`);
+            return resolved || candidate;
+          }
+        }
       }
     }
 

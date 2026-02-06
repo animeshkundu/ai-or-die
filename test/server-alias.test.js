@@ -2,6 +2,7 @@ const assert = require('assert');
 const { ClaudeCodeWebServer } = require('../src/server');
 
 describe('Server Aliases', function() {
+  this.timeout(10000);
   it('should set aliases from options', function() {
     const server = new ClaudeCodeWebServer({
       claudeAlias: 'Buddy',

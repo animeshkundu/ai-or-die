@@ -20,7 +20,7 @@ ai-or-die is a web-based terminal aggregator that provides browser access to mul
 
 ## Requirements
 
-- Node.js >= 16
+- Node.js >= 22
 - At least one supported CLI tool installed:
   - [Claude Code](https://claude.ai/code) — `claude`
   - [GitHub Copilot CLI](https://github.com/features/copilot/cli) — `copilot`

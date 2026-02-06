@@ -36,10 +36,10 @@
               <a class="btn primary" href="#usage">Get Started</a>
               <a class="btn" href="https://www.npmjs.com/package/ai-or-die" target="_blank" rel="noopener">View on npm</a>
             </div>
-            <pre class="snippet"><code>npx ai-or-die
-# optional flags:
-# --port 8080 --auth YOUR_TOKEN
-# --tunnel --tunnel-allow-anonymous</code></pre>
+            <div class="copy-wrap">
+              <pre class="snippet"><code>npx ai-or-die</code></pre>
+              <button class="copy-btn" data-copy="npx ai-or-die" title="Copy to clipboard">Copy</button>
+            </div>
           </div>
           <div class="hero-aside">
             <div class="terminal-card">
@@ -75,13 +75,13 @@
           <div class="columns">
             <div>
               <h3>Install or run instantly</h3>
-              <pre class="snippet"><code># Run without installing
-npx ai-or-die
-
-# Or install globally
+              <div class="copy-wrap">
+                <pre class="snippet"><code>npx ai-or-die</code></pre>
+                <button class="copy-btn" data-copy="npx ai-or-die" title="Copy to clipboard">Copy</button>
+              </div>
+              <pre class="snippet"><code># Or install globally
 npm install -g ai-or-die
-ai-or-die --port 8080
-              </code></pre>
+ai-or-die --port 8080</code></pre>
             </div>
             <div>
               <h3>Common flags</h3>
@@ -121,7 +121,7 @@ ai-or-die --tunnel --tunnel-allow-anonymous
           <h2>FAQ</h2>
           <details>
             <summary>What are the requirements?</summary>
-            <p>Node.js 16+, an AI coding CLI on PATH, and a modern browser with WebSocket support.</p>
+            <p>Node.js 22+, an AI coding CLI on PATH, and a modern browser with WebSocket support.</p>
           </details>
           <details>
             <summary>How do I develop locally?</summary>

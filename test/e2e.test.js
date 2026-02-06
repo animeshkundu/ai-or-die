@@ -541,10 +541,36 @@ describe('E2E: Terminal tool session', function () {
     await waitForMessage(ws, 'terminal_stopped', 10000);
     await closeWs(ws);
   });
+
+  it('should echo a unique marker through the terminal (cross-platform)', async function () {
+    const { ws } = await connectWs(port);
+    wsSend(ws, { type: 'create_session', name: 'Cross-Platform Echo' });
+    await waitForMessage(ws, 'session_created');
+
+    const startedPromise = waitForMessage(ws, 'terminal_started', 15000);
+    wsSend(ws, { type: 'start_terminal' });
+    await startedPromise;
+
+    // Drain initial output (prompt, motd)
+    await collectMessages(ws, 'output', 3000);
+
+    // Send echo with unique marker
+    const marker = `XPLAT_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    wsSend(ws, { type: 'input', data: `echo ${marker}\n` });
+
+    const outputs = await collectMessages(ws, 'output', 5000);
+    const combined = outputs.map(m => m.data).join('');
+    assert(combined.includes(marker),
+      `Expected output to contain "${marker}" but got: ${combined.slice(0, 500)}`);
+
+    wsSend(ws, { type: 'stop' });
+    await waitForMessage(ws, 'terminal_stopped', 10000);
+    await closeWs(ws);
+  });
 });
 
 
-describe.skip('E2E: Input/output round-trip', function () { // TODO: flaky timing issue with terminal_started in CI
+describe('E2E: Input/output round-trip', function () {
   this.timeout(30000);
 
   let server;
@@ -565,11 +591,8 @@ describe.skip('E2E: Input/output round-trip', function () { // TODO: flaky timin
     wsSend(ws, { type: 'start_terminal' });
     await startedPromise;
 
-    // Wait for initial shell output to settle
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-
-    // Drain any buffered messages so they don't interfere with test assertions
-    await collectMessages(ws, 'output', 1000);
+    // Drain initial shell output (prompt, motd) — generous window for Windows ConPTY
+    await collectMessages(ws, 'output', 3000);
   });
 
   after(async function () {
@@ -587,7 +610,7 @@ describe.skip('E2E: Input/output round-trip', function () { // TODO: flaky timin
     const marker = `E2E_MARKER_${Date.now()}`;
     wsSend(ws, { type: 'input', data: `echo ${marker}\n` });
 
-    const outputs = await collectMessages(ws, 'output', 3000);
+    const outputs = await collectMessages(ws, 'output', 5000);
     const combined = outputs.map(m => m.data).join('');
     assert(combined.includes(marker), `Expected output to contain "${marker}", got: ${combined.slice(0, 200)}`);
   });
@@ -597,7 +620,7 @@ describe.skip('E2E: Input/output round-trip', function () { // TODO: flaky timin
     // printf works on both bash and powershell (via alias)
     wsSend(ws, { type: 'input', data: `echo ${marker}_LINE1 && echo ${marker}_LINE2\n` });
 
-    const outputs = await collectMessages(ws, 'output', 3000);
+    const outputs = await collectMessages(ws, 'output', 5000);
     const combined = outputs.map(m => m.data).join('');
     assert(combined.includes(`${marker}_LINE1`), 'Expected LINE1 in output');
     assert(combined.includes(`${marker}_LINE2`), 'Expected LINE2 in output');

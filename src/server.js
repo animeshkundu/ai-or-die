@@ -59,14 +59,20 @@ class ClaudeCodeWebServer {
     };
     
     this.setupExpress();
-    this.loadPersistedSessions();
+    this._sessionsLoaded = this.loadPersistedSessions();
     this.setupAutoSave();
   }
   
   async loadPersistedSessions() {
     try {
       const sessions = await this.sessionStore.loadSessions();
-      this.claudeSessions = sessions;
+      // Merge loaded sessions into the existing map to avoid overwriting
+      // sessions created between constructor and load completion
+      for (const [id, session] of sessions) {
+        if (!this.claudeSessions.has(id)) {
+          this.claudeSessions.set(id, session);
+        }
+      }
       if (sessions.size > 0) {
         console.log(`Loaded ${sessions.size} persisted sessions`);
       }
@@ -143,10 +149,22 @@ class ClaudeCodeWebServer {
     // Serve manifest.json with correct MIME type
     this.app.get('/manifest.json', (req, res) => {
       res.setHeader('Content-Type', 'application/manifest+json');
-      res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
+      if (global.__SEA_MODE__) {
+        this._sendSeaAsset(res, 'public/manifest.json');
+      } else {
+        res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
+      }
     });
-    
-    this.app.use(express.static(path.join(__dirname, 'public')));
+
+    if (global.__SEA_MODE__) {
+      this.app.use((req, res, next) => {
+        const assetKey = 'public' + req.path;
+        if (this._sendSeaAsset(res, assetKey)) return;
+        next();
+      });
+    } else {
+      this.app.use(express.static(path.join(__dirname, 'public')));
+    }
 
     // PWA Icon routes - generate ai-or-die brain/terminal icon dynamically
     const iconSizes = [16, 32, 144, 180, 192, 512];
@@ -566,13 +584,55 @@ class ClaudeCodeWebServer {
     });
 
     this.app.get('/', (req, res) => {
-      res.sendFile(path.join(__dirname, 'public', 'index.html'));
+      if (global.__SEA_MODE__) {
+        this._sendSeaAsset(res, 'public/index.html');
+      } else {
+        res.sendFile(path.join(__dirname, 'public', 'index.html'));
+      }
     });
   }
 
+  /**
+   * Serve a static asset from the SEA blob. Returns true if sent, false if not found.
+   */
+  _sendSeaAsset(res, assetKey) {
+    try {
+      const sea = require('node:sea');
+      const assetKeys = sea.getAssetKeys();
+      if (!assetKeys.includes(assetKey)) return false;
+
+      const data = Buffer.from(sea.getRawAsset(assetKey));
+      const ext = path.extname(assetKey).toLowerCase();
+      const mimeTypes = {
+        '.html': 'text/html',
+        '.js': 'application/javascript',
+        '.css': 'text/css',
+        '.json': 'application/json',
+        '.png': 'image/png',
+        '.svg': 'image/svg+xml',
+        '.ico': 'image/x-icon'
+      };
+      res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
+      res.send(data);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async start() {
+    // Run session loading and command discovery in parallel
+    await Promise.all([
+      this._sessionsLoaded,
+      this.claudeBridge._commandReady,
+      this.codexBridge._commandReady,
+      this.copilotBridge._commandReady,
+      this.geminiBridge._commandReady,
+      this.terminalBridge._commandReady,
+    ]);
+
     let server;
-    
+
     if (this.useHttps) {
       if (!this.certFile || !this.keyFile) {
         throw new Error('HTTPS requires both --cert and --key options');
