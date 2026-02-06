@@ -6,7 +6,7 @@
 //   node scripts/build-sea.js          -- full build (bundle + SEA binary)
 //   node scripts/build-sea.js bundle   -- bundle only (for testing)
 
-const { execFileSync, execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -18,34 +18,29 @@ const ARCH = process.arch;
 // ---------------------------------------------------------------------------
 // Step 1: Bundle all JS into a single file using esbuild
 // ---------------------------------------------------------------------------
-function bundle() {
+async function bundle() {
   console.log('Bundling application with esbuild...');
   fs.mkdirSync(DIST, { recursive: true });
 
-  const esbuildArgs = [
-    path.join(ROOT, 'sea-bootstrap.js'),
-    '--bundle',
-    '--platform=node',
-    '--target=node22',
-    '--format=cjs',
-    '--outfile=' + path.join(DIST, 'bundle.js'),
-    // Native modules cannot be bundled — they are loaded at runtime
-    '--external:@lydell/node-pty',
-    '--external:@lydell/node-pty-win32-x64',
-    '--external:@lydell/node-pty-win32-arm64',
-    '--external:@lydell/node-pty-linux-x64',
-    '--external:@lydell/node-pty-linux-arm64',
-    '--external:@lydell/node-pty-darwin-x64',
-    '--external:@lydell/node-pty-darwin-arm64',
-    // open package uses import() which doesn't work in SEA
-    '--external:open',
-  ];
-
-  // Use npx to run esbuild — avoids .cmd shell issues on Windows
-  execFileSync(process.execPath, [
-    path.join(ROOT, 'node_modules', 'esbuild', 'bin', 'esbuild'),
-    ...esbuildArgs
-  ], { stdio: 'inherit', cwd: ROOT });
+  const esbuild = require('esbuild');
+  await esbuild.build({
+    entryPoints: [path.join(ROOT, 'sea-bootstrap.js')],
+    bundle: true,
+    platform: 'node',
+    target: 'node22',
+    format: 'cjs',
+    outfile: path.join(DIST, 'bundle.js'),
+    external: [
+      '@lydell/node-pty',
+      '@lydell/node-pty-win32-x64',
+      '@lydell/node-pty-win32-arm64',
+      '@lydell/node-pty-linux-x64',
+      '@lydell/node-pty-linux-arm64',
+      '@lydell/node-pty-darwin-x64',
+      '@lydell/node-pty-darwin-arm64',
+      'open',
+    ],
+  });
 
   console.log('Bundle created: dist/bundle.js');
 }
@@ -172,11 +167,16 @@ function buildSea(configPath) {
 // ---------------------------------------------------------------------------
 const mode = process.argv[2];
 
-if (mode === 'bundle') {
-  bundle();
-} else {
-  bundle();
-  const assets = collectAssets();
-  const configPath = generateSeaConfig(assets);
-  buildSea(configPath);
-}
+(async () => {
+  if (mode === 'bundle') {
+    await bundle();
+  } else {
+    await bundle();
+    const assets = collectAssets();
+    const configPath = generateSeaConfig(assets);
+    buildSea(configPath);
+  }
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
