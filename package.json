@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node bin/ai-or-die.js",
     "dev": "node bin/ai-or-die.js --dev",
-    "test": "mocha test/*.test.js",
+    "test": "mocha --exit test/*.test.js",
     "build:bundle": "node scripts/build-sea.js bundle",
     "build:sea": "node scripts/build-sea.js",
     "release:pr": "bash scripts/release-pr.sh"
