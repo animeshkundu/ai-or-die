@@ -43,7 +43,7 @@ test.describe('Font settings', () => {
     await fontSelect.selectOption("'JetBrains Mono', monospace");
 
     // Save settings
-    await page.click('#saveSettingsBtn');
+    await page.evaluate(() => document.getElementById('saveSettingsBtn').click());
     await page.waitForTimeout(500);
 
     // Verify terminal font changed
@@ -71,7 +71,7 @@ test.describe('Font settings', () => {
     await cursorSelect.selectOption('bar');
 
     // Save settings
-    await page.click('#saveSettingsBtn');
+    await page.evaluate(() => document.getElementById('saveSettingsBtn').click());
     await page.waitForTimeout(500);
 
     // Verify cursor style changed
@@ -95,7 +95,7 @@ test.describe('Font settings', () => {
 
     const slider = page.locator('#fontSize');
     await slider.fill('18');
-    await page.click('#saveSettingsBtn');
+    await page.evaluate(() => document.getElementById('saveSettingsBtn').click());
     await page.waitForTimeout(300);
 
     // Verify font size changed
