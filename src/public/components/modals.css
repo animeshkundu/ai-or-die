@@ -315,6 +315,14 @@
     color: var(--text-secondary);
 }
 
+.setting-warning {
+    display: block;
+    color: var(--status-warning);
+    margin-top: 4px;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
 .modal-footer {
     padding: 20px;
     border-top: 1px solid var(--border);

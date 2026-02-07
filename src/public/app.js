@@ -1168,7 +1168,15 @@ class ClaudeCodeWebInterface {
         document.getElementById('fontSize').value = settings.fontSize;
         document.getElementById('fontSizeValue').textContent = settings.fontSize + 'px';
         const themeSelect = document.getElementById('themeSelect');
-        if (themeSelect) themeSelect.value = settings.theme === 'light' ? 'light' : 'dark';
+        if (themeSelect) themeSelect.value = settings.theme || 'midnight';
+        const fontFamily = document.getElementById('fontFamily');
+        if (fontFamily) fontFamily.value = settings.fontFamily || "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace";
+        const cursorStyle = document.getElementById('cursorStyle');
+        if (cursorStyle) cursorStyle.value = settings.cursorStyle || 'block';
+        const cursorBlink = document.getElementById('cursorBlink');
+        if (cursorBlink) cursorBlink.checked = settings.cursorBlink ?? true;
+        const scrollback = document.getElementById('scrollback');
+        if (scrollback) scrollback.value = String(settings.scrollback || 1000);
         document.getElementById('showTokenStats').checked = settings.showTokenStats;
         document.getElementById('dangerousMode').checked = settings.dangerousMode || false;
     }
@@ -1185,8 +1193,12 @@ class ClaudeCodeWebInterface {
     loadSettings() {
         const defaults = {
             fontSize: 14,
+            fontFamily: "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace",
+            cursorStyle: 'block',
+            cursorBlink: true,
+            scrollback: 1000,
             showTokenStats: true,
-            theme: 'dark',
+            theme: 'midnight',
             dangerousMode: false
         };
         
@@ -1202,8 +1214,12 @@ class ClaudeCodeWebInterface {
     saveSettings() {
         const settings = {
             fontSize: parseInt(document.getElementById('fontSize').value),
+            fontFamily: document.getElementById('fontFamily')?.value || "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace",
+            cursorStyle: document.getElementById('cursorStyle')?.value || 'block',
+            cursorBlink: document.getElementById('cursorBlink')?.checked ?? true,
+            scrollback: parseInt(document.getElementById('scrollback')?.value || '1000'),
             showTokenStats: document.getElementById('showTokenStats').checked,
-            theme: (document.getElementById('themeSelect')?.value) || 'dark',
+            theme: (document.getElementById('themeSelect')?.value) || 'midnight',
             dangerousMode: document.getElementById('dangerousMode').checked
         };
         
@@ -1217,16 +1233,29 @@ class ClaudeCodeWebInterface {
     }
 
     applySettings(settings) {
-        // Token stats bar removed - no longer needed
-        // Apply theme (dark is default; light sets attribute)
-        if (settings.theme === 'light') {
-            document.documentElement.setAttribute('data-theme', 'light');
+        // Apply theme — 'midnight' is default (no attribute), others set data-theme
+        if (settings.theme && settings.theme !== 'midnight') {
+            document.documentElement.setAttribute('data-theme', settings.theme);
         } else {
             document.documentElement.removeAttribute('data-theme');
         }
 
+        // Apply terminal settings
         this.terminal.options.fontSize = settings.fontSize;
-        
+        if (settings.fontFamily) this.terminal.options.fontFamily = settings.fontFamily;
+        if (settings.cursorStyle) this.terminal.options.cursorStyle = settings.cursorStyle;
+        this.terminal.options.cursorBlink = settings.cursorBlink ?? true;
+        if (settings.scrollback) this.terminal.options.scrollback = settings.scrollback;
+
+        // Update terminal theme colors to match the current CSS theme
+        const style = getComputedStyle(document.documentElement);
+        this.terminal.options.theme = {
+            background: style.getPropertyValue('--terminal-bg').trim() || style.getPropertyValue('--surface-primary').trim(),
+            foreground: style.getPropertyValue('--terminal-fg').trim() || style.getPropertyValue('--text-primary').trim(),
+            cursor: style.getPropertyValue('--terminal-cursor').trim() || style.getPropertyValue('--accent-default').trim(),
+            selectionBackground: style.getPropertyValue('--terminal-selection').trim() || undefined,
+        };
+
         this.fitTerminal();
     }
 

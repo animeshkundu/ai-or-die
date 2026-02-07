@@ -171,25 +171,62 @@
                 </div>
                 <div class="modal-body">
                     <div class="setting-group">
+                        <label for="themeSelect">Theme:</label>
+                        <select id="themeSelect">
+                            <option value="midnight">Midnight</option>
+                            <option value="classic-dark">Classic Dark</option>
+                            <option value="classic-light">Classic Light</option>
+                            <option value="monokai">Monokai</option>
+                            <option value="nord">Nord</option>
+                            <option value="solarized-dark">Solarized Dark</option>
+                            <option value="solarized-light">Solarized Light</option>
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label for="fontFamily">Font:</label>
+                        <select id="fontFamily">
+                            <option value="'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace">Meslo Nerd Font</option>
+                            <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
+                            <option value="'Fira Code', monospace">Fira Code</option>
+                            <option value="'Cascadia Code', monospace">Cascadia Code</option>
+                            <option value="'Consolas', monospace">Consolas</option>
+                            <option value="monospace">System Monospace</option>
+                        </select>
+                    </div>
+                    <div class="setting-group">
                         <label for="fontSize">Font Size:</label>
                         <input type="range" id="fontSize" min="10" max="24" value="14">
                         <span id="fontSizeValue">14px</span>
                     </div>
                     <div class="setting-group">
-                        <label for="themeSelect">Theme:</label>
-                        <select id="themeSelect">
-                            <option value="dark">Dark</option>
-                            <option value="light">Light</option>
+                        <label for="cursorStyle">Cursor:</label>
+                        <select id="cursorStyle">
+                            <option value="block">Block</option>
+                            <option value="underline">Underline</option>
+                            <option value="bar">Bar</option>
                         </select>
                     </div>
                     <div class="setting-group">
-                        <label for="showTokenStats">Show Token Stats:</label>
+                        <label for="cursorBlink">Cursor Blink:</label>
+                        <input type="checkbox" id="cursorBlink" checked>
+                    </div>
+                    <div class="setting-group">
+                        <label for="scrollback">Scrollback:</label>
+                        <select id="scrollback">
+                            <option value="1000">1,000 lines</option>
+                            <option value="5000">5,000 lines</option>
+                            <option value="10000">10,000 lines</option>
+                            <option value="50000">50,000 lines</option>
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label for="showTokenStats">Token Stats:</label>
                         <input type="checkbox" id="showTokenStats" checked>
                     </div>
                     <div class="setting-group">
-                        <label for="dangerousMode">Autonomous Mode:</label>
+                        <label for="dangerousMode">Autonomous:</label>
                         <input type="checkbox" id="dangerousMode">
-                        <small style="display:block;color:#e8a838;margin-top:4px">Skips permission prompts for Claude, Copilot, Gemini, Codex. Use in trusted environments only.</small>
+                        <small class="setting-warning">Skips permission prompts. Use in trusted environments only.</small>
                     </div>
                 </div>
                 <div class="modal-footer">
