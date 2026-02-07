@@ -127,20 +127,26 @@ test.describe('Context menu: right-click terminal shows menu', () => {
     const menu = page.locator('[data-tid="context-menu"]');
     await expect(menu).toBeVisible();
 
-    // Get the left offset of the text span (2nd child span) for each menu item
-    const textLeftPositions = await menu.locator('.ctx-item').evaluateAll(items =>
+    // Use direct children to avoid querySelectorAll traversal quirks.
+    // children[0] = .ctx-icon, children[1] = text label
+    const measurements = await menu.locator('.ctx-item').evaluateAll(items =>
       items.map(item => {
-        const textSpan = item.querySelectorAll('span')[1]; // 2nd span is the text label
-        if (!textSpan) return null;
-        return textSpan.getBoundingClientRect().left;
+        const textEl = item.children[1];
+        if (!textEl) return null;
+        const parentRect = item.getBoundingClientRect();
+        const textRect = textEl.getBoundingClientRect();
+        return {
+          action: item.dataset.action,
+          relativeLeft: textRect.left - parentRect.left,
+        };
       }).filter(v => v !== null)
     );
 
-    // All text labels should start at the same x position (within 2px tolerance)
-    expect(textLeftPositions.length).toBeGreaterThanOrEqual(7);
-    const firstLeft = textLeftPositions[0];
-    for (const left of textLeftPositions) {
-      expect(Math.abs(left - firstLeft)).toBeLessThanOrEqual(2);
+    // All text labels should have the same relative left offset (within 2px)
+    expect(measurements.length).toBeGreaterThanOrEqual(7);
+    const firstOffset = measurements[0].relativeLeft;
+    for (const m of measurements) {
+      expect(Math.abs(m.relativeLeft - firstOffset)).toBeLessThanOrEqual(2);
     }
   });
 });
