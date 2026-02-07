@@ -96,9 +96,8 @@ test.describe('Visual regression', () => {
     await page.goto(url);
     await waitForAppReady(page);
 
-    // Open settings
-    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
-    await page.click('#settingsBtn');
+    // Open settings (use evaluate to bypass layout stability checks from CDN font loading)
+    await page.evaluate(() => document.getElementById('settingsBtn').click());
     await page.waitForSelector('.settings-modal.active', { timeout: 10000 });
     await page.waitForTimeout(500);
 
