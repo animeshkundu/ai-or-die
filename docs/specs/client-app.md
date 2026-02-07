@@ -13,6 +13,7 @@ The frontend is a single-page application served from `src/public/`. It runs ent
 | xterm-addon-web-links | 0.9.0 | unpkg CDN | Clickable URLs in terminal output |
 | JetBrains Mono | -- | Google Fonts | Monospace font for terminal |
 | Inter | -- | Google Fonts | UI font for headers, tabs, controls |
+| clipboard-handler.js | -- | Local | Keyboard shortcuts (Ctrl+C/V) and clipboard utility functions |
 
 ---
 
@@ -306,3 +307,47 @@ The server generates SVG icons at sizes 16, 32, 144, 180, 192, and 512 pixels:
 - Dark background (`#1a1a1a`) with rounded corners.
 - Monospace "CC" text in orange (`#ff6b00`).
 - Served as `image/svg+xml` with a 1-year `Cache-Control`.
+
+---
+
+## Clipboard & Keyboard Shortcuts
+
+Implemented in `src/public/clipboard-handler.js` and `src/public/app.js`.
+
+### Keyboard Shortcuts
+
+`attachClipboardHandler(terminal, sendFn)` attaches an `attachCustomKeyEventHandler` to the xterm.js terminal:
+
+| Shortcut | Behavior |
+|----------|----------|
+| Ctrl+C / Cmd+C | Copy selection to clipboard (or send SIGINT if no selection) |
+| Ctrl+V / Cmd+V | Browser native paste → xterm handles bracketed paste → `onData` |
+| Ctrl+Shift+C | Copy selection (Linux convention) |
+| Ctrl+Shift+V | Paste (Linux convention) |
+
+Uses `(e.ctrlKey \|\| e.metaKey)` directly for cross-platform Mac/Windows/Linux support.
+
+### Utility Functions
+
+- `attachClipboardHandler.normalizeLineEndings(text)` — converts `\r\n` → `\r` and `\n` → `\r`
+- `attachClipboardHandler.wrapBracketedPaste(text)` — wraps in `ESC[200~` ... `ESC[201~`
+
+### Context Menu
+
+A shared `#termContextMenu` element lives in `<main>` (not inside the terminal wrapper) so it can serve both the main terminal and split panes via event delegation.
+
+**Menu items:**
+
+| Action | Label | Shortcut Hint |
+|--------|-------|---------------|
+| copy | Copy | Ctrl+C |
+| paste | Paste | Ctrl+V |
+| pastePlain | Paste as Plain Text | -- |
+| selectAll | Select All | -- |
+| clear | Clear | -- |
+
+**Accessibility:** ARIA `role="menu"` / `role="menuitem"` / `role="separator"`, `aria-disabled`, `tabindex="-1"`, arrow key navigation, Enter to activate, Escape to close.
+
+**Split pane support:** The context menu uses `resolveTerminal(target)` to determine which terminal (main or split pane) triggered the right-click, and operates on that terminal instance.
+
+**Error handling:** Clipboard API failures show a toast notification ("Clipboard access denied. Use Ctrl+V to paste.") that auto-dismisses after 3 seconds.

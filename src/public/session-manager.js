@@ -714,6 +714,21 @@ class SessionTabManager {
         // If tile view is enabled, tabs target the active pane (VS Code-style)
         await this.claudeInterface.joinSession(sessionId);
         this.updateHeaderInfo(sessionId);
+
+        // Fit terminal to container and capture focus after tab switch
+        requestAnimationFrame(() => {
+            const container = document.getElementById('terminalContainer');
+            if (!container || container.offsetHeight === 0) return;
+            if (this.claudeInterface.fitTerminal) this.claudeInterface.fitTerminal();
+
+            const overlay = document.getElementById('overlay');
+            const overlayVisible = overlay && overlay.style.display !== 'none';
+            const hasModal = document.querySelector('.session-modal.active, .settings-modal, .folder-browser-modal');
+            const splitActive = this.claudeInterface.splitContainer?.enabled;
+            if (!overlayVisible && !hasModal && !splitActive) {
+                this.claudeInterface.terminal?.focus();
+            }
+        });
     }
     
     reorderTabsByLastAccessed() {

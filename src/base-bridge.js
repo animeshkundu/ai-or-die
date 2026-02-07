@@ -4,6 +4,11 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+/** Chunk size for PTY writes — safely below ConPTY ~16KB kernel buffer */
+const PTY_WRITE_CHUNK_SIZE = 4096;
+/** Inter-chunk delay in ms — allows ConPTY buffer to drain */
+const PTY_WRITE_CHUNK_DELAY_MS = 10;
+
 class BaseBridge {
   constructor(toolName, options = {}) {
     this.toolName = toolName;
@@ -216,7 +221,8 @@ class BaseBridge {
         workingDir,
         created: new Date(),
         active: true,
-        killTimeout: null
+        killTimeout: null,
+        writeQueue: Promise.resolve()
       };
 
       this.sessions.set(sessionId, session);
@@ -322,16 +328,50 @@ class BaseBridge {
     // No-op by default
   }
 
+  /**
+   * Write input data to the session's PTY process. Large inputs are
+   * chunked to prevent ConPTY buffer overflow on Windows.
+   * Writes are serialized per-session via writeQueue.
+   * @param {string} sessionId - Target session UUID
+   * @param {string} data - Raw terminal input to write
+   * @returns {Promise<void>}
+   */
   async sendInput(sessionId, data) {
     const session = this.sessions.get(sessionId);
     if (!session || !session.active) {
       throw new Error(`Session ${sessionId} not found or not active`);
     }
 
-    try {
+    session.writeQueue = session.writeQueue.then(() =>
+      this._writeChunked(session, data)
+    ).catch((err) => {
+      console.warn(`Write to session ${sessionId} failed: ${err.message}`);
+    });
+
+    return session.writeQueue;
+  }
+
+  /**
+   * Write data to the PTY in chunks to prevent kernel buffer overflow.
+   * @private
+   * @param {Object} session - Active session with a live PTY process
+   * @param {string} data - Input data to write
+   * @returns {Promise<void>}
+   */
+  async _writeChunked(session, data) {
+    if (!data || data.length === 0) return;
+
+    if (data.length <= PTY_WRITE_CHUNK_SIZE) {
       session.process.write(data);
-    } catch (error) {
-      throw new Error(`Failed to send input to session ${sessionId}: ${error.message}`);
+      return;
+    }
+
+    for (let i = 0; i < data.length; i += PTY_WRITE_CHUNK_SIZE) {
+      if (!session.active) return;
+      session.process.write(data.slice(i, i + PTY_WRITE_CHUNK_SIZE));
+      if (i + PTY_WRITE_CHUNK_SIZE < data.length) {
+        await new Promise(r => setTimeout(r, PTY_WRITE_CHUNK_DELAY_MS));
+      }
     }
   }
 
@@ -410,3 +450,5 @@ class BaseBridge {
 }
 
 module.exports = BaseBridge;
+module.exports.PTY_WRITE_CHUNK_SIZE = PTY_WRITE_CHUNK_SIZE;
+module.exports.PTY_WRITE_CHUNK_DELAY_MS = PTY_WRITE_CHUNK_DELAY_MS;

@@ -78,10 +78,16 @@ class ClaudeCodeWebInterface {
         this.loadSettings();
         this.applyAliasesToUI();
         this.disablePullToRefresh();
-        
+
         // Show loading while we initialize
         this.showOverlay('loadingSpinner');
-        
+
+        // Establish WebSocket connection early — all subsequent operations
+        // (session creation, joining, tool start) depend on it being ready.
+        // Without this, fresh machines with no sessions would leave the
+        // socket null until the user completes the folder browser flow.
+        await this.connect();
+
         // Initialize the session tab manager and wait for sessions to load
         this.sessionTabManager = new SessionTabManager(this);
         await this.sessionTabManager.init();
@@ -105,11 +111,10 @@ class ClaudeCodeWebInterface {
             const firstTabId = this.sessionTabManager.tabs.keys().next().value;
             console.log('[Init] Switching to tab:', firstTabId);
             await this.sessionTabManager.switchToTab(firstTabId);
-            
-            // Hide overlay completely since we have sessions
-            console.log('[Init] About to hide overlay');
-            this.hideOverlay();
-            console.log('[Init] Overlay should be hidden now');
+            // The session_joined handler decides the overlay state:
+            // - Active session → hideOverlay()
+            // - Inactive/new session → showOverlay('startPrompt') for tool selection
+            // Do NOT force-hide here — it overrides the handler's decision.
         } else {
             console.log('[Init] No sessions found, showing folder browser');
             // No sessions - hide loading overlay and show folder picker to create first session
@@ -338,6 +343,14 @@ class ClaudeCodeWebInterface {
         
         this.terminal.open(document.getElementById('terminal'));
         this.fitTerminal();
+
+        // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
+        attachClipboardHandler(this.terminal, (data) => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.send({ type: 'input', data });
+            }
+        });
+
         this.setupTerminalContextMenu();
 
         this.terminal.onData((data) => {
@@ -533,9 +546,9 @@ class ClaudeCodeWebInterface {
                     // Load available sessions
                     this.loadSessions();
                     
-                    // Only show start prompt if we don't have sessions AND no current session
-                    // The init() method will handle showing/hiding overlays for restored sessions
-                    if (!this.currentClaudeSessionId && (!this.sessionTabManager || this.sessionTabManager.tabs.size === 0)) {
+                    // Only show start prompt if sessionTabManager is initialized and has no sessions
+                    // During early init(), sessionTabManager is null — let init() handle the overlay
+                    if (this.sessionTabManager && !this.currentClaudeSessionId && this.sessionTabManager.tabs.size === 0) {
                         this.showOverlay('startPrompt');
                     }
                     
@@ -659,8 +672,6 @@ class ClaudeCodeWebInterface {
                 if (message.active) {
                     console.log('[session_joined] Session is active, hiding overlay');
                     this.hideOverlay();
-                    // Don't auto-focus to avoid focus tracking sequences
-                    // User can click to focus when ready
                 } else {
                     // Session exists but Claude is not running
                     // Check if this is a brand new session (empty output buffer indicates new)
@@ -944,10 +955,11 @@ class ClaudeCodeWebInterface {
             try {
                 this.fitAddon.fit();
 
-                // Subtract 2 rows to account for tab bar / header not included in fit calculation
+                // Subtract 2 rows for tab bar, 6 cols for scrollbar width
                 const adjustedRows = Math.max(1, this.terminal.rows - 2);
-                if (adjustedRows !== this.terminal.rows) {
-                    this.terminal.resize(this.terminal.cols, adjustedRows);
+                const adjustedCols = Math.max(1, this.terminal.cols - 6);
+                if (adjustedRows !== this.terminal.rows || adjustedCols !== this.terminal.cols) {
+                    this.terminal.resize(adjustedCols, adjustedRows);
                 }
 
                 // On mobile, ensure terminal doesn't exceed viewport width
@@ -975,60 +987,165 @@ class ClaudeCodeWebInterface {
         const menu = document.getElementById('termContextMenu');
         if (!menu) return;
 
-        const termEl = document.getElementById('terminal');
-        termEl.addEventListener('contextmenu', (e) => {
+        // Track which terminal triggered the context menu (supports split panes)
+        let activeTerminal = null;
+        let activeSendFn = null;
+
+        const menuItems = Array.from(menu.querySelectorAll('.ctx-item'));
+
+        // Helper: get the terminal and sendFn for a right-click target
+        const resolveTerminal = (target) => {
+            // Check if click is inside a split pane terminal
+            const splitPane = target.closest('.split-pane');
+            if (splitPane && this.splitContainer) {
+                const index = parseInt(splitPane.dataset.splitIndex, 10);
+                const split = this.splitContainer.splits[index];
+                if (split && split.terminal) {
+                    return {
+                        terminal: split.terminal,
+                        sendFn: (data) => {
+                            if (split.socket && split.socket.readyState === WebSocket.OPEN) {
+                                split.socket.send(JSON.stringify({ type: 'input', data }));
+                            }
+                        }
+                    };
+                }
+            }
+            // Default: main terminal
+            return {
+                terminal: this.terminal,
+                sendFn: (data) => {
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.send({ type: 'input', data });
+                    }
+                }
+            };
+        };
+
+        // Helper: send paste data with line ending normalization + bracketed paste
+        const sendPasteData = (text, sendFn, terminal) => {
+            let normalized = attachClipboardHandler.normalizeLineEndings(text);
+            if (terminal.modes && terminal.modes.bracketedPasteMode) {
+                normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+            }
+            sendFn(normalized);
+        };
+
+        // Helper: show clipboard error toast
+        const showClipboardError = () => {
+            const toast = document.createElement('div');
+            toast.className = 'clipboard-toast';
+            toast.textContent = 'Clipboard access denied. Use Ctrl+V to paste.';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        };
+
+        // Right-click handler — listen on <main> for event delegation (covers splits)
+        const mainEl = document.querySelector('.main');
+        mainEl.addEventListener('contextmenu', (e) => {
+            // Only trigger on terminal areas (xterm elements)
+            if (!e.target.closest('.xterm')) return;
+
             e.preventDefault();
             e.stopPropagation();
 
-            // Position menu at cursor
-            menu.style.left = e.clientX + 'px';
-            menu.style.top = e.clientY + 'px';
+            const resolved = resolveTerminal(e.target);
+            activeTerminal = resolved.terminal;
+            activeSendFn = resolved.sendFn;
+
+            // Position menu at cursor, constrained to viewport
+            const x = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8);
+            const y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8);
+            menu.style.left = x + 'px';
+            menu.style.top = y + 'px';
             menu.style.display = 'block';
 
             // Disable copy if no selection
             const copyItem = menu.querySelector('[data-action="copy"]');
             if (copyItem) {
-                const hasSelection = this.terminal.hasSelection();
+                const hasSelection = activeTerminal.hasSelection();
                 copyItem.classList.toggle('disabled', !hasSelection);
+                copyItem.setAttribute('aria-disabled', !hasSelection);
             }
+
+            // Focus first non-disabled item for keyboard navigation
+            const firstEnabled = menuItems.find(el => !el.classList.contains('disabled'));
+            if (firstEnabled) firstEnabled.focus();
         });
 
         // Handle menu item clicks
         menu.addEventListener('click', async (e) => {
-            const action = e.target.dataset.action;
+            const item = e.target.closest('.ctx-item');
+            if (!item || item.classList.contains('disabled')) return;
+            const action = item.dataset.action;
             if (!action) return;
             menu.style.display = 'none';
 
             switch (action) {
                 case 'copy': {
-                    const sel = this.terminal.getSelection();
-                    if (sel) await navigator.clipboard.writeText(sel);
+                    const sel = activeTerminal.getSelection();
+                    if (sel) {
+                        try {
+                            await navigator.clipboard.writeText(sel);
+                        } catch { showClipboardError(); }
+                    }
                     break;
                 }
                 case 'paste': {
                     try {
                         const text = await navigator.clipboard.readText();
-                        if (text && this.socket && this.socket.readyState === WebSocket.OPEN) {
-                            this.send({ type: 'input', data: text });
-                        }
-                    } catch { /* clipboard permission denied */ }
+                        if (text) sendPasteData(text, activeSendFn, activeTerminal);
+                    } catch { showClipboardError(); }
+                    break;
+                }
+                case 'pastePlain': {
+                    try {
+                        const text = await navigator.clipboard.readText();
+                        if (text) sendPasteData(text, activeSendFn, activeTerminal);
+                    } catch { showClipboardError(); }
                     break;
                 }
                 case 'selectAll':
-                    this.terminal.selectAll();
+                    activeTerminal.selectAll();
                     break;
                 case 'clear':
-                    this.terminal.clear();
+                    activeTerminal.clear();
                     break;
             }
-            this.terminal.focus();
+            if (activeTerminal) activeTerminal.focus();
         });
 
-        // Dismiss menu on click outside or scroll
+        // Keyboard navigation within menu
+        menu.addEventListener('keydown', (e) => {
+            const items = menuItems.filter(el => !el.classList.contains('disabled'));
+            const currentIndex = items.indexOf(document.activeElement);
+
+            switch (e.key) {
+                case 'ArrowDown':
+                    e.preventDefault();
+                    items[(currentIndex + 1) % items.length].focus();
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    items[(currentIndex - 1 + items.length) % items.length].focus();
+                    break;
+                case 'Enter':
+                    e.preventDefault();
+                    if (document.activeElement.classList.contains('ctx-item')) {
+                        document.activeElement.click();
+                    }
+                    break;
+                case 'Escape':
+                    menu.style.display = 'none';
+                    if (activeTerminal) activeTerminal.focus();
+                    break;
+            }
+        });
+
+        // Dismiss menu on click outside
         document.addEventListener('click', (e) => {
             if (!menu.contains(e.target)) menu.style.display = 'none';
         });
-        document.addEventListener('keydown', () => { menu.style.display = 'none'; });
     }
 
     updateStatus(status) {

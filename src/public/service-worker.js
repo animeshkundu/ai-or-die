@@ -1,11 +1,14 @@
-const CACHE_NAME = 'ai-or-die-v1';
+const CACHE_NAME = 'ai-or-die-v2';
 const urlsToCache = [
   '/',
   '/index.html',
   '/style.css',
   '/app.js',
+  '/clipboard-handler.js',
   '/session-manager.js',
-  '/plan-detector.js'
+  '/plan-detector.js',
+  '/splits.js',
+  '/icons.js'
 ];
 
 // Install event - cache resources

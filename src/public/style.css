@@ -1268,18 +1268,32 @@ body {
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 4px 0;
-    min-width: 140px;
+    min-width: 200px;
     box-shadow: 0 8px 24px rgba(0,0,0,.4);
 }
 .ctx-item {
-    padding: 6px 16px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 16px;
     cursor: pointer;
     font-size: 13px;
     color: var(--text-primary);
 }
-.ctx-item:hover {
+.ctx-item .shortcut {
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin-left: 24px;
+}
+.ctx-item:hover,
+.ctx-item:focus {
     background: var(--accent);
     color: #fff;
+    outline: none;
+}
+.ctx-item:hover .shortcut,
+.ctx-item:focus .shortcut {
+    color: rgba(255,255,255,0.7);
 }
 .ctx-item.disabled {
     opacity: .4;
@@ -1289,6 +1303,31 @@ body {
     height: 1px;
     background: var(--border);
     margin: 4px 0;
+}
+/* Clipboard error toast */
+.clipboard-toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 13px;
+    z-index: 1100;
+    box-shadow: 0 4px 12px rgba(0,0,0,.3);
+    animation: toastFadeIn 0.2s ease;
+}
+@keyframes toastFadeIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+    to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+@media (max-width: 768px) {
+    .ctx-item {
+        padding: 12px 16px;
+    }
 }
 
 /* Folder Browser Modal */

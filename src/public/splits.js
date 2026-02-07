@@ -51,7 +51,14 @@ class Split {
         this.terminal.loadAddon(this.fitAddon);
         this.terminal.loadAddon(this.webLinksAddon);
         this.terminal.open(terminalDiv);
-        
+
+        // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
+        attachClipboardHandler(this.terminal, (data) => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.socket.send(JSON.stringify({ type: 'input', data }));
+            }
+        });
+
         // Setup terminal input handler
         this.terminal.onData((data) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -169,6 +176,11 @@ class Split {
         try {
             if (this.fitAddon) {
                 this.fitAddon.fit();
+                // Subtract 6 cols for scrollbar width
+                const adjustedCols = Math.max(1, this.terminal.cols - 6);
+                if (adjustedCols !== this.terminal.cols) {
+                    this.terminal.resize(adjustedCols, this.terminal.rows);
+                }
             }
         } catch (error) {
             // Ignore fit errors
