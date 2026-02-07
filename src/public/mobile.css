@@ -1,5 +1,20 @@
 /* mobile.css — All mobile/responsive styles: media queries, hamburger menu, mobile menu */
 
+/* Safe area insets for notched devices (iPhone X+, etc.) */
+@supports (padding: env(safe-area-inset-top)) {
+    .session-tabs-bar {
+        padding-left: max(10px, env(safe-area-inset-left));
+        padding-right: max(10px, env(safe-area-inset-right));
+    }
+    .mobile-menu {
+        padding-top: env(safe-area-inset-top);
+    }
+    .mode-switcher {
+        bottom: max(80px, calc(80px + env(safe-area-inset-bottom)));
+        right: max(20px, env(safe-area-inset-right));
+    }
+}
+
 /* Mobile Menu Styles */
 .hamburger-btn {
     display: none;
