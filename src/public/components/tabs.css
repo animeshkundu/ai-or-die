@@ -2,13 +2,13 @@
 
 /* Session Tabs Bar */
 .session-tabs-bar {
-    background-color: var(--bg-secondary);
-    border-bottom: 1px solid var(--border);
+    background-color: var(--surface-secondary);
+    border-bottom: 1px solid var(--border-default);
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0 10px;
-    min-height: 36px;
+    min-height: 40px;
     position: relative;
     overflow: visible; /* Ensure dropdown can overflow */
 }
@@ -42,30 +42,101 @@
 .session-tab {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
-    background-color: var(--bg-tertiary);
-    border: 1px solid var(--border);
+    gap: 0;
+    padding: 0 12px 0 0;
+    background-color: var(--surface-tertiary);
+    border: 1px solid var(--border-default);
     border-radius: 6px 6px 0 0;
     color: var(--text-secondary);
     font-size: 12px;
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: all 0.2s ease;
     min-width: 120px;
-    max-width: 200px;
+    max-width: 220px;
     position: relative;
     user-select: none;
+    height: 36px;
+    overflow: hidden;
 }
 
 .session-tab:hover {
-    background-color: var(--bg-primary);
+    background-color: var(--surface-primary);
     color: var(--text-primary);
 }
 
 .session-tab.active {
-    background-color: var(--bg-primary);
+    background-color: var(--surface-primary);
     color: var(--text-primary);
-    border-bottom-color: var(--bg-primary);
+    border-bottom-color: var(--surface-primary);
+}
+
+/* Accent bottom highlight for active tab */
+.session-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background-color: var(--accent-default);
+}
+
+/* Left-border status indicator (replaces old dot) */
+.tab-status-border {
+    width: 3px;
+    align-self: stretch;
+    flex-shrink: 0;
+    border-radius: 3px 0 0 0;
+    transition: background-color 0.2s ease;
+    background-color: transparent;
+}
+
+.tab-status-border.active {
+    background-color: var(--status-success);
+}
+
+.tab-status-border.idle {
+    background-color: var(--status-info);
+}
+
+.tab-status-border.disconnected,
+.tab-status-border.error {
+    background-color: var(--status-error);
+}
+
+.tab-status-border.unread {
+    background-color: var(--status-info) !important;
+    animation: unread-border-pulse 1.5s infinite;
+}
+
+.tab-status-border.pulse {
+    animation: border-pulse 2s infinite;
+}
+
+@keyframes border-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+@keyframes unread-border-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* Tool type badge */
+.tab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 18px;
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: #fff;
+    flex-shrink: 0;
+    line-height: 1;
 }
 
 .session-tab.dragging {
@@ -79,6 +150,7 @@
     flex: 1;
     overflow: hidden;
     position: relative;
+    padding: 0 0 0 8px;
 }
 
 .tab-icon {

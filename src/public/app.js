@@ -709,64 +709,23 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'claude_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                // Don't auto-focus to avoid focus tracking sequences
-                // User can click to focus when ready
-                this.loadSessions(); // Refresh session list
-                // Request usage stats to start tracking session usage
-                this.requestUsageStats();
-                
-                // Update tab status to active
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
             case 'codex_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
             case 'agent_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
             case 'copilot_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
             case 'gemini_started':
+            case 'terminal_started': {
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 this.loadSessions();
                 this.requestUsageStats();
                 if (this.sessionTabManager && this.currentClaudeSessionId) {
                     this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
+                    // Extract tool type from message type (e.g. 'claude_started' → 'claude')
+                    const toolType = message.type.replace('_started', '');
+                    this.sessionTabManager.setTabToolType(this.currentClaudeSessionId, toolType === 'agent' ? 'claude' : toolType);
                 }
                 break;
-            case 'terminal_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
+            }
                 
             case 'claude_stopped':
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} stopped\x1b[0m`);

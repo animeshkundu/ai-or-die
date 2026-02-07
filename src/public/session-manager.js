@@ -579,7 +579,7 @@ class SessionTabManager {
         }
     }
 
-    addTab(sessionId, sessionName, status = 'idle', workingDir = null, autoSwitch = true) {
+    addTab(sessionId, sessionName, status = 'idle', workingDir = null, autoSwitch = true, toolType = null) {
         const tabsContainer = document.getElementById('tabsContainer');
         if (!tabsContainer) return;
         
@@ -601,9 +601,23 @@ class SessionTabManager {
         const folderName = workingDir ? workingDir.split('/').pop() || '/' : null;
         const displayName = !isDefaultSessionName ? sessionName : (folderName || sessionName);
         
+        // Tool type badge mapping
+        const toolBadges = {
+            claude: { label: 'C', color: '#d97706' },
+            codex: { label: 'Cx', color: '#059669' },
+            copilot: { label: 'Cp', color: '#6366f1' },
+            gemini: { label: 'G', color: '#2563eb' },
+            terminal: { label: '>_', color: '#71717a' },
+        };
+        const badge = toolBadges[toolType] || null;
+        const badgeHtml = badge
+            ? `<span class="tab-badge" style="background:${badge.color}" title="${toolType || ''}">${badge.label}</span>`
+            : '';
+
         tab.innerHTML = `
+            <span class="tab-status-border ${status}"></span>
             <div class="tab-content">
-                <span class="tab-status ${status}"></span>
+                ${badgeHtml}
                 <span class="tab-name" title="${workingDir || sessionName}">${displayName}</span>
             </div>
             <span class="tab-close" title="Close tab">
@@ -662,6 +676,7 @@ class SessionTabManager {
             name: sessionName,
             status: status,
             workingDir: workingDir,
+            toolType: toolType,
             lastAccessed: Date.now(),
             lastActivity: Date.now(),
             unreadOutput: false,
@@ -929,16 +944,18 @@ class SessionTabManager {
     updateTabStatus(sessionId, status) {
         const tab = this.tabs.get(sessionId);
         if (tab) {
-            const statusEl = tab.querySelector('.tab-status');
+            // Support both old .tab-status dot and new .tab-status-border
+            const statusEl = tab.querySelector('.tab-status-border') || tab.querySelector('.tab-status');
             if (statusEl) {
                 // Get current session info
                 const session = this.activeSessions.get(sessionId);
                 const wasActive = session && session.status === 'active';
-                
+
                 // Preserve unread class if it exists
                 const hasUnread = statusEl.classList.contains('unread');
-                statusEl.className = `tab-status ${status}`;
-                
+                const baseClass = statusEl.classList.contains('tab-status-border') ? 'tab-status-border' : 'tab-status';
+                statusEl.className = `${baseClass} ${status}`;
+
                 // When transitioning from active to idle for background tabs, mark as unread
                 if (wasActive && status === 'idle' && sessionId !== this.activeTabId) {
                     statusEl.classList.add('unread');
@@ -948,7 +965,7 @@ class SessionTabManager {
                 } else if (hasUnread) {
                     statusEl.classList.add('unread');
                 }
-                
+
                 // Update visual indicator based on status
                 if (status === 'active') {
                     statusEl.classList.add('pulse');
@@ -1076,19 +1093,45 @@ class SessionTabManager {
         }
     }
     
+    setTabToolType(sessionId, toolType) {
+        const tab = this.tabs.get(sessionId);
+        if (!tab) return;
+        const session = this.activeSessions.get(sessionId);
+        if (session) session.toolType = toolType;
+
+        // Add badge if not already present
+        if (!tab.querySelector('.tab-badge')) {
+            const toolBadges = {
+                claude: { label: 'C', color: '#d97706' },
+                codex: { label: 'Cx', color: '#059669' },
+                copilot: { label: 'Cp', color: '#6366f1' },
+                gemini: { label: 'G', color: '#2563eb' },
+                terminal: { label: '>_', color: '#71717a' },
+            };
+            const badge = toolBadges[toolType];
+            if (badge) {
+                const badgeEl = document.createElement('span');
+                badgeEl.className = 'tab-badge';
+                badgeEl.style.background = badge.color;
+                badgeEl.title = toolType;
+                badgeEl.textContent = badge.label;
+                const content = tab.querySelector('.tab-content');
+                if (content) content.insertBefore(badgeEl, content.firstChild);
+            }
+        }
+    }
+
     updateUnreadIndicator(sessionId, hasUnread) {
         const tab = this.tabs.get(sessionId);
         if (tab) {
-            const statusEl = tab.querySelector('.tab-status');
+            const statusEl = tab.querySelector('.tab-status-border') || tab.querySelector('.tab-status');
             if (hasUnread) {
                 tab.classList.add('has-unread');
-                // Add unread class to status indicator instead of creating new element
                 if (statusEl) {
                     statusEl.classList.add('unread');
                 }
             } else {
                 tab.classList.remove('has-unread');
-                // Remove unread class from status indicator
                 if (statusEl) {
                     statusEl.classList.remove('unread');
                 }
