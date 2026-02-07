@@ -215,8 +215,7 @@
 
     // Search bar (collapsible)
     var searchBar = document.createElement('div');
-    searchBar.className = 'fb-search-bar';
-    searchBar.style.display = 'none';
+    searchBar.className = 'fb-search-bar'; // hidden by default via CSS
     var searchInput = document.createElement('input');
     searchInput.type = 'text';
     searchInput.className = 'fb-search-input';
@@ -735,7 +734,11 @@
 
   FileBrowserPanel.prototype._toggleSearch = function () {
     this._searchVisible = !this._searchVisible;
-    this._searchBar.style.display = this._searchVisible ? '' : 'none';
+    if (this._searchVisible) {
+      this._searchBar.classList.add('visible');
+    } else {
+      this._searchBar.classList.remove('visible');
+    }
     if (this._searchVisible) {
       this._searchInput.focus();
     } else {
