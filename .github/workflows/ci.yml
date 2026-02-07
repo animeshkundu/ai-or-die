@@ -118,7 +118,7 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run visual regression tests
-        run: npx playwright test --config e2e/playwright.config.js --project visual-regression
+        run: npx playwright test --config e2e/playwright.config.js --project visual-regression --update-snapshots
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -128,6 +128,13 @@ jobs:
             e2e/test-results/
             playwright-report/
           retention-days: 14
+      - name: Upload generated baselines
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: screenshot-baselines-${{ matrix.os }}
+          path: e2e/tests/**/*-snapshots/
+          retention-days: 30
       - name: Upload screenshot diffs
         uses: actions/upload-artifact@v4
         if: failure()
