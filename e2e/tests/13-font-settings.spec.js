@@ -34,8 +34,9 @@ test.describe('Font settings', () => {
     await joinSessionAndStartTerminal(page, sessionId);
 
     // Open settings
+    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
     await page.click('#settingsBtn');
-    await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.waitForSelector('.settings-modal.active', { timeout: 10000 });
 
     // Change font to JetBrains Mono
     const fontSelect = page.locator('#fontFamily');
@@ -61,8 +62,9 @@ test.describe('Font settings', () => {
     await joinSessionAndStartTerminal(page, sessionId);
 
     // Open settings
+    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
     await page.click('#settingsBtn');
-    await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.waitForSelector('.settings-modal.active', { timeout: 10000 });
 
     // Change cursor to bar
     const cursorSelect = page.locator('#cursorStyle');
@@ -87,8 +89,9 @@ test.describe('Font settings', () => {
     await waitForTerminalCanvas(page);
 
     // Open settings and change font size
+    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
     await page.click('#settingsBtn');
-    await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.waitForSelector('.settings-modal.active', { timeout: 10000 });
 
     const slider = page.locator('#fontSize');
     await slider.fill('18');

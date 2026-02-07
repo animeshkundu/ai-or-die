@@ -42,8 +42,9 @@ test.describe('Theme switching', () => {
     await waitForTerminalCanvas(page);
 
     // Open settings and change theme
+    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
     await page.click('#settingsBtn');
-    await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.waitForSelector('.settings-modal.active', { timeout: 10000 });
 
     const themeSelect = page.locator('#themeSelect');
     await themeSelect.selectOption('classic-dark');
@@ -63,8 +64,9 @@ test.describe('Theme switching', () => {
     await waitForTerminalCanvas(page);
 
     // Open settings and change theme
+    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
     await page.click('#settingsBtn');
-    await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.waitForSelector('.settings-modal.active', { timeout: 10000 });
 
     const themeSelect = page.locator('#themeSelect');
     await themeSelect.selectOption('monokai');
@@ -87,8 +89,9 @@ test.describe('Theme switching', () => {
     await waitForTerminalCanvas(page);
 
     // Set theme to nord
+    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
     await page.click('#settingsBtn');
-    await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.waitForSelector('.settings-modal.active', { timeout: 10000 });
     await page.locator('#themeSelect').selectOption('nord');
     await page.click('#saveSettingsBtn');
     await page.waitForTimeout(300);

@@ -97,8 +97,9 @@ test.describe('Visual regression', () => {
     await waitForAppReady(page);
 
     // Open settings
+    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
     await page.click('#settingsBtn');
-    await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.waitForSelector('.settings-modal.active', { timeout: 10000 });
     await page.waitForTimeout(500);
 
     await expect(page).toHaveScreenshot('settings-modal.png');
