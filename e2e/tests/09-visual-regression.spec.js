@@ -72,31 +72,31 @@ test.describe('Visual regression', () => {
   });
 
   test('multiple tabs open', async ({ page }) => {
-    // Create 3 sessions
-    await createSessionViaApi(port, 'Tab One');
+    // Create 3 sessions and start terminal in one so the overlay dismisses
+    const s1 = await createSessionViaApi(port, 'Tab One');
     await createSessionViaApi(port, 'Tab Two');
     await createSessionViaApi(port, 'Tab Three');
 
     await page.goto(url);
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, s1);
 
     // Wait for all tabs to render
-    await page.waitForTimeout(1500);
-    const tabs = page.locator('.session-tab');
-    await expect(tabs).toHaveCount(3, { timeout: 10000 }).catch(() => {
-      // May have more tabs from other tests — just ensure at least 3
-    });
+    await page.waitForTimeout(500);
 
     await expect(page).toHaveScreenshot('tab-bar-multiple.png');
   });
 
   test('settings modal open', async ({ page }) => {
+    // Start a terminal first so the overlay is dismissed and settings button is accessible
     const sessionId = await createSessionViaApi(port, 'VR Settings');
     await page.goto(url);
     await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
 
-    // Open settings (use evaluate to bypass layout stability checks from CDN font loading)
+    // Open settings
     await page.evaluate(() => document.getElementById('settingsBtn').click());
     await page.waitForSelector('.settings-modal.active', { timeout: 10000 });
     await page.waitForTimeout(500);
@@ -104,7 +104,7 @@ test.describe('Visual regression', () => {
     await expect(page).toHaveScreenshot('settings-modal.png');
 
     // Close settings
-    await page.click('#closeSettingsBtn');
+    await page.evaluate(() => document.getElementById('closeSettingsBtn').click());
   });
 
   test('context menu visible', async ({ page }) => {
