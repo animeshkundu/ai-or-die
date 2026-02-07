@@ -14,6 +14,7 @@ const urlsToCache = [
   '/mobile.css',
   '/style.css',
   '/app.js',
+  '/command-palette.js',
   '/clipboard-handler.js',
   '/session-manager.js',
   '/plan-detector.js',
