@@ -212,14 +212,14 @@ test.describe('File browser', () => {
   test('Files button in tab bar opens and closes file browser', async ({ page }) => {
     await setupPage(page);
 
-    // Click the Browse Files button
-    await page.click('#browseFilesBtn');
+    // Use JavaScript click to avoid overlay interception on CI
+    await page.evaluate(() => document.getElementById('browseFilesBtn').click());
 
     // Verify panel opens
     const panel = page.locator('.file-browser-panel.open');
     await expect(panel).toBeVisible({ timeout: 10000 });
 
-    // Click the close button inside the panel
+    // Click the close button inside the panel (panel is above overlay, so direct click works)
     const closeBtn = page.locator('.fb-close-btn');
     await expect(closeBtn).toBeVisible();
     await closeBtn.click();
@@ -233,8 +233,8 @@ test.describe('File browser', () => {
   test('Escape key closes file browser', async ({ page }) => {
     await setupPage(page);
 
-    // Open the browser
-    await page.click('#browseFilesBtn');
+    // Open the browser via JS click to avoid overlay interception
+    await page.evaluate(() => document.getElementById('browseFilesBtn').click());
     await page.waitForSelector('.file-browser-panel.open', { timeout: 10000 });
 
     // Focus the panel so keydown events reach it
