@@ -39,6 +39,8 @@
         } catch (_) { /* ignore */ }
       })();
     </script>
+    <link rel="preload" href="fonts/MesloLGSNerdFont-Regular.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="stylesheet" href="fonts.css">
     <link rel="stylesheet" href="tokens.css">
     <link rel="stylesheet" href="base.css">
     <link rel="stylesheet" href="components/tabs.css">
@@ -52,9 +54,8 @@
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@latest/build/meslo-nerd-font.css" media="print" onload="this.media='all'">
-    <noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@latest/build/meslo-nerd-font.css"></noscript>
     <script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
     <script src="https://unpkg.com/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
@@ -228,7 +229,7 @@
                     <div class="setting-group">
                         <label for="fontFamily">Font:</label>
                         <select id="fontFamily">
-                            <option value="'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace">Meslo Nerd Font</option>
+                            <option value="'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace">Meslo Nerd Font</option>
                             <option value="'JetBrains Mono', monospace">JetBrains Mono</option>
                             <option value="'Fira Code', monospace">Fira Code</option>
                             <option value="'Cascadia Code', monospace">Cascadia Code</option>

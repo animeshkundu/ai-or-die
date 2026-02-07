@@ -56,14 +56,9 @@ async function bundle() {
 function collectAssets() {
   const assets = {};
 
-  // Static web assets
+  // Static web assets (recursive to include fonts/ and components/ subdirectories)
   const publicDir = path.join(ROOT, 'src', 'public');
-  for (const file of fs.readdirSync(publicDir)) {
-    const fullPath = path.join(publicDir, file);
-    if (fs.statSync(fullPath).isFile()) {
-      assets[`public/${file}`] = fullPath;
-    }
-  }
+  collectFilesRecursive(publicDir, 'public', assets);
 
   // Platform-specific native addon files
   const ptyPkgName = `node-pty-${PLATFORM}-${ARCH}`;
