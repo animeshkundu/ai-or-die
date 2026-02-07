@@ -75,7 +75,7 @@ class ClaudeCodeWebInterface {
         this.setupTerminal();
         this.setupUI();
         this.setupPlanDetector();
-        this.loadSettings();
+        this.applySettings(this.loadSettings());
         this.applyAliasesToUI();
         this.disablePullToRefresh();
 
@@ -301,7 +301,8 @@ class ClaudeCodeWebInterface {
         
         this.terminal = new Terminal({
             fontSize: fontSize,
-            fontFamily: 'JetBrains Mono, Fira Code, Monaco, Consolas, monospace',
+            fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim()
+                || "'MesloLGS Nerd Font', 'Meslo Nerd Font', 'JetBrains Mono', monospace",
             theme: {
                 background: 'transparent',
                 foreground: '#f0f6fc',
@@ -347,8 +348,26 @@ class ClaudeCodeWebInterface {
             this.terminal.loadAddon(this.searchAddon);
         }
 
+        // Load Unicode11 addon for correct Nerd Font / powerline glyph widths
+        if (typeof Unicode11Addon !== 'undefined') {
+            this.unicode11Addon = new Unicode11Addon.Unicode11Addon();
+            this.terminal.loadAddon(this.unicode11Addon);
+            this.terminal.unicode.activeVersion = '11';
+        }
+
         this.terminal.open(document.getElementById('terminal'));
         this.fitTerminal();
+
+        // Re-render terminal when Nerd Font finishes loading (lazy-loaded via media="print")
+        if (document.fonts && document.fonts.load) {
+            document.fonts.load('14px MesloLGS Nerd Font').then(() => {
+                this.terminal.refresh(0, this.terminal.rows - 1);
+                this.fitTerminal();
+            }).catch(() => {
+                // Font not available — still refresh in case fallback font loaded late
+                this.terminal.refresh(0, this.terminal.rows - 1);
+            });
+        }
 
         // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
         attachClipboardHandler(this.terminal, (data) => {

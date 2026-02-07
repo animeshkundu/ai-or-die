@@ -11,6 +11,7 @@ The frontend is a single-page application served from `src/public/`. It runs ent
 | xterm.js | 5.3.0 | unpkg CDN | Terminal emulator component |
 | xterm-addon-fit | 0.8.0 | unpkg CDN | Auto-fit terminal to container |
 | xterm-addon-web-links | 0.9.0 | unpkg CDN | Clickable URLs in terminal output |
+| xterm-addon-unicode11 | 0.6.0 | unpkg CDN | Unicode 11 character width support for Nerd Font / powerline glyphs |
 | JetBrains Mono | -- | Google Fonts | Monospace font for terminal (fallback) |
 | MesloLGS Nerd Font | -- | jsDelivr CDN | Primary terminal font with Nerd Font glyphs |
 | Inter | -- | Google Fonts | UI font for headers, tabs, controls |
@@ -91,13 +92,14 @@ The main application controller. Instantiated once on page load.
 
 1. Call `window.authManager.initialize()`. If it returns `false`, the login prompt is displayed and initialization halts.
 2. Fetch `/api/config` to get folder mode, aliases, and base folder.
-3. Set up the terminal (xterm.js with fit addon and web links addon).
-4. Establish WebSocket connection.
-5. Set up UI event handlers (folder browser, session controls, resize observer).
-6. Initialize `SessionTabManager`.
-7. Initialize `PlanDetector`.
-8. Load existing sessions from the server.
-9. Start usage polling interval.
+3. Set up the terminal (xterm.js with fit, web links, and unicode11 addons).
+4. Apply saved settings (font, theme, cursor) immediately via `applySettings(loadSettings())`.
+5. Establish WebSocket connection.
+6. Set up UI event handlers (folder browser, session controls, resize observer).
+7. Initialize `SessionTabManager`.
+8. Initialize `PlanDetector`.
+9. Load existing sessions from the server.
+10. Start usage polling interval.
 
 ### WebSocket Management
 
@@ -116,7 +118,7 @@ The main application controller. Instantiated once on page load.
     cursor: '#f0f6fc',
     // Full 16-color ANSI palette configured
   },
-  fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace",
+  fontFamily: "reads from CSS --font-mono token; defaults to 'MesloLGS Nerd Font', 'JetBrains Mono', monospace",
   fontSize: 14,          // 13 on mobile
   lineHeight: 1.2,
   scrollback: 10000,

@@ -57,7 +57,7 @@ module.exports = defineConfig({
     },
     {
       name: 'new-features',
-      testMatch: /1[0-3]-.*\.spec\.js/,
+      testMatch: /1[0-4]-.*\.spec\.js/,
     },
   ],
 });
