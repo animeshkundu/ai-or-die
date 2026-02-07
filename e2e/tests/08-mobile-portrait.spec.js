@@ -48,9 +48,11 @@ test.describe('Mobile portrait: app renders and works at mobile viewport sizes',
     await waitForTerminalCanvas(page);
 
     // Verify the viewport is mobile-sized (set by Playwright device descriptor)
+    // Note: Playwright device viewports use CSS sizes (e.g. iPhone 14 = 390x664),
+    // not screen resolutions (390x844)
     const viewport = page.viewportSize();
     expect(viewport.width).toBeLessThan(500);
-    expect(viewport.height).toBeGreaterThan(700);
+    expect(viewport.height).toBeGreaterThan(600);
   });
 
   test('terminal dimensions are smaller than desktop', async ({ page }) => {
