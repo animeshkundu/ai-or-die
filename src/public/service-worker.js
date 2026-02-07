@@ -1,9 +1,20 @@
-const CACHE_NAME = 'ai-or-die-v2';
+const CACHE_NAME = 'ai-or-die-v3';
 const urlsToCache = [
   '/',
   '/index.html',
+  '/tokens.css',
+  '/base.css',
+  '/components/tabs.css',
+  '/components/terminal.css',
+  '/components/buttons.css',
+  '/components/modals.css',
+  '/components/cards.css',
+  '/components/menus.css',
+  '/components/notifications.css',
+  '/mobile.css',
   '/style.css',
   '/app.js',
+  '/command-palette.js',
   '/clipboard-handler.js',
   '/session-manager.js',
   '/plan-detector.js',

@@ -1,0 +1,375 @@
+/* ============================================================
+   Design Tokens for ai-or-die
+   Three-tier system: Primitives → Semantic → Component
+   Themes override only semantic tokens.
+   ============================================================ */
+
+/* === Primitive Tokens (raw values — never use directly in components) === */
+:root {
+  /* --- Gray Scale (Zinc palette) --- */
+  --color-gray-0: #09090b;
+  --color-gray-50: #111113;
+  --color-gray-100: #18181b;
+  --color-gray-150: #1e1e22;
+  --color-gray-200: #27272a;
+  --color-gray-300: #3f3f46;
+  --color-gray-400: #52525b;
+  --color-gray-500: #71717a;
+  --color-gray-600: #a1a1aa;
+  --color-gray-700: #d4d4d8;
+  --color-gray-800: #e4e4e7;
+  --color-gray-900: #f4f4f5;
+  --color-gray-950: #fafafa;
+
+  /* --- Accent Colors --- */
+  --color-blue-400: #60a5fa;
+  --color-blue-500: #3b82f6;
+  --color-blue-600: #2563eb;
+
+  --color-orange-400: #fb923c;
+  --color-orange-500: #ff6b00;
+  --color-orange-600: #e65f00;
+
+  --color-green-400: #4ade80;
+  --color-green-500: #22c55e;
+  --color-green-600: #16a34a;
+
+  --color-red-400: #f87171;
+  --color-red-500: #ef4444;
+  --color-red-600: #dc2626;
+
+  --color-yellow-400: #facc15;
+  --color-yellow-500: #eab308;
+  --color-yellow-600: #ca8a04;
+
+  --color-cyan-400: #22d3ee;
+  --color-cyan-500: #06b6d4;
+
+  --color-purple-400: #c084fc;
+  --color-purple-500: #a855f7;
+
+  /* --- Typography --- */
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'MesloLGS Nerd Font', 'Meslo Nerd Font', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+
+  --text-xs: 0.6875rem;   /* 11px */
+  --text-sm: 0.75rem;     /* 12px */
+  --text-base: 0.8125rem; /* 13px */
+  --text-md: 0.875rem;    /* 14px */
+  --text-lg: 1rem;        /* 16px */
+  --text-xl: 1.125rem;    /* 18px */
+  --text-2xl: 1.5rem;     /* 24px */
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.6;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* --- Spacing (4px base unit) --- */
+  --space-0: 0;
+  --space-px: 1px;
+  --space-0-5: 0.125rem; /* 2px */
+  --space-1: 0.25rem;    /* 4px */
+  --space-1-5: 0.375rem; /* 6px */
+  --space-2: 0.5rem;     /* 8px */
+  --space-2-5: 0.625rem; /* 10px */
+  --space-3: 0.75rem;    /* 12px */
+  --space-4: 1rem;       /* 16px */
+  --space-5: 1.25rem;    /* 20px */
+  --space-6: 1.5rem;     /* 24px */
+  --space-8: 2rem;       /* 32px */
+  --space-10: 2.5rem;    /* 40px */
+  --space-12: 3rem;      /* 48px */
+
+  /* --- Border Radius --- */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 9999px;
+
+  /* --- Elevation / Shadows --- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.5);
+
+  /* --- Transitions --- */
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+
+  /* --- Z-Index Scale --- */
+  --z-base: 0;
+  --z-dropdown: 1000;
+  --z-sticky: 1100;
+  --z-modal-backdrop: 2000;
+  --z-modal: 2001;
+  --z-popover: 3000;
+  --z-overlay: 5000;
+  --z-toast: 10000;
+  --z-tooltip: 10001;
+}
+
+/* ============================================================
+   Semantic Tokens — MIDNIGHT theme (new default)
+   Components should ONLY use these tokens.
+   ============================================================ */
+:root {
+  /* --- Surfaces --- */
+  --surface-primary: var(--color-gray-0);
+  --surface-secondary: var(--color-gray-50);
+  --surface-tertiary: var(--color-gray-100);
+  --surface-elevated: var(--color-gray-150);
+
+  /* --- Text --- */
+  --text-primary: var(--color-gray-950);
+  --text-secondary: var(--color-gray-600);
+  --text-muted: var(--color-gray-500);
+  --text-inverse: var(--color-gray-0);
+
+  /* --- Borders --- */
+  --border-default: var(--color-gray-200);
+  --border-hover: var(--color-gray-300);
+  --border-focus: var(--color-blue-500);
+
+  /* --- Accent --- */
+  --accent-default: var(--color-blue-500);
+  --accent-hover: var(--color-blue-600);
+  --accent-soft: rgba(59, 130, 246, 0.12);
+  --accent-glow: rgba(59, 130, 246, 0.25);
+
+  /* --- Status --- */
+  --status-success: var(--color-green-500);
+  --status-error: var(--color-red-500);
+  --status-warning: var(--color-yellow-500);
+  --status-info: var(--color-blue-400);
+
+  /* --- Terminal --- */
+  --terminal-bg: var(--color-gray-0);
+  --terminal-fg: #c9d1d9;
+  --terminal-cursor: var(--color-blue-400);
+  --terminal-selection: rgba(59, 130, 246, 0.3);
+}
+
+/* ============================================================
+   CLASSIC DARK — preserves the original GitHub Dark look
+   ============================================================ */
+[data-theme="classic-dark"] {
+  --surface-primary: #0d1117;
+  --surface-secondary: #161b22;
+  --surface-tertiary: #1c2028;
+  --surface-elevated: #21262d;
+
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --text-inverse: #0d1117;
+
+  --border-default: #30363d;
+  --border-hover: #484f58;
+  --border-focus: #ff6b00;
+
+  --accent-default: #ff6b00;
+  --accent-hover: #e65f00;
+  --accent-soft: rgba(255, 107, 0, 0.12);
+  --accent-glow: rgba(255, 107, 0, 0.25);
+
+  --status-success: #3fb950;
+  --status-error: #f85149;
+  --status-warning: #d29922;
+  --status-info: #58a6ff;
+
+  --terminal-bg: #0d1117;
+  --terminal-fg: #c9d1d9;
+  --terminal-cursor: #58a6ff;
+  --terminal-selection: rgba(88, 166, 255, 0.3);
+}
+
+/* ============================================================
+   CLASSIC LIGHT — preserves the original light theme
+   ============================================================ */
+[data-theme="classic-light"],
+[data-theme="light"] {
+  --surface-primary: #fafafa;
+  --surface-secondary: #ffffff;
+  --surface-tertiary: #f3f4f6;
+  --surface-elevated: #e5e7eb;
+
+  --text-primary: #1a1a1a;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --text-inverse: #fafafa;
+
+  --border-default: #e6e7eb;
+  --border-hover: #d4d6db;
+  --border-focus: #e05d00;
+
+  --accent-default: #e05d00;
+  --accent-hover: #cc5200;
+  --accent-soft: rgba(224, 93, 0, 0.08);
+  --accent-glow: rgba(224, 93, 0, 0.15);
+
+  --status-success: #0f7b5c;
+  --status-error: #d92d20;
+  --status-warning: #a16207;
+  --status-info: #2563eb;
+
+  --terminal-bg: #fafafa;
+  --terminal-fg: #1a1a1a;
+  --terminal-cursor: #e05d00;
+  --terminal-selection: rgba(224, 93, 0, 0.15);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.15);
+}
+
+/* ============================================================
+   MONOKAI — warm dark theme
+   ============================================================ */
+[data-theme="monokai"] {
+  --surface-primary: #272822;
+  --surface-secondary: #2d2e27;
+  --surface-tertiary: #383830;
+  --surface-elevated: #3e3d32;
+
+  --text-primary: #f8f8f2;
+  --text-secondary: #a6a28c;
+  --text-muted: #75715e;
+  --text-inverse: #272822;
+
+  --border-default: #49483e;
+  --border-hover: #5b5a50;
+  --border-focus: #a6e22e;
+
+  --accent-default: #a6e22e;
+  --accent-hover: #b6f23e;
+  --accent-soft: rgba(166, 226, 46, 0.12);
+  --accent-glow: rgba(166, 226, 46, 0.25);
+
+  --status-success: #a6e22e;
+  --status-error: #f92672;
+  --status-warning: #e6db74;
+  --status-info: #66d9ef;
+
+  --terminal-bg: #272822;
+  --terminal-fg: #f8f8f2;
+  --terminal-cursor: #f8f8f0;
+  --terminal-selection: rgba(166, 226, 46, 0.2);
+}
+
+/* ============================================================
+   NORD — cool blue-gray palette
+   ============================================================ */
+[data-theme="nord"] {
+  --surface-primary: #2e3440;
+  --surface-secondary: #3b4252;
+  --surface-tertiary: #434c5e;
+  --surface-elevated: #4c566a;
+
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  --text-muted: #81a1c1;
+  --text-inverse: #2e3440;
+
+  --border-default: #4c566a;
+  --border-hover: #5e6a82;
+  --border-focus: #88c0d0;
+
+  --accent-default: #88c0d0;
+  --accent-hover: #8fbcbb;
+  --accent-soft: rgba(136, 192, 208, 0.12);
+  --accent-glow: rgba(136, 192, 208, 0.25);
+
+  --status-success: #a3be8c;
+  --status-error: #bf616a;
+  --status-warning: #ebcb8b;
+  --status-info: #81a1c1;
+
+  --terminal-bg: #2e3440;
+  --terminal-fg: #d8dee9;
+  --terminal-cursor: #88c0d0;
+  --terminal-selection: rgba(136, 192, 208, 0.2);
+}
+
+/* ============================================================
+   SOLARIZED DARK
+   ============================================================ */
+[data-theme="solarized-dark"] {
+  --surface-primary: #002b36;
+  --surface-secondary: #073642;
+  --surface-tertiary: #0a4050;
+  --surface-elevated: #0d4f5e;
+
+  --text-primary: #eee8d5;
+  --text-secondary: #839496;
+  --text-muted: #657b83;
+  --text-inverse: #002b36;
+
+  --border-default: #094959;
+  --border-hover: #0b5c6e;
+  --border-focus: #268bd2;
+
+  --accent-default: #268bd2;
+  --accent-hover: #2e9fe6;
+  --accent-soft: rgba(38, 139, 210, 0.12);
+  --accent-glow: rgba(38, 139, 210, 0.25);
+
+  --status-success: #859900;
+  --status-error: #dc322f;
+  --status-warning: #b58900;
+  --status-info: #2aa198;
+
+  --terminal-bg: #002b36;
+  --terminal-fg: #839496;
+  --terminal-cursor: #268bd2;
+  --terminal-selection: rgba(38, 139, 210, 0.2);
+}
+
+/* ============================================================
+   SOLARIZED LIGHT
+   ============================================================ */
+[data-theme="solarized-light"] {
+  --surface-primary: #fdf6e3;
+  --surface-secondary: #eee8d5;
+  --surface-tertiary: #e8e1ce;
+  --surface-elevated: #ddd6c1;
+
+  --text-primary: #073642;
+  --text-secondary: #586e75;
+  --text-muted: #93a1a1;
+  --text-inverse: #fdf6e3;
+
+  --border-default: #d3cbb7;
+  --border-hover: #c5bca8;
+  --border-focus: #268bd2;
+
+  --accent-default: #268bd2;
+  --accent-hover: #2e9fe6;
+  --accent-soft: rgba(38, 139, 210, 0.08);
+  --accent-glow: rgba(38, 139, 210, 0.15);
+
+  --status-success: #859900;
+  --status-error: #dc322f;
+  --status-warning: #b58900;
+  --status-info: #2aa198;
+
+  --terminal-bg: #fdf6e3;
+  --terminal-fg: #586e75;
+  --terminal-cursor: #268bd2;
+  --terminal-selection: rgba(38, 139, 210, 0.15);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.15);
+}

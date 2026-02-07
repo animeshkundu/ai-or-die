@@ -1,0 +1,432 @@
+/* tabs.css — Session tab bar, tab items, overflow dropdown, tab actions */
+
+/* Session Tabs Bar */
+.session-tabs-bar {
+    background-color: var(--surface-secondary);
+    border-bottom: 1px solid var(--border-default);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px;
+    min-height: 40px;
+    position: relative;
+    overflow: visible; /* Ensure dropdown can overflow */
+}
+
+.tabs-section {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: visible; /* Allow dropdown to overflow vertically */
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+}
+
+.tabs-section::-webkit-scrollbar {
+    height: 4px;
+}
+
+.tabs-section::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 2px;
+}
+
+.tabs-container {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 0;
+}
+
+.session-tab {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    padding: 0 12px 0 0;
+    background-color: var(--surface-tertiary);
+    border: 1px solid var(--border-default);
+    border-radius: 6px 6px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    min-width: 120px;
+    max-width: 220px;
+    position: relative;
+    user-select: none;
+    height: 36px;
+    overflow: hidden;
+}
+
+.session-tab:hover {
+    background-color: var(--surface-primary);
+    color: var(--text-primary);
+}
+
+.session-tab.active {
+    background-color: var(--surface-primary);
+    color: var(--text-primary);
+    border-bottom-color: var(--surface-primary);
+}
+
+/* Accent bottom highlight for active tab */
+.session-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background-color: var(--accent-default);
+}
+
+/* Left-border status indicator (replaces old dot) */
+.tab-status-border {
+    width: 3px;
+    align-self: stretch;
+    flex-shrink: 0;
+    border-radius: 3px 0 0 0;
+    transition: background-color 0.2s ease;
+    background-color: transparent;
+}
+
+.tab-status-border.active {
+    background-color: var(--status-success);
+}
+
+.tab-status-border.idle {
+    background-color: var(--status-info);
+}
+
+.tab-status-border.disconnected,
+.tab-status-border.error {
+    background-color: var(--status-error);
+}
+
+.tab-status-border.unread {
+    background-color: var(--status-info) !important;
+    animation: unread-border-pulse 1.5s infinite;
+}
+
+.tab-status-border.pulse {
+    animation: border-pulse 2s infinite;
+}
+
+@keyframes border-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+@keyframes unread-border-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* Tool type badge */
+.tab-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 18px;
+    border-radius: var(--radius-sm);
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    color: #fff;
+    flex-shrink: 0;
+    line-height: 1;
+}
+
+.session-tab.dragging {
+    opacity: 0.5;
+}
+
+.tab-content {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    padding: 0 0 0 8px;
+}
+
+.tab-icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+}
+
+.tab-status {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    transition: all 0.3s ease;
+    position: relative;
+}
+
+.tab-status.active {
+    background-color: var(--success);
+}
+
+.tab-status.idle {
+    background-color: var(--status-info);
+    animation: idle-gentle-pulse 3s infinite;
+}
+
+.tab-status.disconnected {
+    background-color: var(--error);
+}
+
+.tab-status.error {
+    background-color: var(--error);
+}
+
+/* Pulse animation for active sessions */
+.tab-status.pulse {
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+    }
+    70% {
+        box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+    }
+    100% {
+        box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+    }
+}
+
+@keyframes idle-gentle-pulse {
+    0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 0.8;
+        transform: scale(1.1);
+    }
+}
+
+/* Unread indicator - changes status dot to blue */
+.tab-status.unread {
+    background-color: var(--status-info) !important;
+    animation: unread-pulse 1.5s infinite;
+}
+
+@keyframes unread-pulse {
+    0%, 100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.5;
+    }
+}
+
+.session-tab.has-unread .tab-name {
+    color: var(--status-info);
+    font-weight: 600;
+}
+
+.tab-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tab-close {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity 0.2s;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.session-tab:hover .tab-close {
+    opacity: 0.6;
+}
+
+.tab-close:hover {
+    opacity: 1;
+    background-color: var(--border);
+}
+
+.tab-name-input {
+    width: 100%;
+    font: inherit;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-hover);
+    border-radius: 4px;
+    padding: 2px 4px;
+    outline: none;
+}
+
+.tab-new {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    margin-left: 4px;
+}
+
+.tab-actions { display: flex; gap: 6px; align-items: center; }
+.tab-tile {
+  width: 28px; height: 28px; display:flex; align-items:center; justify-content:center;
+  background: transparent; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text-secondary); cursor: pointer; transition: all .2s; flex-shrink: 0; margin-left: 4px;
+}
+.tab-tile:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.tab-tile[disabled] { opacity: .5; cursor: not-allowed; }
+
+/* Global tabs are visible; panes can be enabled optionally */
+
+.tab-new:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.tab-settings {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.2s;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.tab-settings:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+/* Tab Overflow Dropdown for Mobile */
+.tab-overflow-wrapper {
+    position: relative;
+    display: none;
+}
+
+.tab-overflow-btn {
+    width: auto;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 8px;
+    background-color: transparent;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-left: 4px;
+}
+
+.tab-overflow-btn:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.tab-overflow-count {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.tab-overflow-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    min-width: 200px;
+    max-width: 300px;
+    z-index: 10000; /* Higher z-index to ensure it appears above everything */
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.tab-overflow-menu.active {
+    display: block;
+}
+
+.overflow-tab-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    border-bottom: 1px solid var(--border);
+}
+
+.overflow-tab-item:last-child {
+    border-bottom: none;
+}
+
+.overflow-tab-item:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.overflow-tab-item.active {
+    background-color: var(--bg-tertiary);
+    color: var(--accent);
+}
+
+.overflow-tab-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 13px;
+}
+
+.overflow-tab-close {
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.overflow-tab-close:hover {
+    background-color: var(--error);
+    color: white;
+}
+
+/* Mobile-specific styles */
+@media (max-width: 768px) {
+    /* Overflow wrapper visibility is controlled by JavaScript */
+}
