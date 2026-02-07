@@ -1,0 +1,550 @@
+/* mobile.css — All mobile/responsive styles: media queries, hamburger menu, mobile menu */
+
+/* Safe area insets for notched devices (iPhone X+, etc.) */
+@supports (padding: env(safe-area-inset-top)) {
+    .session-tabs-bar {
+        padding-left: max(10px, env(safe-area-inset-left));
+        padding-right: max(10px, env(safe-area-inset-right));
+    }
+    .mobile-menu {
+        padding-top: env(safe-area-inset-top);
+    }
+    .mode-switcher {
+        bottom: max(80px, calc(80px + env(safe-area-inset-bottom)));
+        right: max(20px, env(safe-area-inset-right));
+    }
+}
+
+/* Mobile Menu Styles */
+.hamburger-btn {
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+    min-width: 44px;
+    min-height: 44px;
+    width: 44px;
+    height: 44px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 10px;
+    margin: 0;
+    border-radius: 4px;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color 0.2s ease;
+}
+
+.hamburger-btn:hover {
+    background-color: var(--bg-tertiary);
+}
+
+.hamburger-line {
+    display: block;
+    width: 24px;
+    height: 2px;
+    background-color: var(--text-primary);
+    border-radius: 2px;
+    transition: all 0.3s ease;
+}
+
+.hamburger-btn.active .hamburger-line:nth-child(1) {
+    transform: translateY(6px) rotate(45deg);
+}
+
+.hamburger-btn.active .hamburger-line:nth-child(2) {
+    opacity: 0;
+}
+
+.hamburger-btn.active .hamburger-line:nth-child(3) {
+    transform: translateY(-6px) rotate(-45deg);
+}
+
+.mobile-menu {
+    position: fixed;
+    top: 0;
+    left: -300px;
+    width: 280px;
+    height: 100%;
+    background-color: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    z-index: 3000;
+    transition: left 0.3s ease;
+    display: flex;
+    flex-direction: column;
+}
+
+.mobile-menu.active {
+    left: 0;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
+}
+
+.mobile-menu-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.mobile-menu-header h2 {
+    font-size: 18px;
+    font-weight: 600;
+    margin: 0;
+}
+
+.close-menu-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    font-size: 28px;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mobile-menu-content {
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.mobile-menu-btn {
+    padding: 12px 16px;
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+    text-align: left;
+}
+
+.mobile-menu-btn:hover:not(:disabled) {
+    background-color: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.mobile-menu-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.mobile-menu-btn.btn-danger {
+    background-color: var(--error);
+    color: white;
+    border-color: var(--error);
+}
+
+.mobile-menu-btn.btn-danger:hover:not(:disabled) {
+    background-color: var(--color-red-600);
+    border-color: var(--color-red-600);
+}
+
+.desktop-only {
+    display: block;
+}
+
+/* Mobile Modal Fixes */
+@media (max-width: 768px) {
+    /* Base modal fixes */
+    .settings-modal,
+    .session-modal,
+    .folder-browser-modal {
+        padding: 10px;
+        align-items: flex-start;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .modal-content {
+        width: calc(100% - 20px);
+        max-width: none;
+        max-height: calc(100vh - 20px);
+        margin: 10px;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .folder-browser-content {
+        width: calc(100% - 20px);
+        max-width: none;
+        max-height: calc(100vh - 20px);
+        height: auto;
+    }
+
+    .modal-header {
+        padding: 15px;
+        position: sticky;
+        top: 0;
+        background-color: var(--bg-secondary);
+        z-index: 10;
+    }
+
+    .modal-body {
+        padding: 15px;
+    }
+
+    .modal-footer {
+        padding: 15px;
+        position: sticky;
+        bottom: 0;
+        background-color: var(--bg-secondary);
+        z-index: 10;
+        gap: 10px;
+    }
+
+    /* Ensure buttons in modals are touch-friendly */
+    .modal-footer .btn {
+        min-height: 44px;
+        padding: 12px 20px;
+    }
+
+    /* Fix folder browser specific issues */
+    .folder-list-container {
+        max-height: 40vh;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .folder-item {
+        min-height: 44px;
+        padding: 12px;
+    }
+
+    /* Session modal fixes */
+    .session-list {
+        max-height: 50vh;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .session-item {
+        min-height: 44px;
+        padding: 10px;
+    }
+
+    /* Ensure close buttons are easily tappable */
+    .close-btn,
+    .modal-close {
+        position: absolute;
+        right: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+    }
+}
+
+/* Mobile Responsive Styles */
+@media (max-width: 768px) {
+    .hamburger-btn {
+        display: flex;
+        flex-shrink: 0;
+    }
+
+    .desktop-only {
+        display: none !important;
+    }
+
+    .header {
+        padding: 8px 12px;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 0;
+        flex-shrink: 0;
+        min-height: 44px;
+    }
+
+    .header-content {
+        flex: 1;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        justify-content: flex-end;
+        min-width: 0;
+    }
+
+    .header-info {
+        display: flex;
+        flex-direction: row;
+        gap: 8px;
+        align-items: center;
+        justify-content: flex-end;
+    }
+
+    .status {
+        font-size: 11px;
+        padding: 2px 6px;
+        white-space: nowrap;
+    }
+
+    .working-dir {
+        font-size: 11px;
+        padding: 2px 6px;
+        max-width: 150px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .header-controls {
+        display: none;
+    }
+
+    .main {
+        flex: 1;
+        overflow: hidden;
+    }
+
+    .terminal-container {
+        padding: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+    }
+
+    #terminal {
+        padding: 8px;
+        width: 100%;
+        height: 100%;
+        box-sizing: border-box;
+    }
+
+    /* Force xterm to respect mobile viewport */
+    .xterm {
+        width: 100% !important;
+        height: 100% !important;
+    }
+
+    .xterm-viewport {
+        width: 100% !important;
+        overflow-x: hidden !important;
+        overflow-y: auto !important;
+    }
+
+    .xterm-screen {
+        width: 100% !important;
+    }
+
+    .overlay-content {
+        padding: 20px;
+        max-width: 90%;
+    }
+
+    .start-prompt h2 {
+        font-size: 20px;
+    }
+
+    .start-prompt p {
+        font-size: 14px;
+    }
+
+    /* Modal styles are handled in the Mobile Modal Fixes section above */
+}
+
+/* Extra small devices (phones in portrait) */
+@media (max-width: 480px) {
+    .header {
+        padding: 6px 8px;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+    }
+
+    .hamburger-btn {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        min-height: 40px;
+        padding: 8px;
+    }
+
+    .header-info {
+        gap: 6px;
+    }
+
+    .status {
+        font-size: 10px;
+        padding: 1px 4px;
+    }
+
+    .working-dir {
+        font-size: 10px;
+        padding: 1px 4px;
+        max-width: 120px;
+    }
+
+    .btn {
+        padding: 8px 12px;
+        font-size: 11px;
+    }
+
+    /* Legacy start-buttons replaced by .tool-cards-grid */
+
+    /* Extra terminal fixes for very small screens */
+    #terminal {
+        padding: 4px;
+    }
+
+    /* Ensure modals don't overflow */
+    .modal-content {
+        max-height: 85vh;
+        overflow-y: auto;
+    }
+
+    /* Adjust main container */
+    .main {
+        padding: 0;
+        margin: 0;
+    }
+
+    body {
+        overflow-x: hidden;
+    }
+}
+
+/* Mode Switcher Styles */
+.mode-switcher {
+    position: fixed;
+    bottom: 80px; /* Increased from 20px to avoid covering text input */
+    right: 20px;
+    z-index: 1000;
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* Show mode switcher on mobile devices */
+@media (max-width: 1024px) and (hover: none) and (pointer: coarse),
+       (max-width: 768px) {
+    .mode-switcher {
+        display: flex;
+    }
+}
+
+.mode-switcher-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 2px solid var(--border);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+    width: 56px;
+    height: 56px;
+}
+
+.mode-switcher-btn:hover {
+    background-color: var(--bg-tertiary);
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.mode-switcher-btn:active {
+    transform: translateY(0);
+}
+
+.mode-switcher-btn.switching {
+    animation: modeSwitchPulse 0.3s ease;
+}
+
+@keyframes modeSwitchPulse {
+    0% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(0.95);
+        background-color: var(--accent);
+    }
+    100% {
+        transform: scale(1);
+    }
+}
+
+.mode-switcher-btn svg {
+    width: 24px;
+    height: 24px;
+    stroke: var(--accent);
+    flex-shrink: 0;
+}
+
+/* Add visual indicator for current mode */
+.mode-switcher-btn[data-mode="chat"] {
+    border-color: var(--success);
+}
+
+.mode-switcher-btn[data-mode="code"] {
+    border-color: var(--accent);
+}
+
+.mode-switcher-btn[data-mode="plan"] {
+    border-color: var(--warning);
+}
+
+/* Escape Button Styles */
+.escape-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 2px solid var(--error);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+    width: 56px;
+    height: 56px;
+}
+
+.escape-btn:hover {
+    background-color: var(--bg-tertiary);
+    border-color: #ff4444;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(255, 68, 68, 0.2);
+}
+
+.escape-btn:active {
+    transform: translateY(0);
+}
+
+.escape-btn.pressed {
+    animation: escapeBtnPress 0.2s ease;
+}
+
+@keyframes escapeBtnPress {
+    0% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(0.9);
+        background-color: var(--error);
+    }
+    100% {
+        transform: scale(1);
+    }
+}
+
+.escape-btn svg {
+    width: 24px;
+    height: 24px;
+    stroke: var(--error);
+    flex-shrink: 0;
+}

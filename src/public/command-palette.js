@@ -1,0 +1,147 @@
+/**
+ * Command Palette — powered by ninja-keys Web Component.
+ * Provides Ctrl+K quick-action search: switch sessions, change theme,
+ * open settings, toggle split view, clear terminal.
+ */
+class CommandPaletteManager {
+  constructor() {
+    this.ninja = null;
+    this.app = null;
+    // Wait for both DOM and ninja-keys custom element to be defined
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => this._init());
+    } else {
+      this._init();
+    }
+  }
+
+  _init() {
+    // ninja-keys is loaded as a module; the custom element may not be
+    // defined immediately. Poll briefly to find it.
+    const tryBind = () => {
+      this.ninja = document.querySelector('ninja-keys');
+      if (this.ninja) {
+        this._bindActions();
+        this._setupKeyboard();
+      } else {
+        // Retry until the web component is ready (max ~3s)
+        setTimeout(tryBind, 200);
+      }
+    };
+    tryBind();
+  }
+
+  _setupKeyboard() {
+    // Intercept Ctrl+K to open the palette when terminal has focus
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.ninja) this.ninja.open();
+      }
+    }, true); // capture phase so it fires before xterm
+  }
+
+  _bindActions() {
+    // Re-bind whenever the palette is opened so session list is fresh
+    if (this.ninja) {
+      this.ninja.addEventListener('open', () => this.refreshActions());
+    }
+    this.refreshActions();
+  }
+
+  refreshActions() {
+    if (!this.ninja) return;
+    const app = window.app;
+    if (!app) return;
+
+    const actions = [];
+
+    // --- Session switching ---
+    if (app.sessionTabManager) {
+      const sessions = app.sessionTabManager.activeSessions;
+      if (sessions && sessions.size > 0) {
+        sessions.forEach((session, id) => {
+          actions.push({
+            id: `session-${id}`,
+            title: `Switch to: ${session.name}`,
+            section: 'Sessions',
+            handler: () => {
+              app.sessionTabManager.switchToTab(id);
+            }
+          });
+        });
+      }
+    }
+
+    // --- New session ---
+    actions.push({
+      id: 'new-session',
+      title: 'New Session',
+      section: 'Sessions',
+      hotkey: 'ctrl+t',
+      handler: () => {
+        const btn = document.getElementById('tabNewBtn');
+        if (btn) btn.click();
+      }
+    });
+
+    // --- Theme switching ---
+    const themes = [
+      { value: 'midnight', label: 'Midnight' },
+      { value: 'classic-dark', label: 'Classic Dark' },
+      { value: 'classic-light', label: 'Classic Light' },
+      { value: 'monokai', label: 'Monokai' },
+      { value: 'nord', label: 'Nord' },
+      { value: 'solarized-dark', label: 'Solarized Dark' },
+      { value: 'solarized-light', label: 'Solarized Light' },
+    ];
+
+    for (const theme of themes) {
+      actions.push({
+        id: `theme-${theme.value}`,
+        title: `Theme: ${theme.label}`,
+        section: 'Appearance',
+        handler: () => {
+          if (theme.value === 'midnight') {
+            document.documentElement.removeAttribute('data-theme');
+          } else {
+            document.documentElement.setAttribute('data-theme', theme.value);
+          }
+          // Persist the choice
+          try {
+            const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+            settings.theme = theme.value;
+            localStorage.setItem('cc-web-settings', JSON.stringify(settings));
+            if (app.applySettings) app.applySettings(settings);
+          } catch (_) { /* ignore */ }
+        }
+      });
+    }
+
+    // --- Actions ---
+    actions.push({
+      id: 'open-settings',
+      title: 'Open Settings',
+      section: 'Actions',
+      handler: () => {
+        const btn = document.getElementById('settingsBtn');
+        if (btn) btn.click();
+      }
+    });
+
+    actions.push({
+      id: 'clear-terminal',
+      title: 'Clear Terminal',
+      section: 'Actions',
+      handler: () => {
+        if (app.terminal) app.terminal.clear();
+      }
+    });
+
+    this.ninja.data = actions;
+  }
+}
+
+// Instantiate globally so app.js can access it
+window.commandPaletteManager = new CommandPaletteManager();

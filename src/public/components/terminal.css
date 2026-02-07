@@ -1,0 +1,290 @@
+/* terminal.css — Terminal container, split view, xterm overrides, overlays, pane menus, search bar */
+
+/* Terminal Search Bar (Ctrl+F) */
+.terminal-search-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    background-color: var(--surface-secondary);
+    border-bottom: 1px solid var(--border-default);
+    flex-shrink: 0;
+}
+
+.term-search-input {
+    flex: 1;
+    min-width: 180px;
+    max-width: 300px;
+    padding: 4px 8px;
+    font-size: 13px;
+    font-family: var(--font-mono);
+    background-color: var(--surface-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    outline: none;
+}
+
+.term-search-input:focus {
+    border-color: var(--accent-default);
+}
+
+.term-search-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    min-width: 50px;
+    text-align: center;
+    font-family: var(--font-mono);
+}
+
+.term-search-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--duration-fast) ease;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+}
+
+.term-search-btn:hover {
+    background-color: var(--surface-tertiary);
+    color: var(--text-primary);
+}
+
+.term-search-toggle.active {
+    background-color: var(--accent-soft);
+    color: var(--accent-default);
+    border-color: var(--accent-default);
+}
+
+/* Terminal Container */
+.terminal-container {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+}
+
+.terminal-wrapper {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Split View */
+.split-container {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    position: relative;
+}
+
+.split-pane {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    background: var(--bg-primary);
+    transition: border-color 0.2s ease;
+}
+
+.split-pane.split-active {
+    border: 2px solid var(--accent);
+}
+
+.split-terminal-wrapper {
+    flex: 1;
+    min-height: 0;
+  width: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+.split-left {
+    width: 50%;
+}
+
+.split-right {
+    width: 50%;
+}
+
+.split-divider {
+    width: 6px;
+  background: var(--border);
+    cursor: col-resize;
+    flex-shrink: 0;
+    transition: background 0.2s ease;
+}
+
+.split-divider:hover {
+    background: var(--border-hover);
+}
+
+.split-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 10;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: all 0.2s ease;
+}
+
+.split-close:hover {
+    opacity: 1;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+/* Drop zone for drag-to-split */
+.split-drop-zone {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 100px;
+    background: rgba(88, 166, 255, 0.15);
+    border: 2px dashed rgba(88, 166, 255, 0.5);
+    border-radius: 8px;
+    pointer-events: none;
+    z-index: 100;
+}
+
+#terminal {
+    width: 100%;
+    height: 100%;
+    padding: 20px;
+    box-sizing: border-box;
+}
+
+.terminal-overlay {
+    position: fixed; /* Cover the full app regardless of container visibility */
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 5000;
+    background-color: rgba(0, 0, 0, 0.92);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(2px);
+}
+
+.overlay-content {
+    text-align: center;
+    padding: 40px;
+    background-color: var(--bg-secondary);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    max-width: 520px;
+}
+
+.loading-spinner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--border);
+    border-top: 3px solid var(--accent);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.start-prompt h2 {
+    margin-bottom: 12px;
+    color: var(--text-primary);
+}
+
+.start-prompt p {
+    margin-bottom: 20px;
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+/* Legacy start-buttons replaced by .tool-cards-grid */
+
+.error-message h3 {
+    color: var(--error);
+    margin-bottom: 12px;
+}
+
+.error-message p {
+    color: var(--text-secondary);
+    margin-bottom: 20px;
+    line-height: 1.5;
+}
+
+/* xterm overrides */
+.xterm .xterm-viewport {
+    background-color: transparent !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+}
+
+.xterm .xterm-screen {
+    background-color: transparent !important;
+}
+
+/* Fix xterm canvas width on mobile */
+.xterm {
+    width: 100%;
+    height: 100%;
+}
+
+.xterm-screen canvas {
+    max-width: 100%;
+}
+
+/* Fix scrollbar extending beyond viewport */
+.xterm-viewport::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+.xterm-viewport::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 5px;
+}
+
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+    background: var(--border-hover);
+}
+
+/* Context menu for tabs */
+.pane-session-menu { position: absolute; z-index: 3000; min-width: 220px; background: var(--bg-secondary); border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); padding:6px; }
+.pane-session-item { padding:8px 10px; border-radius:6px; cursor:pointer; color: var(--text-primary); }
+.pane-session-item.used { color: var(--text-secondary); }
+.pane-session-item:hover { background: var(--bg-tertiary); }
