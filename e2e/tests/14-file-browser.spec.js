@@ -48,6 +48,11 @@ test.describe('File browser', () => {
     await page.goto(url);
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
+    // Wait for the terminal overlay to be hidden (connection established)
+    await page.waitForFunction(() => {
+      const overlay = document.getElementById('overlay');
+      return !overlay || overlay.style.display === 'none' || overlay.offsetParent === null;
+    }, { timeout: 30000 });
   }
 
   /**
