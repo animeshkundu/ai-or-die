@@ -85,16 +85,18 @@ test.describe('Background session notifications', () => {
     await joinSessionAndStartTerminal(page, sessionA);
 
     // Try to send notification for the ACTIVE tab — should be suppressed
-    const toastShown = await page.evaluate((activeSessionId) => {
+    // Use stm.activeTabId directly since it may differ from the API session ID
+    const toastShown = await page.evaluate(() => {
       return new Promise((resolve) => {
         const stm = window.app.sessionTabManager;
-        stm.sendNotification('Should Not Show', 'Suppressed', activeSessionId);
+        const activeId = stm.activeTabId;
+        stm.sendNotification('Should Not Show', 'Suppressed', activeId);
         setTimeout(() => {
           const toast = document.querySelector('.mobile-notification');
           resolve(!!toast);
         }, 500);
       });
-    }, sessionA);
+    });
 
     expect(toastShown).toBe(false);
   });
