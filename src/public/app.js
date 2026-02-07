@@ -155,9 +155,15 @@ class ClaudeCodeWebInterface {
             return this.aliases[kind];
         }
         // Default aliases
-        if (kind === 'codex') return 'Codex';
-        if (kind === 'agent') return 'Cursor';
-        return 'Claude';
+        const defaults = {
+            claude: 'Claude',
+            codex: 'Codex',
+            agent: 'Cursor',
+            copilot: 'Copilot',
+            gemini: 'Gemini',
+            terminal: 'Terminal'
+        };
+        return defaults[kind] || kind.charAt(0).toUpperCase() + kind.slice(1);
     }
 
     applyAliasesToUI() {
