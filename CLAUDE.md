@@ -19,17 +19,29 @@ Available agents: **Architect**, **Engineer**, **QA Reviewer**, **Troubleshooter
 
 ### Documentation-Driven Workflow
 Before starting any task, consult the relevant documentation:
-- `docs/agent-instructions/` -- Philosophy, research guidelines, testing standards, tooling conventions
+- `docs/agent-instructions/` -- Agent workflow guides:
+  - `00-philosophy.md` -- Core principles
+  - `01-research-and-web.md` -- Research guidelines
+  - `02-testing-and-validation.md` -- Testing standards
+  - `03-tooling-and-pipelines.md` -- Tooling conventions
+  - `04-handoff-protocol.md` -- How to leave the repo clean for the next agent
+  - `05-defensive-coding.md` -- Error prevention, cross-platform traps
+  - `06-ci-first-testing.md` -- CI-only testing, E2E debugging, performance budget
+  - `07-docs-hygiene.md` -- Keeping documentation in sync
+  - `08-multi-agent-consultation.md` -- When and how to consult expert subagents
 - `docs/adrs/` -- Architecture Decision Records (check before proposing new patterns)
 - `docs/specs/` -- Component specifications (read before implementing, update after changing behavior)
 - `docs/architecture/` -- System diagrams and component overviews
-- `docs/history/` -- Incident post-mortems and debugging notes
+- `docs/history/` -- Solved problems and debugging notes (check before debugging any issue)
 
 ### Mandatory Rules
 1. **Spec updates with code changes**: When code behavior changes, the corresponding spec in `docs/specs/` must be updated in the same commit or PR.
 2. **ADR compliance**: Never contradict an accepted ADR. To change direction, write a new ADR that supersedes the old one.
 3. **Cross-platform support**: All code must work on both Windows and Linux. Use `path.join()` for file paths, provide `.sh` and `.ps1` script variants, and test on both platforms in CI.
 4. **Test coverage**: Every feature and bug fix requires tests. No exceptions.
+5. **CI-only testing**: All testing happens on GitHub Actions runners. Never test locally. E2E tests are the only true validation. Push → draft PR → CI → iterate.
+6. **Document what you solve**: Every solved problem goes in `docs/history/`. LLMs don't carry memories — written docs are the only institutional memory.
+7. **Consult before committing**: For significant decisions, spawn expert subagents (architect, principal engineer, lead QA, PM, designer, user researcher) in parallel. See `docs/agent-instructions/08-multi-agent-consultation.md`.
 
 ## Common Commands
 

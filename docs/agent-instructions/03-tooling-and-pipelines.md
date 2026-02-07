@@ -14,14 +14,13 @@ If you perform a verification task twice, script it. All scripts live in the `sc
 
 ### GitHub Actions
 
-The CI pipeline (`.github/workflows/ci.yml`) runs on every push and PR:
+The CI pipeline (`.github/workflows/ci.yml`) runs on every push and PR. It runs 8 job types in parallel across ubuntu-latest and windows-latest (16 total jobs):
 
-1. **Matrix**: Runs on both `ubuntu-latest` and `windows-latest`
-2. **Install**: `npm ci`
-3. **Lint**: ESLint check
-4. **Test**: `npm test` with coverage reporting
-5. **Audit**: `npm audit` for security vulnerabilities
-6. **Docs Check**: Verify docs/ structure exists
+- **Unit tests**: `npm test` + `npm audit`
+- **Browser E2E tests**: 6 Playwright job types (golden-path, functional-core, functional-extended, mobile, visual-regression, new-features)
+- **Binary build**: SEA binary compilation + smoke tests
+
+See `06-ci-first-testing.md` for the full CI job map, artifact details, and debugging workflow. CI is the only authority on whether code works (see ADR-0008 for the parallelization strategy).
 
 ### Release Pipeline
 

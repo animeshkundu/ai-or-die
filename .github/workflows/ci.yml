@@ -52,7 +52,7 @@ jobs:
             playwright-report/
           retention-days: 14
 
-  test-browser-functional:
+  test-browser-functional-core:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -65,13 +65,38 @@ jobs:
       - run: npm ci
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-      - name: Run functional browser tests
-        run: npx playwright test --config e2e/playwright.config.js --project functional
+      - name: Run functional core tests
+        run: npx playwright test --config e2e/playwright.config.js --project functional-core
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-functional-${{ matrix.os }}
+          name: playwright-functional-core-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  test-browser-functional-extended:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run functional extended tests
+        run: npx playwright test --config e2e/playwright.config.js --project functional-extended
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-functional-extended-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/

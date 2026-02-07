@@ -6,7 +6,7 @@ module.exports = defineConfig({
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: 1,
+  workers: process.env.CI ? 2 : 1,
   timeout: 60000,
   expect: {
     timeout: 15000,
@@ -32,8 +32,12 @@ module.exports = defineConfig({
       testMatch: '01-golden-path.spec.js',
     },
     {
-      name: 'functional',
-      testMatch: /0[2-7]-.*\.spec\.js|09-image-paste\.spec\.js|09-background-.*\.spec\.js/,
+      name: 'functional-core',
+      testMatch: /0[2-5]-.*\.spec\.js/,
+    },
+    {
+      name: 'functional-extended',
+      testMatch: /0[6-7]-.*\.spec\.js|09-image-paste\.spec\.js|09-background-.*\.spec\.js/,
     },
     {
       name: 'mobile-iphone',

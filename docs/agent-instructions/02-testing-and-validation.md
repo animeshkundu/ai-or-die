@@ -26,14 +26,26 @@ Write tests alongside implementation, not after. The workflow:
 - Use temp directories for file system tests (see `session-store.test.js` pattern)
 - Test cross-platform behavior: path construction, command resolution, shell detection
 
+## CI-Only Testing
+
+All testing happens on GitHub Actions runners. No local test runs. Ever.
+
+- Local environments are unreliable: missing native modules, stale state, platform differences
+- CI provides fresh, reproducible, cross-platform results every time
+- E2E tests are the only true validation — if they pass on CI, the feature works
+
+The workflow: write code → push to branch → open draft PR → CI runs → read results → fix → push again.
+
+See `docs/agent-instructions/06-ci-first-testing.md` for the complete CI workflow guide, job map, and debugging playbook.
+
 ## Self-Validation
 
 Before committing, every agent must:
 
-1. Run `npm test` — all tests pass
-2. Run `npm start` — server boots without errors
-3. Run `scripts/validate.sh` (Linux) or `scripts/validate.ps1` (Windows)
-4. Verify the change doesn't break existing functionality
+1. Push to branch and open a draft PR to trigger CI
+2. Verify all CI jobs pass on both ubuntu-latest and windows-latest
+3. Check `docs/history/` for known issues if any job fails
+4. Verify the change doesn't break existing functionality (CI confirms this)
 
 ## What to Test
 
@@ -50,9 +62,9 @@ Before committing, every agent must:
 - Auth middleware behavior
 
 ### For Client Changes
-- Manual browser testing (create session, select tool, verify output)
-- Check mobile responsiveness
-- Verify WebSocket reconnection
+- E2E tests via Playwright (verified on CI, never locally)
+- Mobile viewport tests via mobile-iphone and mobile-pixel Playwright projects
+- WebSocket reconnection covered by E2E functional tests
 
 ## When Tests Fail
 
