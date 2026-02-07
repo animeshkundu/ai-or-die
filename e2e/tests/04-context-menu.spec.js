@@ -127,26 +127,40 @@ test.describe('Context menu: right-click terminal shows menu', () => {
     const menu = page.locator('[data-tid="context-menu"]');
     await expect(menu).toBeVisible();
 
-    // Use direct children to avoid querySelectorAll traversal quirks.
-    // children[0] = .ctx-icon, children[1] = text label
+    // Measure each icon container's computed width and text position
     const measurements = await menu.locator('.ctx-item').evaluateAll(items =>
       items.map(item => {
-        const textEl = item.children[1];
-        if (!textEl) return null;
-        const parentRect = item.getBoundingClientRect();
+        const icon = item.children[0]; // .ctx-icon
+        const textEl = item.children[1]; // text label
+        if (!icon || !textEl) return null;
+        const iconRect = icon.getBoundingClientRect();
         const textRect = textEl.getBoundingClientRect();
+        const iconWidth = parseFloat(getComputedStyle(icon).width);
         return {
           action: item.dataset.action,
-          relativeLeft: textRect.left - parentRect.left,
+          iconWidth,
+          iconRenderedWidth: iconRect.width,
+          textLeft: textRect.left,
+          iconLeft: iconRect.left,
         };
       }).filter(v => v !== null)
     );
 
-    // All text labels should have the same relative left offset (within 2px)
     expect(measurements.length).toBeGreaterThanOrEqual(7);
-    const firstOffset = measurements[0].relativeLeft;
+
+    // Log measurements for CI debugging
+    console.log('Context menu alignment:', JSON.stringify(measurements, null, 2));
+
+    // All icon containers should be 16px (our CSS fix)
     for (const m of measurements) {
-      expect(Math.abs(m.relativeLeft - firstOffset)).toBeLessThanOrEqual(2);
+      expect(m.iconWidth).toBeCloseTo(16, 0);
+    }
+
+    // All text labels should start at the same x position (within 2px)
+    const firstTextLeft = measurements[0].textLeft;
+    for (const m of measurements) {
+      const diff = Math.abs(m.textLeft - firstTextLeft);
+      expect(diff).toBeLessThanOrEqual(2);
     }
   });
 });
