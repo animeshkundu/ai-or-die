@@ -289,6 +289,12 @@
       if (e.key === 'Escape') {
         if (this._searchVisible) {
           this._toggleSearch();
+        } else if (this._currentView === 'editor') {
+          // Let the editor handle Escape first (e.g., close search dialog)
+          // Only close editor if no editor internal popups are open
+          if (this._editorPanel) {
+            this._editorPanel.close();
+          }
         } else if (this._currentView === 'preview') {
           this._showBrowseView();
         } else {
@@ -301,6 +307,9 @@
 
     document.body.appendChild(panel);
     this._panelEl = panel;
+
+    // Setup clipboard paste
+    this._setupClipboardPaste();
 
     // Create preview panel
     this._previewPanel = new FilePreviewPanel({
@@ -641,15 +650,60 @@
   };
 
   FileBrowserPanel.prototype._onEditRequest = function (item) {
-    // Delegate to the file editor if available
+    if (!item || !item.editable) return;
+    var self = this;
+
+    // Fetch file content first
+    this.authFetch('/api/files/content?path=' + encodeURIComponent(item.path))
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('Failed to load file');
+        return resp.json();
+      })
+      .then(function (data) {
+        self._showEditorView(item, data.content, data.hash);
+      })
+      .catch(function (err) {
+        self._statusBar.textContent = 'Failed to open editor: ' + err.message;
+      });
+  };
+
+  FileBrowserPanel.prototype._showEditorView = function (item, content, hash) {
+    var self = this;
+    this._currentView = 'editor';
+    this._selectedItem = item;
+    this._fileListEl.style.display = 'none';
+    this._previewContainer.style.display = '';
+    this._panelEl.classList.add('editor-active');
+
+    // Clear preview container and render editor
+    this._previewContainer.innerHTML = '';
+
     if (window.fileEditor && window.fileEditor.FileEditorPanel) {
-      // Editor integration will be added in Phase 1b
-      this._announceToScreenReader('Editor not yet available');
+      this._editorPanel = new window.fileEditor.FileEditorPanel({
+        authFetch: this.authFetch,
+        containerEl: this._previewContainer,
+        onClose: function () {
+          self._editorPanel = null;
+          self._showBrowseView();
+        },
+        onSave: function () {
+          self._announceToScreenReader('File saved');
+        },
+      });
+      this._editorPanel.openEditor(item.path, content, hash);
+      this._announceToScreenReader('Editing ' + item.name);
+    } else {
+      this._previewContainer.innerHTML = '<div class="fb-preview-error">Editor not available. Ace Editor may not have loaded.</div>';
     }
+
+    this._renderBreadcrumbs();
+    this._adjustTerminal();
   };
 
   FileBrowserPanel.prototype._handleBack = function () {
-    if (this._currentView === 'preview') {
+    if (this._currentView === 'editor') {
+      if (this._editorPanel) this._editorPanel.close();
+    } else if (this._currentView === 'preview') {
       this._showBrowseView();
     } else {
       this.navigateUp();
@@ -785,11 +839,26 @@
 
   FileBrowserPanel.prototype._uploadFiles = function (files) {
     var self = this;
-    var total = files.length;
+    var queue = Array.from(files);
+    var total = queue.length;
     var done = 0;
+    var skipped = 0;
 
-    files.forEach(function (file) {
-      self._statusBar.textContent = 'Uploading ' + (done + 1) + ' of ' + total + '...';
+    function uploadNext() {
+      if (done + skipped >= total) {
+        self._hideUploadProgress();
+        self._refresh();
+        var msg = done + ' uploaded';
+        if (skipped > 0) msg += ', ' + skipped + ' skipped';
+        self._statusBar.textContent = msg;
+        self._announceToScreenReader(msg);
+        return;
+      }
+
+      var file = queue[done + skipped];
+      self._showUploadProgress(done + skipped + 1, total);
+      self._statusBar.textContent = 'Uploading ' + (done + skipped + 1) + ' of ' + total + '...';
+
       var reader = new FileReader();
       reader.onload = function () {
         var base64 = reader.result.split(',')[1];
@@ -805,22 +874,156 @@
         })
           .then(function (resp) {
             if (resp.status === 409) {
-              // File exists — for now, log; overwrite UI in Phase 1b
-              self._statusBar.textContent = file.name + ' already exists';
-            } else if (!resp.ok) {
+              // File already exists — show overwrite banner
+              return self._showOverwriteBanner(file, base64, function onResolved(action) {
+                if (action === 'skip') skipped++;
+                else done++;
+                uploadNext();
+              });
+            }
+            if (!resp.ok) {
               return resp.json().then(function (err) { throw new Error(err.error); });
             }
             done++;
-            if (done === total) {
-              self._refresh();
-              self._statusBar.textContent = total + ' file' + (total > 1 ? 's' : '') + ' uploaded';
-            }
+            uploadNext();
           })
           .catch(function (err) {
             self._statusBar.textContent = 'Upload failed: ' + err.message;
+            skipped++;
+            uploadNext();
           });
       };
       reader.readAsDataURL(file);
+    }
+
+    uploadNext();
+  };
+
+  FileBrowserPanel.prototype._showOverwriteBanner = function (file, base64, onResolved) {
+    var self = this;
+    // Remove any existing banner
+    this._hideOverwriteBanner();
+
+    var banner = document.createElement('div');
+    banner.className = 'file-browser-overwrite-banner';
+    banner.setAttribute('role', 'alert');
+
+    var msg = document.createElement('span');
+    msg.className = 'fb-overwrite-msg';
+    msg.textContent = '"' + file.name + '" already exists.';
+    banner.appendChild(msg);
+
+    var actions = document.createElement('div');
+    actions.className = 'fb-overwrite-actions';
+
+    var overwriteBtn = document.createElement('button');
+    overwriteBtn.className = 'btn btn-small';
+    overwriteBtn.style.color = 'var(--status-error)';
+    overwriteBtn.textContent = 'Overwrite';
+    overwriteBtn.addEventListener('click', function () {
+      self._hideOverwriteBanner();
+      // Re-upload with overwrite=true
+      self.authFetch('/api/files/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetDir: self._currentPath,
+          fileName: file.name,
+          content: base64,
+          overwrite: true,
+        }),
+      }).then(function () {
+        onResolved('overwrite');
+      }).catch(function () {
+        onResolved('skip');
+      });
+    });
+    actions.appendChild(overwriteBtn);
+
+    var keepBothBtn = document.createElement('button');
+    keepBothBtn.className = 'btn btn-secondary btn-small';
+    var ext = file.name.lastIndexOf('.') > 0 ? file.name.slice(file.name.lastIndexOf('.')) : '';
+    var baseName = ext ? file.name.slice(0, -ext.length) : file.name;
+    var newName = baseName + ' (1)' + ext;
+    keepBothBtn.textContent = 'Keep Both \u2192 ' + newName;
+    keepBothBtn.addEventListener('click', function () {
+      self._hideOverwriteBanner();
+      self.authFetch('/api/files/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetDir: self._currentPath,
+          fileName: newName,
+          content: base64,
+          overwrite: false,
+        }),
+      }).then(function () {
+        onResolved('keepBoth');
+      }).catch(function () {
+        onResolved('skip');
+      });
+    });
+    actions.appendChild(keepBothBtn);
+
+    var skipBtn = document.createElement('button');
+    skipBtn.className = 'btn btn-secondary btn-small';
+    skipBtn.textContent = 'Skip';
+    skipBtn.addEventListener('click', function () {
+      self._hideOverwriteBanner();
+      onResolved('skip');
+    });
+    actions.appendChild(skipBtn);
+
+    banner.appendChild(actions);
+    this._fileListEl.parentNode.insertBefore(banner, this._fileListEl);
+    this._overwriteBanner = banner;
+  };
+
+  FileBrowserPanel.prototype._hideOverwriteBanner = function () {
+    if (this._overwriteBanner && this._overwriteBanner.parentNode) {
+      this._overwriteBanner.parentNode.removeChild(this._overwriteBanner);
+    }
+    this._overwriteBanner = null;
+  };
+
+  FileBrowserPanel.prototype._showUploadProgress = function (current, total) {
+    if (!this._uploadProgressBar) {
+      var bar = document.createElement('div');
+      bar.className = 'fb-upload-progress-bar';
+      this._panelEl.insertBefore(bar, this._panelEl.firstChild.nextSibling); // after resize handle
+      this._uploadProgressBar = bar;
+    }
+    var pct = total > 0 ? (current / total) * 100 : 0;
+    this._uploadProgressBar.style.width = pct + '%';
+    this._uploadProgressBar.style.display = '';
+  };
+
+  FileBrowserPanel.prototype._hideUploadProgress = function () {
+    if (this._uploadProgressBar) {
+      this._uploadProgressBar.style.display = 'none';
+      this._uploadProgressBar.style.width = '0%';
+    }
+  };
+
+  // -- Clipboard paste upload --
+
+  FileBrowserPanel.prototype._setupClipboardPaste = function () {
+    var self = this;
+    this._panelEl.addEventListener('paste', function (e) {
+      if (!self._open || self._currentView !== 'browse') return;
+      var items = e.clipboardData && e.clipboardData.items;
+      if (!items) return;
+      var imageFiles = [];
+      for (var i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf('image/') === 0) {
+          var blob = items[i].getAsFile();
+          if (blob) imageFiles.push(blob);
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        self._uploadFiles(imageFiles);
+      }
     });
   };
 
@@ -1111,19 +1314,181 @@
   };
 
   // ---------------------------------------------------------------------------
-  // TerminalPathDetector (Phase 1c, stub for now)
+  // TerminalPathDetector — right-click context menu for file paths in terminal
   // ---------------------------------------------------------------------------
+
+  // Regex patterns for file paths
+  var PATH_PATTERNS = [
+    /(?:^|\s)(\/[\w./-]+\.\w+)/,                         // Unix absolute: /path/to/file.ext
+    /(?:^|\s)(\.\/[\w./-]+)/,                              // Unix relative: ./path/to/file
+    /(?:^|\s)([A-Z]:\\[\w.\\ -]+\.\w+)/i,                 // Windows: C:\path\file.ext
+    /(?:^|\s)([\w-]+\/[\w./-]+\.\w+)/,                    // Bare relative: src/file.ext
+  ];
 
   function TerminalPathDetector(options) {
     this.fileBrowserPanel = options.fileBrowserPanel;
     this.authFetch = options.authFetch;
     this.terminal = options.terminal;
-    this._contextMenu = null;
+    this._menuEl = null;
   }
 
   TerminalPathDetector.prototype.init = function () {
-    // Will be fully implemented in Phase 1c
-    // Stub: listens for right-click on terminal
+    if (!this.terminal) return;
+    var self = this;
+
+    // Build context menu element
+    var menu = document.createElement('div');
+    menu.className = 'fb-terminal-context-menu';
+    menu.style.display = 'none';
+    menu.setAttribute('role', 'menu');
+
+    var viewItem = document.createElement('div');
+    viewItem.className = 'ctx-item';
+    viewItem.setAttribute('role', 'menuitem');
+    viewItem.innerHTML = (window.icons ? '<span class="ctx-icon">' + window.icons.file(14) + '</span>' : '') +
+      '<span>Open in File Viewer</span>';
+    menu.appendChild(viewItem);
+    this._viewItem = viewItem;
+
+    var editItem = document.createElement('div');
+    editItem.className = 'ctx-item';
+    editItem.setAttribute('role', 'menuitem');
+    editItem.innerHTML = (window.icons ? '<span class="ctx-icon">' + window.icons.edit(14) + '</span>' : '') +
+      '<span>Edit in Editor</span>';
+    menu.appendChild(editItem);
+    this._editItem = editItem;
+
+    var downloadItem = document.createElement('div');
+    downloadItem.className = 'ctx-item';
+    downloadItem.setAttribute('role', 'menuitem');
+    downloadItem.innerHTML = (window.icons ? '<span class="ctx-icon">' + window.icons.download(14) + '</span>' : '') +
+      '<span>Download</span>';
+    menu.appendChild(downloadItem);
+    this._downloadItem = downloadItem;
+
+    document.body.appendChild(menu);
+    this._menuEl = menu;
+
+    // Right-click handler on the terminal element
+    var termEl = this.terminal.element;
+    if (!termEl) return;
+
+    termEl.addEventListener('contextmenu', function (e) {
+      var selection = self.terminal.getSelection();
+      var detectedPath = self._extractPath(selection);
+
+      if (detectedPath) {
+        e.preventDefault();
+        self._showMenu(e.clientX, e.clientY, detectedPath);
+      }
+    });
+
+    // Dismiss menu on click elsewhere
+    document.addEventListener('click', function () {
+      self._hideMenu();
+    });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') self._hideMenu();
+    });
+  };
+
+  TerminalPathDetector.prototype._extractPath = function (text) {
+    if (!text || !text.trim()) return null;
+    var trimmed = text.trim();
+
+    // Strip surrounding quotes
+    if ((trimmed[0] === '"' || trimmed[0] === "'") && trimmed[trimmed.length - 1] === trimmed[0]) {
+      trimmed = trimmed.slice(1, -1);
+    }
+
+    // Check against path patterns
+    for (var i = 0; i < PATH_PATTERNS.length; i++) {
+      var match = trimmed.match(PATH_PATTERNS[i]);
+      if (match) return match[1] || match[0];
+    }
+
+    // Fallback: if it looks like a path (contains / or \ and has an extension)
+    if (/[/\\]/.test(trimmed) && /\.\w{1,10}$/.test(trimmed)) {
+      return trimmed;
+    }
+
+    return null;
+  };
+
+  TerminalPathDetector.prototype._showMenu = function (x, y, filePath) {
+    var self = this;
+    var menu = this._menuEl;
+
+    // Position the menu
+    menu.style.left = x + 'px';
+    menu.style.top = y + 'px';
+    menu.style.display = '';
+
+    // Initially show items as disabled (checking)
+    var items = menu.querySelectorAll('.ctx-item');
+    for (var i = 0; i < items.length; i++) {
+      items[i].classList.add('disabled');
+    }
+
+    // Validate the path asynchronously
+    this.authFetch('/api/files/stat?path=' + encodeURIComponent(filePath))
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('not found');
+        return resp.json();
+      })
+      .then(function (stat) {
+        // Enable items
+        for (var j = 0; j < items.length; j++) {
+          items[j].classList.remove('disabled');
+        }
+
+        // Wire click handlers
+        self._viewItem.onclick = function () {
+          self._hideMenu();
+          if (self.fileBrowserPanel) self.fileBrowserPanel.openToFile(filePath);
+        };
+        self._editItem.onclick = function () {
+          self._hideMenu();
+          if (self.fileBrowserPanel) {
+            self.fileBrowserPanel.openToFile(filePath);
+            // The edit will be triggered after preview loads
+          }
+        };
+        self._downloadItem.onclick = function () {
+          self._hideMenu();
+          window.open('/api/files/download?path=' + encodeURIComponent(filePath), '_blank');
+        };
+
+        // Hide edit for non-editable files
+        if (!stat.editable) {
+          self._editItem.style.display = 'none';
+        } else {
+          self._editItem.style.display = '';
+        }
+      })
+      .catch(function () {
+        // Path doesn't exist — disable all items
+        for (var k = 0; k < items.length; k++) {
+          items[k].classList.add('disabled');
+        }
+      });
+
+    // Ensure menu stays within viewport
+    requestAnimationFrame(function () {
+      var rect = menu.getBoundingClientRect();
+      if (rect.right > window.innerWidth) {
+        menu.style.left = (window.innerWidth - rect.width - 8) + 'px';
+      }
+      if (rect.bottom > window.innerHeight) {
+        menu.style.top = (window.innerHeight - rect.height - 8) + 'px';
+      }
+    });
+  };
+
+  TerminalPathDetector.prototype._hideMenu = function () {
+    if (this._menuEl) {
+      this._menuEl.style.display = 'none';
+    }
   };
 
   // ---------------------------------------------------------------------------

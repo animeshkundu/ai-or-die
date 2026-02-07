@@ -464,3 +464,72 @@
     font-size: var(--text-base);
   }
 }
+
+/* ============================================================
+   Terminal Path Context Menu
+   ============================================================ */
+.fb-terminal-context-menu {
+  position: fixed;
+  z-index: var(--z-popover, 3000);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-1) 0;
+  min-width: 180px;
+}
+
+.fb-terminal-context-menu .ctx-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  transition: background-color var(--duration-fast);
+}
+
+.fb-terminal-context-menu .ctx-item:hover:not(.disabled) {
+  background: var(--surface-tertiary);
+}
+
+.fb-terminal-context-menu .ctx-item.disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.fb-terminal-context-menu .ctx-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   Overwrite Banner
+   ============================================================ */
+.fb-overwrite-msg {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.fb-overwrite-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+/* ============================================================
+   Upload Progress Bar
+   ============================================================ */
+.fb-upload-progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  background: var(--accent-default);
+  transition: width var(--duration-normal) var(--ease-default);
+  z-index: 5;
+}
