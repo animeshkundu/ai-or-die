@@ -104,6 +104,70 @@ jobs:
             playwright-report/
           retention-days: 14
 
+  test-browser-visual:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run visual regression tests
+        run: npx playwright test --config e2e/playwright.config.js --project visual-regression
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-visual-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+      - name: Upload generated baselines
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: screenshot-baselines-${{ matrix.os }}
+          path: e2e/tests/**/*-snapshots/
+          retention-days: 30
+      - name: Upload screenshot diffs
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: screenshot-diffs-${{ matrix.os }}
+          path: e2e/tests/**/*-diff.png
+          retention-days: 14
+
+  test-browser-new-features:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run new feature tests
+        run: npx playwright test --config e2e/playwright.config.js --project new-features
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-new-features-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
   build-binary:
     runs-on: ${{ matrix.os }}
     strategy:

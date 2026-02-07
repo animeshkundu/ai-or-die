@@ -337,10 +337,16 @@ class ClaudeCodeWebInterface {
 
         this.fitAddon = new FitAddon.FitAddon();
         this.webLinksAddon = new WebLinksAddon.WebLinksAddon();
-        
+
         this.terminal.loadAddon(this.fitAddon);
         this.terminal.loadAddon(this.webLinksAddon);
-        
+
+        // Load search addon if available
+        if (typeof SearchAddon !== 'undefined') {
+            this.searchAddon = new SearchAddon.SearchAddon();
+            this.terminal.loadAddon(this.searchAddon);
+        }
+
         this.terminal.open(document.getElementById('terminal'));
         this.fitTerminal();
 
@@ -351,6 +357,7 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        this.setupTerminalSearch();
         this.setupTerminalContextMenu();
 
         this.terminal.onData((data) => {
@@ -709,64 +716,23 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'claude_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                // Don't auto-focus to avoid focus tracking sequences
-                // User can click to focus when ready
-                this.loadSessions(); // Refresh session list
-                // Request usage stats to start tracking session usage
-                this.requestUsageStats();
-                
-                // Update tab status to active
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
             case 'codex_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
             case 'agent_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
             case 'copilot_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
             case 'gemini_started':
+            case 'terminal_started': {
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 this.loadSessions();
                 this.requestUsageStats();
                 if (this.sessionTabManager && this.currentClaudeSessionId) {
                     this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
+                    // Extract tool type from message type (e.g. 'claude_started' → 'claude')
+                    const toolType = message.type.replace('_started', '');
+                    this.sessionTabManager.setTabToolType(this.currentClaudeSessionId, toolType === 'agent' ? 'claude' : toolType);
                 }
                 break;
-            case 'terminal_started':
-                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
-                this.hideOverlay();
-                this.loadSessions();
-                this.requestUsageStats();
-                if (this.sessionTabManager && this.currentClaudeSessionId) {
-                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                }
-                break;
+            }
                 
             case 'claude_stopped':
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} stopped\x1b[0m`);
@@ -911,25 +877,35 @@ class ClaudeCodeWebInterface {
         container.innerHTML = '';
 
         const toolMeta = {
-            claude: { icon: 'C', color: '#ff6b00', desc: 'Anthropic' },
-            codex: { icon: 'Cx', color: '#10a37f', desc: 'OpenAI' },
-            copilot: { icon: 'Cp', color: '#8b5cf6', desc: 'GitHub' },
-            gemini: { icon: 'G', color: '#4285f4', desc: 'Google' },
-            terminal: { icon: '>_', color: '#8b949e', desc: 'Shell' }
+            claude: { icon: 'C', color: '#d97706', desc: 'Anthropic AI', hint: 'Install: npm i -g @anthropic-ai/claude-code' },
+            codex: { icon: 'Cx', color: '#059669', desc: 'OpenAI Codex', hint: 'Install: npm i -g @openai/codex' },
+            copilot: { icon: 'Cp', color: '#6366f1', desc: 'GitHub Copilot', hint: 'Install: gh extension install github/gh-copilot' },
+            gemini: { icon: 'G', color: '#2563eb', desc: 'Google Gemini', hint: 'Install: npm i -g @anthropic-ai/gemini-cli' },
+            terminal: { icon: '>_', color: '#71717a', desc: 'System Shell', hint: '' }
         };
 
+        let cardIndex = 0;
         for (const [toolId, tool] of Object.entries(this.tools)) {
-            const meta = toolMeta[toolId] || { icon: '?', color: '#888', desc: '' };
+            const meta = toolMeta[toolId] || { icon: '?', color: '#888', desc: '', hint: '' };
             const card = document.createElement('div');
             card.className = 'tool-card' + (tool.available ? '' : ' disabled');
+            // Staggered fade-in animation
+            card.style.animationDelay = `${cardIndex * 60}ms`;
+            card.classList.add('tool-card-enter');
+
+            const statusText = tool.available ? 'Start' : 'Not installed';
+            const hintHtml = !tool.available && meta.hint
+                ? `<div class="tool-card-hint">${meta.hint}</div>` : '';
+
             card.innerHTML = `
                 <div class="tool-card-icon" style="background: ${meta.color}">${meta.icon}</div>
                 <div class="tool-card-info">
                     <div class="tool-card-name">${tool.alias}</div>
                     <div class="tool-card-desc">${meta.desc}</div>
+                    ${hintHtml}
                 </div>
                 <button class="btn btn-primary tool-card-btn" ${tool.available ? '' : 'disabled'}>
-                    ${tool.available ? 'Start' : 'Not installed'}
+                    ${statusText}
                 </button>
             `;
             if (tool.available) {
@@ -938,6 +914,7 @@ class ClaudeCodeWebInterface {
                 });
             }
             container.appendChild(card);
+            cardIndex++;
         }
     }
 
@@ -1024,6 +1001,82 @@ class ClaudeCodeWebInterface {
                 console.error('Error fitting terminal:', error);
             }
         }
+    }
+
+    setupTerminalSearch() {
+        const bar = document.getElementById('terminalSearchBar');
+        const input = document.getElementById('termSearchInput');
+        const countEl = document.getElementById('termSearchCount');
+        const prevBtn = document.getElementById('termSearchPrev');
+        const nextBtn = document.getElementById('termSearchNext');
+        const caseBtn = document.getElementById('termSearchCase');
+        const regexBtn = document.getElementById('termSearchRegex');
+        const closeBtn = document.getElementById('termSearchClose');
+        if (!bar || !input || !this.searchAddon) return;
+
+        let caseSensitive = false;
+        let useRegex = false;
+
+        const doSearch = (direction = 'next') => {
+            const query = input.value;
+            if (!query) { countEl.textContent = ''; return; }
+            const opts = { caseSensitive, regex: useRegex };
+            if (direction === 'prev') {
+                this.searchAddon.findPrevious(query, opts);
+            } else {
+                this.searchAddon.findNext(query, opts);
+            }
+        };
+
+        const openSearch = () => {
+            bar.style.display = 'flex';
+            input.focus();
+            input.select();
+        };
+
+        const closeSearch = () => {
+            bar.style.display = 'none';
+            input.value = '';
+            countEl.textContent = '';
+            this.searchAddon.clearDecorations();
+            this.terminal.focus();
+        };
+
+        // Ctrl+F opens search (capture phase to intercept before xterm)
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                e.preventDefault();
+                e.stopPropagation();
+                openSearch();
+            }
+        }, true);
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                doSearch(e.shiftKey ? 'prev' : 'next');
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeSearch();
+            }
+        });
+
+        input.addEventListener('input', () => doSearch('next'));
+        prevBtn.addEventListener('click', () => doSearch('prev'));
+        nextBtn.addEventListener('click', () => doSearch('next'));
+        closeBtn.addEventListener('click', () => closeSearch());
+
+        caseBtn.addEventListener('click', () => {
+            caseSensitive = !caseSensitive;
+            caseBtn.classList.toggle('active', caseSensitive);
+            doSearch('next');
+        });
+
+        regexBtn.addEventListener('click', () => {
+            useRegex = !useRegex;
+            regexBtn.classList.toggle('active', useRegex);
+            doSearch('next');
+        });
     }
 
     setupTerminalContextMenu() {
@@ -1241,7 +1294,15 @@ class ClaudeCodeWebInterface {
         document.getElementById('fontSize').value = settings.fontSize;
         document.getElementById('fontSizeValue').textContent = settings.fontSize + 'px';
         const themeSelect = document.getElementById('themeSelect');
-        if (themeSelect) themeSelect.value = settings.theme === 'light' ? 'light' : 'dark';
+        if (themeSelect) themeSelect.value = settings.theme || 'midnight';
+        const fontFamily = document.getElementById('fontFamily');
+        if (fontFamily) fontFamily.value = settings.fontFamily || "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace";
+        const cursorStyle = document.getElementById('cursorStyle');
+        if (cursorStyle) cursorStyle.value = settings.cursorStyle || 'block';
+        const cursorBlink = document.getElementById('cursorBlink');
+        if (cursorBlink) cursorBlink.checked = settings.cursorBlink ?? true;
+        const scrollback = document.getElementById('scrollback');
+        if (scrollback) scrollback.value = String(settings.scrollback || 1000);
         document.getElementById('showTokenStats').checked = settings.showTokenStats;
         document.getElementById('dangerousMode').checked = settings.dangerousMode || false;
     }
@@ -1258,8 +1319,12 @@ class ClaudeCodeWebInterface {
     loadSettings() {
         const defaults = {
             fontSize: 14,
+            fontFamily: "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace",
+            cursorStyle: 'block',
+            cursorBlink: true,
+            scrollback: 1000,
             showTokenStats: true,
-            theme: 'dark',
+            theme: 'midnight',
             dangerousMode: false
         };
         
@@ -1275,8 +1340,12 @@ class ClaudeCodeWebInterface {
     saveSettings() {
         const settings = {
             fontSize: parseInt(document.getElementById('fontSize').value),
+            fontFamily: document.getElementById('fontFamily')?.value || "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace",
+            cursorStyle: document.getElementById('cursorStyle')?.value || 'block',
+            cursorBlink: document.getElementById('cursorBlink')?.checked ?? true,
+            scrollback: parseInt(document.getElementById('scrollback')?.value || '1000'),
             showTokenStats: document.getElementById('showTokenStats').checked,
-            theme: (document.getElementById('themeSelect')?.value) || 'dark',
+            theme: (document.getElementById('themeSelect')?.value) || 'midnight',
             dangerousMode: document.getElementById('dangerousMode').checked
         };
         
@@ -1290,16 +1359,29 @@ class ClaudeCodeWebInterface {
     }
 
     applySettings(settings) {
-        // Token stats bar removed - no longer needed
-        // Apply theme (dark is default; light sets attribute)
-        if (settings.theme === 'light') {
-            document.documentElement.setAttribute('data-theme', 'light');
+        // Apply theme — 'midnight' is default (no attribute), others set data-theme
+        if (settings.theme && settings.theme !== 'midnight') {
+            document.documentElement.setAttribute('data-theme', settings.theme);
         } else {
             document.documentElement.removeAttribute('data-theme');
         }
 
+        // Apply terminal settings
         this.terminal.options.fontSize = settings.fontSize;
-        
+        if (settings.fontFamily) this.terminal.options.fontFamily = settings.fontFamily;
+        if (settings.cursorStyle) this.terminal.options.cursorStyle = settings.cursorStyle;
+        this.terminal.options.cursorBlink = settings.cursorBlink ?? true;
+        if (settings.scrollback) this.terminal.options.scrollback = settings.scrollback;
+
+        // Update terminal theme colors to match the current CSS theme
+        const style = getComputedStyle(document.documentElement);
+        this.terminal.options.theme = {
+            background: style.getPropertyValue('--terminal-bg').trim() || style.getPropertyValue('--surface-primary').trim(),
+            foreground: style.getPropertyValue('--terminal-fg').trim() || style.getPropertyValue('--text-primary').trim(),
+            cursor: style.getPropertyValue('--terminal-cursor').trim() || style.getPropertyValue('--accent-default').trim(),
+            selectionBackground: style.getPropertyValue('--terminal-selection').trim() || undefined,
+        };
+
         this.fitTerminal();
     }
 

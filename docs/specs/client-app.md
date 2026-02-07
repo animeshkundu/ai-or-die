@@ -11,9 +11,43 @@ The frontend is a single-page application served from `src/public/`. It runs ent
 | xterm.js | 5.3.0 | unpkg CDN | Terminal emulator component |
 | xterm-addon-fit | 0.8.0 | unpkg CDN | Auto-fit terminal to container |
 | xterm-addon-web-links | 0.9.0 | unpkg CDN | Clickable URLs in terminal output |
-| JetBrains Mono | -- | Google Fonts | Monospace font for terminal |
+| JetBrains Mono | -- | Google Fonts | Monospace font for terminal (fallback) |
+| MesloLGS Nerd Font | -- | jsDelivr CDN | Primary terminal font with Nerd Font glyphs |
 | Inter | -- | Google Fonts | UI font for headers, tabs, controls |
 | clipboard-handler.js | -- | Local | Keyboard shortcuts (Ctrl+C/V) and clipboard utility functions |
+
+---
+
+## Design Token System
+
+Source: `src/public/tokens.css`
+
+Three-tier architecture loaded before `style.css`:
+
+1. **Primitive tokens** — raw color/size values (e.g., `--color-gray-200`, `--space-4`)
+2. **Semantic tokens** — role-based references (e.g., `--surface-primary`, `--accent-default`)
+3. **Theme overrides** — `[data-theme="name"]` blocks override semantic tokens only
+
+### Available Themes
+
+| Theme | `data-theme` value | Default? |
+|-------|-------------------|----------|
+| Midnight | (none / omit attribute) | Yes |
+| Classic Dark | `classic-dark` | No |
+| Classic Light | `classic-light` or `light` | No |
+| Monokai | `monokai` | No |
+| Nord | `nord` | No |
+| Solarized Dark | `solarized-dark` | No |
+| Solarized Light | `solarized-light` | No |
+
+### Backward Compatibility
+
+`style.css` defines aliases mapping old variable names to new semantic tokens:
+- `--bg-primary` → `var(--surface-primary)`
+- `--accent` → `var(--accent-default)`
+- `--success` → `var(--status-success)`
+- `--error` → `var(--status-error)`
+- `--border` → `var(--border-default)`
 
 ---
 

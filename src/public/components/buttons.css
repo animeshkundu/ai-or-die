@@ -1,0 +1,245 @@
+/* buttons.css — Button variants, form groups, mode switcher, escape button */
+
+.btn-small {
+    padding: 6px 12px;
+    font-size: 12px;
+}
+
+.btn-icon {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-icon:hover {
+    color: var(--text-primary);
+    background-color: var(--bg-tertiary);
+}
+
+.btn {
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: var(--font-sans);
+    font-size: 12px;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.btn:hover:not(:disabled) {
+    background-color: var(--bg-secondary);
+    border-color: var(--border-hover);
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.btn-primary {
+    background-color: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+    background-color: var(--accent-hover);
+    border-color: var(--accent-hover);
+}
+
+.btn-secondary {
+    background-color: var(--bg-tertiary);
+    border-color: var(--border);
+}
+
+.btn-danger {
+    background-color: var(--error);
+    color: white;
+    border-color: var(--error);
+}
+
+.btn-danger:hover:not(:disabled) {
+    background-color: var(--color-red-600);
+    border-color: var(--color-red-600);
+}
+
+.btn-danger-skip {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #8b0000;
+    color: white;
+    border: 2px solid #660000;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-danger-skip:hover {
+    background-color: #a00000;
+    border-color: #800000;
+    box-shadow: 0 0 10px rgba(139, 0, 0, 0.5);
+}
+
+.btn-danger-skip svg {
+    width: 24px;
+    height: 24px;
+}
+
+.form-group {
+    margin-bottom: 16px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.form-group input {
+    width: 100%;
+    padding: 8px 12px;
+    background-color: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+}
+
+.form-group input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+    cursor: pointer;
+}
+
+/* Mode Switcher Styles */
+.mode-switcher {
+    position: fixed;
+    bottom: 80px;
+    right: 20px;
+    z-index: 1000;
+    display: none;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.mode-switcher-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 2px solid var(--border);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+    width: 56px;
+    height: 56px;
+}
+
+.mode-switcher-btn:hover {
+    background-color: var(--bg-tertiary);
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+}
+
+.mode-switcher-btn:active {
+    transform: translateY(0);
+}
+
+.mode-switcher-btn.switching {
+    animation: modeSwitchPulse 0.3s ease;
+}
+
+@keyframes modeSwitchPulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(0.95); background-color: var(--accent); }
+    100% { transform: scale(1); }
+}
+
+.mode-switcher-btn svg {
+    width: 24px;
+    height: 24px;
+    stroke: var(--accent);
+    flex-shrink: 0;
+}
+
+.mode-switcher-btn[data-mode="chat"] { border-color: var(--success); }
+.mode-switcher-btn[data-mode="code"] { border-color: var(--accent); }
+.mode-switcher-btn[data-mode="plan"] { border-color: var(--warning); }
+
+/* Escape Button Styles */
+.escape-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    background-color: var(--bg-secondary);
+    color: var(--text-primary);
+    border: 2px solid var(--error);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: all 0.3s ease;
+    width: 56px;
+    height: 56px;
+}
+
+.escape-btn:hover {
+    background-color: var(--bg-tertiary);
+    border-color: #ff4444;
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(255, 68, 68, 0.2);
+}
+
+.escape-btn:active {
+    transform: translateY(0);
+}
+
+.escape-btn.pressed {
+    animation: escapeBtnPress 0.2s ease;
+}
+
+@keyframes escapeBtnPress {
+    0% { transform: scale(1); }
+    50% { transform: scale(0.9); background-color: var(--error); }
+    100% { transform: scale(1); }
+}
+
+.escape-btn svg {
+    width: 24px;
+    height: 24px;
+    stroke: var(--error);
+    flex-shrink: 0;
+}
