@@ -123,19 +123,24 @@
             <!-- Context menu shared by main terminal and split panes -->
             <div id="termContextMenu" class="term-context-menu" style="display:none" role="menu" data-tid="context-menu">
                 <div class="ctx-item" data-action="copy" role="menuitem" tabindex="-1">
+                    <span class="ctx-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>
                     <span>Copy</span><span class="shortcut">Ctrl+C</span>
                 </div>
                 <div class="ctx-item" data-action="paste" role="menuitem" tabindex="-1">
+                    <span class="ctx-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg></span>
                     <span>Paste</span><span class="shortcut">Ctrl+V</span>
                 </div>
                 <div class="ctx-item" data-action="pastePlain" role="menuitem" tabindex="-1">
+                    <span class="ctx-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/><line x1="8" y1="12" x2="16" y2="12"/></svg></span>
                     <span>Paste as Plain Text</span>
                 </div>
                 <div class="ctx-sep" role="separator"></div>
                 <div class="ctx-item" data-action="selectAll" role="menuitem" tabindex="-1">
+                    <span class="ctx-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 12h8"/><path d="M8 8h8"/><path d="M8 16h8"/></svg></span>
                     <span>Select All</span>
                 </div>
                 <div class="ctx-item" data-action="clear" role="menuitem" tabindex="-1">
+                    <span class="ctx-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M5 6v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6"/></svg></span>
                     <span>Clear</span>
                 </div>
             </div>
