@@ -827,25 +827,35 @@ class ClaudeCodeWebInterface {
         container.innerHTML = '';
 
         const toolMeta = {
-            claude: { icon: 'C', color: '#ff6b00', desc: 'Anthropic' },
-            codex: { icon: 'Cx', color: '#10a37f', desc: 'OpenAI' },
-            copilot: { icon: 'Cp', color: '#8b5cf6', desc: 'GitHub' },
-            gemini: { icon: 'G', color: '#4285f4', desc: 'Google' },
-            terminal: { icon: '>_', color: '#8b949e', desc: 'Shell' }
+            claude: { icon: 'C', color: '#d97706', desc: 'Anthropic AI', hint: 'Install: npm i -g @anthropic-ai/claude-code' },
+            codex: { icon: 'Cx', color: '#059669', desc: 'OpenAI Codex', hint: 'Install: npm i -g @openai/codex' },
+            copilot: { icon: 'Cp', color: '#6366f1', desc: 'GitHub Copilot', hint: 'Install: gh extension install github/gh-copilot' },
+            gemini: { icon: 'G', color: '#2563eb', desc: 'Google Gemini', hint: 'Install: npm i -g @anthropic-ai/gemini-cli' },
+            terminal: { icon: '>_', color: '#71717a', desc: 'System Shell', hint: '' }
         };
 
+        let cardIndex = 0;
         for (const [toolId, tool] of Object.entries(this.tools)) {
-            const meta = toolMeta[toolId] || { icon: '?', color: '#888', desc: '' };
+            const meta = toolMeta[toolId] || { icon: '?', color: '#888', desc: '', hint: '' };
             const card = document.createElement('div');
             card.className = 'tool-card' + (tool.available ? '' : ' disabled');
+            // Staggered fade-in animation
+            card.style.animationDelay = `${cardIndex * 60}ms`;
+            card.classList.add('tool-card-enter');
+
+            const statusText = tool.available ? 'Start' : 'Not installed';
+            const hintHtml = !tool.available && meta.hint
+                ? `<div class="tool-card-hint">${meta.hint}</div>` : '';
+
             card.innerHTML = `
                 <div class="tool-card-icon" style="background: ${meta.color}">${meta.icon}</div>
                 <div class="tool-card-info">
                     <div class="tool-card-name">${tool.alias}</div>
                     <div class="tool-card-desc">${meta.desc}</div>
+                    ${hintHtml}
                 </div>
                 <button class="btn btn-primary tool-card-btn" ${tool.available ? '' : 'disabled'}>
-                    ${tool.available ? 'Start' : 'Not installed'}
+                    ${statusText}
                 </button>
             `;
             if (tool.available) {
@@ -854,6 +864,7 @@ class ClaudeCodeWebInterface {
                 });
             }
             container.appendChild(card);
+            cardIndex++;
         }
     }
 

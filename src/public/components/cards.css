@@ -30,8 +30,47 @@
 }
 
 .tool-card.disabled {
-  opacity: 0.45;
+  opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Staggered entry animation for tool cards */
+.tool-card-enter {
+  animation: toolCardFadeIn var(--duration-slow) var(--ease-out) both;
+}
+
+@keyframes toolCardFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.tool-card.disabled .tool-card-enter {
+  /* Disabled cards still animate in but stay dimmed */
+}
+
+/* Install hint for disabled tool cards */
+.tool-card-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Start prompt subtitle */
+.start-prompt-subtitle {
+  color: var(--text-secondary);
+  font-size: 14px;
+  margin-bottom: 16px;
+  line-height: 1.5;
 }
 
 .tool-card-icon {
