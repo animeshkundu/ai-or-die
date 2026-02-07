@@ -7,6 +7,7 @@ class SessionTabManager {
         this.tabOrder = []; // visual order of tabs
         this.tabHistory = []; // most recently used order
         this.notificationsEnabled = false;
+        this.idleTimeoutMs = 90000;
         this.requestNotificationPermission();
     }
 
@@ -1021,7 +1022,7 @@ class SessionTabManager {
                         }
                     }
                 }
-            }, 90000); // 90 seconds
+            }, this.idleTimeoutMs);
             
             // Keep the original 5-minute timeout for full idle state
             session.idleTimeout = setTimeout(() => {

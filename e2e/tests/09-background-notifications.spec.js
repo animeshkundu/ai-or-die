@@ -248,4 +248,71 @@ test.describe('Background session notifications', () => {
       await contextB.close();
     }
   });
+
+  test('full E2E: background session idle triggers notification toast via real timer', async ({ browser }) => {
+    // This test exercises the COMPLETE notification pipeline end-to-end:
+    // background output → session_activity → markSessionActivity → idle timer fires
+    // → sendNotification → in-app toast appears
+    const contextA = await browser.newContext();
+    const contextB = await browser.newContext();
+    const pageA = await contextA.newPage();
+    const pageB = await contextB.newPage();
+
+    try {
+      setupPageCapture(pageA);
+      setupPageCapture(pageB);
+
+      await pageA.goto(url);
+      await pageB.goto(url);
+      await waitForAppReady(pageA);
+      await waitForAppReady(pageB);
+      await waitForTerminalCanvas(pageA);
+      await waitForTerminalCanvas(pageB);
+
+      // Client A: session 1 with terminal
+      const session1 = await createSessionViaApi(port, 'E2E Notify S1');
+      await joinSessionAndStartTerminal(pageA, session1);
+
+      // Client B: session 2 with terminal + session 1 as background tab
+      const session2 = await createSessionViaApi(port, 'E2E Notify S2');
+      await joinSessionAndStartTerminal(pageB, session2);
+
+      await pageB.evaluate(async (sid) => {
+        window.app.sessionTabManager.addTab(sid, 'E2E Notify S1', 'idle');
+      }, session1);
+
+      // Override idle timeout to 3 seconds on Client B for fast testing
+      await pageB.evaluate(() => {
+        window.app.sessionTabManager.idleTimeoutMs = 3000;
+      });
+
+      // Client A types echo command → produces output → server sends session_activity
+      const marker = `E2E_NOTIFY_${Date.now()}`;
+      await typeInTerminal(pageA, `echo ${marker}`);
+      await pressKey(pageA, 'Enter');
+      await waitForTerminalText(pageA, marker, 15000);
+
+      // Wait for: session_activity propagation (~1s) + idle timer (3s) + buffer (2s)
+      await pageB.waitForTimeout(6000);
+
+      // Assert: in-app toast notification appeared on Client B
+      const toastInfo = await pageB.evaluate(() => {
+        const toast = document.querySelector('.mobile-notification');
+        return toast ? { exists: true, text: toast.textContent } : { exists: false, text: '' };
+      });
+
+      expect(toastInfo.exists).toBe(true);
+      expect(toastInfo.text).toContain('E2E Notify S1');
+
+      // Assert: background tab has unread indicator
+      const hasUnread = await pageB.evaluate((sid) => {
+        const tab = window.app.sessionTabManager.tabs.get(sid);
+        return tab ? tab.classList.contains('has-unread') : false;
+      }, session1);
+      expect(hasUnread).toBe(true);
+    } finally {
+      await contextA.close();
+      await contextB.close();
+    }
+  });
 });
