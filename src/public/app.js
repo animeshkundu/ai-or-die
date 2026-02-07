@@ -775,21 +775,20 @@ class ClaudeCodeWebInterface {
             }
                 
             case 'claude_stopped':
-                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} stopped\x1b[0m`);
-                // Show start prompt to allow restarting Claude in this session
-                this.showOverlay('startPrompt');
-                this.loadSessions(); // Refresh session list
-                break;
             case 'codex_stopped':
-                this.terminal.writeln(`\r\n\x1b[33mCodex Code stopped\x1b[0m`);
-                this.showOverlay('startPrompt');
-                this.loadSessions();
-                break;
             case 'agent_stopped':
-                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('agent')} stopped\x1b[0m`);
+            case 'copilot_stopped':
+            case 'gemini_stopped':
+            case 'terminal_stopped': {
+                const stoppedTool = message.type.replace('_stopped', '');
+                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias(stoppedTool)} stopped\x1b[0m`);
                 this.showOverlay('startPrompt');
                 this.loadSessions();
+                if (this.sessionTabManager && this.currentClaudeSessionId) {
+                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'idle');
+                }
                 break;
+            }
                 
             case 'output':
                 // Filter out focus tracking sequences (^[[I and ^[[O)
