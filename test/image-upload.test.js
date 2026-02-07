@@ -16,7 +16,16 @@ const TINY_PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 function connectWs(port) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-    ws.on('open', () => resolve(ws));
+    // Listen for the 'connected' message BEFORE open resolves,
+    // because the server sends it immediately on connection and
+    // it can arrive before our waitForMessage listener is attached.
+    ws.on('message', function onFirstMessage(data) {
+      const msg = JSON.parse(data);
+      if (msg.type === 'connected') {
+        ws.removeListener('message', onFirstMessage);
+        resolve(ws);
+      }
+    });
     ws.on('error', reject);
   });
 }
@@ -62,7 +71,6 @@ describe('Image upload WebSocket protocol', function () {
   it('should accept a valid PNG upload and write file to disk', async function () {
     this.timeout(15000);
     const ws = await connectWs(port);
-    await waitForMessage(ws, 'connected');
 
     // Create session
     send(ws, { type: 'create_session', name: 'img-test' });
@@ -96,7 +104,6 @@ describe('Image upload WebSocket protocol', function () {
   it('should reject oversized images', async function () {
     this.timeout(15000);
     const ws = await connectWs(port);
-    await waitForMessage(ws, 'connected');
 
     send(ws, { type: 'create_session', name: 'img-test-big' });
     await waitForMessage(ws, 'session_created');
@@ -120,7 +127,6 @@ describe('Image upload WebSocket protocol', function () {
   it('should reject unsupported MIME types', async function () {
     this.timeout(15000);
     const ws = await connectWs(port);
-    await waitForMessage(ws, 'connected');
 
     send(ws, { type: 'create_session', name: 'img-test-mime' });
     await waitForMessage(ws, 'session_created');
@@ -142,7 +148,6 @@ describe('Image upload WebSocket protocol', function () {
   it('should reject SVG uploads', async function () {
     this.timeout(15000);
     const ws = await connectWs(port);
-    await waitForMessage(ws, 'connected');
 
     send(ws, { type: 'create_session', name: 'img-test-svg' });
     await waitForMessage(ws, 'session_created');
@@ -163,7 +168,6 @@ describe('Image upload WebSocket protocol', function () {
   it('should reject upload without active session', async function () {
     this.timeout(15000);
     const ws = await connectWs(port);
-    await waitForMessage(ws, 'connected');
     // Don't create/join a session
 
     send(ws, {
@@ -183,7 +187,6 @@ describe('Image upload WebSocket protocol', function () {
   it('should clean up temp files when session is deleted', async function () {
     this.timeout(15000);
     const ws = await connectWs(port);
-    await waitForMessage(ws, 'connected');
 
     send(ws, { type: 'create_session', name: 'img-cleanup-test' });
     const created = await waitForMessage(ws, 'session_created');
@@ -216,7 +219,6 @@ describe('Image upload WebSocket protocol', function () {
   it('should create .gitignore in temp directory', async function () {
     this.timeout(15000);
     const ws = await connectWs(port);
-    await waitForMessage(ws, 'connected');
 
     send(ws, { type: 'create_session', name: 'img-gitignore-test' });
     await waitForMessage(ws, 'session_created');
@@ -244,7 +246,6 @@ describe('Image upload WebSocket protocol', function () {
   it('should enforce rate limiting', async function () {
     this.timeout(30000);
     const ws = await connectWs(port);
-    await waitForMessage(ws, 'connected');
 
     send(ws, { type: 'create_session', name: 'img-rate-test' });
     await waitForMessage(ws, 'session_created');
@@ -278,7 +279,6 @@ describe('Image upload WebSocket protocol', function () {
   it('should map MIME types to correct extensions', async function () {
     this.timeout(20000);
     const ws = await connectWs(port);
-    await waitForMessage(ws, 'connected');
 
     send(ws, { type: 'create_session', name: 'img-ext-test' });
     await waitForMessage(ws, 'session_created');
