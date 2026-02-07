@@ -61,8 +61,11 @@
     <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
 </head>
 <body>
-    <div id="app">
-        
+    <a href="#terminal" class="skip-to-content">Skip to terminal</a>
+    <div id="app" role="application" aria-label="ai-or-die terminal interface">
+        <!-- Live region for screen reader announcements -->
+        <div id="srAnnounce" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+
         <!-- Session Tabs Bar -->
         <div class="session-tabs-bar" id="sessionTabsBar" data-tid="session-tabs-bar">
             <div class="tabs-section">
@@ -104,7 +107,7 @@
         <div class="mobile-menu" id="mobileMenu">
             <div class="mobile-menu-header">
                 <h2><span class="icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 10h.01M16 10h.01M8 16c1.333-1 2.667-1 4 0 1.333 1 2.667 1 4 0"/></svg></span> <span id="mobileMenuTitle">ai-or-die</span></h2>
-                <button class="close-menu-btn" id="closeMenuBtn">&times;</button>
+                <button class="close-menu-btn" id="closeMenuBtn" aria-label="Close menu">&times;</button>
             </div>
             <div class="mobile-menu-content">
                 <button id="sessionsBtnMobile" class="mobile-menu-btn">Sessions</button>
@@ -188,7 +191,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>Settings</h2>
-                    <button class="close-btn" id="closeSettingsBtn">&times;</button>
+                    <button class="close-btn" id="closeSettingsBtn" aria-label="Close settings">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div class="setting-group">
@@ -268,7 +271,7 @@
                         </span>
                         Claude's Plan
                     </h2>
-                    <button class="close-btn" id="closePlanBtn" title="Close">&times;</button>
+                    <button class="close-btn" id="closePlanBtn" title="Close" aria-label="Close plan">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div class="plan-status" id="planStatus">
@@ -305,7 +308,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>Create New Session</h2>
-                    <button class="close-btn" id="closeNewSessionBtn">&times;</button>
+                    <button class="close-btn" id="closeNewSessionBtn" aria-label="Close new session dialog">&times;</button>
                 </div>
                 <div class="modal-body">
                     <div class="form-group">
@@ -380,7 +383,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2>Sessions</h2>
-                <button class="modal-close" id="closeMobileSessionsModal">&times;</button>
+                <button class="modal-close" id="closeMobileSessionsModal" aria-label="Close sessions">&times;</button>
             </div>
             <div class="modal-body">
                 <div id="mobileSessionList" class="session-list">
