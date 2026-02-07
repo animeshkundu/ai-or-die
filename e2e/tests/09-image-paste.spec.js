@@ -7,6 +7,7 @@ const {
   attachFailureArtifacts,
   joinSessionAndStartTerminal,
   focusTerminal,
+  readTerminalContent,
 } = require('../helpers/terminal-helpers');
 
 // Minimal 1x1 red PNG encoded as base64 for clipboard tests
@@ -154,6 +155,35 @@ test.describe('Image paste: preview modal and upload', () => {
 
     // Modal should close after the image is processed
     await expect(modal).not.toBeVisible({ timeout: 5000 });
+
+    // Verify the server responded with image_upload_complete via WebSocket
+    const uploadComplete = page._wsMessages.find(
+      m => m.dir === 'recv' && m.type === 'image_upload_complete'
+    );
+    expect(uploadComplete).toBeTruthy();
+    expect(uploadComplete.filePath).toBeTruthy();
+    expect(uploadComplete.filePath).toContain('.claude-images');
+
+    // Wait for the file path to be injected into the terminal
+    await page.waitForTimeout(3000);
+
+    // Read the terminal buffer to find the injected path
+    const terminalContent = await readTerminalContent(page);
+
+    // Verify the path was injected with .claude-images directory
+    expect(terminalContent).toContain('.claude-images/');
+    expect(terminalContent).toContain('.png"');  // quoted path with .png extension
+
+    // Verify forward slashes (no backslashes in the path)
+    const pathMatch = terminalContent.match(/"([^"]+\.claude-images[^"]*\.png)"/);
+    expect(pathMatch).toBeTruthy();
+    if (pathMatch) {
+      expect(pathMatch[1]).not.toContain('\\');
+      expect(pathMatch[1]).toContain('/');
+    }
+
+    // Verify caption was included in the terminal input
+    expect(terminalContent).toContain('What is this?');
   });
 
   test('Close button (x) dismisses the preview modal', async ({ page, context }) => {
@@ -194,5 +224,83 @@ test.describe('Image paste: preview modal and upload', () => {
 
     // Clean up
     await page.click('#cancelImageBtn');
+  });
+
+  test('Complete flow: paste, upload, file on disk, path in terminal', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    const sessionId = await setupTerminalPage(page);
+
+    await writeImageToClipboard(page);
+    await focusTerminal(page);
+    await page.keyboard.press('Control+v');
+
+    const modal = page.locator('#imagePreviewModal');
+    await expect(modal).toBeVisible({ timeout: 5000 });
+
+    await page.fill('.image-preview-caption', 'Describe this image');
+    await page.click('#sendImageBtn');
+    await expect(modal).not.toBeVisible({ timeout: 5000 });
+
+    // Verify the WebSocket image_upload message was sent by the client
+    const uploadSent = page._wsMessages.find(
+      m => m.dir === 'sent' && m.type === 'image_upload'
+    );
+    expect(uploadSent).toBeTruthy();
+    expect(uploadSent.base64).toBeTruthy();
+    expect(uploadSent.mimeType).toBe('image/png');
+
+    // Verify the server responded with image_upload_complete
+    const uploadComplete = page._wsMessages.find(
+      m => m.dir === 'recv' && m.type === 'image_upload_complete'
+    );
+    expect(uploadComplete).toBeTruthy();
+    expect(uploadComplete.filePath).toBeTruthy();
+    expect(uploadComplete.mimeType).toBe('image/png');
+    expect(uploadComplete.size).toBeGreaterThan(0);
+
+    // Verify no image_upload_error was received
+    const uploadError = page._wsMessages.find(
+      m => m.dir === 'recv' && m.type === 'image_upload_error'
+    );
+    expect(uploadError).toBeFalsy();
+
+    // The server returned an absolute file path; verify it points to .claude-images
+    const serverPath = uploadComplete.filePath;
+    expect(serverPath).toContain('.claude-images');
+    expect(serverPath).toMatch(/\.png$/);
+
+    // Verify the file actually exists on disk via the server API
+    const fs = require('fs');
+    expect(fs.existsSync(serverPath)).toBe(true);
+    const stat = fs.statSync(serverPath);
+    expect(stat.size).toBeGreaterThan(0);
+
+    // Wait for the path to be injected into the terminal
+    await page.waitForTimeout(3000);
+
+    // Read terminal content to verify the path was injected
+    const terminalContent = await readTerminalContent(page);
+
+    // Path should be in terminal, quoted, with forward slashes
+    expect(terminalContent).toContain('.claude-images/');
+    expect(terminalContent).toContain('.png"');
+
+    // Extract the full path from terminal and verify formatting
+    const pathMatch = terminalContent.match(/"([^"]*\.claude-images[^"]*\.png)"/);
+    expect(pathMatch).toBeTruthy();
+    if (pathMatch) {
+      // Must use forward slashes (cross-platform normalization)
+      expect(pathMatch[1]).not.toContain('\\');
+      expect(pathMatch[1]).toContain('/');
+    }
+
+    // Verify caption text was included alongside the path
+    expect(terminalContent).toContain('Describe this image');
+
+    // Verify the terminal input message was sent via WebSocket
+    const inputMsg = page._wsMessages.find(
+      m => m.dir === 'sent' && m.type === 'input' && typeof m.data === 'string' && m.data.includes('.claude-images')
+    );
+    expect(inputMsg).toBeTruthy();
   });
 });
