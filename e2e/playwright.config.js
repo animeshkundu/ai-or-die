@@ -8,7 +8,14 @@ module.exports = defineConfig({
   retries: process.env.CI ? 1 : 0,
   workers: 1,
   timeout: 60000,
-  expect: { timeout: 15000 },
+  expect: {
+    timeout: 15000,
+    toHaveScreenshot: {
+      maxDiffPixelRatio: 0.01,
+      threshold: 0.2,
+      animations: 'disabled',
+    },
+  },
   reporter: process.env.CI ? [['github'], ['html', { open: 'never' }]] : 'list',
   use: {
     browserName: 'chromium',
@@ -37,6 +44,16 @@ module.exports = defineConfig({
       name: 'mobile-pixel',
       testMatch: '08-mobile-portrait.spec.js',
       use: { ...devices['Pixel 7'] },
+    },
+    {
+      name: 'visual-regression',
+      testMatch: '09-visual-regression.spec.js',
+      use: {
+        viewport: { width: 1280, height: 720 },
+        launchOptions: {
+          args: ['--font-render-hinting=none', '--disable-font-subpixel-positioning'],
+        },
+      },
     },
   ],
 });
