@@ -48,6 +48,7 @@ class ClaudeCodeWebServer {
       customCostLimit: parseFloat(process.env.CLAUDE_COST_LIMIT || options.customCostLimit || 50.00)
     });
     this.autoSaveInterval = null;
+    this.activityBroadcastTimestamps = new Map(); // sessionId -> last broadcast timestamp
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
     // Commands dropdown removed
@@ -385,6 +386,7 @@ class ClaudeCodeWebServer {
       this.cleanupSessionImages(session);
 
       this.claudeSessions.delete(sessionId);
+      this.activityBroadcastTimestamps.delete(sessionId);
 
       // Save sessions after deletion — await to ensure persistence
       await this.saveSessionsToDisk();
@@ -1054,6 +1056,13 @@ class ClaudeCodeWebServer {
             currentSession.outputBuffer.shift();
           }
           this.broadcastToSession(sessionId, { type: 'output', data });
+          // Notify non-joined connections about activity (throttled to 1/sec)
+          const now = Date.now();
+          const lastBroadcast = this.activityBroadcastTimestamps.get(sessionId) || 0;
+          if (now - lastBroadcast > 1000) {
+            this.activityBroadcastTimestamps.set(sessionId, now);
+            this.broadcastSessionActivity(sessionId, 'session_activity');
+          }
         },
         onExit: (code, signal) => {
           const currentSession = this.claudeSessions.get(sessionId);
@@ -1062,6 +1071,8 @@ class ClaudeCodeWebServer {
             currentSession.agent = null;
           }
           this.broadcastToSession(sessionId, { type: 'exit', code, signal });
+          this.activityBroadcastTimestamps.delete(sessionId);
+          this.broadcastSessionActivity(sessionId, 'session_exit', { code, signal });
         },
         onError: (error) => {
           const currentSession = this.claudeSessions.get(sessionId);
@@ -1070,6 +1081,7 @@ class ClaudeCodeWebServer {
             currentSession.agent = null;
           }
           this.broadcastToSession(sessionId, { type: 'error', message: error.message });
+          this.broadcastSessionActivity(sessionId, 'session_error');
         },
         ...options
       });
@@ -1085,6 +1097,7 @@ class ClaudeCodeWebServer {
         type: `${toolName}_started`,
         sessionId: sessionId
       });
+      this.broadcastSessionActivity(sessionId, 'session_started', { agent: toolName });
 
     } catch (error) {
       if (this.dev) {
@@ -1111,6 +1124,8 @@ class ClaudeCodeWebServer {
     session.agent = null;
     session.lastActivity = new Date();
     this.broadcastToSession(sessionId, { type: `${agentType}_stopped` });
+    this.activityBroadcastTimestamps.delete(sessionId);
+    this.broadcastSessionActivity(sessionId, 'session_stopped', { agent: agentType });
   }
 
   sendToWebSocket(ws, data) {
@@ -1126,11 +1141,24 @@ class ClaudeCodeWebServer {
     session.connections.forEach(wsId => {
       const wsInfo = this.webSocketConnections.get(wsId);
       // Double-check that this WebSocket is actually part of this session
-      if (wsInfo && 
-          wsInfo.claudeSessionId === claudeSessionId && 
+      if (wsInfo &&
+          wsInfo.claudeSessionId === claudeSessionId &&
           wsInfo.ws.readyState === WebSocket.OPEN) {
         this.sendToWebSocket(wsInfo.ws, data);
       }
+    });
+  }
+
+  // Sends a lightweight event to all WebSocket connections that are NOT joined
+  // to the specified session. This enables clients to track activity in background
+  // sessions for notification purposes without receiving full terminal output.
+  broadcastSessionActivity(sessionId, eventType, extraData = {}) {
+    const session = this.claudeSessions.get(sessionId);
+    const sessionName = session ? session.name : '';
+    this.webSocketConnections.forEach((wsInfo, wsId) => {
+      if (wsInfo.claudeSessionId === sessionId) return;
+      if (wsInfo.ws.readyState !== WebSocket.OPEN) return;
+      this.sendToWebSocket(wsInfo.ws, { type: eventType, sessionId, sessionName, ...extraData });
     });
   }
 

@@ -891,6 +891,49 @@ class ClaudeCodeWebInterface {
                 );
                 break;
                 
+            // Background session activity events (from broadcastSessionActivity)
+            // These handlers must never touch this.terminal or this.showOverlay
+            case 'session_activity':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    this.sessionTabManager.markSessionActivity(message.sessionId, true, '');
+                }
+                break;
+
+            case 'session_exit':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    if (message.code !== 0) {
+                        this.sessionTabManager.markSessionError(message.sessionId, true);
+                    }
+                    this.sessionTabManager.updateTabStatus(message.sessionId, 'idle');
+                }
+                this.loadSessions();
+                break;
+
+            case 'session_error':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    this.sessionTabManager.markSessionError(message.sessionId, true);
+                }
+                break;
+
+            case 'session_started':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    this.sessionTabManager.updateTabStatus(message.sessionId, 'active');
+                }
+                this.loadSessions();
+                break;
+
+            case 'session_stopped':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    this.sessionTabManager.updateTabStatus(message.sessionId, 'idle');
+                }
+                this.loadSessions();
+                break;
+
             default:
                 console.log('Unknown message type:', message.type);
         }

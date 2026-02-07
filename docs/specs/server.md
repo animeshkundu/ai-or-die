@@ -37,6 +37,7 @@ new ClaudeCodeWebServer(options)
 | `sessionStore` | `SessionStore` | Persistence layer for session data |
 | `usageReader` | `UsageReader` | Reads JSONL usage logs from `~/.claude/projects/` |
 | `usageAnalytics` | `UsageAnalytics` | Calculates burn rate, predictions, plan limits |
+| `activityBroadcastTimestamps` | `Map<string, number>` | Per-session throttle timestamps for activity broadcasts |
 | `selectedWorkingDir` | string \| null | Currently selected working directory via folder browser |
 | `baseFolder` | string | `process.cwd()` at startup -- root for path validation |
 | `isShuttingDown` | boolean | Prevents duplicate shutdown sequences |
@@ -250,10 +251,17 @@ All messages are JSON. The `type` field determines the handler.
 | `info` | Informational message (e.g., "No agent is running"). |
 | `pong` | Response to `ping`. |
 | `usage_update` | Usage statistics payload (see Usage Analytics spec). |
+| `session_activity` | Lightweight notification sent to connections NOT joined to the session, indicating new output. Fields: `sessionId`, `sessionName`. Throttled to 1/second per session. |
+| `session_exit` | Sent to non-joined connections when agent exits. Fields: `sessionId`, `sessionName`, `code`, `signal`. |
+| `session_error` | Sent to non-joined connections on error. Fields: `sessionId`, `sessionName`. |
+| `session_started` | Sent to non-joined connections when a tool starts. Fields: `sessionId`, `sessionName`, `agent`. |
+| `session_stopped` | Sent to non-joined connections when a tool stops. Fields: `sessionId`, `sessionName`, `agent`. |
 
 ### Broadcasting
 
 `broadcastToSession(sessionId, data)` iterates the session's `connections` Set, verifies each WebSocket is open and belongs to the correct session, then sends the JSON-serialized message.
+
+`broadcastSessionActivity(sessionId, eventType, extraData)` sends a lightweight event to all WebSocket connections that are NOT joined to the specified session. This enables clients to track activity in background sessions for notification purposes without receiving full terminal output. Events use a `session_` prefix to distinguish cross-session events from in-session events (which are unprefixed like `output`, `exit`). The `session_activity` event is throttled to at most once per second per session to avoid flooding during high-output scenarios.
 
 ---
 
