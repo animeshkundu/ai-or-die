@@ -98,4 +98,54 @@ test.describe('Context menu: right-click terminal shows menu', () => {
     await page.keyboard.press('Escape');
     await expect(menu).not.toBeVisible();
   });
+
+  test('all menu items have SVG icons', async ({ page }) => {
+    await setupTerminalPage(page);
+
+    // Open context menu
+    const terminalArea = page.locator('[data-tid="terminal"] .xterm-screen, #terminal .xterm-screen').first();
+    await terminalArea.click({ button: 'right', position: { x: 100, y: 50 } });
+
+    const menu = page.locator('[data-tid="context-menu"]');
+    await expect(menu).toBeVisible();
+
+    // Every .ctx-item should have a .ctx-icon containing an <svg>
+    const actions = ['copy', 'paste', 'pastePlain', 'pasteImage', 'attachImage', 'selectAll', 'clear'];
+    for (const action of actions) {
+      const icon = menu.locator(`[data-action="${action}"] .ctx-icon svg`);
+      await expect(icon).toBeAttached();
+    }
+  });
+
+  test('icon containers are consistent width for text alignment', async ({ page }) => {
+    await setupTerminalPage(page);
+
+    // Open context menu
+    const terminalArea = page.locator('[data-tid="terminal"] .xterm-screen, #terminal .xterm-screen').first();
+    await terminalArea.click({ button: 'right', position: { x: 100, y: 50 } });
+
+    const menu = page.locator('[data-tid="context-menu"]');
+    await expect(menu).toBeVisible();
+
+    // Verify all icon containers render at consistent width and position
+    const iconData = await menu.locator('.ctx-item .ctx-icon').evaluateAll(icons =>
+      icons.map(icon => {
+        const rect = icon.getBoundingClientRect();
+        return { width: rect.width, left: rect.left };
+      })
+    );
+
+    expect(iconData.length).toBeGreaterThanOrEqual(7);
+
+    // All icons should be 16px wide (enforced by CSS min-width)
+    for (const icon of iconData) {
+      expect(icon.width).toBeCloseTo(16, 0);
+    }
+
+    // All icons should be at the same horizontal position
+    const firstLeft = iconData[0].left;
+    for (const icon of iconData) {
+      expect(Math.abs(icon.left - firstLeft)).toBeLessThanOrEqual(1);
+    }
+  });
 });
