@@ -26,7 +26,7 @@ module.exports = defineConfig({
     },
     {
       name: 'functional',
-      testMatch: /0[2-9]-.*\.spec\.js/,
+      testMatch: /0[2-79]-.*\.spec\.js/,
     },
     {
       name: 'mobile-iphone',
