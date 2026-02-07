@@ -44,7 +44,8 @@ class SessionStore {
                     cacheTokens: 0,
                     totalCost: 0,
                     models: {}
-                }
+                },
+                tempImages: Array.isArray(session.tempImages) ? session.tempImages : []
             }));
 
             const data = {

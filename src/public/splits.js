@@ -59,6 +59,27 @@ class Split {
             }
         });
 
+        // Attach image handler to split terminal
+        const terminalContainer = wrapper;
+        if (window.imageHandler) {
+            this._imageHandler = window.imageHandler.attachImageHandler(
+                this.terminal, terminalContainer, {
+                    onImageReady: (imageData) => {
+                        this._pendingImageCaption = imageData.caption;
+                        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                            this.socket.send(JSON.stringify({
+                                type: 'image_upload',
+                                base64: imageData.base64,
+                                mimeType: imageData.mimeType,
+                                fileName: imageData.fileName || 'pasted-image.png',
+                                caption: imageData.caption || ''
+                            }));
+                        }
+                    }
+                }
+            );
+        }
+
         // Setup terminal input handler
         this.terminal.onData((data) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -158,6 +179,34 @@ class Split {
             case 'error':
                 this.terminal.write(`\r\n\x1b[31mError: ${msg.message}\x1b[0m\r\n`);
                 break;
+
+            case 'image_upload_complete': {
+                const { filePath } = msg;
+                const caption = this._pendingImageCaption || '';
+                const normalizedPath = filePath.replace(/\\/g, '/');
+                const quotedPath = '"' + normalizedPath + '"';
+                const inputText = caption ? caption + ' ' + quotedPath : quotedPath;
+                let normalized = window.attachClipboardHandler
+                    ? window.attachClipboardHandler.normalizeLineEndings(inputText)
+                    : inputText;
+                if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+                    normalized = window.attachClipboardHandler
+                        ? window.attachClipboardHandler.wrapBracketedPaste(normalized)
+                        : normalized;
+                }
+                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    this.socket.send(JSON.stringify({ type: 'input', data: normalized }));
+                }
+                this._pendingImageCaption = null;
+                break;
+            }
+
+            case 'image_upload_error': {
+                if (this.terminal) {
+                    this.terminal.write('\r\n\x1b[31m[Image upload error] ' + msg.message + '\x1b[0m\r\n');
+                }
+                break;
+            }
         }
     }
 

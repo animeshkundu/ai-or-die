@@ -48,6 +48,8 @@ test.describe('Context menu: right-click terminal shows menu', () => {
     await expect(menu.locator('[data-action="copy"]')).toBeVisible();
     await expect(menu.locator('[data-action="paste"]')).toBeVisible();
     await expect(menu.locator('[data-action="pastePlain"]')).toBeVisible();
+    await expect(menu.locator('[data-action="pasteImage"]')).toBeVisible();
+    await expect(menu.locator('[data-action="attachImage"]')).toBeVisible();
     await expect(menu.locator('[data-action="selectAll"]')).toBeVisible();
     await expect(menu.locator('[data-action="clear"]')).toBeVisible();
   });

@@ -388,3 +388,13 @@ A shared `#termContextMenu` element lives in `<main>` (not inside the terminal w
 **Split pane support:** The context menu uses `resolveTerminal(target)` to determine which terminal (main or split pane) triggered the right-click, and operates on that terminal instance.
 
 **Error handling:** Clipboard API failures show a toast notification ("Clipboard access denied. Use Ctrl+V to paste.") that auto-dismisses after 3 seconds.
+
+---
+
+## ImageHandler
+
+Source: `src/public/image-handler.js`
+
+Handles image paste, drag-and-drop, and file picker input for uploading images to the server and injecting their file paths into the terminal. Images are sent as base64 over the WebSocket `image_upload` message, written to a server-side temp directory, and the returned path is injected into the terminal as bracketed paste text. The module also adds "Paste Image" and "Attach Image" items to the context menu and an "Attach Image" button to the toolbar. A preview modal is shown before upload for confirmation.
+
+See the [Image Paste Specification](image-paste.md) for the full protocol, security constraints, rate limits, and cleanup behavior.
