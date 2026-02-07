@@ -50,6 +50,14 @@ class Split {
         
         this.terminal.loadAddon(this.fitAddon);
         this.terminal.loadAddon(this.webLinksAddon);
+
+        // Load Unicode11 addon for correct Nerd Font / powerline glyph widths
+        if (typeof Unicode11Addon !== 'undefined') {
+            const unicode11 = new Unicode11Addon.Unicode11Addon();
+            this.terminal.loadAddon(unicode11);
+            this.terminal.unicode.activeVersion = '11';
+        }
+
         this.terminal.open(terminalDiv);
 
         // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
