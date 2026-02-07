@@ -166,32 +166,38 @@ test.describe('Nerd Font rendering infrastructure', () => {
     // Write directly to the terminal (bypassing the shell) so we control
     // exactly what characters land in the buffer. This tests xterm's write
     // path and Unicode11 width calculation without shell echo interference.
+    //
+    // Use ESC[2J ESC[H to clear screen and move cursor to 0,0 first,
+    // so cursor position is deterministic regardless of shell prompt state.
     const result = await page.evaluate(() => {
-      const term = window.app.terminal;
+      return new Promise((resolve) => {
+        const term = window.app.terminal;
 
-      // Save cursor position, move to a known location
-      const startRow = term.buffer.active.cursorY;
+        // Clear screen and move cursor to origin (0,0)
+        term.write('\x1b[2J\x1b[H', () => {
+          const startX = term.buffer.active.cursorX; // should be 0
 
-      // Write a newline to get a fresh line, then our test string
-      // \ue0b0 = powerline right arrow (1 cell)
-      // \u4e16 = CJK "世" (2 cells with Unicode 11)
-      term.write('\r\n');
-      term.write('AA\ue0b0BB\u4e16CC');
+          // Write test string with powerline glyph and CJK character:
+          // \ue0b0 = powerline right arrow (1 cell)
+          // \u4e16 = CJK "世" (2 cells with Unicode 11)
+          term.write('AA\ue0b0BB\u4e16CC', () => {
+            const endX = term.buffer.active.cursorX;
+            const delta = endX - startX;
 
-      // Read cursor X — should be at column: 2+1+2+2+2 = 9
-      // AA(2) + powerline(1) + BB(2) + 世(2) + CC(2) = 9
-      const cursorX = term.buffer.active.cursorX;
+            // Read back the line from the buffer
+            const line = term.buffer.active.getLine(term.buffer.active.cursorY);
+            const text = line ? line.translateToString(true) : '';
 
-      // Also read back the line from the buffer to verify content
-      const line = term.buffer.active.getLine(term.buffer.active.cursorY);
-      const text = line ? line.translateToString(true) : '';
-
-      return { cursorX, text };
+            resolve({ startX, endX, delta, text });
+          });
+        });
+      });
     });
 
-    // Cursor should be at column 9:
+    // Cursor should advance by exactly 9 cells:
     // 'A'(1) + 'A'(1) + '\ue0b0'(1) + 'B'(1) + 'B'(1) + '世'(2) + 'C'(1) + 'C'(1) = 9
-    expect(result.cursorX).toBe(9);
+    expect(result.startX).toBe(0);
+    expect(result.delta).toBe(9);
     // Buffer text should contain our characters
     expect(result.text).toContain('AA');
     expect(result.text).toContain('BB');
