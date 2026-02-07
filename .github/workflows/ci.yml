@@ -77,6 +77,33 @@ jobs:
             playwright-report/
           retention-days: 14
 
+  test-browser-mobile:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run mobile portrait tests (iPhone 14)
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-iphone
+      - name: Run mobile portrait tests (Pixel 7)
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-pixel
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-mobile-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
   build-binary:
     runs-on: ${{ matrix.os }}
     strategy:
