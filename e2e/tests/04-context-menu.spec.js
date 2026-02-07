@@ -98,4 +98,49 @@ test.describe('Context menu: right-click terminal shows menu', () => {
     await page.keyboard.press('Escape');
     await expect(menu).not.toBeVisible();
   });
+
+  test('all menu items have SVG icons', async ({ page }) => {
+    await setupTerminalPage(page);
+
+    // Open context menu
+    const terminalArea = page.locator('[data-tid="terminal"] .xterm-screen, #terminal .xterm-screen').first();
+    await terminalArea.click({ button: 'right', position: { x: 100, y: 50 } });
+
+    const menu = page.locator('[data-tid="context-menu"]');
+    await expect(menu).toBeVisible();
+
+    // Every .ctx-item should have a .ctx-icon containing an <svg>
+    const actions = ['copy', 'paste', 'pastePlain', 'pasteImage', 'attachImage', 'selectAll', 'clear'];
+    for (const action of actions) {
+      const icon = menu.locator(`[data-action="${action}"] .ctx-icon svg`);
+      await expect(icon).toBeAttached();
+    }
+  });
+
+  test('menu item text is left-aligned consistently', async ({ page }) => {
+    await setupTerminalPage(page);
+
+    // Open context menu
+    const terminalArea = page.locator('[data-tid="terminal"] .xterm-screen, #terminal .xterm-screen').first();
+    await terminalArea.click({ button: 'right', position: { x: 100, y: 50 } });
+
+    const menu = page.locator('[data-tid="context-menu"]');
+    await expect(menu).toBeVisible();
+
+    // Get the left offset of the text span (2nd child span) for each menu item
+    const textLeftPositions = await menu.locator('.ctx-item').evaluateAll(items =>
+      items.map(item => {
+        const textSpan = item.querySelectorAll('span')[1]; // 2nd span is the text label
+        if (!textSpan) return null;
+        return textSpan.getBoundingClientRect().left;
+      }).filter(v => v !== null)
+    );
+
+    // All text labels should start at the same x position (within 2px tolerance)
+    expect(textLeftPositions.length).toBeGreaterThanOrEqual(7);
+    const firstLeft = textLeftPositions[0];
+    for (const left of textLeftPositions) {
+      expect(Math.abs(left - firstLeft)).toBeLessThanOrEqual(2);
+    }
+  });
 });
