@@ -351,6 +351,27 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        // Attach image paste/drop handler
+        const termContainer = document.getElementById('terminal');
+        if (window.imageHandler && termContainer) {
+            this._imageHandler = window.imageHandler.attachImageHandler(
+                this.terminal, termContainer, {
+                    onImageReady: (imageData) => {
+                        this._pendingImageCaption = imageData.caption;
+                        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                            this.send({
+                                type: 'image_upload',
+                                base64: imageData.base64,
+                                mimeType: imageData.mimeType,
+                                fileName: imageData.fileName || 'pasted-image.png',
+                                caption: imageData.caption || ''
+                            });
+                        }
+                    }
+                }
+            );
+        }
+
         this.setupTerminalContextMenu();
 
         this.terminal.onData((data) => {
@@ -453,6 +474,25 @@ class ClaudeCodeWebInterface {
 
         if (settingsBtn) settingsBtn.addEventListener('click', () => this.showSettings());
         if (retryBtn) retryBtn.addEventListener('click', () => this.reconnect());
+
+        // Attach Image button
+        const attachBtn = document.getElementById('attachImageBtn');
+        if (attachBtn && window.imageHandler) {
+            attachBtn.addEventListener('click', () => {
+                window.imageHandler.triggerFilePicker((imageData) => {
+                    this._pendingImageCaption = imageData.caption;
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.send({
+                            type: 'image_upload',
+                            base64: imageData.base64,
+                            mimeType: imageData.mimeType,
+                            fileName: imageData.fileName || 'attached-image.png',
+                            caption: imageData.caption || ''
+                        });
+                    }
+                });
+            });
+        }
         
         // Tile view toggle
         // Mobile menu event listeners
@@ -845,6 +885,34 @@ class ClaudeCodeWebInterface {
             case 'pong':
                 break;
 
+            case 'image_upload_complete': {
+                const { filePath } = message;
+                const caption = this._pendingImageCaption || '';
+                // Normalize path: forward slashes for cross-platform safety
+                const normalizedPath = filePath.replace(/\\/g, '/');
+                // Always quote the path to handle spaces
+                const quotedPath = '"' + normalizedPath + '"';
+                // Build input text
+                const inputText = caption ? caption + ' ' + quotedPath : quotedPath;
+                // Send as terminal input with bracketed paste wrapping
+                let normalized = attachClipboardHandler.normalizeLineEndings(inputText);
+                if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+                    normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                }
+                this.send({ type: 'input', data: normalized });
+                this._pendingImageCaption = null;
+                break;
+            }
+
+            case 'image_upload_error': {
+                console.error('Image upload error:', message.message);
+                // Write error to terminal as fallback notification
+                if (this.terminal) {
+                    this.terminal.write('\r\n\x1b[31m[Image upload error] ' + message.message + '\x1b[0m\r\n');
+                }
+                break;
+            }
+
             case 'usage_update':
                 this.updateUsageDisplay(
                     message.sessionStats, 
@@ -1068,6 +1136,16 @@ class ClaudeCodeWebInterface {
                 copyItem.setAttribute('aria-disabled', !hasSelection);
             }
 
+            // Disable "Paste Image" if clipboard.read() is not available
+            const pasteImageItem = menu.querySelector('[data-action="pasteImage"]');
+            if (pasteImageItem) {
+                if (!navigator.clipboard || typeof navigator.clipboard.read !== 'function') {
+                    pasteImageItem.classList.add('disabled');
+                } else {
+                    pasteImageItem.classList.remove('disabled');
+                }
+            }
+
             // Focus first non-disabled item for keyboard navigation
             const firstEnabled = menuItems.find(el => !el.classList.contains('disabled'));
             if (firstEnabled) firstEnabled.focus();
@@ -1103,6 +1181,58 @@ class ClaudeCodeWebInterface {
                         const text = await navigator.clipboard.readText();
                         if (text) sendPasteData(text, activeSendFn, activeTerminal);
                     } catch { showClipboardError(); }
+                    break;
+                }
+                case 'pasteImage': {
+                    try {
+                        if (navigator.clipboard && typeof navigator.clipboard.read === 'function') {
+                            const items = await navigator.clipboard.read();
+                            for (const item of items) {
+                                const imageType = item.types.find(t =>
+                                    ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(t)
+                                );
+                                if (imageType) {
+                                    const blob = await item.getType(imageType);
+                                    window.imageHandler.showImagePreview(blob, (imageData) => {
+                                        this._pendingImageCaption = imageData.caption;
+                                        this.send({
+                                            type: 'image_upload',
+                                            base64: imageData.base64,
+                                            mimeType: imageData.mimeType,
+                                            fileName: imageData.fileName || 'pasted-image.png',
+                                            caption: imageData.caption || ''
+                                        });
+                                    });
+                                    return;
+                                }
+                            }
+                            // No image found
+                            if (activeTerminal) {
+                                activeTerminal.write('\r\n\x1b[33mNo image found in clipboard.\x1b[0m\r\n');
+                            }
+                        } else {
+                            if (activeTerminal) {
+                                activeTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach Image instead.\x1b[0m\r\n');
+                            }
+                        }
+                    } catch (err) {
+                        console.error('Paste Image failed:', err);
+                    }
+                    break;
+                }
+                case 'attachImage': {
+                    if (window.imageHandler) {
+                        window.imageHandler.triggerFilePicker((imageData) => {
+                            this._pendingImageCaption = imageData.caption;
+                            this.send({
+                                type: 'image_upload',
+                                base64: imageData.base64,
+                                mimeType: imageData.mimeType,
+                                fileName: imageData.fileName || 'attached-image.png',
+                                caption: imageData.caption || ''
+                            });
+                        });
+                    }
                     break;
                 }
                 case 'selectAll':

@@ -332,3 +332,11 @@ Every endpoint that accepts a filesystem path (`/api/folders`, `/api/set-working
 - `express.static` serves `src/public/`.
 - `manifest.json` is served with `Content-Type: application/manifest+json`.
 - Dynamic SVG icons are generated at `/icon-{16,32,144,180,192,512}.png` with monospace "CC" text on a dark background, served as `image/svg+xml` with a 1-year cache header.
+
+---
+
+## Image Upload
+
+The server handles `image_upload` WebSocket messages for the image paste feature. On receipt, it validates the MIME type against an allowlist (PNG, JPEG, GIF, WebP -- no SVG), enforces a 10 MB base64 payload limit and a per-session rate limit of 5 uploads per minute, then writes the decoded image to a temp directory (`<os-tmpdir>/claude-code-web/images/<session-id>/<uuid>.<ext>`). Each session is capped at 1000 images via FIFO eviction. Temp files are cleaned up on session deletion, server shutdown, server startup (stale sweep), and via a periodic 30-minute timer.
+
+See the [Image Paste Specification](image-paste.md) for the full protocol, client-side handling, security constraints, and testing requirements.

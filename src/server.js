@@ -3,6 +3,8 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
 const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -76,6 +78,7 @@ class ClaudeCodeWebServer {
       if (sessions.size > 0) {
         console.log(`Loaded ${sessions.size} persisted sessions`);
       }
+      this.sweepOldTempImages();
     } catch (error) {
       console.error('Failed to load persisted sessions:', error);
     }
@@ -86,7 +89,10 @@ class ClaudeCodeWebServer {
     this.autoSaveInterval = setInterval(() => {
       this.saveSessionsToDisk();
     }, 30000);
-    
+
+    // Sweep old temp images every 30 minutes
+    this.imageSweepInterval = setInterval(() => this.sweepOldTempImages(), 30 * 60 * 1000);
+
     // Also save on process exit
     process.on('SIGINT', () => this.handleShutdown());
     process.on('SIGTERM', () => this.handleShutdown());
@@ -108,6 +114,10 @@ class ClaudeCodeWebServer {
     await this.saveSessionsToDisk();
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
+    }
+    // Clean up temp images for all sessions
+    for (const [, session] of this.claudeSessions) {
+      this.cleanupSessionImages(session);
     }
     this.close();
     process.exit(0);
@@ -363,14 +373,17 @@ class ClaudeCodeWebServer {
       session.connections.forEach(wsId => {
         const wsInfo = this.webSocketConnections.get(wsId);
         if (wsInfo && wsInfo.ws.readyState === WebSocket.OPEN) {
-          wsInfo.ws.send(JSON.stringify({ 
+          wsInfo.ws.send(JSON.stringify({
             type: 'session_deleted',
             message: 'Session has been deleted'
           }));
           wsInfo.ws.close();
         }
       });
-      
+
+      // Clean up temp images
+      this.cleanupSessionImages(session);
+
       this.claudeSessions.delete(sessionId);
 
       // Save sessions after deletion — await to ensure persistence
@@ -645,6 +658,7 @@ class ClaudeCodeWebServer {
 
     this.wss = new WebSocket.Server({
       server,
+      maxPayload: 8 * 1024 * 1024,
       perMessageDeflate: {
         serverNoContextTakeover: true,
         clientNoContextTakeover: true,
@@ -838,6 +852,10 @@ class ClaudeCodeWebServer {
 
       case 'get_usage':
         this.handleGetUsage(wsInfo);
+        break;
+
+      case 'image_upload':
+        await this.handleImageUpload(wsId, data);
         break;
 
       default:
@@ -1140,10 +1158,13 @@ class ClaudeCodeWebServer {
   close() {
     // Save sessions before closing
     this.saveSessionsToDisk();
-    
+
     // Clear auto-save interval
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
+    }
+    if (this.imageSweepInterval) {
+      clearInterval(this.imageSweepInterval);
     }
     
     if (this.wss) {
@@ -1269,6 +1290,188 @@ class ClaudeCodeWebServer {
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
         message: 'Failed to retrieve usage statistics'
+      });
+    }
+  }
+
+  async handleImageUpload(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+
+    if (!wsInfo.claudeSessionId) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'image_upload_error',
+        message: 'No session joined'
+      });
+      return;
+    }
+
+    const session = this.claudeSessions.get(wsInfo.claudeSessionId);
+    if (!session) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'image_upload_error',
+        message: 'Session not found'
+      });
+      return;
+    }
+
+    try {
+      // Rate limit: max 5 image uploads per minute per session
+      if (!session._imageUploadTimestamps) {
+        session._imageUploadTimestamps = [];
+      }
+      const now = Date.now();
+      session._imageUploadTimestamps = session._imageUploadTimestamps.filter(
+        ts => now - ts < 60000
+      );
+      if (session._imageUploadTimestamps.length >= 5) {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'image_upload_error',
+          message: 'Rate limit exceeded: maximum 5 image uploads per minute.'
+        });
+        return;
+      }
+      session._imageUploadTimestamps.push(now);
+
+      // FIFO cap: max 1000 temp images per session
+      if (!session.tempImages) {
+        session.tempImages = [];
+      }
+      while (session.tempImages.length >= 1000) {
+        // Remove oldest by created date
+        const sorted = session.tempImages.slice().sort((a, b) => a.created - b.created);
+        const oldest = sorted[0];
+        try { fs.unlinkSync(oldest.path); } catch { /* ignore */ }
+        session.tempImages = session.tempImages.filter(img => img !== oldest);
+      }
+
+      // Validate base64 data
+      if (!data.base64 || typeof data.base64 !== 'string') {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'image_upload_error',
+          message: 'Missing image data'
+        });
+        return;
+      }
+      if (data.base64.length > 5.5 * 1024 * 1024) {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'image_upload_error',
+          message: 'Image too large (max 4MB file size)'
+        });
+        return;
+      }
+
+      // Validate MIME type
+      const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+      if (!allowedMimeTypes.includes(data.mimeType)) {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'image_upload_error',
+          message: 'Unsupported image format. Allowed: PNG, JPEG, GIF, WebP'
+        });
+        return;
+      }
+
+      const filePath = this.saveImageToTemp(session, data);
+
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'image_upload_complete',
+        filePath: filePath,
+        mimeType: data.mimeType,
+        size: Buffer.byteLength(data.base64, 'base64')
+      });
+    } catch (error) {
+      console.error('Image upload error:', error);
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'image_upload_error',
+        message: 'Failed to save image: ' + error.message
+      });
+    }
+  }
+
+  saveImageToTemp(session, data) {
+    // Primary temp dir: .claude-images inside the session working directory
+    let tempDir = path.join(session.workingDir, '.claude-images');
+    try {
+      fs.mkdirSync(tempDir, { recursive: true });
+    } catch {
+      // Fallback to OS temp directory
+      tempDir = path.join(os.tmpdir(), 'claude-web-images', session.id);
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    // Verify resolved path doesn't escape via symlinks
+    const resolvedTempDir = fs.realpathSync(tempDir);
+    if (resolvedTempDir !== tempDir && !resolvedTempDir.startsWith(session.workingDir) && !resolvedTempDir.startsWith(os.tmpdir())) {
+      throw new Error('Temp directory resolved to unexpected location');
+    }
+
+    // Auto-create .gitignore in tempDir
+    const gitignorePath = path.join(tempDir, '.gitignore');
+    if (!fs.existsSync(gitignorePath)) {
+      fs.writeFileSync(gitignorePath, '*\n');
+    }
+
+    // Generate unique filename
+    const ext = this.mimeToExtension(data.mimeType);
+    const filename = `img-${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext}`;
+    const filePath = path.join(tempDir, filename);
+
+    // Write the image file
+    fs.writeFileSync(filePath, Buffer.from(data.base64, 'base64'));
+
+    // Track the temp image
+    if (!session.tempImages) {
+      session.tempImages = [];
+    }
+    session.tempImages.push({
+      path: filePath,
+      size: Buffer.byteLength(data.base64, 'base64'),
+      created: Date.now()
+    });
+
+    return filePath;
+  }
+
+  mimeToExtension(mimeType) {
+    const map = {
+      'image/png': '.png',
+      'image/jpeg': '.jpg',
+      'image/gif': '.gif',
+      'image/webp': '.webp'
+    };
+    return map[mimeType] || null;
+  }
+
+  cleanupSessionImages(session) {
+    if (!session.tempImages || session.tempImages.length === 0) return;
+    for (const img of session.tempImages) {
+      try {
+        if (fs.existsSync(img.path)) fs.unlinkSync(img.path);
+      } catch { /* ignore */ }
+    }
+    session.tempImages = [];
+    // Try to remove the .claude-images dir if empty
+    const tempDir = path.join(session.workingDir, '.claude-images');
+    try {
+      const remaining = fs.readdirSync(tempDir);
+      // Only remove if just .gitignore remains or empty
+      if (remaining.length === 0 || (remaining.length === 1 && remaining[0] === '.gitignore')) {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    } catch { /* ignore */ }
+  }
+
+  sweepOldTempImages() {
+    const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+    const now = Date.now();
+    for (const [, session] of this.claudeSessions) {
+      if (!session.tempImages || session.tempImages.length === 0) continue;
+      session.tempImages = session.tempImages.filter(img => {
+        if (now - img.created > maxAge) {
+          try { if (fs.existsSync(img.path)) fs.unlinkSync(img.path); } catch { /* ignore */ }
+          return false;
+        }
+        return true;
       });
     }
   }
