@@ -5,7 +5,6 @@ const {
   waitForTerminalCanvas,
   attachFailureArtifacts,
   joinSessionAndStartTerminal,
-  waitForTerminalText,
 } = require('../helpers/terminal-helpers');
 
 test.describe('Nerd Font rendering infrastructure', () => {
@@ -112,47 +111,56 @@ test.describe('Nerd Font rendering infrastructure', () => {
     expect(fontFamily).not.toMatch(/Meslo.*Nerd/i);
   });
 
-  test('unicode11 glyph widths are correct for powerline and wide characters', async ({ page }) => {
+  test('CJK and powerline characters occupy correct cell widths', async ({ page }) => {
     const sessionId = await createSessionViaApi(port, 'Glyph Width Test');
     await page.goto(url);
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    // Use terminal.unicode.getStringCellWidth() to verify glyph widths.
-    // This is the exact function xterm.js uses for cursor positioning.
+    // Verify glyph widths by writing characters to the terminal and
+    // measuring cursor advancement. This uses xterm's actual rendering
+    // path — the same code that positions the cursor for real prompts.
     const widths = await page.evaluate(() => {
-      const term = window.app && window.app.terminal;
-      if (!term || !term.unicode) return null;
-      const wcwidth = (str) => term.unicode.getStringCellWidth(str);
-      return {
-        // Powerline glyphs (PUA) — should be 1 cell each
-        powerlineRight: wcwidth('\ue0b0'),     //
-        powerlineLeft: wcwidth('\ue0b2'),      //
-        gitBranch: wcwidth('\ue0a0'),          //
-        // CJK wide characters — should be 2 cells each with Unicode 11
-        cjk: wcwidth('\u4e16'),                // 世
-        cjkTwo: wcwidth('\u754c'),             // 界
-        // Basic ASCII — should be 1 cell each
-        ascii: wcwidth('A'),
-        asciiWord: wcwidth('hello'),           // 5 cells
-        // Mixed string: ASCII + powerline + CJK
-        mixed: wcwidth('AB\ue0b0\u4e16'),     // 2 + 1 + 2 = 5
-      };
+      return new Promise((resolve) => {
+        const term = window.app.terminal;
+        const results = {};
+
+        // Helper: clear screen, write string, measure cursor delta
+        function measure(label, str) {
+          return new Promise((res) => {
+            term.write('\x1b[2J\x1b[H', () => {
+              const startX = term.buffer.active.cursorX;
+              term.write(str, () => {
+                results[label] = term.buffer.active.cursorX - startX;
+                res();
+              });
+            });
+          });
+        }
+
+        // Run measurements sequentially
+        measure('ascii_A', 'A')
+          .then(() => measure('ascii_hello', 'hello'))
+          .then(() => measure('powerline', '\ue0b0'))
+          .then(() => measure('gitBranch', '\ue0a0'))
+          .then(() => measure('cjk_world', '\u4e16'))
+          .then(() => measure('cjk_two', '\u754c'))
+          .then(() => measure('mixed', 'AB\ue0b0\u4e16'))
+          .then(() => resolve(results));
+      });
     });
 
-    expect(widths).not.toBeNull();
-    // Powerline glyphs: 1 cell each
-    expect(widths.powerlineRight).toBe(1);
-    expect(widths.powerlineLeft).toBe(1);
-    expect(widths.gitBranch).toBe(1);
-    // CJK: 2 cells each (this is the key Unicode 11 improvement)
-    expect(widths.cjk).toBe(2);
-    expect(widths.cjkTwo).toBe(2);
     // ASCII baseline
-    expect(widths.ascii).toBe(1);
-    expect(widths.asciiWord).toBe(5);
-    // Mixed string
+    expect(widths.ascii_A).toBe(1);
+    expect(widths.ascii_hello).toBe(5);
+    // Powerline glyphs (PUA): 1 cell each
+    expect(widths.powerline).toBe(1);
+    expect(widths.gitBranch).toBe(1);
+    // CJK wide characters: 2 cells each
+    expect(widths.cjk_world).toBe(2);
+    expect(widths.cjk_two).toBe(2);
+    // Mixed: A(1) + B(1) + powerline(1) + 世(2) = 5
     expect(widths.mixed).toBe(5);
   });
 
