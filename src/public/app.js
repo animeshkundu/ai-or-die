@@ -526,6 +526,20 @@ class ClaudeCodeWebInterface {
             });
         }
         
+        // File Browser button
+        const browseFilesBtn = document.getElementById('browseFilesBtn');
+        if (browseFilesBtn) {
+            browseFilesBtn.addEventListener('click', () => this.toggleFileBrowser());
+        }
+
+        // Ctrl+B shortcut for file browser
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+                e.preventDefault();
+                this.toggleFileBrowser();
+            }
+        });
+
         // Tile view toggle
         // Mobile menu event listeners
         if (closeMenuBtn) closeMenuBtn.addEventListener('click', () => this.closeMobileMenu());
@@ -1557,6 +1571,42 @@ class ClaudeCodeWebInterface {
                 this.send({ type: 'ping' });
             }
         }, 30000);
+    }
+
+    // File Browser Methods
+    toggleFileBrowser() {
+        if (!this._fileBrowserPanel && window.fileBrowser) {
+            this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({
+                app: this,
+                authFetch: (url, opts) => this.authFetch(url, opts),
+                initialPath: this.getCurrentWorkingDir(),
+            });
+        }
+        if (this._fileBrowserPanel) {
+            this._fileBrowserPanel.toggle();
+        }
+    }
+
+    openFileInViewer(filePath) {
+        if (!this._fileBrowserPanel && window.fileBrowser) {
+            this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({
+                app: this,
+                authFetch: (url, opts) => this.authFetch(url, opts),
+                initialPath: this.getCurrentWorkingDir(),
+            });
+        }
+        if (this._fileBrowserPanel) {
+            this._fileBrowserPanel.openToFile(filePath);
+        }
+    }
+
+    getCurrentWorkingDir() {
+        // Return the working directory of the active session, or the base folder
+        if (this.currentClaudeSessionId && this.claudeSessions) {
+            const session = this.claudeSessions.find(s => s.id === this.currentClaudeSessionId);
+            if (session && session.workingDir) return session.workingDir;
+        }
+        return this.currentFolderPath || null;
     }
 
     // Folder Browser Methods

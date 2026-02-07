@@ -348,3 +348,126 @@ Every endpoint that accepts a filesystem path (`/api/folders`, `/api/set-working
 The server handles `image_upload` WebSocket messages for the image paste feature. On receipt, it validates the MIME type against an allowlist (PNG, JPEG, GIF, WebP -- no SVG), enforces a 10 MB base64 payload limit and a per-session rate limit of 5 uploads per minute, then writes the decoded image to a temp directory (`<os-tmpdir>/claude-code-web/images/<session-id>/<uuid>.<ext>`). Each session is capped at 1000 images via FIFO eviction. Temp files are cleaned up on session deletion, server shutdown, server startup (stale sweep), and via a periodic 30-minute timer.
 
 See the [Image Paste Specification](image-paste.md) for the full protocol, client-side handling, security constraints, and testing requirements.
+
+---
+
+## File Browser API
+
+Six REST endpoints for browsing, previewing, editing, uploading, and downloading files. All endpoints are behind the auth middleware and validate paths via `validatePath()` with symlink resolution. File utilities are extracted to `src/utils/file-utils.js`.
+
+See the [File Browser Specification](file-browser.md) for the full client-side handling, preview types, editor integration, and testing requirements.
+
+### `GET /api/files`
+
+List directory contents (both files and directories). Coexists with `GET /api/folders`, which lists only directories for the working-directory selector.
+
+**Query params:**
+- `path` -- directory to list (default: `baseFolder`)
+- `showHidden` -- `"true"` to include dotfiles
+- `offset` -- pagination offset (default: `0`)
+- `limit` -- max items per page (default: `500`, cap: `1000`)
+
+**Response:**
+```json
+{
+  "currentPath": "/home/user/project",
+  "parentPath": "/home/user",
+  "items": [
+    {
+      "name": "src",
+      "path": "/home/user/project/src",
+      "isDirectory": true,
+      "size": 0,
+      "modified": "2026-02-05T10:30:00.000Z"
+    },
+    {
+      "name": "index.js",
+      "path": "/home/user/project/index.js",
+      "isDirectory": false,
+      "size": 2048,
+      "modified": "2026-02-05T11:00:00.000Z",
+      "mimeCategory": "code",
+      "previewable": true,
+      "editable": true
+    }
+  ],
+  "totalCount": 42,
+  "offset": 0,
+  "limit": 500
+}
+```
+
+### `GET /api/files/stat`
+
+Get metadata for a single file or directory, including the streaming MD5 hash.
+
+**Query params:** `path` -- file or directory path.
+
+**Response:**
+```json
+{
+  "path": "/home/user/project/index.js",
+  "name": "index.js",
+  "size": 2048,
+  "modified": "2026-02-05T11:00:00.000Z",
+  "isDirectory": false,
+  "mimeCategory": "code",
+  "previewable": true,
+  "editable": true,
+  "hash": "d41d8cd98f00b204e9800998ecf8427e"
+}
+```
+
+### `GET /api/files/content`
+
+Read text file content in a JSON envelope. Binary files are rejected with 415. Text files up to 5 MB are served; larger files return `truncated: true`.
+
+**Query params:** `path` -- file path.
+
+**Response:**
+```json
+{
+  "content": "const express = require('express');\n...",
+  "hash": "a1b2c3d4e5f6...",
+  "truncated": false,
+  "totalSize": 2048
+}
+```
+
+### `PUT /api/files/content`
+
+Save text file content with hash-based optimistic concurrency. Rate-limited to 30 writes/min/IP.
+
+**Request body:** `{ "path": "...", "content": "...", "hash": "..." }`
+
+**Success (200):** `{ "hash": "new-hash", "size": 2100 }`
+
+**Conflict (409):** `{ "error": "File has been modified externally", "currentHash": "..." }` -- returned when the submitted hash does not match the current file hash.
+
+**Other errors:** 403 (path outside base), 404, 413 (content > 5 MB), 507 (disk full).
+
+### `POST /api/files/upload`
+
+Upload a file as base64-encoded JSON. Uses route-specific `express.json({ limit: '10mb' })` to avoid affecting the global body limit. Rate-limited to 30 writes/min/IP.
+
+**Request body:** `{ "targetDir": "...", "fileName": "...", "content": "<base64>", "overwrite": false }`
+
+**Success (201):** `{ "name": "data.csv", "path": "/home/user/project/data.csv", "size": 4096 }`
+
+**Errors:** 403 (path outside base), 409 (file exists with `overwrite: false`), 413 (> 10 MB), 422 (blocked extension), 507 (disk full).
+
+**Blocked extensions:** `.exe`, `.bat`, `.cmd`, `.com`, `.msi`, `.dll`, `.ps1`, `.vbs`, `.wsf`, `.scr`, `.pif`, `.reg`, `.inf`, `.hta`, `.cpl`, `.jar`.
+
+### `GET /api/files/download`
+
+Stream a file for download or inline preview. Max download size: 100 MB.
+
+**Query params:**
+- `path` -- file path (required)
+- `inline` -- `"1"` to serve with `Content-Disposition: inline` (for image/PDF preview in browser); default streams as `attachment`
+
+**Security headers** on all content responses: `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Content-Security-Policy: sandbox`.
+
+### Path Validation Enhancement
+
+`validatePath()` is enhanced to resolve symlinks via `fs.realpathSync()` before the `startsWith` check, eliminating TOCTOU race conditions where a symlink could be swapped between validation and file access. This applies to all file browser endpoints as well as the existing folder endpoints.

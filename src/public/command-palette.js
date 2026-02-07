@@ -139,6 +139,42 @@ class CommandPaletteManager {
       }
     });
 
+    actions.push({
+      id: 'toggle-file-browser',
+      title: 'Toggle File Browser',
+      section: 'Actions',
+      hotkey: 'ctrl+b',
+      handler: () => {
+        if (app.toggleFileBrowser) app.toggleFileBrowser();
+      }
+    });
+
+    actions.push({
+      id: 'open-file-by-path',
+      title: 'Open File by Path...',
+      section: 'Actions',
+      hotkey: 'ctrl+shift+o',
+      handler: () => {
+        const filePath = prompt('Enter file path:');
+        if (filePath && app.openFileInViewer) app.openFileInViewer(filePath);
+      }
+    });
+
+    actions.push({
+      id: 'upload-file',
+      title: 'Upload File',
+      section: 'Actions',
+      handler: () => {
+        if (app.toggleFileBrowser) {
+          app.toggleFileBrowser();
+          // Open file picker after panel opens
+          setTimeout(() => {
+            if (app._fileBrowserPanel) app._fileBrowserPanel._openFilePicker();
+          }, 300);
+        }
+      }
+    });
+
     this.ninja.data = actions;
   }
 }

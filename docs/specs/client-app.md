@@ -400,3 +400,109 @@ Source: `src/public/image-handler.js`
 Handles image paste, drag-and-drop, and file picker input for uploading images to the server and injecting their file paths into the terminal. Images are sent as base64 over the WebSocket `image_upload` message, written to a server-side temp directory, and the returned path is injected into the terminal as bracketed paste text. The module also adds "Paste Image" and "Attach Image" items to the context menu and an "Attach Image" button to the toolbar. A preview modal is shown before upload for confirmation.
 
 See the [Image Paste Specification](image-paste.md) for the full protocol, security constraints, rate limits, and cleanup behavior.
+
+---
+
+## FileBrowserPanel
+
+Source: `src/public/file-browser.js`
+
+The file navigation panel, rendered as a right-docked side panel on desktop or a full-screen overlay on mobile. Displays directory listings, handles file selection, and manages upload input.
+
+### Public API
+
+| Method | Description |
+|--------|-------------|
+| `open(startPath)` | Open panel to a directory path |
+| `close()` | Close panel, restore terminal width via `fitAddon.fit()` |
+| `toggle()` | Toggle open/closed |
+| `isOpen()` | Returns boolean |
+| `openToFile(filePath)` | Navigate to parent directory, auto-select and preview the file |
+| `navigateTo(path)` | Fetch listing from `GET /api/files` and render |
+| `navigateUp()` | Navigate to parent directory |
+| `navigateHome()` | Navigate to session working directory |
+
+The panel auto-switches to overlay mode when the terminal would be squeezed below 80 columns (`ensureMinTerminalWidth()`).
+
+File list uses ARIA tree pattern (`role="tree"`, `role="treeitem"`, `aria-expanded`, `aria-selected`) with full W3C arrow-key navigation.
+
+Upload is handled via three methods: file picker button, drag-and-drop (full-panel overlay on drag-enter), and clipboard paste. Uploads go to `POST /api/files/upload` as base64 JSON with a 10 MB limit.
+
+### FilePreviewPanel
+
+Also in `src/public/file-browser.js`. Renders file previews dispatched by MIME category:
+
+| Category | Rendering |
+|----------|-----------|
+| Image | `<img>` via `/api/files/download?inline=1` |
+| Text/Code | Monospace `<pre>` with line numbers, hover-reveal "Edit" button |
+| JSON | Pretty-printed `<pre>` |
+| CSV | HTML `<table>` (max 100 rows) |
+| PDF | `<iframe>` via `/api/files/download?inline=1` |
+| Binary | Metadata + download button |
+
+### TerminalPathDetector
+
+Also in `src/public/file-browser.js`. Hooks into xterm.js right-click to detect file paths (Unix, Windows, and relative) in terminal output. Shows context menu items ("Open in File Browser", "Open in Editor", "Download") with async stat-based enabling. Reuses the existing `#termContextMenu`.
+
+---
+
+## FileEditorPanel
+
+Source: `src/public/file-editor.js`
+
+Ace Editor integration for in-browser text file editing. Ace is lazy-loaded from CDN on first editor open with a loading spinner and 5-second timeout.
+
+### Public API
+
+| Method | Description |
+|--------|-------------|
+| `openEditor(filePath, content, fileHash)` | Initialize Ace with content, store hash for conflict detection |
+| `save()` | `PUT /api/files/content` with current content and stored hash |
+| `toggleAutoSave()` | Enable/disable auto-save (default: ON, 3s debounce) |
+| `onClose()` | Prompt for unsaved changes, prevent Escape from bubbling |
+| `saveDraft()` | Backup to `localStorage` on every change for crash recovery |
+
+### Conflict Handling
+
+On 409 from the server, a conflict dialog offers: **Keep** (force-save editor content), **Reload** (discard editor changes), **Compare Changes** (show both versions).
+
+### Theme Mapping
+
+Ace themes map to the application's design token themes: midnight/classic-dark use `tomorrow_night`, classic-light uses `tomorrow`, monokai/nord/solarized themes use their Ace equivalents.
+
+---
+
+## File Browser Integration in app.js
+
+Source: `src/public/app.js`
+
+### New Methods
+
+| Method | Description |
+|--------|-------------|
+| `toggleFileBrowser()` | Lazy-initialize `FileBrowserPanel` on first call, then toggle open/closed. Opens to the current session's working directory. |
+| `openFileInViewer(filePath)` | Open the file browser panel navigated to a specific file path. Called by `TerminalPathDetector` and command palette. |
+| `getCurrentWorkingDir()` | Returns the working directory of the current session, used by the file browser as its root path. |
+
+### Keyboard Shortcut
+
+`Ctrl+B` is registered in the global keydown handler. It calls `toggleFileBrowser()` and prevents the default browser bookmark action.
+
+### UI Integration
+
+- A "Files" button (`#browseFilesBtn`) is added to the session tab bar actions area. Clicking it calls `toggleFileBrowser()`. The button is disabled when no session is joined.
+- Terminal resize: `fitAddon.fit()` is called when the file browser panel opens, closes, or is resized (via `transitionend` listener).
+- Screen reader announcements for file browser state changes use the existing `#srAnnounce` live region.
+
+### Command Palette Actions
+
+Three new actions registered in `src/public/command-palette.js`:
+
+| Action | Shortcut | Description |
+|--------|----------|-------------|
+| Toggle File Browser | `Ctrl+B` | Open/close file browser panel |
+| Open File by Path... | `Ctrl+Shift+O` | Prompt for a file path, open directly in the file browser |
+| Upload File | -- | Open the file picker for upload |
+
+See the [File Browser Specification](file-browser.md) for the complete feature documentation including server API, security model, preview types, and testing requirements.

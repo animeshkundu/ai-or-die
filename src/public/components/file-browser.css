@@ -1,0 +1,592 @@
+/* ============================================================
+   file-browser.css — Side-panel file browser component
+   Right-docked panel with file tree, preview, upload, and editor
+   ============================================================ */
+
+/* ---- Panel Layout ---- */
+.file-browser-panel {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: 350px;
+  z-index: 5001; /* Above the terminal overlay (z-index: 5000) */
+  background: var(--surface-secondary);
+  border-left: 1px solid var(--border-default);
+  box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform var(--duration-normal) var(--ease-out);
+  overflow: hidden;
+}
+.file-browser-panel.open { transform: translateX(0); }
+.file-browser-panel.editor-active { width: min(500px, 50vw); }
+
+/* ---- Resize Handle ---- */
+.file-browser-resize-handle {
+  position: absolute;
+  top: 0; left: 0; bottom: 0;
+  width: 4px;
+  cursor: col-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background var(--duration-fast);
+}
+.file-browser-resize-handle:hover,
+.file-browser-resize-handle.dragging {
+  background: var(--accent-default);
+}
+
+/* ---- Header (40px row: back + breadcrumbs + actions) ---- */
+.file-browser-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 40px;
+  min-height: 40px;
+  padding: 0 var(--space-2);
+  background: var(--surface-elevated);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+/* ---- Header Action Buttons (fb-header-btn, fb-back-btn, fb-close-btn) ---- */
+.fb-header-btn {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: color var(--duration-fast), background var(--duration-fast);
+  flex-shrink: 0;
+}
+.fb-header-btn:hover { color: var(--text-primary); background: var(--surface-tertiary); }
+.fb-header-btn.active { color: var(--accent-default); background: var(--accent-soft); }
+.fb-back-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ---- Breadcrumbs ---- */
+.fb-breadcrumbs {
+  display: flex; align-items: center;
+  flex: 1; min-width: 0;
+  overflow: hidden;
+  gap: var(--space-0-5);
+  font-size: var(--text-sm);
+}
+.fb-breadcrumb {
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: var(--space-0-5) var(--space-1);
+  border-radius: var(--radius-sm);
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+.fb-breadcrumb:hover { color: var(--accent-default); background: var(--accent-soft); }
+.fb-breadcrumb.active {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+  cursor: default;
+}
+.fb-breadcrumb.active:hover { background: none; }
+.fb-breadcrumb-sep {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-size: var(--text-sm);
+  user-select: none;
+}
+
+/* ---- Search Bar (collapsible) ---- */
+.fb-search-bar {
+  display: none;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+.fb-search-bar.visible { display: block; }
+.fb-search-input {
+  width: 100%;
+  padding: var(--space-1-5) var(--space-2);
+  background: var(--surface-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  outline: none;
+  transition: border-color var(--duration-fast);
+}
+.fb-search-input:focus { border-color: var(--accent-default); }
+.fb-search-input::placeholder { color: var(--text-muted); }
+
+/* ---- Content Area ---- */
+.fb-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- File List ---- */
+.fb-file-list {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-default) var(--surface-secondary);
+}
+.fb-file-list::-webkit-scrollbar { width: 10px; height: 10px; }
+.fb-file-list::-webkit-scrollbar-track { background: var(--surface-secondary); }
+.fb-file-list::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 5px; }
+.fb-file-list::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
+
+/* ---- File Items ---- */
+.file-browser-item {
+  display: flex; align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: background-color var(--duration-fast);
+  border-left: 3px solid transparent;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+.file-browser-item:hover { background: var(--surface-tertiary); }
+.file-browser-item.selected {
+  background: var(--accent-soft);
+  border-left-color: var(--accent-default);
+}
+.file-browser-item:focus-visible {
+  outline: 2px solid var(--accent-default);
+  outline-offset: -2px;
+}
+
+/* ---- File Item Sub-elements ---- */
+.file-item-icon {
+  width: 18px; height: 18px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.file-item-name {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.file-item-size {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.file-item-edit {
+  opacity: 0;
+  padding: var(--space-1);
+  border-radius: var(--radius-sm);
+  border: none; background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: opacity var(--duration-fast);
+}
+.file-browser-item:hover .file-item-edit { opacity: 0.6; }
+.file-item-edit:hover {
+  opacity: 1;
+  background: var(--accent-soft);
+  color: var(--accent-default);
+}
+
+/* ---- Preview Container ---- */
+.fb-preview-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+/* ---- Preview Header ---- */
+.fb-preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-3);
+}
+.fb-preview-title {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-md);
+}
+.fb-preview-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* ---- Preview Content ---- */
+.fb-preview-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.fb-preview-meta {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-2);
+}
+
+/* ---- Preview: Image ---- */
+.fb-preview-image {
+  max-width: 100%; max-height: 300px;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+}
+.fb-preview-dims {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  text-align: center;
+  margin-top: var(--space-2);
+}
+
+/* ---- Preview: PDF ---- */
+.fb-preview-pdf {
+  width: 100%;
+  min-height: 300px;
+  border: none;
+  border-radius: var(--radius-md);
+}
+
+/* ---- Preview: Binary ---- */
+.fb-preview-binary {
+  text-align: center;
+  padding: var(--space-8);
+  color: var(--text-secondary);
+}
+.fb-preview-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-2);
+}
+
+/* ---- Preview: Error ---- */
+.fb-preview-error {
+  color: var(--status-error);
+  padding: var(--space-4);
+  text-align: center;
+}
+
+/* ---- Code Preview (gutter + code) ---- */
+.fb-code-preview {
+  display: flex;
+  background: var(--surface-tertiary);
+  border-radius: var(--radius-md);
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.fb-code-gutter {
+  padding: var(--space-2) var(--space-2);
+  text-align: right;
+  color: var(--text-muted);
+  user-select: none;
+  border-right: 1px solid var(--border-default);
+}
+.fb-code-content {
+  padding: var(--space-2) var(--space-3);
+  flex: 1;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.fb-line-number {
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+/* ---- CSV Preview ---- */
+.fb-csv-wrapper {
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+}
+.fb-csv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+}
+.fb-csv-table th {
+  background: var(--surface-tertiary);
+  font-weight: var(--weight-semibold);
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-default);
+}
+.fb-csv-table td {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-default);
+}
+
+/* ---- Truncated Notice ---- */
+.fb-truncated-notice {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  padding: var(--space-2);
+  text-align: center;
+  background: var(--surface-tertiary);
+  border-radius: var(--radius-sm);
+  margin-top: var(--space-2);
+}
+
+/* ---- Upload Overlay (drag-drop) ---- */
+.file-browser-upload-overlay {
+  position: absolute; inset: 0;
+  background: var(--accent-soft);
+  border: 2px dashed var(--accent-default);
+  display: none; align-items: center; justify-content: center;
+  z-index: 10;
+  border-radius: var(--radius-md);
+}
+.file-browser-upload-overlay.active { display: flex; }
+.fb-upload-overlay-content {
+  color: var(--accent-default);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  text-align: center;
+}
+
+/* ---- Upload Progress Bar ---- */
+.fb-upload-progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 2px;
+  background: var(--accent-default);
+  transition: width var(--duration-normal) var(--ease-default);
+  z-index: 5;
+}
+
+/* ---- Status Bar ---- */
+.fb-status-bar {
+  display: flex; align-items: center;
+  gap: var(--space-2);
+  height: 24px; min-height: 24px;
+  padding: 0 var(--space-3);
+  background: var(--surface-elevated);
+  border-top: 1px solid var(--border-default);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ---- Editor Area ---- */
+.file-browser-editor {
+  flex: 1;
+  display: none; flex-direction: column;
+  min-height: 0;
+}
+.file-browser-editor.visible { display: flex; }
+.file-browser-editor-toolbar {
+  display: flex; align-items: center;
+  gap: var(--space-2);
+  height: 40px; min-height: 40px;
+  padding: 0 var(--space-3);
+  background: var(--surface-elevated);
+  border-bottom: 1px solid var(--border-default);
+  flex-shrink: 0;
+}
+.file-browser-editor-filename {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-browser-editor-dirty {
+  display: none;
+  width: 6px; height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--status-warning);
+  flex-shrink: 0;
+}
+.file-browser-editor-dirty.visible { display: inline-block; }
+.file-browser-editor-autosave {
+  display: flex; align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-0-5) var(--space-2);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  cursor: pointer;
+  background: transparent; border: none;
+  transition: background var(--duration-fast), color var(--duration-fast);
+}
+.file-browser-editor-autosave.active {
+  background: var(--accent-soft);
+  color: var(--accent-default);
+}
+.file-browser-editor-content { flex: 1; min-height: 0; overflow: auto; }
+.file-browser-editor-status {
+  display: flex; align-items: center;
+  gap: var(--space-2);
+  height: 24px; min-height: 24px;
+  padding: 0 var(--space-3);
+  background: var(--surface-elevated);
+  border-top: 1px solid var(--border-default);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* ---- Overwrite Banner ---- */
+.file-browser-overwrite-banner {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-elevated);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-md);
+  margin: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+/* ---- Conflict Banner ---- */
+.file-browser-conflict-banner {
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-elevated);
+  border: 1px solid var(--status-error);
+  border-radius: var(--radius-md);
+  margin: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+.file-browser-conflict-banner-actions {
+  display: flex; gap: var(--space-2); margin-top: var(--space-2);
+}
+
+/* ---- View Transition Animations ---- */
+@keyframes fbSlideInRight {
+  from { transform: translateX(30px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@keyframes fbSlideOutLeft {
+  from { transform: translateX(0); opacity: 1; }
+  to { transform: translateX(-30px); opacity: 0; }
+}
+.file-browser-view-enter { animation: fbSlideInRight var(--duration-fast) var(--ease-out); }
+.file-browser-view-exit { animation: fbSlideOutLeft var(--duration-fast) var(--ease-out); }
+
+/* ---- Empty State ---- */
+.fb-empty-message,
+.file-browser-empty {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: var(--space-8);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+  gap: var(--space-2);
+}
+
+/* ---- Loading Spinner ---- */
+.fb-loading,
+.file-browser-loading {
+  display: flex; align-items: center; justify-content: center;
+  padding: var(--space-8);
+}
+.file-browser-spinner {
+  width: 24px; height: 24px;
+  border: 2px solid var(--border-default);
+  border-top-color: var(--accent-default);
+  border-radius: var(--radius-full);
+  animation: spin 0.8s linear infinite;
+}
+
+/* ---- Mobile Backdrop ---- */
+.file-browser-backdrop {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  z-index: var(--z-modal-backdrop);
+}
+.file-browser-backdrop.active { display: block; }
+
+/* ============================================================
+   Responsive — Medium Viewports (tablet overlay)
+   ============================================================ */
+@media (min-width: 769px) and (max-width: 1024px) {
+  .file-browser-panel.open { z-index: var(--z-modal); }
+}
+
+/* ============================================================
+   Responsive — Small Viewports (mobile full-width)
+   ============================================================ */
+@media (max-width: 768px) {
+  .file-browser-panel { width: 100%; z-index: var(--z-modal); }
+
+  .file-browser-item {
+    min-height: 44px;
+    padding: var(--space-3) var(--space-4);
+  }
+  .file-item-edit { opacity: 0.6; }
+
+  .fb-back-btn,
+  .fb-header-btn { width: 36px; height: 36px; }
+
+  .fb-breadcrumbs {
+    overflow-x: auto; flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+  }
+  .fb-search-input {
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-base);
+  }
+}
+
+/* ============================================================
+   Terminal Path Context Menu
+   ============================================================ */
+.fb-terminal-context-menu {
+  position: fixed;
+  z-index: var(--z-popover, 3000);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-1) 0;
+  min-width: 180px;
+}
+
+.fb-terminal-context-menu .ctx-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  transition: background-color var(--duration-fast);
+}
+
+.fb-terminal-context-menu .ctx-item:hover:not(.disabled) {
+  background: var(--surface-tertiary);
+}
+
+.fb-terminal-context-menu .ctx-item.disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.fb-terminal-context-menu .ctx-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   Overwrite Banner (inner elements)
+   ============================================================ */
+.fb-overwrite-msg {
+  display: block;
+  margin-bottom: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.fb-overwrite-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
