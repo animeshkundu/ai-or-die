@@ -344,11 +344,16 @@
 
   // -- Conflict dialog --
 
-  FileEditorPanel.prototype._showConflictDialog = function () {
+  FileEditorPanel.prototype._showConflictDialog = function (conflictData) {
     var self = this;
+    // conflictData may contain { error, currentHash, yourHash } from 409 response
+    if (conflictData && conflictData.currentHash) {
+      this._serverHash = conflictData.currentHash;
+    }
     this._removeConflictBanner();
     var banner = document.createElement('div');
     banner.className = 'file-browser-conflict-banner';
+    banner.setAttribute('role', 'alert');
     var msg = document.createElement('span');
     msg.textContent = 'This file was modified externally.';
     banner.appendChild(msg);
