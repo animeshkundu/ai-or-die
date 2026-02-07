@@ -48,6 +48,7 @@
     <link rel="stylesheet" href="components/cards.css">
     <link rel="stylesheet" href="components/menus.css">
     <link rel="stylesheet" href="components/notifications.css">
+    <link rel="stylesheet" href="components/file-browser.css">
     <link rel="stylesheet" href="mobile.css">
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -60,6 +61,7 @@
     <script src="https://unpkg.com/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
     <script src="https://unpkg.com/xterm-addon-search@0.13.0/lib/xterm-addon-search.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
+    <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.5/ace.min.js" as="script">
 </head>
 <body>
     <a href="#terminal" class="skip-to-content">Skip to terminal</a>
@@ -95,6 +97,12 @@
                 </div>
             </div>
             <div class="tab-actions">
+                <button class="tab-browse-files" id="browseFilesBtn" title="Browse Files (Ctrl+B)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                        <line x1="9" y1="14" x2="15" y2="14"/>
+                    </svg>
+                </button>
                 <button class="tab-attach-image" id="attachImageBtn" title="Attach Image">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" stroke-width="2">
@@ -421,6 +429,7 @@
     <script src="session-manager.js"></script>
     <script src="splits.js"></script>
     <script src="icons.js"></script>
+    <script src="file-browser.js"></script>
     <script src="command-palette.js"></script>
     <script src="app.js"></script>
     <ninja-keys class="dark" id="commandPalette" hideBreadcrumbs></ninja-keys>

@@ -14,6 +14,7 @@ const CopilotBridge = require('./copilot-bridge');
 const GeminiBridge = require('./gemini-bridge');
 const TerminalBridge = require('./terminal-bridge');
 const SessionStore = require('./utils/session-store');
+const { getFileInfo, computeFileHash, isBinaryFile, sanitizeFileName, isBlockedExtension, formatFileSize, normalizePath, BLOCKED_EXTENSIONS } = require('./utils/file-utils');
 const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
 
@@ -138,16 +139,27 @@ class ClaudeCodeWebServer {
     if (!targetPath) {
       return { valid: false, error: 'Path is required' };
     }
-    
+
     const resolvedPath = path.resolve(targetPath);
-    
+
     if (!this.isPathWithinBase(resolvedPath)) {
-      return { 
-        valid: false, 
-        error: 'Access denied: Path is outside the allowed directory' 
+      return {
+        valid: false,
+        error: 'Access denied: Path is outside the allowed directory'
       };
     }
-    
+
+    // Resolve symlinks to prevent TOCTOU attacks
+    try {
+      if (fs.existsSync(resolvedPath)) {
+        const realPath = fs.realpathSync(resolvedPath);
+        if (!this.isPathWithinBase(realPath)) {
+          return { valid: false, error: 'Access denied: symlink escapes allowed directory' };
+        }
+        return { valid: true, path: realPath };
+      }
+    } catch (e) { /* If realpath fails, fall through to using resolved path */ }
+
     return { valid: true, path: resolvedPath };
   }
 
@@ -463,18 +475,18 @@ class ClaudeCodeWebServer {
 
     this.app.get('/api/folders', (req, res) => {
       const requestedPath = req.query.path || this.baseFolder;
-      
+
       // Validate the requested path
       const validation = this.validatePath(requestedPath);
       if (!validation.valid) {
-        return res.status(403).json({ 
+        return res.status(403).json({
           error: validation.error,
-          message: 'Access to this directory is not allowed' 
+          message: 'Access to this directory is not allowed'
         });
       }
-      
+
       const currentPath = validation.path;
-      
+
       try {
         const items = fs.readdirSync(currentPath, { withFileTypes: true });
         const folders = items
@@ -486,10 +498,10 @@ class ClaudeCodeWebServer {
             isDirectory: true
           }))
           .sort((a, b) => a.name.localeCompare(b.name));
-        
+
         const parentDir = path.dirname(currentPath);
         const canGoUp = this.isPathWithinBase(parentDir) && parentDir !== currentPath;
-        
+
         res.json({
           currentPath,
           parentPath: canGoUp ? parentDir : null,
@@ -498,10 +510,370 @@ class ClaudeCodeWebServer {
           baseFolder: this.baseFolder
         });
       } catch (error) {
-        res.status(403).json({ 
+        res.status(403).json({
           error: 'Cannot access directory',
-          message: error.message 
+          message: error.message
         });
+      }
+    });
+
+    // ── File Browser Endpoints ──────────────────────────────────────────
+
+    // GET /api/files — List directory (files + folders), paginated
+    this.app.get('/api/files', (req, res) => {
+      const requestedPath = req.query.path || this.baseFolder;
+      const validation = this.validatePath(requestedPath);
+      if (!validation.valid) {
+        return res.status(403).json({ error: validation.error });
+      }
+      const currentPath = validation.path;
+      const offset = Math.max(0, parseInt(req.query.offset || '0', 10) || 0);
+      const limit = Math.min(1000, Math.max(1, parseInt(req.query.limit || '500', 10) || 500));
+      const showHidden = req.query.showHidden === 'true';
+
+      (async () => {
+        try {
+          const stat = await fs.promises.stat(currentPath);
+          if (!stat.isDirectory()) {
+            return res.status(400).json({ error: 'Path is not a directory' });
+          }
+          const entries = await fs.promises.readdir(currentPath, { withFileTypes: true });
+          const filtered = entries.filter(e => showHidden || !e.name.startsWith('.'));
+
+          const mapped = [];
+          for (const entry of filtered) {
+            const itemPath = path.join(currentPath, entry.name);
+            const isDir = entry.isDirectory();
+            let size = null;
+            let modified = null;
+            let extension = null;
+            let mimeCategory = null;
+            let editable = false;
+
+            if (!isDir) {
+              try {
+                const st = await fs.promises.stat(itemPath);
+                size = st.size;
+                modified = st.mtime.toISOString();
+              } catch { /* skip stat errors */ }
+              const info = getFileInfo(itemPath);
+              extension = info.extension;
+              mimeCategory = info.mimeCategory;
+              editable = info.editable;
+            } else {
+              try {
+                const st = await fs.promises.stat(itemPath);
+                modified = st.mtime.toISOString();
+              } catch { /* skip */ }
+            }
+
+            mapped.push({
+              name: entry.name,
+              path: normalizePath(itemPath),
+              isDirectory: isDir,
+              size,
+              modified,
+              extension,
+              mimeCategory,
+              editable,
+            });
+          }
+
+          // Sort: directories first, then alphabetical
+          mapped.sort((a, b) => {
+            if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+            return a.name.localeCompare(b.name);
+          });
+
+          const totalCount = mapped.length;
+          const items = mapped.slice(offset, offset + limit);
+
+          const parentDir = path.dirname(currentPath);
+          const canGoUp = this.isPathWithinBase(parentDir) && parentDir !== currentPath;
+
+          res.json({
+            currentPath: normalizePath(currentPath),
+            parentPath: canGoUp ? normalizePath(parentDir) : null,
+            items,
+            totalCount,
+            offset,
+            limit,
+            home: normalizePath(this.baseFolder),
+            baseFolder: normalizePath(this.baseFolder),
+          });
+        } catch (error) {
+          res.status(403).json({ error: 'Cannot access directory', message: error.message });
+        }
+      })();
+    });
+
+    // GET /api/files/stat — File/dir metadata with hash
+    this.app.get('/api/files/stat', async (req, res) => {
+      const filePath = req.query.path;
+      if (!filePath) return res.status(400).json({ error: 'Path is required' });
+
+      const validation = this.validatePath(filePath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+
+      const resolvedPath = validation.path;
+      try {
+        const stat = await fs.promises.stat(resolvedPath);
+        const info = getFileInfo(resolvedPath);
+        let hash = null;
+        if (!stat.isDirectory() && info.mimeCategory !== 'binary') {
+          try { hash = await computeFileHash(resolvedPath); } catch { /* skip */ }
+        }
+
+        res.json({
+          path: normalizePath(resolvedPath),
+          name: path.basename(resolvedPath),
+          isDirectory: stat.isDirectory(),
+          size: stat.size,
+          sizeFormatted: formatFileSize(stat.size),
+          modified: stat.mtime.toISOString(),
+          created: stat.birthtime.toISOString(),
+          extension: info.extension,
+          mimeType: info.mimeType,
+          mimeCategory: info.mimeCategory,
+          previewable: info.previewable,
+          editable: info.editable,
+          hash,
+        });
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          return res.status(404).json({ error: 'File not found' });
+        }
+        res.status(500).json({ error: 'Failed to get file info', message: error.message });
+      }
+    });
+
+    // GET /api/files/content — Serve text content as JSON envelope
+    this.app.get('/api/files/content', async (req, res) => {
+      const filePath = req.query.path;
+      if (!filePath) return res.status(400).json({ error: 'Path is required' });
+
+      const validation = this.validatePath(filePath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+
+      const resolvedPath = validation.path;
+      try {
+        const stat = await fs.promises.stat(resolvedPath);
+        if (stat.isDirectory()) {
+          return res.status(400).json({ error: 'Path is a directory' });
+        }
+
+        const info = getFileInfo(resolvedPath);
+        const maxSize = Math.min(
+          parseInt(req.query.maxSize || '5242880', 10) || 5242880,
+          5242880 // 5MB hard cap
+        );
+
+        // Binary check: extension-based first, then null-byte heuristic
+        if (info.mimeCategory === 'binary') {
+          const binary = await isBinaryFile(resolvedPath);
+          if (binary) {
+            return res.status(415).json({ error: 'Binary file cannot be previewed as text' });
+          }
+        }
+
+        // Even for "text" categories, check for binary content
+        if (info.mimeCategory !== 'binary') {
+          try {
+            const binary = await isBinaryFile(resolvedPath);
+            if (binary) {
+              return res.status(415).json({ error: 'File contains binary content and cannot be previewed as text' });
+            }
+          } catch { /* if check fails, try to serve anyway */ }
+        }
+
+        const hash = await computeFileHash(resolvedPath);
+        const truncated = stat.size > maxSize;
+        const readSize = Math.min(stat.size, maxSize);
+
+        const buffer = Buffer.alloc(readSize);
+        const fd = await fs.promises.open(resolvedPath, 'r');
+        try {
+          await fd.read(buffer, 0, readSize, 0);
+        } finally {
+          await fd.close();
+        }
+
+        const content = buffer.toString('utf-8');
+
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({
+          content,
+          hash,
+          truncated,
+          totalSize: stat.size,
+          mimeCategory: info.mimeCategory,
+          extension: info.extension,
+          editable: info.editable,
+        });
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          return res.status(404).json({ error: 'File not found' });
+        }
+        res.status(500).json({ error: 'Failed to read file', message: error.message });
+      }
+    });
+
+    // GET /api/files/download — Stream file with inline/attachment support
+    this.app.get('/api/files/download', (req, res) => {
+      const filePath = req.query.path;
+      if (!filePath) return res.status(400).json({ error: 'Path is required' });
+
+      const validation = this.validatePath(filePath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+
+      const resolvedPath = validation.path;
+      try {
+        const stat = fs.statSync(resolvedPath);
+        if (stat.isDirectory()) {
+          return res.status(400).json({ error: 'Cannot download a directory' });
+        }
+        if (stat.size > 100 * 1024 * 1024) {
+          return res.status(413).json({ error: 'File too large (>100MB)' });
+        }
+
+        const fileName = path.basename(resolvedPath);
+        const info = getFileInfo(resolvedPath);
+        const inline = req.query.inline === '1';
+
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'no-store');
+
+        if (inline) {
+          // Serve inline for preview (images, PDFs)
+          res.setHeader('Content-Type', info.mimeType);
+          res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+          res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'");
+        } else {
+          // Force download
+          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        }
+
+        const stream = fs.createReadStream(resolvedPath);
+        stream.pipe(res);
+        stream.on('error', (err) => {
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'Failed to stream file', message: err.message });
+          }
+        });
+      } catch (error) {
+        if (error.code === 'ENOENT') {
+          return res.status(404).json({ error: 'File not found' });
+        }
+        res.status(500).json({ error: 'Failed to download file', message: error.message });
+      }
+    });
+
+    // PUT /api/files/content — Save edited file with hash conflict detection
+    this.app.put('/api/files/content', async (req, res) => {
+      const { path: filePath, content, hash } = req.body;
+      if (!filePath) return res.status(400).json({ error: 'Path is required' });
+      if (content === undefined || content === null) return res.status(400).json({ error: 'Content is required' });
+
+      const validation = this.validatePath(filePath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+
+      const resolvedPath = validation.path;
+
+      // Check content size (5MB limit for editor saves)
+      if (Buffer.byteLength(content, 'utf-8') > 5 * 1024 * 1024) {
+        return res.status(413).json({ error: 'Content too large (>5MB)' });
+      }
+
+      try {
+        // Hash-based conflict detection
+        if (hash && fs.existsSync(resolvedPath)) {
+          const currentHash = await computeFileHash(resolvedPath);
+          if (currentHash !== hash) {
+            return res.status(409).json({
+              error: 'File was modified externally',
+              currentHash,
+              yourHash: hash,
+            });
+          }
+        }
+
+        await fs.promises.writeFile(resolvedPath, content, 'utf-8');
+        const newHash = await computeFileHash(resolvedPath);
+        const stat = await fs.promises.stat(resolvedPath);
+
+        res.json({ hash: newHash, size: stat.size });
+      } catch (error) {
+        if (error.code === 'ENOSPC') {
+          return res.status(507).json({ error: 'Insufficient storage space' });
+        }
+        res.status(500).json({ error: 'Failed to save file', message: error.message });
+      }
+    });
+
+    // POST /api/files/upload — Upload file (base64 JSON, route-specific limit)
+    this.app.post('/api/files/upload', express.json({ limit: '10mb' }), async (req, res) => {
+      const { targetDir, fileName, content, overwrite } = req.body;
+      if (!targetDir || !fileName || !content) {
+        return res.status(400).json({ error: 'targetDir, fileName, and content are required' });
+      }
+
+      // Validate target directory
+      const dirValidation = this.validatePath(targetDir);
+      if (!dirValidation.valid) return res.status(403).json({ error: dirValidation.error });
+
+      // Sanitize and validate filename
+      let safeName;
+      try {
+        safeName = sanitizeFileName(fileName);
+      } catch (e) {
+        return res.status(400).json({ error: e.message });
+      }
+
+      if (isBlockedExtension(safeName)) {
+        return res.status(403).json({ error: `Upload of ${path.extname(safeName)} files is not allowed` });
+      }
+
+      const targetPath = path.join(dirValidation.path, safeName);
+
+      // Validate the full target path is still within base
+      const targetValidation = this.validatePath(targetPath);
+      if (!targetValidation.valid) return res.status(403).json({ error: targetValidation.error });
+
+      try {
+        // Check if file already exists
+        if (fs.existsSync(targetPath) && !overwrite) {
+          return res.status(409).json({ error: 'File already exists', fileName: safeName });
+        }
+
+        // Ensure parent directory exists (for directory upload with relative paths)
+        const parentDir = path.dirname(targetPath);
+        if (!fs.existsSync(parentDir)) {
+          // Validate each directory level is within base
+          const parentValidation = this.validatePath(parentDir);
+          if (!parentValidation.valid) return res.status(403).json({ error: parentValidation.error });
+          await fs.promises.mkdir(parentDir, { recursive: true });
+        }
+
+        // Decode base64 and write
+        const buffer = Buffer.from(content, 'base64');
+        if (buffer.length > 10 * 1024 * 1024) {
+          return res.status(413).json({ error: 'File too large (>10MB)' });
+        }
+
+        await fs.promises.writeFile(targetPath, buffer);
+        const stat = await fs.promises.stat(targetPath);
+
+        res.json({
+          name: safeName,
+          path: normalizePath(targetPath),
+          size: stat.size,
+        });
+      } catch (error) {
+        if (error.code === 'ENOSPC') {
+          return res.status(507).json({ error: 'Insufficient storage space' });
+        }
+        res.status(500).json({ error: 'Failed to upload file', message: error.message });
       }
     });
 
