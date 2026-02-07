@@ -118,7 +118,7 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run visual regression tests
-        run: npx playwright test --config e2e/playwright.config.js --project visual-regression --update-snapshots
+        run: npx playwright test --config e2e/playwright.config.js --project visual-regression
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
