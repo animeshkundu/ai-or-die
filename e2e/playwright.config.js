@@ -33,7 +33,7 @@ module.exports = defineConfig({
     },
     {
       name: 'functional',
-      testMatch: /0[2-79]-.*\.spec\.js/,
+      testMatch: /0[2-7]-.*\.spec\.js|09-image-paste\.spec\.js/,
     },
     {
       name: 'mobile-iphone',

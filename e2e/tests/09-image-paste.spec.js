@@ -107,9 +107,10 @@ test.describe('Image paste: preview modal and upload', () => {
     const modal = page.locator('#imagePreviewModal');
     await expect(modal).toBeVisible({ timeout: 5000 });
 
-    // Press Escape to dismiss
-    await page.keyboard.press('Escape');
-    await expect(modal).not.toBeVisible();
+    // Wait for modal's keydown listener to be attached, then press Escape
+    await page.waitForTimeout(500);
+    await modal.press('Escape');
+    await expect(modal).not.toBeVisible({ timeout: 5000 });
   });
 
   test('Context menu shows Paste Image and Attach Image items', async ({ page }) => {
