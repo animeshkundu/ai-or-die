@@ -1,5 +1,5 @@
 // @ts-check
-const { defineConfig } = require('@playwright/test');
+const { defineConfig, devices } = require('@playwright/test');
 
 module.exports = defineConfig({
   testDir: './tests',
@@ -27,6 +27,16 @@ module.exports = defineConfig({
     {
       name: 'functional',
       testMatch: /0[2-7]-.*\.spec\.js/,
+    },
+    {
+      name: 'mobile-iphone',
+      testMatch: '08-mobile-portrait.spec.js',
+      use: { ...devices['iPhone 14'] },
+    },
+    {
+      name: 'mobile-pixel',
+      testMatch: '08-mobile-portrait.spec.js',
+      use: { ...devices['Pixel 7'] },
     },
   ],
 });
