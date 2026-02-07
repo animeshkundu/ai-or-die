@@ -1,4 +1,69 @@
-/* terminal.css — Terminal container, split view, xterm overrides, overlays, pane menus */
+/* terminal.css — Terminal container, split view, xterm overrides, overlays, pane menus, search bar */
+
+/* Terminal Search Bar (Ctrl+F) */
+.terminal-search-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    background-color: var(--surface-secondary);
+    border-bottom: 1px solid var(--border-default);
+    flex-shrink: 0;
+}
+
+.term-search-input {
+    flex: 1;
+    min-width: 180px;
+    max-width: 300px;
+    padding: 4px 8px;
+    font-size: 13px;
+    font-family: var(--font-mono);
+    background-color: var(--surface-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    outline: none;
+}
+
+.term-search-input:focus {
+    border-color: var(--accent-default);
+}
+
+.term-search-count {
+    font-size: 11px;
+    color: var(--text-muted);
+    min-width: 50px;
+    text-align: center;
+    font-family: var(--font-mono);
+}
+
+.term-search-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--duration-fast) ease;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+}
+
+.term-search-btn:hover {
+    background-color: var(--surface-tertiary);
+    color: var(--text-primary);
+}
+
+.term-search-toggle.active {
+    background-color: var(--accent-soft);
+    color: var(--accent-default);
+    border-color: var(--accent-default);
+}
 
 /* Terminal Container */
 .terminal-container {

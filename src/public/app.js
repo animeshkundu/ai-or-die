@@ -337,10 +337,16 @@ class ClaudeCodeWebInterface {
 
         this.fitAddon = new FitAddon.FitAddon();
         this.webLinksAddon = new WebLinksAddon.WebLinksAddon();
-        
+
         this.terminal.loadAddon(this.fitAddon);
         this.terminal.loadAddon(this.webLinksAddon);
-        
+
+        // Load search addon if available
+        if (typeof SearchAddon !== 'undefined') {
+            this.searchAddon = new SearchAddon.SearchAddon();
+            this.terminal.loadAddon(this.searchAddon);
+        }
+
         this.terminal.open(document.getElementById('terminal'));
         this.fitTerminal();
 
@@ -351,6 +357,7 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        this.setupTerminalSearch();
         this.setupTerminalContextMenu();
 
         this.terminal.onData((data) => {
@@ -951,6 +958,82 @@ class ClaudeCodeWebInterface {
                 console.error('Error fitting terminal:', error);
             }
         }
+    }
+
+    setupTerminalSearch() {
+        const bar = document.getElementById('terminalSearchBar');
+        const input = document.getElementById('termSearchInput');
+        const countEl = document.getElementById('termSearchCount');
+        const prevBtn = document.getElementById('termSearchPrev');
+        const nextBtn = document.getElementById('termSearchNext');
+        const caseBtn = document.getElementById('termSearchCase');
+        const regexBtn = document.getElementById('termSearchRegex');
+        const closeBtn = document.getElementById('termSearchClose');
+        if (!bar || !input || !this.searchAddon) return;
+
+        let caseSensitive = false;
+        let useRegex = false;
+
+        const doSearch = (direction = 'next') => {
+            const query = input.value;
+            if (!query) { countEl.textContent = ''; return; }
+            const opts = { caseSensitive, regex: useRegex };
+            if (direction === 'prev') {
+                this.searchAddon.findPrevious(query, opts);
+            } else {
+                this.searchAddon.findNext(query, opts);
+            }
+        };
+
+        const openSearch = () => {
+            bar.style.display = 'flex';
+            input.focus();
+            input.select();
+        };
+
+        const closeSearch = () => {
+            bar.style.display = 'none';
+            input.value = '';
+            countEl.textContent = '';
+            this.searchAddon.clearDecorations();
+            this.terminal.focus();
+        };
+
+        // Ctrl+F opens search (capture phase to intercept before xterm)
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                e.preventDefault();
+                e.stopPropagation();
+                openSearch();
+            }
+        }, true);
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                doSearch(e.shiftKey ? 'prev' : 'next');
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeSearch();
+            }
+        });
+
+        input.addEventListener('input', () => doSearch('next'));
+        prevBtn.addEventListener('click', () => doSearch('prev'));
+        nextBtn.addEventListener('click', () => doSearch('next'));
+        closeBtn.addEventListener('click', () => closeSearch());
+
+        caseBtn.addEventListener('click', () => {
+            caseSensitive = !caseSensitive;
+            caseBtn.classList.toggle('active', caseSensitive);
+            doSearch('next');
+        });
+
+        regexBtn.addEventListener('click', () => {
+            useRegex = !useRegex;
+            regexBtn.classList.toggle('active', useRegex);
+            doSearch('next');
+        });
     }
 
     setupTerminalContextMenu() {
