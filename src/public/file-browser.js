@@ -291,11 +291,11 @@
         if (this._searchVisible) {
           this._toggleSearch();
         } else if (this._currentView === 'editor') {
-          // Let the editor handle Escape first (e.g., close search dialog)
-          // Only close editor if no editor internal popups are open
-          if (this._editorPanel) {
-            this._editorPanel.close();
-          }
+          // Don't handle Escape here — Ace Editor has its own Escape
+          // command that handles closing search bar vs closing editor.
+          // The document-level fallback handler will catch it if Ace
+          // doesn't consume it.
+          return;
         } else if (this._currentView === 'preview') {
           this._showBrowseView();
         } else {
@@ -313,8 +313,14 @@
     var self = this;
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && self._open) {
-        if (self._currentView === 'editor' && self._editorPanel) {
-          self._editorPanel.close();
+        if (self._currentView === 'editor') {
+          // Check if Ace has an internal popup open (search bar)
+          var aceSearch = self._panelEl.querySelector('.ace_search');
+          if (aceSearch && aceSearch.offsetParent !== null) {
+            // Ace search is visible — let Ace handle this Escape, don't close editor
+            return;
+          }
+          if (self._editorPanel) self._editorPanel.close();
         } else if (self._currentView === 'preview') {
           self._showBrowseView();
         } else {

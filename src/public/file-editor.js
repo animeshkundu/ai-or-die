@@ -99,6 +99,7 @@
     if (this._saving || !this._dirty || this._destroyed) return;
     this._saving = true; this._retryCount = 0;
     this._updateStatus('Saving...', '');
+    this._announceToScreenReader('Saving');
     this._doSave();
   };
 
@@ -322,10 +323,11 @@
           self._dirtyDot.classList.remove('visible');
           localStorage.removeItem('fb-draft-' + self._filePath);
           self._updateStatus('Saved', getAceMode(getExtension(self._filePath)));
+          self._announceToScreenReader('File saved');
           self.onSave();
         });
       } else if (resp.status === 409) {
-        return resp.json().then(function (d) { self._saving = false; self._showConflictDialog(d); });
+        return resp.json().then(function (d) { self._saving = false; self._announceToScreenReader('File was modified externally'); self._showConflictDialog(d); });
       } else { throw new Error('HTTP ' + resp.status); }
     }).catch(function () {
       if (self._destroyed) return;
@@ -335,6 +337,7 @@
       } else {
         self._saving = false; self._retryCount = 0;
         self._updateStatus('SAVE FAILED', '', true);
+        self._announceToScreenReader('Save failed');
       }
     });
   };
@@ -514,7 +517,7 @@
     if (!this._aceEditor || !this._statusEl || this._destroyed) return;
     var pos = this._aceEditor.getCursorPosition();
     var mode = getAceMode(getExtension(this._filePath));
-    var state = this._dirty ? 'Editing' : (this._saving ? 'Saving...' : 'Ready');
+    var state = this._saving ? 'Saving...' : (this._dirty ? 'Editing' : 'Ready');
     this._statusEl.textContent = [state, mode, 'UTF-8',
       'Ln ' + (pos.row + 1) + ', Col ' + (pos.column + 1)].join(' \u00b7 ');
     this._statusEl.style.color = '';
