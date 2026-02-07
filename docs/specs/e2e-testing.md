@@ -247,32 +247,29 @@ PTY process startup varies by platform. Windows ConPTY is slower than Unix PTY. 
 
 ## 5. Future Enhancements
 
-### 5.1 Browser E2E with Playwright (Tier 2)
+### 5.1 Browser E2E with Playwright (Implemented)
 
-When browser-level testing is needed:
+Browser-level tests run Chromium via Playwright, validating the full stack from browser → xterm.js → WebSocket → PTY and back.
 
-```javascript
-// Example Playwright test structure
-test('terminal displays tool output', async ({ page }) => {
-  await page.goto(`http://localhost:${port}?token=${authToken}`);
+**Structure:** `e2e/` directory with per-spec server instances, shared helpers, and rich failure artifacts.
 
-  // Wait for xterm.js canvas to render
-  await page.waitForSelector('.xterm-screen canvas');
+**Test specs:**
 
-  // Read terminal content via xterm API
-  const content = await page.evaluate(() => {
-    const term = window.__terminal__;
-    const buffer = term.buffer.active;
-    let text = '';
-    for (let i = 0; i < buffer.cursorY + 1; i++) {
-      text += buffer.getLine(i).translateToString(true) + '\n';
-    }
-    return text;
-  });
+| Spec | What it validates |
+|------|-------------------|
+| `01-golden-path` | Real user flow: spawn CLI → browser → click Terminal → type → see output |
+| `02-terminal-io` | Echo round-trip, multi-line output, terminal dimensions |
+| `03-clipboard` | Ctrl+C copies selection (not SIGINT), Ctrl+V pastes from clipboard |
+| `04-context-menu` | Right-click shows menu, items work, keyboard navigation, Escape closes |
+| `05-tab-switching` | Two sessions isolated, no garbled text after switching |
+| `06-large-paste` | 3KB+ paste arrives intact through chunked write pipeline |
 
-  expect(content).toContain('expected output');
-});
-```
+**Key design decisions:**
+- `serviceWorkers: 'block'` prevents stale cache interference
+- Terminal text read via `terminal.buffer.active.getLine(i).translateToString(true)` (canvas-rendered content)
+- Focus terminal via `page.evaluate(() => terminal.focus())` before keyboard input
+- Failure artifacts: terminal buffer, WebSocket log, console log, screenshot
+- CI: separate `test-browser` job on ubuntu-latest + windows-latest
 
 ### 5.2 Mock Tool Scripts
 
@@ -301,12 +298,11 @@ done
 
 ## 6. Dependencies
 
-No new dependencies required.
-
 | Package | Role | Status |
 |---------|------|--------|
-| `mocha` | Test runner | Already in devDependencies |
+| `mocha` | Test runner (server-side) | Already in devDependencies |
 | `assert` | Assertions | Node.js built-in |
 | `ws` | WebSocket client in tests | Already in dependencies |
 | `http` | HTTP client for REST endpoints | Node.js built-in |
 | `node-pty` | PTY spawning (via bridges) | Already in dependencies |
+| `@playwright/test` | Browser E2E test runner | devDependency |

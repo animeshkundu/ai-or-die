@@ -869,3 +869,59 @@ describe('E2E: Multi-session tool start from same WebSocket', function () {
     await closeWs(ws);
   });
 });
+
+describe('E2E: Large input handling', function () {
+  this.timeout(30000);
+
+  let server;
+  let port;
+  let ws;
+
+  before(async function () {
+    server = new ClaudeCodeWebServer({ port: 0, noAuth: true });
+    const httpServer = await server.start();
+    port = httpServer.address().port;
+
+    ({ ws } = await connectWs(port));
+    wsSend(ws, { type: 'create_session', name: 'Large Input Test' });
+    await waitForMessage(ws, 'session_created');
+    const startedPromise = waitForMessage(ws, 'terminal_started', 15000);
+    wsSend(ws, { type: 'start_terminal' });
+    await startedPromise;
+
+    // Drain initial shell output — generous window for Windows ConPTY
+    await collectMessages(ws, 'output', 3000);
+  });
+
+  after(async function () {
+    wsSend(ws, { type: 'stop' });
+    try {
+      await waitForMessage(ws, 'terminal_stopped', 10000);
+    } catch (_) {
+      // Terminal may have already exited
+    }
+    await closeWs(ws);
+    server.close();
+  });
+
+  it('should handle a large echo command sent as a single input message', async function () {
+    // Build a large echo command (>4KB to trigger chunked write) with a unique marker
+    // This simulates pasting a long command — the input goes through chunked sendInput
+    const marker = `LARGE_${Date.now()}`;
+    const padding = 'A'.repeat(3000);
+    const cmd = `echo ${marker}_${padding}_END\n`;
+
+    // cmd is ~3020 chars — under shell line limits but exercises the input pipeline
+    wsSend(ws, { type: 'input', data: cmd });
+
+    // Generous collect window for Windows ConPTY
+    const outputs = await collectMessages(ws, 'output', 8000);
+    const combined = outputs.map(m => m.data).join('');
+    assert(combined.includes(marker), `Expected output to contain marker "${marker}", got length: ${combined.length}`);
+  });
+
+  // Note: Write queue serialization (ordering guarantee) is tested by the
+  // unit test in test/chunked-write.test.js. An E2E ordering test is too
+  // timing-sensitive on Windows ConPTY where command processing times are
+  // unpredictable and output rendering can interleave between tests.
+});

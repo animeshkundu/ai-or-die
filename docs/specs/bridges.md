@@ -11,7 +11,7 @@ Every bridge implements the same public API:
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `startSession` | `(sessionId, options) => Promise<BridgeSession>` | Spawn the CLI process in a pty and wire up output/exit/error callbacks. Throws if `sessionId` already exists. |
-| `sendInput` | `(sessionId, data) => Promise<void>` | Write raw data to the pty stdin. Throws if session is missing or inactive. |
+| `sendInput` | `(sessionId, data) => Promise<void>` | Write data to the pty stdin with chunked writes. Large inputs (> 4096 bytes) are split into 4096-byte chunks with 10ms inter-chunk delays to prevent ConPTY buffer overflow. Writes are serialized per-session via `writeQueue`. Throws if session is missing or inactive. |
 | `resize` | `(sessionId, cols, rows) => Promise<void>` | Resize the pty dimensions. Logs a warning on failure instead of throwing. |
 | `stopSession` | `(sessionId) => Promise<void>` | Send `SIGTERM`; after a 5-second grace period, send `SIGKILL`. Removes the session from the internal Map. |
 | `getSession` | `(sessionId) => BridgeSession \| undefined` | Return the raw session object. |
@@ -22,11 +22,12 @@ Every bridge implements the same public API:
 
 ```js
 {
-  process: IPty,          // node-pty process handle
-  workingDir: string,     // cwd the process was started in
+  process: IPty,              // node-pty process handle
+  workingDir: string,         // cwd the process was started in
   created: Date,
   active: boolean,
-  killTimeout: Timeout|null  // handle for the SIGKILL escalation timer
+  killTimeout: Timeout|null,  // handle for the SIGKILL escalation timer
+  writeQueue: Promise<void>   // serialization chain for chunked PTY writes
 }
 ```
 
@@ -170,25 +171,26 @@ None. The agent is spawned with an empty args array.
 
 ---
 
-## Planned Bridges
+## BaseBridge (Implemented)
 
-The following bridges are planned but not yet implemented. They should follow the same common interface described above.
-
-### BaseBridge (Planned)
-
-A shared base class that extracts the duplicated logic from ClaudeBridge, CodexBridge, and AgentBridge:
+A shared base class that all bridges extend (`src/base-bridge.js`):
 
 - Cross-platform command discovery (`find*Command`, `commandExists`)
 - Session lifecycle management (`startSession`, `stopSession`, `sendInput`, `resize`)
 - Output buffering with configurable limits
 - Kill timeout escalation (SIGTERM then SIGKILL after 5s)
 - PTY environment setup
+- **Chunked PTY writes**: `sendInput` splits data > `PTY_WRITE_CHUNK_SIZE` (4096 bytes) into chunks with `PTY_WRITE_CHUNK_DELAY_MS` (10ms) inter-chunk delays. A per-session `writeQueue` (Promise chain) serializes concurrent writes to prevent interleaving.
 
-Each concrete bridge would extend `BaseBridge` and provide:
+Each concrete bridge extends `BaseBridge` and provides:
 - `commandSearchPaths` -- ordered array of paths to search
 - `fallbackCommand` -- default command name
 - `buildArgs(options)` -- returns the CLI arguments array
-- `onDataHook(data, buffer)` -- optional per-bridge output processing (e.g., trust prompt handling)
+- `processOutput(sessionId, ptyProcess, dataBuffer)` -- optional per-bridge output processing (e.g., trust prompt handling)
+
+## Planned Bridges
+
+The following bridges are planned but not yet implemented:
 
 ### CopilotBridge
 
