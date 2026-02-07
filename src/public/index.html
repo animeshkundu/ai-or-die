@@ -350,7 +350,7 @@
                             newWorker.addEventListener('statechange', () => {
                                 if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
                                     // New service worker available, prompt user to refresh
-                                    if (confirm('A new version of Claude Code Web is available. Refresh to update?')) {
+                                    if (confirm('A new version of ai-or-die is available. Refresh to update?')) {
                                         newWorker.postMessage({ type: 'SKIP_WAITING' });
                                         window.location.reload();
                                     }

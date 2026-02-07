@@ -925,3 +925,337 @@ describe('E2E: Large input handling', function () {
   // timing-sensitive on Windows ConPTY where command processing times are
   // unpredictable and output rendering can interleave between tests.
 });
+
+describe('E2E: Session activity broadcasting', function () {
+  this.timeout(30000);
+
+  let server;
+  let port;
+
+  before(async function () {
+    server = new ClaudeCodeWebServer({ port: 0, noAuth: true });
+    const httpServer = await server.start();
+    port = httpServer.address().port;
+  });
+
+  after(function () {
+    server.close();
+  });
+
+  it('should send session_activity to non-joined connections', async function () {
+    // Client A creates a session and starts terminal
+    const { ws: wsA } = await connectWs(port);
+    wsSend(wsA, { type: 'create_session', name: 'Active Session' });
+    const created = await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    await collectMessages(wsA, 'output', 1500);
+
+    // Client B connects but does NOT join any session (lobby state)
+    const { ws: wsB } = await connectWs(port);
+
+    // Send input to session A via client A
+    const marker = `ACTIVITY_${Date.now()}`;
+    wsSend(wsA, { type: 'input', data: `echo ${marker}\n` });
+
+    // Client B should receive session_activity (not output)
+    const activity = await waitForMessage(wsB, 'session_activity', 5000);
+    assert.strictEqual(activity.sessionId, created.sessionId);
+    assert.strictEqual(activity.sessionName, 'Active Session');
+
+    // Cleanup
+    wsSend(wsA, { type: 'stop' });
+    await waitForMessage(wsA, 'exit', 10000).catch(() => {});
+    await Promise.all([closeWs(wsA), closeWs(wsB)]);
+  });
+
+  it('should NOT send session_activity to the joined connection', async function () {
+    const { ws } = await connectWs(port);
+    wsSend(ws, { type: 'create_session', name: 'Self Session' });
+    await waitForMessage(ws, 'session_created');
+    wsSend(ws, { type: 'start_terminal' });
+    await waitForMessage(ws, 'terminal_started', 15000);
+    await collectMessages(ws, 'output', 1500);
+
+    // Send input and collect messages - should get output but NOT session_activity
+    wsSend(ws, { type: 'input', data: `echo SELF_TEST\n` });
+    const activities = await collectMessages(ws, 'session_activity', 3000);
+    assert.strictEqual(activities.length, 0, 'Joined connection should not receive session_activity');
+
+    wsSend(ws, { type: 'stop' });
+    await waitForMessage(ws, 'exit', 10000).catch(() => {});
+    await closeWs(ws);
+  });
+
+  it('should send session_started to non-joined connections', async function () {
+    const { ws: wsA } = await connectWs(port);
+    const { ws: wsB } = await connectWs(port);
+
+    // Create session with wsA
+    wsSend(wsA, { type: 'create_session', name: 'Start Test' });
+    const created = await waitForMessage(wsA, 'session_created');
+
+    // Start terminal - wsB should get session_started
+    wsSend(wsA, { type: 'start_terminal' });
+    const [startedA, startedB] = await Promise.all([
+      waitForMessage(wsA, 'terminal_started', 15000),
+      waitForMessage(wsB, 'session_started', 15000)
+    ]);
+    assert.strictEqual(startedB.sessionId, created.sessionId);
+    assert.strictEqual(startedB.agent, 'terminal');
+
+    wsSend(wsA, { type: 'stop' });
+    await waitForMessage(wsA, 'exit', 10000).catch(() => {});
+    await Promise.all([closeWs(wsA), closeWs(wsB)]);
+  });
+
+  it('should send session_stopped to non-joined connections', async function () {
+    const { ws: wsA } = await connectWs(port);
+    const { ws: wsB } = await connectWs(port);
+
+    wsSend(wsA, { type: 'create_session', name: 'Stop Test' });
+    const created = await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    // wsB also receives session_started, drain it
+    await waitForMessage(wsB, 'session_started', 5000).catch(() => {});
+    await collectMessages(wsA, 'output', 1500);
+
+    // Stop the terminal
+    wsSend(wsA, { type: 'stop' });
+    const stopped = await waitForMessage(wsB, 'session_stopped', 10000);
+    assert.strictEqual(stopped.sessionId, created.sessionId);
+    assert.strictEqual(stopped.agent, 'terminal');
+
+    await waitForMessage(wsA, 'terminal_stopped', 10000).catch(() => {});
+    await Promise.all([closeWs(wsA), closeWs(wsB)]);
+  });
+
+  it('should send session_exit to non-joined connections', async function () {
+    const { ws: wsA } = await connectWs(port);
+    const { ws: wsB } = await connectWs(port);
+
+    wsSend(wsA, { type: 'create_session', name: 'Exit Test' });
+    const created = await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    await waitForMessage(wsB, 'session_started', 5000).catch(() => {});
+    await collectMessages(wsA, 'output', 1500);
+
+    // Exit the shell process
+    const exitCmd = process.platform === 'win32' ? 'exit\r\n' : 'exit\n';
+    wsSend(wsA, { type: 'input', data: exitCmd });
+
+    const exitMsg = await waitForMessage(wsB, 'session_exit', 15000);
+    assert.strictEqual(exitMsg.sessionId, created.sessionId);
+    assert(exitMsg.code !== undefined, 'Expected exit code to be present');
+
+    await waitForMessage(wsA, 'exit', 15000).catch(() => {});
+    await Promise.all([closeWs(wsA), closeWs(wsB)]);
+  });
+
+  it('should throttle session_activity to roughly 1/second', async function () {
+    const { ws: wsA } = await connectWs(port);
+    const { ws: wsB } = await connectWs(port);
+
+    wsSend(wsA, { type: 'create_session', name: 'Throttle Test' });
+    await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    await waitForMessage(wsB, 'session_started', 5000).catch(() => {});
+    await collectMessages(wsA, 'output', 1500);
+
+    // Wait for throttle window to pass from terminal start
+    await new Promise(r => setTimeout(r, 1100));
+
+    // Start collecting BEFORE sending input so we don't miss early messages
+    const collectPromise = collectMessages(wsB, 'session_activity', 4000);
+
+    // Send 10 rapid echo commands (100ms apart)
+    for (let i = 0; i < 10; i++) {
+      wsSend(wsA, { type: 'input', data: `echo THROTTLE_${i}\n` });
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    const activities = await collectPromise;
+    assert(activities.length <= 5, `Expected at most ~5 session_activity messages, got ${activities.length}`);
+    assert(activities.length >= 1, 'Expected at least 1 session_activity message');
+
+    wsSend(wsA, { type: 'stop' });
+    await waitForMessage(wsA, 'exit', 10000).catch(() => {});
+    await Promise.all([closeWs(wsA), closeWs(wsB)]);
+  });
+
+  it('should send activity to a client joined to a DIFFERENT session', async function () {
+    // Client A in session 1
+    const { ws: wsA } = await connectWs(port);
+    wsSend(wsA, { type: 'create_session', name: 'Session 1' });
+    const created1 = await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    await collectMessages(wsA, 'output', 1500);
+
+    // Client B in session 2
+    const { ws: wsB } = await connectWs(port);
+    wsSend(wsB, { type: 'create_session', name: 'Session 2' });
+    await waitForMessage(wsB, 'session_created');
+    // Drain any session_started that arrived for session 1
+    await collectMessages(wsB, 'session_started', 500);
+
+    // Wait for shell prompts to settle and throttle window to pass
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Send input to session 1
+    wsSend(wsA, { type: 'input', data: `echo CROSS_SESSION\n` });
+    const activity = await waitForMessage(wsB, 'session_activity', 5000);
+    assert.strictEqual(activity.sessionId, created1.sessionId);
+
+    wsSend(wsA, { type: 'stop' });
+    await waitForMessage(wsA, 'exit', 10000).catch(() => {});
+    await Promise.all([closeWs(wsA), closeWs(wsB)]);
+  });
+
+  it('should stop broadcasting after session deletion', async function () {
+    const { ws: wsA } = await connectWs(port);
+    const { ws: wsB } = await connectWs(port);
+
+    wsSend(wsA, { type: 'create_session', name: 'Delete Test' });
+    const created = await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    await waitForMessage(wsB, 'session_started', 5000).catch(() => {});
+    await collectMessages(wsA, 'output', 1500);
+
+    // Delete the session
+    await httpRequest('DELETE', `http://127.0.0.1:${port}/api/sessions/${created.sessionId}`);
+    await new Promise(r => setTimeout(r, 500));
+
+    // Connect a new client and verify no activity broadcasts for the deleted session
+    const { ws: wsC } = await connectWs(port);
+    const activities = await collectMessages(wsC, 'session_activity', 2000);
+    const deleted = activities.filter(a => a.sessionId === created.sessionId);
+    assert.strictEqual(deleted.length, 0, 'Should not receive activity for deleted session');
+
+    await Promise.all([closeWs(wsA).catch(() => {}), closeWs(wsB), closeWs(wsC)]);
+  });
+
+  it('should remain healthy after client disconnect during broadcast', async function () {
+    const { ws: wsA } = await connectWs(port);
+    const { ws: wsB } = await connectWs(port);
+
+    wsSend(wsA, { type: 'create_session', name: 'Disconnect Test' });
+    await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    await waitForMessage(wsB, 'session_started', 5000).catch(() => {});
+    await collectMessages(wsA, 'output', 1500);
+
+    // Abruptly terminate client B
+    wsB.terminate();
+    await new Promise(r => setTimeout(r, 500));
+
+    // Send input — server should not crash
+    wsSend(wsA, { type: 'input', data: `echo HEALTHY\n` });
+    const outputs = await collectMessages(wsA, 'output', 3000);
+    assert(outputs.length > 0, 'Server should still send output after client disconnect');
+
+    // Health check
+    const health = await httpRequest('GET', `http://127.0.0.1:${port}/api/health`);
+    assert.strictEqual(health.statusCode, 200);
+
+    wsSend(wsA, { type: 'stop' });
+    await waitForMessage(wsA, 'exit', 10000).catch(() => {});
+    await closeWs(wsA);
+  });
+
+  it('should deliver broadcasts to a reconnected client', async function () {
+    const { ws: wsA } = await connectWs(port);
+    wsSend(wsA, { type: 'create_session', name: 'Reconnect Test' });
+    const created = await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    await collectMessages(wsA, 'output', 1500);
+
+    // Connect B, disconnect, reconnect as C
+    const { ws: wsB } = await connectWs(port);
+    await closeWs(wsB);
+    const { ws: wsC } = await connectWs(port);
+
+    // Send input — new client C should receive activity
+    // Wait >1s to ensure throttle window has passed
+    await new Promise(r => setTimeout(r, 1100));
+    wsSend(wsA, { type: 'input', data: `echo RECONNECT\n` });
+    const activity = await waitForMessage(wsC, 'session_activity', 5000);
+    assert.strictEqual(activity.sessionId, created.sessionId);
+
+    wsSend(wsA, { type: 'stop' });
+    await waitForMessage(wsA, 'exit', 10000).catch(() => {});
+    await Promise.all([closeWs(wsA), closeWs(wsC)]);
+  });
+
+  it('should send activity to a client that left a session (lobby state)', async function () {
+    const { ws: wsA } = await connectWs(port);
+    const { ws: wsB } = await connectWs(port);
+
+    // Create session with A
+    wsSend(wsA, { type: 'create_session', name: 'Lobby Test' });
+    const created = await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    await collectMessages(wsA, 'output', 1500);
+
+    // B joins and then leaves the same session
+    wsSend(wsB, { type: 'join_session', sessionId: created.sessionId });
+    await waitForMessage(wsB, 'session_joined', 5000);
+    wsSend(wsB, { type: 'leave_session' });
+    await waitForMessage(wsB, 'session_left', 5000);
+
+    // Wait long enough for shell prompts to settle and throttle window to pass
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Send input — B (now in lobby) should receive session_activity
+    wsSend(wsA, { type: 'input', data: `echo LOBBY\n` });
+    const activity = await waitForMessage(wsB, 'session_activity', 5000);
+    assert.strictEqual(activity.sessionId, created.sessionId);
+
+    wsSend(wsA, { type: 'stop' });
+    await waitForMessage(wsA, 'exit', 10000).catch(() => {});
+    await Promise.all([closeWs(wsA), closeWs(wsB)]);
+  });
+
+  it('should not broadcast stale activity after rapid create/delete', async function () {
+    const { ws: wsB } = await connectWs(port);
+
+    // Create and immediately delete session 1
+    const res1 = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {
+      body: { name: 'Ephemeral Session' }
+    });
+    const ephemeralId = res1.body.sessionId;
+    await httpRequest('DELETE', `http://127.0.0.1:${port}/api/sessions/${ephemeralId}`);
+
+    // Create session 2 with a terminal
+    const { ws: wsA } = await connectWs(port);
+    wsSend(wsA, { type: 'create_session', name: 'Persistent Session' });
+    const created2 = await waitForMessage(wsA, 'session_created');
+    wsSend(wsA, { type: 'start_terminal' });
+    await waitForMessage(wsA, 'terminal_started', 15000);
+    await waitForMessage(wsB, 'session_started', 5000).catch(() => {});
+    await collectMessages(wsA, 'output', 1500);
+
+    wsSend(wsA, { type: 'input', data: `echo PERSISTENT\n` });
+    const activities = await collectMessages(wsB, 'session_activity', 3000);
+    const stale = activities.filter(a => a.sessionId === ephemeralId);
+    assert.strictEqual(stale.length, 0, 'Should not receive activity for deleted session');
+
+    wsSend(wsA, { type: 'stop' });
+    await waitForMessage(wsA, 'exit', 10000).catch(() => {});
+    await Promise.all([closeWs(wsA), closeWs(wsB)]);
+  });
+
+  it('should not contain old branding in index.html', async function () {
+    const fs = require('fs');
+    const path = require('path');
+    const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'public', 'index.html'), 'utf8');
+    assert(!html.includes('Claude Code Web'), 'index.html should not reference "Claude Code Web"');
+  });
+});

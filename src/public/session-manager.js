@@ -44,36 +44,35 @@ class SessionTabManager {
     sendNotification(title, body, sessionId) {
         // Don't send notification for active tab
         if (sessionId === this.activeTabId) return;
-        
-        // Only send notifications if the page is not visible
-        if (document.visibilityState === 'visible') return;
-        
-        // Try desktop notifications first (won't work on iOS Safari)
-        if ('Notification' in window && Notification.permission === 'granted') {
-            try {
-                const notification = new Notification(title, {
-                    body: body,
-                    icon: '/favicon.ico',
-                    tag: sessionId,
-                    requireInteraction: false,
-                    silent: false
-                });
-                
-                notification.onclick = () => {
-                    window.focus();
-                    this.switchToTab(sessionId);
-                    notification.close();
-                };
-                
-                setTimeout(() => notification.close(), 5000);
-                console.log(`Desktop notification sent: ${title}`);
-                return; // Exit if desktop notification worked
-            } catch (error) {
-                console.error('Desktop notification failed:', error);
+
+        // Try desktop notifications when the page is not visible
+        if (document.visibilityState !== 'visible') {
+            if ('Notification' in window && Notification.permission === 'granted') {
+                try {
+                    const notification = new Notification(title, {
+                        body: body,
+                        icon: '/favicon.ico',
+                        tag: sessionId,
+                        requireInteraction: false,
+                        silent: false
+                    });
+
+                    notification.onclick = () => {
+                        window.focus();
+                        this.switchToTab(sessionId);
+                        notification.close();
+                    };
+
+                    setTimeout(() => notification.close(), 5000);
+                    console.log(`Desktop notification sent: ${title}`);
+                    return; // Desktop notification succeeded; no need for in-app toast
+                } catch (error) {
+                    console.error('Desktop notification failed:', error);
+                }
             }
         }
-        
-        // Fallback for mobile: Use visual + audio/vibration
+
+        // In-app toast: show for background tabs even when page is visible
         this.showMobileNotification(title, body, sessionId);
     }
     
@@ -764,6 +763,13 @@ class SessionTabManager {
 
         const orderedIds = this.getOrderedTabIds();
         const closedIndex = orderedIds.indexOf(sessionId);
+
+        // Clear any pending notification timers before removing session data
+        const session = this.activeSessions.get(sessionId);
+        if (session) {
+            clearTimeout(session.idleTimeout);
+            clearTimeout(session.workCompleteTimeout);
+        }
 
         // Remove tab
         tab.remove();

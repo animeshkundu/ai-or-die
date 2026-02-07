@@ -70,6 +70,7 @@ The main application controller. Instantiated once on page load.
 - **Connection:** Constructs the URL with the session token via `authManager.getWebSocketUrl()`. Reconnects automatically with exponential backoff up to `maxReconnectAttempts`.
 - **Message handling:** Routes incoming messages by `type` field to appropriate handlers (output rendering, session state updates, usage updates, etc.).
 - **Output rendering:** Writes raw terminal data directly to xterm.js via `terminal.write(data)`. Also feeds data to `planDetector.processOutput(data)` and `sessionTabManager.markSessionActivity()`.
+- **Background session events:** Handles `session_activity`, `session_exit`, `session_error`, `session_started`, and `session_stopped` messages for sessions the client is not actively joined to. These update tab status indicators and feed the notification idle timer. These handlers never modify the terminal or show overlays — they only interact with `SessionTabManager`.
 
 ### Terminal Configuration
 
@@ -206,10 +207,12 @@ When a session transitions from `active` to `idle` in a background tab (not the 
 
 - Requests permission on first load (deferred by 2 seconds).
 - Shows a prompt banner if permission is `"default"`.
-- Sends `Notification` when the page is not visible and the event is for a background tab.
+- Sends desktop `Notification` when the page is **not visible** and the event is for a background tab.
+- When the page **is visible** but the event is for a different session tab, shows an in-app toast notification instead of a desktop notification.
 - Falls back to in-page toast notifications + vibration on mobile.
 - Notifications auto-close after 5 seconds.
 - Clicking a notification switches to the relevant tab and focuses the window.
+- Receives lightweight `session_activity` events from the server for sessions the client is not joined to, enabling idle detection and notifications for background tabs without requiring full terminal output.
 
 ### Keyboard Shortcuts
 
