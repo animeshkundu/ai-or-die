@@ -1,0 +1,80 @@
+/* base.css — Reset, body, layout shell, icon helpers, status dots, pre/code */
+
+/* Backward-compatible aliases — map old variable names to new semantic tokens from tokens.css.
+   New code should use the semantic token names directly (--surface-primary, --accent-default, etc.).
+   These aliases exist so existing CSS rules using var(--bg-primary), var(--accent), etc. continue to work. */
+:root {
+    --bg-primary: var(--surface-primary);
+    --bg-secondary: var(--surface-secondary);
+    --bg-tertiary: var(--surface-tertiary);
+    --accent: var(--accent-default);
+    --success: var(--status-success);
+    --error: var(--status-error);
+    --warning: var(--status-warning);
+    --border: var(--border-default);
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+html {
+    overflow-x: hidden;
+    width: 100%;
+    overscroll-behavior: none; /* Disable pull-to-refresh */
+}
+
+body {
+    font-family: var(--font-sans);
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    height: 100vh;
+    height: 100dvh; /* Dynamic viewport height for mobile */
+    overflow: hidden;
+    width: 100%;
+    overscroll-behavior: none; /* Disable pull-to-refresh */
+    touch-action: pan-x pan-y; /* Allow normal scrolling but prevent browser gestures */
+    position: relative;
+}
+
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    height: 100dvh; /* Dynamic viewport height for mobile */
+    max-height: 100vh;
+    max-height: 100dvh;
+}
+
+/* Icon helpers */
+.icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
+}
+
+/* Status dots (replace emoji dots) */
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background-color: var(--border); }
+.dot.dot-on { background-color: var(--success); }
+.dot.dot-idle { background-color: var(--text-muted); }
+.dot.dot-error { background-color: var(--error); }
+
+.main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+}
+
+.desktop-only {
+    display: block;
+}
+
+/* Ensure pre-formatted text and code blocks wrap properly */
+pre, code {
+    word-wrap: break-word;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+}
