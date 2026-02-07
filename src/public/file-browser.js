@@ -142,6 +142,7 @@
     panel.id = 'fileBrowserPanel';
     panel.setAttribute('role', 'complementary');
     panel.setAttribute('aria-label', 'File Browser');
+    panel.tabIndex = -1; // Allow focus for keyboard events
 
     // Resize handle
     var resizeHandle = document.createElement('div');
@@ -307,6 +308,22 @@
 
     document.body.appendChild(panel);
     this._panelEl = panel;
+
+    // Document-level Escape handler (fallback when panel doesn't have focus)
+    var self = this;
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && self._open) {
+        if (self._currentView === 'editor' && self._editorPanel) {
+          self._editorPanel.close();
+        } else if (self._currentView === 'preview') {
+          self._showBrowseView();
+        } else {
+          self.close();
+        }
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    });
 
     // Setup clipboard paste
     this._setupClipboardPaste();
