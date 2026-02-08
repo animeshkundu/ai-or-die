@@ -540,6 +540,20 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        // VS Code Tunnel button
+        const vscodeTunnelBtn = document.getElementById('vscodeTunnelBtn');
+        if (vscodeTunnelBtn) {
+            vscodeTunnelBtn.addEventListener('click', () => this.toggleVSCodeTunnel());
+        }
+
+        // Ctrl+Shift+V shortcut for VS Code tunnel
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'V') {
+                e.preventDefault();
+                this.toggleVSCodeTunnel();
+            }
+        });
+
         // Tile view toggle
         // Mobile menu event listeners
         if (closeMenuBtn) closeMenuBtn.addEventListener('click', () => this.closeMobileMenu());
@@ -970,6 +984,19 @@ class ClaudeCodeWebInterface {
                     this.sessionTabManager.updateTabStatus(message.sessionId, 'idle');
                 }
                 this.loadSessions();
+                break;
+
+            // VS Code Tunnel events
+            case 'vscode_tunnel_started':
+            case 'vscode_tunnel_status':
+            case 'vscode_tunnel_auth':
+            case 'vscode_tunnel_error':
+                if (this._vscodeTunnelUI) {
+                    this._vscodeTunnelUI.handleMessage(message);
+                } else if (window.VSCodeTunnelUI) {
+                    this._vscodeTunnelUI = new window.VSCodeTunnelUI({ app: this });
+                    this._vscodeTunnelUI.handleMessage(message);
+                }
                 break;
 
             default:
@@ -1584,6 +1611,28 @@ class ClaudeCodeWebInterface {
         }
         if (this._fileBrowserPanel) {
             this._fileBrowserPanel.toggle();
+        }
+    }
+
+    // VS Code Tunnel Methods
+    toggleVSCodeTunnel() {
+        if (!this._vscodeTunnelUI && window.VSCodeTunnelUI) {
+            this._vscodeTunnelUI = new window.VSCodeTunnelUI({ app: this });
+        }
+        if (this._vscodeTunnelUI) {
+            this._vscodeTunnelUI.toggle();
+        }
+    }
+
+    stopVSCodeTunnel() {
+        if (this._vscodeTunnelUI) {
+            this._vscodeTunnelUI.stop();
+        }
+    }
+
+    copyVSCodeTunnelUrl() {
+        if (this._vscodeTunnelUI) {
+            this._vscodeTunnelUI.copyUrl();
         }
     }
 

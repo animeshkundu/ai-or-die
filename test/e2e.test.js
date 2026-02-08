@@ -1259,3 +1259,113 @@ describe('E2E: Session activity broadcasting', function () {
     assert(!html.includes('Claude Code Web'), 'index.html should not reference "Claude Code Web"');
   });
 });
+
+
+describe('E2E: VS Code Tunnel', function () {
+  this.timeout(30000);
+
+  let server;
+  let port;
+
+  before(async function () {
+    server = new ClaudeCodeWebServer({ port: 0, noAuth: true });
+    const httpServer = await server.start();
+    port = httpServer.address().port;
+  });
+
+  after(function () {
+    server.close();
+  });
+
+  it('should report vscodeTunnel in config tools', async function () {
+    const res = await httpRequest('GET', `http://127.0.0.1:${port}/api/config`);
+    assert.strictEqual(res.statusCode, 200);
+    assert(res.body.tools.vscodeTunnel !== undefined, 'Expected vscodeTunnel in tools config');
+    assert(typeof res.body.tools.vscodeTunnel.available === 'boolean');
+  });
+
+  it('should require session join before starting tunnel', async function () {
+    const { ws } = await connectWs(port);
+
+    // Try to start tunnel without joining a session
+    wsSend(ws, { type: 'start_vscode_tunnel' });
+    const error = await waitForMessage(ws, 'vscode_tunnel_error', 5000);
+    assert(error.message.includes('Join a session'));
+
+    await closeWs(ws);
+  });
+
+  it('should accept tunnel status request for joined session', async function () {
+    const { ws } = await connectWs(port);
+
+    // Create and join a session
+    wsSend(ws, { type: 'create_session', name: 'Tunnel Test' });
+    const created = await waitForMessage(ws, 'session_created');
+
+    // Request tunnel status
+    wsSend(ws, { type: 'vscode_tunnel_status' });
+    const status = await waitForMessage(ws, 'vscode_tunnel_status', 5000);
+    assert.strictEqual(status.status, 'stopped');
+    assert.strictEqual(status.url, null);
+
+    await closeWs(ws);
+  });
+
+  it('should handle stop for session with no active tunnel', async function () {
+    const { ws } = await connectWs(port);
+
+    wsSend(ws, { type: 'create_session', name: 'Tunnel Stop Test' });
+    await waitForMessage(ws, 'session_created');
+
+    // Stop when no tunnel is running should not error
+    wsSend(ws, { type: 'stop_vscode_tunnel' });
+
+    // Give it a moment — no error should come
+    const errors = await collectMessages(ws, 'vscode_tunnel_error', 1000);
+    assert.strictEqual(errors.length, 0, 'Expected no errors when stopping nonexistent tunnel');
+
+    await closeWs(ws);
+  });
+
+  it('should emit error or starting status when starting tunnel', async function () {
+    const { ws } = await connectWs(port);
+
+    wsSend(ws, { type: 'create_session', name: 'Tunnel Start Test' });
+    await waitForMessage(ws, 'session_created');
+
+    wsSend(ws, { type: 'start_vscode_tunnel' });
+
+    // Should get either a starting status or an error (if code CLI not available)
+    const msg = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('No tunnel response within 10s'));
+      }, 10000);
+
+      function onMessage(raw) {
+        const m = JSON.parse(raw.toString());
+        if (m.type === 'vscode_tunnel_status' || m.type === 'vscode_tunnel_error' || m.type === 'vscode_tunnel_started') {
+          cleanup();
+          resolve(m);
+        }
+      }
+
+      function cleanup() {
+        clearTimeout(timer);
+        ws.removeListener('message', onMessage);
+      }
+
+      ws.on('message', onMessage);
+    });
+
+    assert(
+      msg.type === 'vscode_tunnel_status' || msg.type === 'vscode_tunnel_error' || msg.type === 'vscode_tunnel_started',
+      `Expected tunnel status or error, got ${msg.type}`
+    );
+
+    // Clean up — stop tunnel if it started
+    wsSend(ws, { type: 'stop_vscode_tunnel' });
+    await new Promise(r => setTimeout(r, 1000));
+    await closeWs(ws);
+  });
+});

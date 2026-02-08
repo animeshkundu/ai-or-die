@@ -1,0 +1,236 @@
+/* VS Code Tunnel Banner */
+.vscode-tunnel-banner {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--text-primary);
+    animation: vst-slide-down 0.2s ease-out;
+    z-index: 100;
+    flex-shrink: 0;
+}
+
+.vscode-tunnel-banner.visible {
+    display: flex;
+}
+
+@keyframes vst-slide-down {
+    from { transform: translateY(-100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.vst-icon {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+}
+
+.vst-icon.running {
+    color: var(--status-success, #22c55e);
+}
+
+.vst-icon.error {
+    color: var(--status-error, #ef4444);
+}
+
+.vst-message {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vst-message a {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.vst-message a:hover {
+    text-decoration: underline;
+}
+
+.vst-url {
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    color: var(--accent);
+    cursor: pointer;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: inline-block;
+    vertical-align: middle;
+}
+
+.vst-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.vst-btn {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.vst-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--text-secondary);
+}
+
+.vst-btn.primary {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+}
+
+.vst-btn.primary:hover {
+    opacity: 0.9;
+}
+
+.vst-btn.danger {
+    color: var(--status-error, #ef4444);
+    border-color: var(--status-error, #ef4444);
+}
+
+.vst-btn.danger:hover {
+    background: var(--status-error, #ef4444);
+    color: var(--bg-primary);
+}
+
+.vst-close {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s, background 0.15s;
+}
+
+.vst-close:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+
+.vst-spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: vst-spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+
+@keyframes vst-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Auth prompt styling */
+.vst-auth-code {
+    font-family: var(--font-mono, monospace);
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 2px;
+    padding: 2px 8px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+    user-select: all;
+}
+
+/* Toolbar button states */
+.tab-vscode-tunnel {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s, background 0.2s;
+    position: relative;
+}
+
+.tab-vscode-tunnel:hover {
+    color: var(--accent);
+    background: var(--accent-soft, rgba(255, 107, 0, 0.1));
+}
+
+.tab-vscode-tunnel.starting {
+    color: var(--accent);
+}
+
+.tab-vscode-tunnel.starting svg {
+    animation: vst-spin 1.5s linear infinite;
+}
+
+.tab-vscode-tunnel.running {
+    color: var(--status-success, #22c55e);
+}
+
+.tab-vscode-tunnel.error {
+    color: var(--status-error, #ef4444);
+}
+
+/* Badge dot for active/error state */
+.tab-vscode-tunnel.running::after,
+.tab-vscode-tunnel.error::after {
+    content: '';
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+}
+
+.tab-vscode-tunnel.running::after {
+    background: var(--status-success, #22c55e);
+}
+
+.tab-vscode-tunnel.error::after {
+    background: var(--status-error, #ef4444);
+}
+
+/* Mobile responsive */
+@media (max-width: 768px) {
+    .vscode-tunnel-banner {
+        flex-wrap: wrap;
+        padding: 8px 12px;
+        gap: 6px;
+    }
+
+    .vst-message {
+        flex-basis: 100%;
+        order: 1;
+    }
+
+    .vst-actions {
+        order: 2;
+        flex-wrap: wrap;
+    }
+
+    .vst-url {
+        max-width: 200px;
+    }
+}
