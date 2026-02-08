@@ -4,6 +4,7 @@ const {
   waitForAppReady,
   waitForTerminalCanvas,
   waitForTerminalText,
+  readTerminalContent,
   typeInTerminal,
   pressKey,
   setupPageCapture,
@@ -112,5 +113,65 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
 
     // The marker should appear even though exit follows immediately
     await waitForTerminalText(page, marker, 15000);
+  });
+
+  test('input is processed during heavy output streaming', async ({ page }) => {
+    await setupTerminalPage(page);
+
+    // Start a continuous output generator using node (cross-platform).
+    // Prints 500 lines with 10ms delay between each, taking ~5 seconds total.
+    const cmd = 'node -e "let i=0;const iv=setInterval(()=>{if(i++>=500){clearInterval(iv);return}console.log(\'F_\'+i)},10)"';
+    await typeInTerminal(page, cmd);
+    await pressKey(page, 'Enter');
+
+    // Wait for initial output to confirm streaming has started
+    await waitForTerminalText(page, 'F_1', 15000);
+
+    // While output is still flowing, type a command into the terminal
+    await typeInTerminal(page, 'echo INPUT_MARKER');
+    await pressKey(page, 'Enter');
+
+    // Assert that our input was processed and echoed back despite heavy output
+    await waitForTerminalText(page, 'INPUT_MARKER', 30000);
+  });
+
+  test('backspace editing works correctly with fire-and-forget input', async ({ page }) => {
+    await setupTerminalPage(page);
+
+    // Type the initial text with per-character delay (via typeInTerminal)
+    await typeInTerminal(page, 'echo EDIT_ABCXYZ');
+
+    // Send 3 Backspace keys to remove 'XYZ'
+    await pressKey(page, 'Backspace');
+    await pressKey(page, 'Backspace');
+    await pressKey(page, 'Backspace');
+
+    // Type the replacement text
+    await typeInTerminal(page, 'END');
+
+    // Execute the command
+    await pressKey(page, 'Enter');
+
+    // The shell should have echoed EDIT_ABCEND (not EDIT_ABCXYZ)
+    await waitForTerminalText(page, 'EDIT_ABCEND', 15000);
+  });
+
+  test('large output burst exceeding coalesce threshold is delivered completely', async ({ page }) => {
+    await setupTerminalPage(page);
+
+    // Generate ~45KB of output in a rapid burst using node (cross-platform).
+    // 500 lines, each with a numbered marker and 80 'x' characters (~90 bytes/line).
+    const cmd = 'node -e "for(let i=1;i<=500;i++) console.log(\'BIG_\'+String(i).padStart(4,\'0\')+\'_\'+\'x\'.repeat(80))"';
+    await typeInTerminal(page, cmd);
+    await pressKey(page, 'Enter');
+
+    // Wait for the last line to appear, confirming the entire burst was delivered
+    await waitForTerminalText(page, 'BIG_0500', 30000);
+
+    // Verify first, middle, and last lines are all present in the terminal buffer
+    const content = await readTerminalContent(page);
+    expect(content).toContain('BIG_0001');
+    expect(content).toContain('BIG_0250');
+    expect(content).toContain('BIG_0500');
   });
 });
