@@ -265,8 +265,11 @@ class VSCodeTunnelManager {
    */
   async _checkAuth() {
     if (!this._command) return false;
+    const opts = { timeout: 5000 };
+    // Windows .cmd/.bat files need shell to execute
+    if (process.platform === 'win32') opts.shell = true;
     return new Promise((resolve) => {
-      execFile(this._command, ['tunnel', 'user', 'show'], { timeout: 10000 }, (err) => {
+      execFile(this._command, ['tunnel', 'user', 'show'], opts, (err) => {
         resolve(!err);
       });
     });
