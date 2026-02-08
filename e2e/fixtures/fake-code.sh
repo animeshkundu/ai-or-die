@@ -8,7 +8,7 @@ if [ "$1" = "tunnel" ] && [ "$2" = "user" ]; then
 fi
 
 echo "To grant access to the server, please log in to https://github.com/login/device and use code ABCD-1234"
-sleep 2
+sleep 0.5
 echo "Open this link in your browser https://vscode.dev/tunnel/mock-e2e-test"
 # Stay alive until killed (real code tunnel is a long-running daemon)
 sleep 3600

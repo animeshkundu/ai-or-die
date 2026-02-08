@@ -6,6 +6,6 @@ REM Fast-fail for `code tunnel user show` (auth check) — exit 1 = not authenti
 if "%1"=="tunnel" if "%2"=="user" exit /b 1
 
 echo To grant access to the server, please log in to https://github.com/login/device and use code ABCD-1234
-timeout /t 2 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 echo Open this link in your browser https://vscode.dev/tunnel/mock-e2e-test
-timeout /t 3600 /nobreak >nul
+ping -n 3601 127.0.0.1 >nul

@@ -13,12 +13,19 @@ const fs = require('fs');
 
 test.describe('VS Code Tunnel button', () => {
   let server, port, url;
+  let originalCommand, originalChecked, originalAvailable;
 
   test.beforeAll(async () => {
     const result = await createServer();
     server = result.server;
     port = result.port;
     url = result.url;
+    // Wait for VS Code CLI discovery to finish
+    await server.vscodeTunnel._initPromise;
+    // Save original state for restoration
+    originalCommand = server.vscodeTunnel._command;
+    originalChecked = server.vscodeTunnel._commandChecked;
+    originalAvailable = server.vscodeTunnel._available;
   });
 
   test.afterAll(async () => {
@@ -31,9 +38,10 @@ test.describe('VS Code Tunnel button', () => {
   test.afterEach(async ({ page }, testInfo) => {
     if (server && server.vscodeTunnel) {
       await server.vscodeTunnel.stopAll();
-      // Reset mock command injection to prevent leaking between tests
-      await server.vscodeTunnel._initPromise;
-      server.vscodeTunnel._commandChecked = true;
+      // Restore original command state to prevent leaking between tests
+      server.vscodeTunnel._command = originalCommand;
+      server.vscodeTunnel._commandChecked = originalChecked;
+      server.vscodeTunnel._available = originalAvailable;
     }
     await attachFailureArtifacts(page, testInfo);
   });
@@ -55,7 +63,7 @@ test.describe('VS Code Tunnel button', () => {
     }, sessionId);
     await page.waitForFunction(
       () => window.app.currentClaudeSessionId != null,
-      { timeout: 15000 }
+      { timeout: 5000 }
     );
 
     return sessionId;
@@ -66,23 +74,21 @@ test.describe('VS Code Tunnel button', () => {
    * (VS Code CLI not installed on CI runners).
    */
   async function triggerNotFoundError(page) {
-    // Click the VS Code tunnel button
     await page.click('#vscodeTunnelBtn');
 
     // Wait for the outbound WebSocket message (proves the bug fix works)
-    const sentMsg = await waitForWsMessage(page, 'sent', 'start_vscode_tunnel', 10000);
+    const sentMsg = await waitForWsMessage(page, 'sent', 'start_vscode_tunnel', 5000);
     expect(sentMsg).toBeTruthy();
 
     // Wait for the server error response
-    const recvMsg = await waitForWsMessage(page, 'recv', 'vscode_tunnel_error', 15000);
+    const recvMsg = await waitForWsMessage(page, 'recv', 'vscode_tunnel_error', 5000);
     expect(recvMsg).toBeTruthy();
 
     // Wait for the error banner to appear
-    await page.waitForSelector('#vscodeTunnelBanner.visible', { timeout: 10000 });
+    await page.waitForSelector('#vscodeTunnelBanner.visible', { timeout: 5000 });
   }
 
   test('button click sends WebSocket message and shows not-found error banner', async ({ page }) => {
-    // Skip if VS Code CLI is actually installed on this runner
     test.skip(
       server.vscodeTunnel && server.vscodeTunnel.isAvailableSync(),
       'VS Code CLI is installed — skip not-found test'
@@ -122,7 +128,7 @@ test.describe('VS Code Tunnel button', () => {
     // Banner should lose the visible class
     await page.waitForFunction(
       () => !document.getElementById('vscodeTunnelBanner').classList.contains('visible'),
-      { timeout: 5000 }
+      { timeout: 3000 }
     );
     const isVisible = await page.$eval(
       '#vscodeTunnelBanner',
@@ -147,11 +153,11 @@ test.describe('VS Code Tunnel button', () => {
     await page.click('#vscodeTunnelBanner .vst-retry-btn');
 
     // Wait for another start message
-    const sentMsg = await waitForWsMessage(page, 'sent', 'start_vscode_tunnel', 10000);
+    const sentMsg = await waitForWsMessage(page, 'sent', 'start_vscode_tunnel', 5000);
     expect(sentMsg).toBeTruthy();
 
     // Wait for another error response
-    const recvMsg = await waitForWsMessage(page, 'recv', 'vscode_tunnel_error', 15000);
+    const recvMsg = await waitForWsMessage(page, 'recv', 'vscode_tunnel_error', 5000);
     expect(recvMsg).toBeTruthy();
   });
 
@@ -160,7 +166,6 @@ test.describe('VS Code Tunnel button', () => {
     const stubName = process.platform === 'win32' ? 'fake-code.cmd' : 'fake-code.sh';
     const stubPath = path.resolve(__dirname, '..', 'fixtures', stubName);
 
-    // Verify stub exists
     if (!fs.existsSync(stubPath)) {
       test.skip(true, `Stub script not found: ${stubPath}`);
       return;
@@ -177,11 +182,11 @@ test.describe('VS Code Tunnel button', () => {
     await page.click('#vscodeTunnelBtn');
 
     // Verify the start message was sent
-    const sentMsg = await waitForWsMessage(page, 'sent', 'start_vscode_tunnel', 10000);
+    const sentMsg = await waitForWsMessage(page, 'sent', 'start_vscode_tunnel', 5000);
     expect(sentMsg).toBeTruthy();
 
     // Wait for the banner to appear (starting state)
-    await page.waitForSelector('#vscodeTunnelBanner.visible', { timeout: 10000 });
+    await page.waitForSelector('#vscodeTunnelBanner.visible', { timeout: 5000 });
 
     // Wait for auth banner with device code
     await page.waitForFunction(
@@ -189,7 +194,7 @@ test.describe('VS Code Tunnel button', () => {
         const banner = document.getElementById('vscodeTunnelBanner');
         return banner && banner.textContent.includes('github.com/login/device');
       },
-      { timeout: 15000 }
+      { timeout: 5000 }
     );
     const authText = await page.$eval('#vscodeTunnelBanner', el => el.textContent);
     expect(authText).toContain('ABCD-1234');
@@ -200,7 +205,7 @@ test.describe('VS Code Tunnel button', () => {
         const banner = document.getElementById('vscodeTunnelBanner');
         return banner && banner.textContent.includes('vscode.dev/tunnel');
       },
-      { timeout: 30000 }
+      { timeout: 5000 }
     );
     const urlText = await page.$eval('#vscodeTunnelBanner', el => el.textContent);
     expect(urlText).toContain('vscode.dev/tunnel/mock-e2e-test');
@@ -224,7 +229,7 @@ test.describe('VS Code Tunnel button', () => {
     await page.click('#vscodeTunnelBanner .vst-stop-btn');
     await page.waitForFunction(
       () => !document.getElementById('vscodeTunnelBanner').classList.contains('visible'),
-      { timeout: 10000 }
+      { timeout: 5000 }
     );
   });
 
@@ -240,14 +245,14 @@ test.describe('VS Code Tunnel button', () => {
     await page.keyboard.press('Control+Shift+V');
 
     // Wait for the outbound WebSocket message
-    const sentMsg = await waitForWsMessage(page, 'sent', 'start_vscode_tunnel', 10000);
+    const sentMsg = await waitForWsMessage(page, 'sent', 'start_vscode_tunnel', 5000);
     expect(sentMsg).toBeTruthy();
 
     // Wait for the server error response
-    const recvMsg = await waitForWsMessage(page, 'recv', 'vscode_tunnel_error', 15000);
+    const recvMsg = await waitForWsMessage(page, 'recv', 'vscode_tunnel_error', 5000);
     expect(recvMsg).toBeTruthy();
 
     // Banner should be visible with error
-    await page.waitForSelector('#vscodeTunnelBanner.visible', { timeout: 10000 });
+    await page.waitForSelector('#vscodeTunnelBanner.visible', { timeout: 5000 });
   });
 });
