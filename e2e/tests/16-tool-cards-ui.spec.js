@@ -79,14 +79,15 @@ test.describe('Tool cards UI', () => {
     const cards = page.locator('.tool-card');
     const count = await cards.count();
 
-    let seenDisabled = false;
+    let seenUnavailable = false;
     for (let i = 0; i < count; i++) {
-      const isDisabled = await cards.nth(i).evaluate(el => el.classList.contains('disabled'));
-      if (isDisabled) {
-        seenDisabled = true;
-      } else if (seenDisabled) {
-        // An enabled card after a disabled card means sort is wrong
-        throw new Error(`Available card at index ${i} appears after disabled card`);
+      const isUnavailable = await cards.nth(i).evaluate(el =>
+        el.classList.contains('disabled') || el.classList.contains('installable'));
+      if (isUnavailable) {
+        seenUnavailable = true;
+      } else if (seenUnavailable) {
+        // An enabled card after an unavailable card means sort is wrong
+        throw new Error(`Available card at index ${i} appears after unavailable card`);
       }
     }
   });
@@ -130,7 +131,7 @@ test.describe('Tool cards UI', () => {
     await expect(buttons).toHaveCount(0);
 
     // Available card should have cursor: pointer and be clickable
-    const availableCard = page.locator('.tool-card:not(.disabled)').first();
+    const availableCard = page.locator('.tool-card:not(.disabled):not(.installable)').first();
     const cursor = await availableCard.evaluate(el => getComputedStyle(el).cursor);
     expect(cursor).toBe('pointer');
   });
@@ -141,39 +142,41 @@ test.describe('Tool cards UI', () => {
     await waitForAppReady(page);
     await page.waitForSelector('.tool-card', { timeout: 15000 });
 
-    // If there are both available and disabled cards, a divider should exist
-    const availableCount = await page.locator('.tool-card:not(.disabled)').count();
-    const disabledCount = await page.locator('.tool-card.disabled').count();
+    // If there are both available and unavailable (disabled or installable) cards, a divider should exist
+    const availableCount = await page.locator('.tool-card:not(.disabled):not(.installable)').count();
+    const unavailableCount = await page.locator('.tool-card.disabled, .tool-card.installable').count();
 
-    if (availableCount > 0 && disabledCount > 0) {
+    if (availableCount > 0 && unavailableCount > 0) {
       const divider = page.locator('.tool-cards-divider');
       await expect(divider).toBeVisible();
       await expect(divider).toContainText('More tools');
     }
   });
 
-  test('disabled cards show "Not installed" status', async ({ page }) => {
-    await createSessionViaApi(port, 'Disabled Status');
+  test('unavailable cards show "Not installed" status', async ({ page }) => {
+    await createSessionViaApi(port, 'Unavailable Status');
     await page.goto(url);
     await waitForAppReady(page);
     await page.waitForSelector('.tool-card', { timeout: 15000 });
 
-    const disabledCard = page.locator('.tool-card.disabled').first();
-    if (await disabledCard.isVisible()) {
-      const status = disabledCard.locator('.tool-card-status');
+    // Check both installable and disabled cards
+    const unavailableCard = page.locator('.tool-card.installable, .tool-card.disabled').first();
+    if (await unavailableCard.count() > 0) {
+      const status = unavailableCard.locator('.tool-card-status');
       await expect(status).toContainText('Not installed');
     }
   });
 
-  test('disabled card icons are desaturated (grayscale filter)', async ({ page }) => {
+  test('unavailable card icons are desaturated (grayscale filter)', async ({ page }) => {
     await createSessionViaApi(port, 'Grayscale Icons');
     await page.goto(url);
     await waitForAppReady(page);
     await page.waitForSelector('.tool-card', { timeout: 15000 });
 
-    const disabledIcon = page.locator('.tool-card.disabled .tool-card-icon').first();
-    if (await disabledIcon.isVisible()) {
-      const filter = await disabledIcon.evaluate(el => getComputedStyle(el).filter);
+    // Check both installable and disabled cards
+    const unavailableIcon = page.locator('.tool-card.installable .tool-card-icon, .tool-card.disabled .tool-card-icon').first();
+    if (await unavailableIcon.count() > 0) {
+      const filter = await unavailableIcon.evaluate(el => getComputedStyle(el).filter);
       expect(filter).toContain('grayscale');
     }
   });
@@ -184,7 +187,7 @@ test.describe('Tool cards UI', () => {
     await waitForAppReady(page);
     await page.waitForSelector('.tool-card', { timeout: 15000 });
 
-    const availableCard = page.locator('.tool-card:not(.disabled)').first();
+    const availableCard = page.locator('.tool-card:not(.disabled):not(.installable)').first();
     // Should have tabindex for keyboard navigation
     await expect(availableCard).toHaveAttribute('tabindex', '0');
     // Should have role and aria-label
@@ -194,15 +197,16 @@ test.describe('Tool cards UI', () => {
     expect(ariaLabel.length).toBeGreaterThan(0);
   });
 
-  test('disabled cards have aria-disabled attribute', async ({ page }) => {
-    await createSessionViaApi(port, 'A11y Disabled');
+  test('installable cards have aria-expanded attribute', async ({ page }) => {
+    await createSessionViaApi(port, 'A11y Installable');
     await page.goto(url);
     await waitForAppReady(page);
     await page.waitForSelector('.tool-card', { timeout: 15000 });
 
-    const disabledCard = page.locator('.tool-card.disabled').first();
-    if (await disabledCard.isVisible()) {
-      await expect(disabledCard).toHaveAttribute('aria-disabled', 'true');
+    const installableCard = page.locator('.tool-card.installable').first();
+    if (await installableCard.count() > 0) {
+      await expect(installableCard).toHaveAttribute('aria-expanded', 'false');
+      await expect(installableCard).toHaveAttribute('tabindex', '0');
     }
   });
 
@@ -235,10 +239,10 @@ test.describe('Tool cards UI', () => {
       { timeout: 15000 }
     );
 
-    await page.waitForSelector('.tool-card:not(.disabled)', { timeout: 10000 });
+    await page.waitForSelector('.tool-card:not(.disabled):not(.installable)', { timeout: 10000 });
 
     // Click the first available card (should be terminal)
-    const card = page.locator('.tool-card:not(.disabled)').first();
+    const card = page.locator('.tool-card:not(.disabled):not(.installable)').first();
     await card.click();
 
     // Overlay should hide after tool starts
@@ -252,9 +256,9 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Hover Arrow');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card:not(.disabled)', { timeout: 15000 });
+    await page.waitForSelector('.tool-card:not(.disabled):not(.installable)', { timeout: 15000 });
 
-    const card = page.locator('.tool-card:not(.disabled)').first();
+    const card = page.locator('.tool-card:not(.disabled):not(.installable)').first();
     const arrow = card.locator('.tool-card-arrow');
 
     // Arrow should exist but be invisible before hover

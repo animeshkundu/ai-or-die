@@ -146,6 +146,7 @@ class ClaudeCodeWebInterface {
                     this.folderMode = cfg.folderMode;
                 }
                 this.tools = cfg.tools || {};
+                this._configPrerequisites = cfg.prerequisites || null;
             }
         } catch (_) { /* best-effort */ }
     }
@@ -848,6 +849,18 @@ class ClaudeCodeWebInterface {
             case 'terminal_stopped': {
                 const stoppedTool = message.type.replace('_stopped', '');
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias(stoppedTool)} stopped\x1b[0m`);
+                // If terminal was opened for installation, refresh config to pick up newly installed tools
+                if (this._pendingInstallToolId) {
+                    const pendingTool = this._pendingInstallToolId;
+                    this._pendingInstallToolId = null;
+                    this.refreshConfig().then(() => {
+                        // Auto-recheck the specific tool that was being installed
+                        fetch(`/api/tools/${pendingTool}/recheck`, { method: 'POST' })
+                            .then(r => r.json())
+                            .then(() => this.refreshConfig())
+                            .catch(() => {});
+                    });
+                }
                 this.showOverlay('startPrompt');
                 this.loadSessions();
                 if (this.sessionTabManager && this.currentClaudeSessionId) {
@@ -1029,31 +1042,26 @@ class ClaudeCodeWebInterface {
                 icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
                 gradient: 'linear-gradient(135deg, #52525b, #71717a)',
                 desc: 'System shell (bash / powershell)',
-                hint: ''
             },
             claude: {
                 icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>',
                 gradient: 'linear-gradient(135deg, #d97706, #b45309)',
                 desc: 'AI coding assistant by Anthropic',
-                hint: 'Install: npm i -g @anthropic-ai/claude-code'
             },
             codex: {
                 icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
                 gradient: 'linear-gradient(135deg, #059669, #047857)',
                 desc: 'AI coding agent by OpenAI',
-                hint: 'Install: npm i -g @openai/codex'
             },
             copilot: {
                 icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="3"/><circle cx="15" cy="12" r="3"/><path d="M9 9V6a3 3 0 0 1 6 0v3"/></svg>',
                 gradient: 'linear-gradient(135deg, #6366f1, #4f46e5)',
                 desc: 'AI pair programmer by GitHub',
-                hint: 'Install: gh extension install github/gh-copilot'
             },
             gemini: {
                 icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.5 8 6.5 16 12 22c5.5-6 5.5-14 0-20z"/><path d="M2 12c6-5.5 14-5.5 20 0-6 5.5-14 5.5-20 0z"/></svg>',
                 gradient: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
                 desc: 'AI coding assistant by Google',
-                hint: 'Install: npm i -g @google/gemini-cli'
             }
         };
 
@@ -1075,7 +1083,6 @@ class ClaudeCodeWebInterface {
                 icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
                 gradient: 'linear-gradient(135deg, #6b7280, #4b5563)',
                 desc: '',
-                hint: ''
             };
 
             // Add divider between available and unavailable tools
@@ -1090,39 +1097,42 @@ class ClaudeCodeWebInterface {
                 }
             }
 
+            const isInstallable = !tool.available && toolId !== 'terminal';
             const card = document.createElement('div');
-            card.className = 'tool-card' + (tool.available ? '' : ' disabled');
+            card.className = 'tool-card' + (tool.available ? '' : (isInstallable ? ' installable' : ' disabled'));
             card.dataset.tool = toolId;
             card.style.animationDelay = `${cardIndex * 50}ms`;
             card.classList.add('tool-card-enter');
 
+            // Escape alias to prevent XSS from server-provided config
+            const safeAlias = (tool.alias || '').replace(/[&<>"']/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
             if (tool.available) {
                 card.setAttribute('tabindex', '0');
                 card.setAttribute('role', 'button');
-                card.setAttribute('aria-label', `Start ${tool.alias} — ${meta.desc}`);
+                card.setAttribute('aria-label', `Start ${safeAlias} — ${meta.desc}`);
+            } else if (isInstallable) {
+                card.setAttribute('tabindex', '0');
+                card.setAttribute('role', 'button');
+                card.setAttribute('aria-expanded', 'false');
+                card.setAttribute('aria-label', `${safeAlias} — Not installed. Click to see install options.`);
             } else {
                 card.setAttribute('tabindex', '-1');
                 card.setAttribute('role', 'button');
                 card.setAttribute('aria-disabled', 'true');
-                card.setAttribute('aria-label', `${tool.alias} — Not installed`);
+                card.setAttribute('aria-label', `${safeAlias} — Not installed`);
             }
 
-            const hintHtml = !tool.available && meta.hint
-                ? `<div class="tool-card-hint">${meta.hint}</div>` : '';
             const statusHtml = tool.available
                 ? '<svg class="tool-card-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>'
-                : '<span class="tool-card-status">Not installed</span>';
-
-            // Escape alias to prevent XSS from server-provided config
-            const safeAlias = (tool.alias || '').replace(/[&<>"']/g, c =>
-                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+                : `<span class="tool-card-status">Not installed${isInstallable ? ' <span class="expand-chevron">&#x25BE;</span>' : ''}</span>`;
 
             card.innerHTML = `
                 <div class="tool-card-icon" style="background: ${meta.gradient}">${meta.icon}</div>
                 <div class="tool-card-info">
                     <div class="tool-card-name">${safeAlias}</div>
                     <div class="tool-card-desc">${meta.desc}</div>
-                    ${hintHtml}
                 </div>
                 ${statusHtml}
             `;
@@ -1135,11 +1145,230 @@ class ClaudeCodeWebInterface {
                         this.startToolSession(toolId);
                     }
                 });
+            } else if (isInstallable) {
+                card.addEventListener('click', () => this.toggleInstallExpansion(toolId, card));
+                card.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.toggleInstallExpansion(toolId, card);
+                    }
+                });
             }
 
             container.appendChild(card);
+
+            // Create expansion panel (hidden by default)
+            if (isInstallable) {
+                const expansion = document.createElement('div');
+                expansion.className = 'tool-card-expansion';
+                expansion.id = `install-expansion-${toolId}`;
+                container.appendChild(expansion);
+            }
+
             cardIndex++;
         }
+    }
+
+    toggleInstallExpansion(toolId, card) {
+        const expansion = document.getElementById(`install-expansion-${toolId}`);
+        if (!expansion) return;
+
+        const isExpanded = card.getAttribute('aria-expanded') === 'true';
+
+        // Collapse any other expanded cards (accordion)
+        document.querySelectorAll('.tool-card.installable[aria-expanded="true"]').forEach(otherCard => {
+            if (otherCard !== card) {
+                otherCard.setAttribute('aria-expanded', 'false');
+                const otherId = otherCard.dataset.tool;
+                const otherExpansion = document.getElementById(`install-expansion-${otherId}`);
+                if (otherExpansion) otherExpansion.classList.remove('expanded');
+            }
+        });
+
+        if (isExpanded) {
+            card.setAttribute('aria-expanded', 'false');
+            expansion.classList.remove('expanded');
+        } else {
+            card.setAttribute('aria-expanded', 'true');
+            this.renderInstallExpansion(toolId, expansion);
+            expansion.classList.add('expanded');
+        }
+    }
+
+    renderInstallExpansion(toolId, container) {
+        const tool = this.tools[toolId];
+        const installInfo = tool && tool.install;
+        const prereqs = this._configPrerequisites;
+
+        if (!installInfo) {
+            container.innerHTML = '<p style="color: var(--text-muted); font-size: var(--text-sm);">Install information unavailable.</p>';
+            return;
+        }
+
+        let html = '';
+
+        // Prerequisite warnings
+        if (prereqs && !prereqs.npm.available) {
+            const npmMethods = installInfo.methods.filter(m => m.requiresNpm);
+            if (npmMethods.length > 0) {
+                html += `<div class="install-prereq-warning">
+                    <span>&#x26A0;</span>
+                    <span>npm is not available. <a href="https://nodejs.org/" target="_blank" rel="noopener">Install Node.js</a> to enable npm-based installation.</span>
+                </div>`;
+            }
+        } else if (prereqs && prereqs.npm.available && !prereqs.npm.userMode) {
+            html += `<div class="install-prereq-warning">
+                <span>&#x26A0;</span>
+                <span>npm global installs may require admin. Run <code>npm config set prefix ~/.npm-global</code> first.</span>
+            </div>`;
+        }
+
+        // Install methods
+        for (const method of installInfo.methods) {
+            if (method.command) {
+                const escapedCmd = this._escapeHtml(method.command);
+                html += `<div class="install-cmd-block">
+                    <code>${escapedCmd}</code>
+                    <button class="btn-copy" data-cmd="${escapedCmd}" title="Copy command">Copy</button>
+                </div>`;
+                if (method.note) {
+                    html += `<div class="install-method-note">${this._escapeHtml(method.note)}</div>`;
+                }
+            } else if (method.url) {
+                html += `<div class="install-cmd-block">
+                    <code><a href="${this._escapeHtml(method.url)}" target="_blank" rel="noopener">${this._escapeHtml(method.label)}</a></code>
+                    <button class="btn-copy" data-cmd="${this._escapeHtml(method.url)}" title="Copy URL">Copy</button>
+                </div>`;
+                if (method.note) {
+                    html += `<div class="install-method-note">${this._escapeHtml(method.note)}</div>`;
+                }
+            }
+        }
+
+        // Auth steps
+        if (installInfo.authSteps && installInfo.authSteps.length > 0) {
+            html += '<div class="install-auth-steps"><div class="auth-label">After installing</div>';
+            for (const step of installInfo.authSteps) {
+                if (step.type === 'command') {
+                    html += `<div class="install-auth-step">
+                        <span>${this._escapeHtml(step.label)}:</span>
+                        <code>${this._escapeHtml(step.command)}</code>
+                    </div>`;
+                } else if (step.type === 'url') {
+                    html += `<div class="install-auth-step">
+                        <a href="${this._escapeHtml(step.url)}" target="_blank" rel="noopener">${this._escapeHtml(step.label)}</a>
+                    </div>`;
+                } else if (step.type === 'env') {
+                    html += `<div class="install-auth-step">
+                        <span>${this._escapeHtml(step.label)}:</span>
+                        <code>${this._escapeHtml(step.command || step.variable)}</code>
+                    </div>`;
+                } else if (step.type === 'info') {
+                    html += `<div class="install-auth-step">
+                        <span>${this._escapeHtml(step.label)}</span>
+                    </div>`;
+                }
+            }
+            html += '</div>';
+        }
+
+        // Action buttons
+        const primaryMethod = installInfo.methods.find(m => m.command);
+        html += '<div class="install-actions">';
+        if (primaryMethod) {
+            html += `<button class="btn-install-terminal" data-tool="${toolId}" data-method="${primaryMethod.id}">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                Open Terminal
+            </button>`;
+        }
+        html += `<button class="btn-verify" data-tool="${toolId}">Verify Install</button>`;
+        html += '</div>';
+
+        // Docs link
+        if (installInfo.docsUrl) {
+            html += `<div class="install-docs-link"><a href="${this._escapeHtml(installInfo.docsUrl)}" target="_blank" rel="noopener">Documentation &#x2197;</a></div>`;
+        }
+
+        container.innerHTML = html;
+
+        // Wire up event handlers
+        container.querySelectorAll('.btn-copy').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const cmd = btn.dataset.cmd;
+                navigator.clipboard.writeText(cmd).then(() => {
+                    btn.textContent = 'Copied!';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.textContent = 'Copy';
+                        btn.classList.remove('copied');
+                    }, 2000);
+                });
+            });
+        });
+
+        const terminalBtn = container.querySelector('.btn-install-terminal');
+        if (terminalBtn) {
+            terminalBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._pendingInstallToolId = toolId;
+                this.send({
+                    type: 'open_install_terminal',
+                    toolId: toolId,
+                    method: terminalBtn.dataset.method,
+                    cols: this.terminal ? this.terminal.cols : 80,
+                    rows: this.terminal ? this.terminal.rows : 24,
+                });
+            });
+        }
+
+        const verifyBtn = container.querySelector('.btn-verify');
+        if (verifyBtn) {
+            verifyBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                verifyBtn.textContent = 'Checking...';
+                verifyBtn.disabled = true;
+                try {
+                    const resp = await fetch(`/api/tools/${toolId}/recheck`, { method: 'POST' });
+                    const result = await resp.json();
+                    if (result.available) {
+                        verifyBtn.textContent = 'Installed!';
+                        verifyBtn.classList.add('success');
+                        // Refresh the config and re-render cards
+                        setTimeout(() => this.refreshConfig(), 500);
+                    } else {
+                        verifyBtn.textContent = 'Not found';
+                        setTimeout(() => {
+                            verifyBtn.textContent = 'Verify Install';
+                            verifyBtn.disabled = false;
+                        }, 2000);
+                    }
+                } catch {
+                    verifyBtn.textContent = 'Error';
+                    setTimeout(() => {
+                        verifyBtn.textContent = 'Verify Install';
+                        verifyBtn.disabled = false;
+                    }, 2000);
+                }
+            });
+        }
+    }
+
+    async refreshConfig() {
+        try {
+            const resp = await this.authFetch('/api/config');
+            const config = await resp.json();
+            this.tools = config.tools || {};
+            this._configPrerequisites = config.prerequisites || null;
+            this.renderToolCards();
+        } catch {
+            // Silently fail — config will refresh on next page load
+        }
+    }
+
+    _escapeHtml(str) {
+        return (str || '').replace(/[&<>"']/g, c =>
+            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
     }
 
     startToolSession(toolId) {

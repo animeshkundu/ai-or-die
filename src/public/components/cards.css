@@ -92,10 +92,56 @@
   box-shadow: var(--shadow-sm);
 }
 
-/* Disabled card */
+/* Disabled card (legacy fallback) */
 .tool-card.disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* Installable card — unavailable but interactive */
+.tool-card.installable {
+  opacity: 0.65;
+  cursor: pointer;
+}
+
+.tool-card.installable:hover {
+  opacity: 0.8;
+  border-color: var(--border-hover);
+  background: var(--surface-elevated);
+}
+
+/* Per-tool brand color hover for installable cards (softer than available) */
+.tool-card.installable[data-tool="claude"]:hover {
+  border-color: rgba(217, 119, 6, 0.3);
+  background: rgba(217, 119, 6, 0.04);
+}
+.tool-card.installable[data-tool="codex"]:hover {
+  border-color: rgba(5, 150, 105, 0.3);
+  background: rgba(5, 150, 105, 0.04);
+}
+.tool-card.installable[data-tool="copilot"]:hover {
+  border-color: rgba(99, 102, 241, 0.3);
+  background: rgba(99, 102, 241, 0.04);
+}
+.tool-card.installable[data-tool="gemini"]:hover {
+  border-color: rgba(37, 99, 235, 0.3);
+  background: rgba(37, 99, 235, 0.04);
+}
+
+/* Expanded state */
+.tool-card.installable[aria-expanded="true"] {
+  opacity: 0.85;
+  border-color: var(--border-hover);
+}
+
+/* Desaturate icon for installable cards */
+.tool-card.installable .tool-card-icon {
+  filter: grayscale(0.6) brightness(0.85);
+}
+
+.tool-card.installable:hover .tool-card-icon,
+.tool-card.installable[aria-expanded="true"] .tool-card-icon {
+  filter: grayscale(0.3) brightness(0.9);
 }
 
 /* Staggered entry animation */
@@ -136,7 +182,7 @@
   pointer-events: none;
 }
 
-/* Desaturate icon for disabled cards */
+/* Desaturate icon for disabled cards (legacy) */
 .tool-card.disabled .tool-card-icon {
   filter: grayscale(1) brightness(0.7);
 }
@@ -188,7 +234,7 @@
   transform: translateX(0);
 }
 
-/* "Not installed" status label for disabled cards */
+/* "Not installed" status label for disabled/installable cards */
 .tool-card-status {
   flex-shrink: 0;
   font-size: var(--text-xs);
@@ -198,6 +244,224 @@
   border: 1px solid var(--border-default);
   border-radius: var(--radius-full);
   white-space: nowrap;
+}
+
+/* Chevron rotates when expanded */
+.tool-card-status .expand-chevron {
+  display: inline-block;
+  transition: transform var(--duration-fast) var(--ease-default);
+  margin-left: 4px;
+}
+
+.tool-card.installable[aria-expanded="true"] .tool-card-status .expand-chevron {
+  transform: rotate(180deg);
+}
+
+/* === Expansion panel for installable cards === */
+.tool-card-expansion {
+  width: 100%;
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height var(--duration-normal) var(--ease-default),
+              opacity var(--duration-normal) var(--ease-default),
+              padding var(--duration-normal) var(--ease-default);
+  opacity: 0;
+  background: var(--surface-primary);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  border: 1px solid var(--border-default);
+  border-top: none;
+  margin-top: -1px; /* overlap card bottom border */
+}
+
+.tool-card-expansion.expanded {
+  max-height: 400px;
+  opacity: 1;
+  padding: var(--space-3) var(--space-4);
+}
+
+/* Install command code block */
+.install-cmd-block {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.install-cmd-block code {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: all;
+}
+
+.install-cmd-block .btn-copy {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  transition: all var(--duration-fast) var(--ease-default);
+  white-space: nowrap;
+}
+
+.install-cmd-block .btn-copy:hover {
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+.install-cmd-block .btn-copy.copied {
+  color: var(--status-success, #22c55e);
+  border-color: var(--status-success, #22c55e);
+}
+
+/* Auth steps */
+.install-auth-steps {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-default);
+}
+
+.install-auth-steps .auth-label {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: var(--space-1);
+}
+
+.install-auth-step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  padding: var(--space-1) 0;
+}
+
+.install-auth-step code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--surface-secondary);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  user-select: all;
+}
+
+.install-auth-step a {
+  color: var(--accent-default);
+  text-decoration: none;
+}
+
+.install-auth-step a:hover {
+  text-decoration: underline;
+}
+
+/* Action buttons row */
+.install-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.btn-install-terminal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: var(--accent-default);
+  color: var(--surface-primary);
+  border: none;
+  cursor: pointer;
+  padding: var(--space-1-5) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  transition: opacity var(--duration-fast) var(--ease-default);
+}
+
+.btn-install-terminal:hover {
+  opacity: 0.9;
+}
+
+.btn-verify {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: none;
+  border: 1px solid var(--border-default);
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: var(--space-1-5) var(--space-3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.btn-verify:hover {
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+.btn-verify.success {
+  color: var(--status-success, #22c55e);
+  border-color: var(--status-success, #22c55e);
+}
+
+/* Prerequisite warning */
+.install-prereq-warning {
+  font-size: var(--text-xs);
+  color: var(--status-warning, #eab308);
+  margin-bottom: var(--space-2);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-1);
+}
+
+.install-prereq-warning a {
+  color: var(--accent-default);
+  text-decoration: none;
+}
+
+.install-prereq-warning a:hover {
+  text-decoration: underline;
+}
+
+/* Docs link */
+.install-docs-link {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-2);
+}
+
+.install-docs-link a {
+  color: var(--accent-default);
+  text-decoration: none;
+}
+
+.install-docs-link a:hover {
+  text-decoration: underline;
+}
+
+/* Method note */
+.install-method-note {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-0-5);
+  font-style: italic;
 }
 
 /* Start prompt heading */
