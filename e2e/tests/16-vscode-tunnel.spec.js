@@ -105,10 +105,10 @@ test.describe('VS Code Tunnel button', () => {
 
     // Verify banner content — install panel shows "VS Code CLI (code) not found."
     const bannerText = await page.$eval('#vscodeTunnelBanner', el => el.textContent);
+    expect(bannerText).toContain('VS Code CLI');
     expect(bannerText).toContain('not found');
 
-    // The install panel may show platform-specific install methods (snap, download link, etc.)
-    // Check for either the install panel or the legacy plain-text error
+    // Verify install panel or download link is present
     const hasInstallPanel = await page.$('#vscodeTunnelBanner .vst-install-panel');
     const hasDownloadLink = await page.$('#vscodeTunnelBanner a[href*="code.visualstudio.com"]');
     expect(hasInstallPanel || hasDownloadLink).toBeTruthy();
