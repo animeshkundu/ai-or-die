@@ -22,6 +22,8 @@ class ClaudeCodeWebInterface {
         this.aliases = { claude: 'Claude', codex: 'Codex' };
         // Available tools (populated from /api/config)
         this.tools = {};
+        // Machine hostname (populated from /api/config)
+        this.hostname = '';
         
         
         // Initialize the session tab manager
@@ -91,6 +93,15 @@ class ClaudeCodeWebInterface {
         // Initialize the session tab manager and wait for sessions to load
         this.sessionTabManager = new SessionTabManager(this);
         await this.sessionTabManager.init();
+
+        // Listen for service worker notification clicks (Windows Notification Center)
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', (event) => {
+                if (event.data?.type === 'NOTIFICATION_CLICK' && event.data.sessionId) {
+                    this.sessionTabManager.switchToTab(event.data.sessionId);
+                }
+            });
+        }
         
         // Initialize split container
         if (window.SplitContainer) {
@@ -147,6 +158,7 @@ class ClaudeCodeWebInterface {
                 }
                 this.tools = cfg.tools || {};
                 this._configPrerequisites = cfg.prerequisites || null;
+                this.hostname = cfg.hostname || '';
             }
         } catch (_) { /* best-effort */ }
     }
@@ -605,6 +617,14 @@ class ClaudeCodeWebInterface {
         fontSizeSlider.addEventListener('input', (e) => {
             fontSizeValue.textContent = e.target.value + 'px';
         });
+
+        const notifVolumeSlider = document.getElementById('notifVolume');
+        const notifVolumeValue = document.getElementById('notifVolumeValue');
+        if (notifVolumeSlider && notifVolumeValue) {
+            notifVolumeSlider.addEventListener('input', (e) => {
+                notifVolumeValue.textContent = e.target.value + '%';
+            });
+        }
 
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
@@ -1836,6 +1856,16 @@ class ClaudeCodeWebInterface {
         if (scrollback) scrollback.value = String(settings.scrollback || 1000);
         document.getElementById('showTokenStats').checked = settings.showTokenStats;
         document.getElementById('dangerousMode').checked = settings.dangerousMode || false;
+
+        // Notification settings
+        const notifSound = document.getElementById('notifSound');
+        if (notifSound) notifSound.checked = settings.notifSound ?? true;
+        const notifVolume = document.getElementById('notifVolume');
+        if (notifVolume) notifVolume.value = String(settings.notifVolume ?? 30);
+        const notifVolumeValue = document.getElementById('notifVolumeValue');
+        if (notifVolumeValue) notifVolumeValue.textContent = (settings.notifVolume ?? 30) + '%';
+        const notifDesktop = document.getElementById('notifDesktop');
+        if (notifDesktop) notifDesktop.checked = settings.notifDesktop ?? true;
     }
 
     hideSettings() {
@@ -1856,7 +1886,10 @@ class ClaudeCodeWebInterface {
             scrollback: 1000,
             showTokenStats: true,
             theme: 'midnight',
-            dangerousMode: false
+            dangerousMode: false,
+            notifSound: true,
+            notifVolume: 30,
+            notifDesktop: true
         };
 
         try {
@@ -1886,7 +1919,10 @@ class ClaudeCodeWebInterface {
             scrollback: parseInt(document.getElementById('scrollback')?.value || '1000'),
             showTokenStats: document.getElementById('showTokenStats').checked,
             theme: (document.getElementById('themeSelect')?.value) || 'midnight',
-            dangerousMode: document.getElementById('dangerousMode').checked
+            dangerousMode: document.getElementById('dangerousMode').checked,
+            notifSound: document.getElementById('notifSound')?.checked ?? true,
+            notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
+            notifDesktop: document.getElementById('notifDesktop')?.checked ?? true
         };
         
         try {

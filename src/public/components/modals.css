@@ -335,6 +335,12 @@
     line-height: 1.4;
 }
 
+.setting-divider {
+    border-top: 1px solid var(--border-default, var(--border));
+    padding-top: 16px;
+    margin-top: 8px;
+}
+
 .modal-footer {
     padding: 20px;
     border-top: 1px solid var(--border);

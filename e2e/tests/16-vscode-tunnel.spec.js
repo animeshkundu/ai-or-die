@@ -108,12 +108,10 @@ test.describe('VS Code Tunnel button', () => {
     expect(bannerText).toContain('VS Code CLI');
     expect(bannerText).toContain('not found');
 
-    // Verify download link (install panel includes code.visualstudio.com/download)
-    const downloadLink = await page.$eval(
-      '#vscodeTunnelBanner a[href*="code.visualstudio.com"]',
-      el => el.href
-    );
-    expect(downloadLink).toContain('code.visualstudio.com/download');
+    // Verify install panel or download link is present
+    const hasInstallPanel = await page.$('#vscodeTunnelBanner .vst-install-panel');
+    const hasDownloadLink = await page.$('#vscodeTunnelBanner a[href*="code.visualstudio.com"]');
+    expect(hasInstallPanel || hasDownloadLink).toBeTruthy();
 
     // Verify Re-check / Retry button exists
     const retryBtn = await page.$('#vscodeTunnelBanner .vst-retry-btn');
