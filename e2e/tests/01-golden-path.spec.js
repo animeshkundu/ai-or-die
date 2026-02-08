@@ -61,10 +61,9 @@ test.describe('Golden path: fresh user opens app and uses terminal', () => {
       { timeout: 20000 }
     );
 
-    // 4. Start terminal — find the Terminal tool card (the one that's always available)
-    //    Tool cards are rendered by renderToolCards() with tool-card-name text.
-    //    Target the enabled button, not the first (which may be Claude/not installed).
-    const terminalCard = page.locator('.tool-card:not(.disabled) .tool-card-btn:not([disabled])').first();
+    // 4. Start terminal — find the Terminal tool card (always available, sorted first)
+    //    Cards are clickable divs with data-tool attribute, no separate button.
+    const terminalCard = page.locator('.tool-card:not(.disabled)').first();
     await expect(terminalCard).toBeVisible({ timeout: 10000 });
     await terminalCard.click();
 

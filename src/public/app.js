@@ -1009,42 +1009,113 @@ class ClaudeCodeWebInterface {
         container.innerHTML = '';
 
         const toolMeta = {
-            claude: { icon: 'C', color: '#d97706', desc: 'Anthropic AI', hint: 'Install: npm i -g @anthropic-ai/claude-code' },
-            codex: { icon: 'Cx', color: '#059669', desc: 'OpenAI Codex', hint: 'Install: npm i -g @openai/codex' },
-            copilot: { icon: 'Cp', color: '#6366f1', desc: 'GitHub Copilot', hint: 'Install: gh extension install github/gh-copilot' },
-            gemini: { icon: 'G', color: '#2563eb', desc: 'Google Gemini', hint: 'Install: npm i -g @anthropic-ai/gemini-cli' },
-            terminal: { icon: '>_', color: '#71717a', desc: 'System Shell', hint: '' }
+            terminal: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
+                gradient: 'linear-gradient(135deg, #52525b, #71717a)',
+                desc: 'System shell (bash / powershell)',
+                hint: ''
+            },
+            claude: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>',
+                gradient: 'linear-gradient(135deg, #d97706, #b45309)',
+                desc: 'AI coding assistant by Anthropic',
+                hint: 'Install: npm i -g @anthropic-ai/claude-code'
+            },
+            codex: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+                gradient: 'linear-gradient(135deg, #059669, #047857)',
+                desc: 'AI coding agent by OpenAI',
+                hint: 'Install: npm i -g @openai/codex'
+            },
+            copilot: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="3"/><circle cx="15" cy="12" r="3"/><path d="M9 9V6a3 3 0 0 1 6 0v3"/></svg>',
+                gradient: 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                desc: 'AI pair programmer by GitHub',
+                hint: 'Install: gh extension install github/gh-copilot'
+            },
+            gemini: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.5 8 6.5 16 12 22c5.5-6 5.5-14 0-20z"/><path d="M2 12c6-5.5 14-5.5 20 0-6 5.5-14 5.5-20 0z"/></svg>',
+                gradient: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                desc: 'AI coding assistant by Google',
+                hint: 'Install: npm i -g @google/gemini-cli'
+            }
         };
 
+        // Sort: terminal first, then available tools, then unavailable
+        const sortedEntries = Object.entries(this.tools)
+            .filter(([, tool]) => tool.alias)
+            .sort((a, b) => {
+                if (a[0] === 'terminal') return -1;
+                if (b[0] === 'terminal') return 1;
+                if (a[1].available && !b[1].available) return -1;
+                if (!a[1].available && b[1].available) return 1;
+                return 0;
+            });
+
         let cardIndex = 0;
-        for (const [toolId, tool] of Object.entries(this.tools)) {
-            const meta = toolMeta[toolId] || { icon: '?', color: '#888', desc: '', hint: '' };
+        let addedDivider = false;
+        for (const [toolId, tool] of sortedEntries) {
+            const meta = toolMeta[toolId] || {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+                gradient: 'linear-gradient(135deg, #6b7280, #4b5563)',
+                desc: '',
+                hint: ''
+            };
+
+            // Add divider between available and unavailable tools
+            if (!tool.available && !addedDivider) {
+                const hasAvailable = sortedEntries.some(([, t]) => t.available);
+                if (hasAvailable) {
+                    const divider = document.createElement('div');
+                    divider.className = 'tool-cards-divider';
+                    divider.innerHTML = '<span>More tools</span>';
+                    container.appendChild(divider);
+                    addedDivider = true;
+                }
+            }
+
             const card = document.createElement('div');
             card.className = 'tool-card' + (tool.available ? '' : ' disabled');
-            // Staggered fade-in animation
-            card.style.animationDelay = `${cardIndex * 60}ms`;
+            card.dataset.tool = toolId;
+            card.style.animationDelay = `${cardIndex * 50}ms`;
             card.classList.add('tool-card-enter');
 
-            const statusText = tool.available ? 'Start' : 'Not installed';
+            if (tool.available) {
+                card.setAttribute('tabindex', '0');
+                card.setAttribute('role', 'option');
+                card.setAttribute('aria-label', `Start ${tool.alias} — ${meta.desc}`);
+            } else {
+                card.setAttribute('role', 'option');
+                card.setAttribute('aria-disabled', 'true');
+                card.setAttribute('aria-label', `${tool.alias} — Not installed`);
+            }
+
             const hintHtml = !tool.available && meta.hint
                 ? `<div class="tool-card-hint">${meta.hint}</div>` : '';
+            const statusHtml = tool.available
+                ? '<svg class="tool-card-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>'
+                : '<span class="tool-card-status">Not installed</span>';
 
             card.innerHTML = `
-                <div class="tool-card-icon" style="background: ${meta.color}">${meta.icon}</div>
+                <div class="tool-card-icon" style="background: ${meta.gradient}">${meta.icon}</div>
                 <div class="tool-card-info">
                     <div class="tool-card-name">${tool.alias}</div>
                     <div class="tool-card-desc">${meta.desc}</div>
                     ${hintHtml}
                 </div>
-                <button class="btn btn-primary tool-card-btn" ${tool.available ? '' : 'disabled'}>
-                    ${statusText}
-                </button>
+                ${statusHtml}
             `;
+
             if (tool.available) {
-                card.querySelector('.tool-card-btn').addEventListener('click', () => {
-                    this.startToolSession(toolId);
+                card.addEventListener('click', () => this.startToolSession(toolId));
+                card.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.startToolSession(toolId);
+                    }
                 });
             }
+
             container.appendChild(card);
             cardIndex++;
         }
