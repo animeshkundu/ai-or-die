@@ -154,23 +154,23 @@ test.describe('Visual regression', () => {
     await page.waitForTimeout(500);
 
     // Terminal card is always available (sorted first after UI modernization)
-    const availableCard = page.locator('.tool-card:not(.disabled)').first();
+    const availableCard = page.locator('.tool-card:not(.disabled):not(.installable)').first();
     if (await availableCard.isVisible()) {
       await expect(availableCard).toHaveScreenshot('tool-card-available.png');
     }
   });
 
-  test('tool card disabled component', async ({ page }) => {
-    await createSessionViaApi(port, 'VR Disabled Card');
+  test('tool card installable component', async ({ page }) => {
+    await createSessionViaApi(port, 'VR Installable Card');
     await page.goto(url);
     await waitForAppReady(page);
     await page.waitForSelector('.tool-card', { timeout: 10000 });
     await page.waitForTimeout(500);
 
-    // Most AI tool cards will be disabled on CI (not installed)
-    const disabledCard = page.locator('.tool-card.disabled').first();
-    if (await disabledCard.isVisible()) {
-      await expect(disabledCard).toHaveScreenshot('tool-card-disabled.png');
+    // Most AI tool cards will be installable on CI (not installed)
+    const installableCard = page.locator('.tool-card.installable').first();
+    if (await installableCard.count() > 0) {
+      await expect(installableCard).toHaveScreenshot('tool-card-installable.png');
     }
   });
 
