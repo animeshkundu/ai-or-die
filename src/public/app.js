@@ -1082,10 +1082,11 @@ class ClaudeCodeWebInterface {
 
             if (tool.available) {
                 card.setAttribute('tabindex', '0');
-                card.setAttribute('role', 'option');
+                card.setAttribute('role', 'button');
                 card.setAttribute('aria-label', `Start ${tool.alias} — ${meta.desc}`);
             } else {
-                card.setAttribute('role', 'option');
+                card.setAttribute('tabindex', '-1');
+                card.setAttribute('role', 'button');
                 card.setAttribute('aria-disabled', 'true');
                 card.setAttribute('aria-label', `${tool.alias} — Not installed`);
             }
@@ -1096,10 +1097,14 @@ class ClaudeCodeWebInterface {
                 ? '<svg class="tool-card-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>'
                 : '<span class="tool-card-status">Not installed</span>';
 
+            // Escape alias to prevent XSS from server-provided config
+            const safeAlias = (tool.alias || '').replace(/[&<>"']/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
             card.innerHTML = `
                 <div class="tool-card-icon" style="background: ${meta.gradient}">${meta.icon}</div>
                 <div class="tool-card-info">
-                    <div class="tool-card-name">${tool.alias}</div>
+                    <div class="tool-card-name">${safeAlias}</div>
                     <div class="tool-card-desc">${meta.desc}</div>
                     ${hintHtml}
                 </div>

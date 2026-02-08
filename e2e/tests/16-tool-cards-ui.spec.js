@@ -3,9 +3,7 @@ const { createServer, createSessionViaApi } = require('../helpers/server-factory
 const {
   waitForAppReady,
   waitForTerminalCanvas,
-  setupPageCapture,
   attachFailureArtifacts,
-  joinSessionAndStartTerminal,
 } = require('../helpers/terminal-helpers');
 
 /**
@@ -190,7 +188,7 @@ test.describe('Tool cards UI', () => {
     // Should have tabindex for keyboard navigation
     await expect(availableCard).toHaveAttribute('tabindex', '0');
     // Should have role and aria-label
-    await expect(availableCard).toHaveAttribute('role', 'option');
+    await expect(availableCard).toHaveAttribute('role', 'button');
     const ariaLabel = await availableCard.getAttribute('aria-label');
     expect(ariaLabel).toBeTruthy();
     expect(ariaLabel.length).toBeGreaterThan(0);
@@ -208,14 +206,14 @@ test.describe('Tool cards UI', () => {
     }
   });
 
-  test('tool cards container has listbox role', async ({ page }) => {
-    await createSessionViaApi(port, 'Listbox Role');
+  test('tool cards container has group role', async ({ page }) => {
+    await createSessionViaApi(port, 'Group Role');
     await page.goto(url);
     await waitForAppReady(page);
     await page.waitForSelector('.tool-card', { timeout: 15000 });
 
     const container = page.locator('[data-tid="tool-cards"]');
-    await expect(container).toHaveAttribute('role', 'listbox');
+    await expect(container).toHaveAttribute('role', 'group');
   });
 
   test('clicking available card starts the tool session', async ({ page }) => {
@@ -261,16 +259,13 @@ test.describe('Tool cards UI', () => {
 
     // Arrow should exist but be invisible before hover
     await expect(arrow).toBeAttached();
-    const opacityBefore = await arrow.evaluate(el => getComputedStyle(el).opacity);
-    expect(parseFloat(opacityBefore)).toBe(0);
+    await expect(arrow).toHaveCSS('opacity', '0');
 
     // Hover over the card
     await card.hover();
-    await page.waitForTimeout(200); // wait for transition
 
-    // Arrow should become visible on hover
-    const opacityAfter = await arrow.evaluate(el => getComputedStyle(el).opacity);
-    expect(parseFloat(opacityAfter)).toBe(1);
+    // Arrow should become visible on hover (auto-retry handles transition timing)
+    await expect(arrow).toHaveCSS('opacity', '1');
   });
 
   test('card descriptions are updated and meaningful', async ({ page }) => {
