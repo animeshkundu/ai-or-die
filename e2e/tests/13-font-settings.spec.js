@@ -40,7 +40,7 @@ test.describe('Font settings', () => {
 
     // Change font to JetBrains Mono
     const fontSelect = page.locator('#fontFamily');
-    await fontSelect.selectOption("'JetBrains Mono', monospace");
+    await fontSelect.selectOption("'JetBrains Mono NF', 'MesloLGS Nerd Font', monospace");
 
     // Save settings
     await page.evaluate(() => document.getElementById('saveSettingsBtn').click());
