@@ -38,8 +38,11 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
   test('heavy output is coalesced into fewer WebSocket messages', async ({ page }) => {
     await setupTerminalPage(page);
 
-    // Clear previous WS messages from setup
-    await page.evaluate(() => { window._wsMessages = []; });
+    // Record message count before the burst
+    // page._wsMessages is a Playwright-side (Node.js) array, not browser-side
+    const msgCountBefore = page._wsMessages.filter(m =>
+      m.dir === 'recv' && m.type === 'output'
+    ).length;
 
     // Generate 200 lines of output rapidly via a loop
     const marker = `COALESCE_${Date.now()}`;
@@ -55,17 +58,16 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
     await waitForTerminalText(page, `${marker}_200`, 30000);
 
     // Count output WebSocket messages received during the burst
-    const outputMsgCount = await page.evaluate(() => {
-      return (page._wsMessages || []).filter(m =>
-        m.dir === 'recv' && m.type === 'output'
-      ).length;
-    });
+    // page._wsMessages is populated by setupPageCapture's Playwright-side listener
+    const outputMsgCount = page._wsMessages.filter(m =>
+      m.dir === 'recv' && m.type === 'output'
+    ).length - msgCountBefore;
 
     // With 200 echo commands, without coalescing we'd see 200+ output messages.
-    // With 16ms coalescing, we expect significantly fewer (batched into larger chunks).
-    // Allow generous margin — the key assertion is "much fewer than 200".
-    expect(outputMsgCount).toBeLessThan(200);
+    // With 16ms coalescing, multiple PTY batches are merged into single sends.
+    // The exact count depends on system speed but should be well under 200.
     expect(outputMsgCount).toBeGreaterThan(0);
+    expect(outputMsgCount).toBeLessThan(200);
   });
 
   test('all output arrives intact despite coalescing', async ({ page }) => {
@@ -90,11 +92,7 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
 
     // First burst
     const marker1 = `BURST1_${Date.now()}`;
-    const isWin = process.platform === 'win32';
-    const cmd1 = isWin
-      ? `echo ${marker1}`
-      : `echo ${marker1}`;
-    await typeInTerminal(page, cmd1);
+    await typeInTerminal(page, `echo ${marker1}`);
     await pressKey(page, 'Enter');
     await waitForTerminalText(page, marker1, 10000);
 
@@ -103,10 +101,7 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
 
     // Second burst
     const marker2 = `BURST2_${Date.now()}`;
-    const cmd2 = isWin
-      ? `echo ${marker2}`
-      : `echo ${marker2}`;
-    await typeInTerminal(page, cmd2);
+    await typeInTerminal(page, `echo ${marker2}`);
     await pressKey(page, 'Enter');
     await waitForTerminalText(page, marker2, 10000);
   });
