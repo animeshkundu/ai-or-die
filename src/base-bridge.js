@@ -286,10 +286,10 @@ class BaseBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
-        // Guard: session may have been removed by stopSession/close
-        if (!this.sessions.has(sessionId)) return;
-        session.active = false;
-        this.sessions.delete(sessionId);
+        if (this.sessions.has(sessionId)) {
+          session.active = false;
+          this.sessions.delete(sessionId);
+        }
         onExit(exitCode, signal);
       });
 
@@ -303,8 +303,10 @@ class BaseBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
-        session.active = false;
-        this.sessions.delete(sessionId);
+        if (this.sessions.has(sessionId)) {
+          session.active = false;
+          this.sessions.delete(sessionId);
+        }
         onError(error);
       });
 
