@@ -3,6 +3,9 @@ const { createServer, createSessionViaApi } = require('../helpers/server-factory
 const {
   waitForAppReady,
   waitForTerminalCanvas,
+  waitForTerminalText,
+  typeInTerminal,
+  pressKey,
   attachFailureArtifacts,
   joinSessionAndStartTerminal,
 } = require('../helpers/terminal-helpers');
@@ -298,5 +301,132 @@ test.describe('Nerd Font rendering infrastructure', () => {
     await page.waitForTimeout(3000);
 
     expect(failedFontRequests).toEqual([]);
+  });
+
+  test('font glyphs render correctly after output arrives via coalesced WebSocket', async ({ page }) => {
+    const sessionId = await createSessionViaApi(port, 'Coalesced PUA Glyph');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    // Run a cross-platform command that outputs PUA codepoints via node
+    // \ue0b0 = powerline right arrow, \ue0b2 = powerline left arrow, \ue0a0 = git branch
+    const marker = `PUA_${Date.now()}`;
+    const cmd = `node -e "process.stdout.write('${marker}\\ue0b0\\ue0b2\\ue0a0\\n')"`;
+
+    await typeInTerminal(page, cmd);
+    await pressKey(page, 'Enter');
+
+    // Wait for the marker to appear in terminal output
+    await waitForTerminalText(page, marker, 15000);
+
+    // Verify that MesloLGS Nerd Font is loaded and available
+    const fontLoaded = await page.evaluate(() => {
+      return document.fonts.ready.then(() => {
+        return document.fonts.check('14px "MesloLGS Nerd Font"');
+      });
+    });
+    expect(fontLoaded).toBe(true);
+
+    // Verify PUA glyph cell widths using xterm.js buffer API
+    const puaWidths = await page.evaluate(() => {
+      return new Promise((resolve) => {
+        const term = window.app.terminal;
+        const results = {};
+
+        function measure(label, str) {
+          return new Promise((res) => {
+            term.write('\x1b[2J\x1b[H', () => {
+              const startX = term.buffer.active.cursorX;
+              term.write(str, () => {
+                results[label] = term.buffer.active.cursorX - startX;
+                res();
+              });
+            });
+          });
+        }
+
+        measure('powerlineRight', '\ue0b0')
+          .then(() => measure('powerlineLeft', '\ue0b2'))
+          .then(() => measure('gitBranch', '\ue0a0'))
+          .then(() => measure('allThree', '\ue0b0\ue0b2\ue0a0'))
+          .then(() => resolve(results));
+      });
+    });
+
+    // Each PUA glyph should occupy exactly 1 cell
+    expect(puaWidths.powerlineRight).toBe(1);
+    expect(puaWidths.powerlineLeft).toBe(1);
+    expect(puaWidths.gitBranch).toBe(1);
+    // Three PUA glyphs together = 3 cells
+    expect(puaWidths.allThree).toBe(3);
+  });
+
+  test('bold text with powerline PUA codepoints renders with correct cell widths', async ({ page }) => {
+    const sessionId = await createSessionViaApi(port, 'Bold PUA Width');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    // Write bold ANSI sequences with PUA chars directly to the terminal:
+    // \x1b[1m = bold on, \ue0b0 = powerline right, \ue0a0 = git branch,
+    // AB = two ASCII chars, \x1b[0m = reset
+    const result = await page.evaluate(() => {
+      return new Promise((resolve) => {
+        const term = window.app.terminal;
+
+        // Clear screen and move cursor to origin
+        term.write('\x1b[2J\x1b[H', () => {
+          const startX = term.buffer.active.cursorX;
+
+          // Write bold text with PUA codepoints
+          term.write('\x1b[1m\ue0b0\ue0a0AB\x1b[0m', () => {
+            const endX = term.buffer.active.cursorX;
+            const delta = endX - startX;
+
+            // Read back the line from the buffer
+            const line = term.buffer.active.getLine(term.buffer.active.cursorY);
+            const text = line ? line.translateToString(true) : '';
+
+            resolve({ startX, endX, delta, text });
+          });
+        });
+      });
+    });
+
+    // Wait for fonts to be ready and verify bold variant is available
+    const boldFontAvailable = await page.evaluate(() => {
+      return document.fonts.ready.then(() => {
+        return document.fonts.check('bold 14px "MesloLGS Nerd Font"');
+      });
+    });
+    expect(boldFontAvailable).toBe(true);
+
+    // Cursor should advance by exactly 4 cells:
+    // \ue0b0(1) + \ue0a0(1) + A(1) + B(1) = 4
+    expect(result.startX).toBe(0);
+    expect(result.delta).toBe(4);
+    // Buffer text should contain the ASCII characters
+    expect(result.text).toContain('AB');
+  });
+
+  test('all four font WOFF2 variants are served with correct MIME type', async ({ page }) => {
+    const fontPaths = [
+      '/fonts/MesloLGSNerdFont-Regular.woff2',
+      '/fonts/MesloLGSNerdFont-Bold.woff2',
+      '/fonts/MesloLGSNerdFont-Italic.woff2',
+      '/fonts/MesloLGSNerdFont-BoldItalic.woff2',
+    ];
+
+    for (const fontPath of fontPaths) {
+      const response = await page.request.get(`${url}${fontPath}`);
+      expect(response.status(), `${fontPath} should return 200`).toBe(200);
+      const contentType = response.headers()['content-type'];
+      expect(contentType, `${fontPath} should have font/woff2 MIME type`).toMatch(
+        /font\/woff2|application\/octet-stream/
+      );
+    }
   });
 });

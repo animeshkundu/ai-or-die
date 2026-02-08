@@ -107,6 +107,19 @@ describe('font loading infrastructure', function () {
     it('caches the Regular WOFF2', function () {
       assert.ok(sw.includes('MesloLGSNerdFont-Regular.woff2'), 'service worker must cache the Regular WOFF2');
     });
+
+    it('caches all 4 font WOFF2 variants in urlsToCache', function () {
+      const expectedFonts = [
+        'MesloLGSNerdFont-Regular.woff2',
+        'MesloLGSNerdFont-Bold.woff2',
+        'MesloLGSNerdFont-Italic.woff2',
+        'MesloLGSNerdFont-BoldItalic.woff2'
+      ];
+
+      for (const font of expectedFonts) {
+        assert.ok(sw.includes(font), `service worker urlsToCache must include ${font}`);
+      }
+    });
   });
 
   describe('server.js MIME types', function () {

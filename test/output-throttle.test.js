@@ -7,6 +7,9 @@ const assert = require('assert');
 
 const WebSocket = { OPEN: 1 };
 
+/** Max bytes to accumulate before flushing coalesced output immediately */
+const MAX_COALESCE_BYTES = 32 * 1024;
+
 class OutputThrottleHarness {
   constructor() {
     this.claudeSessions = new Map();
@@ -23,6 +26,16 @@ class OutputThrottleHarness {
       session._pendingOutput = '';
     }
     session._pendingOutput += data;
+
+    // Cap: flush immediately when buffer exceeds threshold
+    if (session._pendingOutput.length > MAX_COALESCE_BYTES) {
+      if (session._outputFlushTimer) {
+        clearTimeout(session._outputFlushTimer);
+        session._outputFlushTimer = null;
+      }
+      this._flushSessionOutput(sessionId);
+      return;
+    }
 
     if (!session._outputFlushTimer) {
       session._outputFlushTimer = setTimeout(() => {
@@ -51,6 +64,10 @@ class OutputThrottleHarness {
       if (wsInfo &&
           wsInfo.claudeSessionId === sessionId &&
           wsInfo.ws.readyState === WebSocket.OPEN) {
+        // Backpressure: skip clients that can't consume fast enough
+        if (wsInfo.ws.bufferedAmount > 256 * 1024) {
+          return;
+        }
         wsInfo.ws.send(msg);
       }
     });
@@ -140,6 +157,22 @@ describe('Output Throttle', function() {
       // Should not throw
       h._throttledOutputBroadcast('nonexistent', 'data');
     });
+
+    it('should flush immediately when pending output exceeds MAX_COALESCE_BYTES', function() {
+      const h = new OutputThrottleHarness();
+      h.addSession('s1', 1);
+
+      // Feed data exceeding MAX_COALESCE_BYTES (32KB) in one call
+      const largeData = 'x'.repeat(MAX_COALESCE_BYTES + 1);
+      h._throttledOutputBroadcast('s1', largeData);
+
+      // Flush should have happened immediately (not after the 16ms timer)
+      assert.strictEqual(h.sentMessages.length, 1, 'Should flush immediately for large data');
+
+      const session = h.claudeSessions.get('s1');
+      assert.strictEqual(session._pendingOutput, '', 'Pending output should be cleared after flush');
+      assert.strictEqual(session._outputFlushTimer, null, 'Timer should be null after immediate flush');
+    });
   });
 
   describe('coalescing behavior', function() {
@@ -182,6 +215,41 @@ describe('Output Throttle', function() {
         const firstMsg = h.sentMessages[0].data;
         assert.ok(h.sentMessages.every(m => m.data === firstMsg),
           'All clients should receive identical pre-serialized message');
+        done();
+      }, 30);
+    });
+
+    it('should preserve PUA codepoints through coalescing and JSON round-trip', function(done) {
+      const h = new OutputThrottleHarness();
+      h.addSession('s1', 1);
+
+      // PUA codepoints used by Nerd Fonts / Powerline
+      const puaChars = [
+        String.fromCharCode(0xE0B0), // U+E0B0 (Powerline right arrow)
+        String.fromCharCode(0xE0A0), // U+E0A0 (Powerline branch)
+        String.fromCharCode(0xE0B2)  // U+E0B2 (Powerline left arrow)
+      ];
+
+      // Feed each PUA string separately (same += pattern as _throttledOutputBroadcast)
+      puaChars.forEach(ch => h._throttledOutputBroadcast('s1', ch));
+
+      // Verify concatenation preserves codepoints in pending output
+      const session = h.claudeSessions.get('s1');
+      const concatenated = session._pendingOutput;
+      assert.strictEqual(concatenated.length, 3, 'Concatenated string should have 3 characters');
+      assert.strictEqual(concatenated.charCodeAt(0), 0xE0B0, 'First char should be U+E0B0');
+      assert.strictEqual(concatenated.charCodeAt(1), 0xE0A0, 'Second char should be U+E0A0');
+      assert.strictEqual(concatenated.charCodeAt(2), 0xE0B2, 'Third char should be U+E0B2');
+
+      // After the timer fires, verify JSON.stringify round-trip preserves them
+      setTimeout(() => {
+        assert.strictEqual(h.sentMessages.length, 1, 'Expected 1 coalesced send');
+
+        const parsed = JSON.parse(h.sentMessages[0].data);
+        assert.strictEqual(parsed.type, 'output');
+        assert.strictEqual(parsed.data.charCodeAt(0), 0xE0B0, 'U+E0B0 survives JSON round-trip');
+        assert.strictEqual(parsed.data.charCodeAt(1), 0xE0A0, 'U+E0A0 survives JSON round-trip');
+        assert.strictEqual(parsed.data.charCodeAt(2), 0xE0B2, 'U+E0B2 survives JSON round-trip');
         done();
       }, 30);
     });
@@ -236,6 +304,26 @@ describe('Output Throttle', function() {
 
       assert.strictEqual(h.sentMessages.length, 1, 'Only open client should receive');
       assert.strictEqual(h.sentMessages[0].wsId, 'ws-s1-1');
+    });
+
+    it('should skip slow clients when bufferedAmount exceeds 256KB threshold', function() {
+      const h = new OutputThrottleHarness();
+      h.addSession('s1', 2);
+
+      // Set first client to have high bufferedAmount (above 256KB threshold)
+      const slowWsInfo = h.webSocketConnections.get('ws-s1-0');
+      slowWsInfo.ws.bufferedAmount = 300 * 1024;
+
+      // Set second client to have zero bufferedAmount (healthy)
+      const fastWsInfo = h.webSocketConnections.get('ws-s1-1');
+      fastWsInfo.ws.bufferedAmount = 0;
+
+      const session = h.claudeSessions.get('s1');
+      session._pendingOutput = 'backpressure test data';
+      h._flushSessionOutput('s1');
+
+      assert.strictEqual(h.sentMessages.length, 1, 'Only fast client should receive');
+      assert.strictEqual(h.sentMessages[0].wsId, 'ws-s1-1', 'Fast client should be the recipient');
     });
   });
 
