@@ -3,12 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ai-or-die — Universal AI Coding Terminal</title>
-    <meta name="description" content="One command, every AI coding assistant in your browser. Claude, Copilot, Gemini and more — multi-session, real-time, secure." />
+    <title>ai-or-die - Universal AI Coding Terminal</title>
+    <meta name="description" content="ai-or-die: one command, every AI coding tool in your browser. Claude, Copilot, Gemini, Codex and a raw terminal, all running in parallel with full terminal emulation." />
     <meta property="og:title" content="ai-or-die" />
-    <meta property="og:description" content="One command, every AI coding assistant in your browser." />
+    <meta property="og:description" content="One command, every AI coding tool in your browser." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://animesh.kundus.in/ai-or-die/" />
+    <meta property="og:image" content="https://animesh.kundus.in/ai-or-die/screenshots/app-desktop-full.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="ai-or-die - Universal AI Coding Terminal" />
+    <meta name="twitter:description" content="One command, every AI coding tool in your browser." />
+    <meta name="twitter:image" content="https://animesh.kundus.in/ai-or-die/screenshots/app-desktop-full.png" />
+    <link rel="canonical" href="https://animesh.kundus.in/ai-or-die/" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" />
@@ -16,22 +22,28 @@
   </head>
   <body>
 
+    <!-- HEADER -->
     <header class="site-header">
       <div class="container nav">
-        <a href="/" class="brand">
-          <span class="brand-icon">&#9001;/&#9002;</span>
+        <a href="index.html" class="brand">
+          <span class="brand-icon">&gt;_</span>
           <span>ai-or-die</span>
         </a>
         <nav>
-          <a href="#features">Features</a>
           <a href="#tools">Tools</a>
+          <a href="#screenshots">Screenshots</a>
+          <a href="#features">Features</a>
           <a href="#start">Get Started</a>
           <a href="#download">Download</a>
+          <a href="docs.html">Docs</a>
           <a class="btn ghost" href="https://github.com/animeshkundu/ai-or-die" target="_blank" rel="noopener">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-3px;margin-right:6px"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
             GitHub
           </a>
         </nav>
+        <button class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
       </div>
     </header>
 
@@ -42,18 +54,19 @@
         <div class="container hero-inner">
           <div class="hero-copy">
             <div class="badge">Open Source &middot; MIT Licensed</div>
-            <h1>One command.<br>Every AI assistant.<br>In your browser.</h1>
-            <p class="tagline">ai-or-die gives you a real terminal for Claude, Copilot, Gemini, Codex and more — multi-session, real-time streaming, secure by default.</p>
+            <h1>One command. Every AI coding tool. Right in your browser.</h1>
+            <p class="tagline">ai-or-die launches Claude, Copilot, Gemini, Codex and a raw terminal in tabbed browser sessions. Real-time streaming, persistent sessions, secure by default. Works on any machine with Node.js.</p>
             <div class="hero-install">
               <div class="copy-wrap">
                 <pre class="install-cmd"><code>npx ai-or-die</code></pre>
-                <button class="copy-btn" data-copy="npx ai-or-die" title="Copy to clipboard">Copy</button>
+                <button class="copy-btn" data-copy="npx ai-or-die" title="Copy to clipboard" aria-live="polite">Copy</button>
               </div>
-              <span class="hint">Requires Node.js 22+</span>
+              <span class="hint">Requires Node.js 22+. Standalone binaries also available.</span>
             </div>
             <div class="cta">
               <a class="btn primary large" href="#start">Get Started</a>
-              <a class="btn large" href="https://www.npmjs.com/package/ai-or-die" target="_blank" rel="noopener">View on npm</a>
+              <a class="btn large" href="https://github.com/animeshkundu/ai-or-die" target="_blank" rel="noopener">GitHub</a>
+              <a class="btn large" href="https://www.npmjs.com/package/ai-or-die" target="_blank" rel="noopener">npm</a>
             </div>
           </div>
           <div class="hero-aside">
@@ -63,13 +76,8 @@
                 <span class="term-title">Terminal</span>
               </div>
               <div class="term-body">
-                <div class="line"><span class="prompt">$</span> npx ai-or-die</div>
-                <div class="line dim">Starting ai-or-die...</div>
-                <div class="line dim">Port: 7777</div>
-                <div class="line accent">&#x1F680; ai-or-die is running at: http://localhost:7777</div>
-                <div class="line"><span class="prompt">&#x1F512;</span> Generated auth token: <span class="token">a8Kp2mXv4Q</span></div>
-                <div class="line dim">&nbsp;</div>
-                <div class="line dim">Press Ctrl+C to stop the server</div>
+                <div class="line"><span class="prompt">$</span> <span id="typed-cmd"></span><span class="cursor">|</span></div>
+                <div id="term-output"></div>
               </div>
             </div>
           </div>
@@ -80,70 +88,128 @@
       <!-- TOOLS -->
       <section id="tools" class="section">
         <div class="container">
-          <h2 class="section-title">Works with the tools you love</h2>
-          <p class="section-sub">ai-or-die auto-detects which CLI tools are installed and makes them available instantly.</p>
+          <h2 class="section-title fade-in">Works with the tools you already use</h2>
+          <p class="section-sub fade-in">ai-or-die auto-detects which CLI tools are installed and makes them available instantly.</p>
           <div class="tools-grid">
-            <div class="tool-card">
-              <div class="tool-icon">&#9672;</div>
+            <div class="tool-card fade-in">
+              <div class="tool-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M8 12h8M12 8v8"/></svg>
+              </div>
               <h3>Claude</h3>
-              <p>Anthropic's Claude Code CLI</p>
+              <p>Anthropic's Claude Code CLI for code generation, editing, and reasoning</p>
             </div>
-            <div class="tool-card">
-              <div class="tool-icon">&#9678;</div>
+            <div class="tool-card fade-in">
+              <div class="tool-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+              </div>
               <h3>Copilot</h3>
-              <p>GitHub Copilot CLI</p>
+              <p>GitHub Copilot CLI for suggestions and code completion</p>
             </div>
-            <div class="tool-card">
-              <div class="tool-icon">&#9670;</div>
+            <div class="tool-card fade-in">
+              <div class="tool-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              </div>
               <h3>Gemini</h3>
-              <p>Google Gemini CLI</p>
+              <p>Google Gemini CLI for multimodal AI assistance</p>
             </div>
-            <div class="tool-card">
-              <div class="tool-icon">&#9656;</div>
+            <div class="tool-card fade-in">
+              <div class="tool-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+              </div>
               <h3>Codex</h3>
-              <p>OpenAI Codex CLI</p>
+              <p>OpenAI Codex CLI for code generation and transformation</p>
             </div>
-            <div class="tool-card">
-              <div class="tool-icon">&gt;_</div>
+            <div class="tool-card fade-in">
+              <div class="tool-icon">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              </div>
               <h3>Terminal</h3>
-              <p>Raw shell access (always available)</p>
+              <p>Raw shell access, always available regardless of other tools</p>
+            </div>
+          </div>
+          <p class="tools-note fade-in">Tools that aren't installed show as disabled. Install any of them at any time.</p>
+        </div>
+      </section>
+
+      <!-- SCREENSHOTS -->
+      <section id="screenshots" class="section alt">
+        <div class="container">
+          <h2 class="section-title fade-in">See it in action</h2>
+          <p class="section-sub fade-in">Real screenshots from the running application.</p>
+          <div class="screenshot-grid">
+            <div class="screenshot-item fade-in">
+              <div class="device-frame desktop">
+                <div class="frame-bar">
+                  <div class="dots"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
+                  <span class="frame-url">localhost:7777</span>
+                </div>
+                <div class="frame-body">
+                  <img src="screenshots/app-tools-view.png" alt="ai-or-die tool selection screen showing available AI tools" loading="lazy" decoding="async" />
+                </div>
+              </div>
+              <p class="screenshot-caption">Tool selection screen with auto-detected AI tools</p>
+            </div>
+            <div class="screenshot-item screenshot-mobile fade-in">
+              <div class="device-frame mobile">
+                <div class="frame-bar">
+                  <div class="dots"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
+                </div>
+                <div class="frame-body">
+                  <img src="screenshots/app-mobile.png" alt="ai-or-die mobile responsive view" loading="lazy" decoding="async" />
+                </div>
+              </div>
+              <p class="screenshot-caption">Mobile responsive view, same features on any device</p>
+            </div>
+          </div>
+          <div class="screenshot-grid single fade-in">
+            <div class="screenshot-item wide">
+              <div class="device-frame desktop">
+                <div class="frame-bar">
+                  <div class="dots"><span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span></div>
+                  <span class="frame-url">localhost:7777</span>
+                </div>
+                <div class="frame-body">
+                  <img src="screenshots/app-after-terminal-click.png" alt="ai-or-die terminal session running" loading="lazy" decoding="async" />
+                </div>
+              </div>
+              <p class="screenshot-caption">Active terminal session with full xterm.js emulation</p>
             </div>
           </div>
         </div>
       </section>
 
       <!-- FEATURES -->
-      <section id="features" class="section alt">
+      <section id="features" class="section">
         <div class="container">
-          <h2 class="section-title">Built for how you actually work</h2>
-          <p class="section-sub">No electron apps, no desktop clients. Just a fast web interface that runs anywhere.</p>
+          <h2 class="section-title fade-in">Built for how developers actually work</h2>
+          <p class="section-sub fade-in">No Electron apps, no desktop clients. A fast web interface that runs anywhere.</p>
           <div class="grid">
-            <div class="card">
+            <div class="card fade-in">
               <div class="card-icon">&#9889;</div>
               <h3>Real-time streaming</h3>
-              <p>Full xterm.js terminal with 256-color ANSI support. Low-latency WebSocket streaming — it feels native.</p>
+              <p>Full xterm.js terminal with 256-color ANSI support. Low-latency WebSocket streaming that feels native.</p>
             </div>
-            <div class="card">
+            <div class="card fade-in">
               <div class="card-icon">&#9881;</div>
               <h3>Multi-session</h3>
-              <p>Run Claude in one tab, Copilot in another. Switch between sessions. Sessions persist across restarts.</p>
+              <p>Run Claude in one tab, Copilot in another, Terminal in a third. Switch freely. Sessions persist across restarts.</p>
             </div>
-            <div class="card">
+            <div class="card fade-in">
               <div class="card-icon">&#128274;</div>
               <h3>Secure by default</h3>
-              <p>Token-based auth generated on startup. HTTPS support. No data leaves your machine unless you want it to.</p>
+              <p>Auth token auto-generated on startup and embedded in the URL. HTTPS support included. No data leaves your machine.</p>
             </div>
-            <div class="card">
+            <div class="card fade-in">
               <div class="card-icon">&#127760;</div>
               <h3>Remote access</h3>
               <p>Built-in Microsoft Dev Tunnels integration. Share your AI terminal securely with <code>--tunnel</code>.</p>
             </div>
-            <div class="card">
-              <div class="card-icon">&#128241;</div>
-              <h3>Mobile-friendly</h3>
-              <p>Responsive design with touch-optimized controls. Installable as a PWA on any device.</p>
+            <div class="card fade-in">
+              <div class="card-icon">&#128187;</div>
+              <h3>Cross-platform</h3>
+              <p>Windows (ConPTY) and Linux, tested in CI. Standalone binaries available if you don't want Node.js.</p>
             </div>
-            <div class="card">
+            <div class="card fade-in">
               <div class="card-icon">&#128640;</div>
               <h3>Zero config</h3>
               <p>Auto-detects installed tools. Picks up your shell, working directory, and environment. Just run it.</p>
@@ -152,20 +218,79 @@
         </div>
       </section>
 
+      <!-- MORE FEATURES -->
+      <section class="section alt">
+        <div class="container">
+          <h2 class="section-title fade-in">The details that matter</h2>
+          <div class="extras-grid">
+            <div class="extra-item fade-in">
+              <span class="extra-icon">&#128241;</span>
+              <div>
+                <strong>PWA support</strong>
+                <p>Installable as a web app on any device with offline-capable shell.</p>
+              </div>
+            </div>
+            <div class="extra-item fade-in">
+              <span class="extra-icon">&#128193;</span>
+              <div>
+                <strong>File browser</strong>
+                <p>Browse and select working directories, handle images, clipboard support.</p>
+              </div>
+            </div>
+            <div class="extra-item fade-in">
+              <span class="extra-icon">&#9000;</span>
+              <div>
+                <strong>Command palette</strong>
+                <p>Ctrl+K to open. Terminal search, theme switching, split views.</p>
+              </div>
+            </div>
+            <div class="extra-item fade-in">
+              <span class="extra-icon">&#128202;</span>
+              <div>
+                <strong>Usage analytics</strong>
+                <p>Track token usage across tools with burn rate predictions.</p>
+              </div>
+            </div>
+            <div class="extra-item fade-in">
+              <span class="extra-icon">&#128268;</span>
+              <div>
+                <strong>VS Code tunnels</strong>
+                <p>Per-session VS Code tunnel integration for remote editing.</p>
+              </div>
+            </div>
+            <div class="extra-item fade-in">
+              <span class="extra-icon">&#128230;</span>
+              <div>
+                <strong>Standalone binaries</strong>
+                <p>Pre-built SEA binaries for Linux and Windows. No Node.js required.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- GET STARTED -->
       <section id="start" class="section">
         <div class="container">
-          <h2 class="section-title">Up and running in seconds</h2>
-          <div class="columns">
+          <h2 class="section-title fade-in">Running in under 30 seconds</h2>
+          <div class="columns fade-in">
             <div>
-              <h3>Run instantly</h3>
+              <h3>Quick start</h3>
               <div class="copy-wrap">
                 <pre class="install-cmd"><code>npx ai-or-die</code></pre>
-                <button class="copy-btn" data-copy="npx ai-or-die" title="Copy to clipboard">Copy</button>
+                <button class="copy-btn" data-copy="npx ai-or-die" title="Copy to clipboard" aria-live="polite">Copy</button>
               </div>
-              <p class="step-note">Opens your browser automatically with a secure auth token.</p>
+              <p class="step-note">Opens your browser with a secure auth token embedded in the URL.</p>
+
               <h3>Or install globally</h3>
-              <pre class="snippet"><code>npm install -g ai-or-die</code></pre>
+              <div class="copy-wrap">
+                <pre class="install-cmd"><code>npm install -g ai-or-die</code></pre>
+                <button class="copy-btn" data-copy="npm install -g ai-or-die" title="Copy to clipboard" aria-live="polite">Copy</button>
+              </div>
+              <p class="step-note">Then run <code>ai-or-die</code> from any directory.</p>
+
+              <h3>Or download a binary</h3>
+              <p class="step-note">Grab the latest binary from the <a href="#download">download section</a> below. No Node.js needed.</p>
             </div>
             <div>
               <h3>Common options</h3>
@@ -175,11 +300,14 @@ ai-or-die --port 8080
 # Your own auth token
 ai-or-die --auth my-secret-token
 
-# Secure remote access
+# Secure remote access via Dev Tunnels
 ai-or-die --tunnel
 
-# Development mode
-ai-or-die --dev</code></pre>
+# Development mode with extra logging
+ai-or-die --dev
+
+# HTTPS with your own certs
+ai-or-die --https --cert cert.pem --key key.pem</code></pre>
             </div>
           </div>
         </div>
@@ -188,26 +316,46 @@ ai-or-die --dev</code></pre>
       <!-- DOWNLOAD -->
       <section id="download" class="section alt">
         <div class="container center">
-          <h2 class="section-title">Standalone binaries</h2>
-          <p class="section-sub">No Node.js required. Download, run, done.</p>
-          <div class="download-grid">
-            <a class="download-card" href="https://github.com/animeshkundu/ai-or-die/releases/latest" target="_blank" rel="noopener">
-              <div class="dl-icon">&#128039;</div>
+          <h2 class="section-title fade-in">Download</h2>
+          <p class="section-sub fade-in">
+            <img src="https://img.shields.io/npm/v/ai-or-die?color=E07A4B&label=npm&style=flat-square" alt="npm version" class="version-badge" />
+            <span id="version-display" class="version-text" aria-label="Package version"></span>
+          </p>
+          <div class="download-grid fade-in">
+            <a class="download-card recommended" href="https://www.npmjs.com/package/ai-or-die" target="_blank" rel="noopener">
+              <div class="dl-icon">
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor"><path d="M0 7.334v8h6.666v1.332H12v-1.332h12v-8H0zm6.666 6.664H5.334v-4H3.999v4H1.335V8.667h5.331v5.331zm4 0h-2.666V8.667h2.666v5.331zm12 0h-1.333v-4h-1.334v4h-1.333v-4h-1.334v4H16v-5.331h6.666v5.331zM11.333 8.667h-2.666v5.331h2.666V8.667z"/></svg>
+              </div>
+              <strong>npm</strong>
+              <span>npx ai-or-die</span>
+            </a>
+            <a class="download-card" href="https://github.com/animeshkundu/ai-or-die/releases/latest/download/ai-or-die-linux-x64" target="_blank" rel="noopener">
+              <div class="dl-icon">
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor"><path d="M12.504 0c-.155 0-.311.015-.466.045C9.85.545 8.11 2.18 7.56 4.39c-.135.55-.21 1.12-.21 1.71 0 .6.075 1.17.21 1.71.06.24.135.47.225.69-1.89.45-3.42 1.77-4.14 3.51-.18.435-.315.9-.39 1.395-.03.18-.045.36-.045.54 0 .3.03.6.09.885.09.435.24.855.435 1.245.405.81.99 1.5 1.725 2.01.735.51 1.605.855 2.535 1.02.27.045.54.075.81.075.33 0 .66-.03.975-.105.315-.075.615-.18.9-.315.135.315.3.615.495.885.39.54.87.99 1.425 1.32.555.33 1.17.555 1.815.63.21.03.42.045.63.045.69 0 1.35-.165 1.935-.48.585-.315 1.095-.765 1.485-1.305.195-.27.36-.555.495-.855.285.135.585.24.9.315.315.075.645.105.975.105.27 0 .54-.03.81-.075.93-.165 1.8-.51 2.535-1.02.735-.51 1.32-1.2 1.725-2.01.195-.39.345-.81.435-1.245.06-.285.09-.585.09-.885 0-.18-.015-.36-.045-.54-.075-.495-.21-.96-.39-1.395-.72-1.74-2.25-3.06-4.14-3.51.09-.22.165-.45.225-.69.135-.54.21-1.11.21-1.71 0-.59-.075-1.16-.21-1.71C16.89 2.18 15.15.545 12.97.045 12.815.015 12.659 0 12.504 0zm-.005 1.425c.135 0 .27.015.405.045 1.59.345 2.835 1.62 3.225 3.21.09.375.135.765.135 1.17 0 .405-.045.795-.135 1.17-.15.615-.42 1.17-.795 1.635-.03.03-.06.06-.075.09-.255-.18-.525-.345-.81-.48-.285-.135-.585-.24-.9-.315-.03-.015-.06-.015-.09-.03.3-.45.51-.96.6-1.5.045-.195.06-.39.06-.585 0-.195-.015-.39-.06-.585-.15-.63-.51-1.17-1.005-1.545-.495-.375-1.095-.585-1.725-.585-.63 0-1.23.21-1.725.585-.495.375-.855.915-1.005 1.545-.045.195-.06.39-.06.585 0 .195.015.39.06.585.09.54.3 1.05.6 1.5-.03.015-.06.015-.09.03-.315.075-.615.18-.9.315-.285.135-.555.3-.81.48-.015-.03-.045-.06-.075-.09-.375-.465-.645-1.02-.795-1.635-.09-.375-.135-.765-.135-1.17 0-.405.045-.795.135-1.17.39-1.59 1.635-2.865 3.225-3.21.135-.03.27-.045.405-.045z"/></svg>
+              </div>
               <strong>Linux x64</strong>
               <span>ai-or-die-linux-x64</span>
             </a>
-            <a class="download-card" href="https://github.com/animeshkundu/ai-or-die/releases/latest" target="_blank" rel="noopener">
-              <div class="dl-icon">&#127999;</div>
+            <a class="download-card" href="https://github.com/animeshkundu/ai-or-die/releases/latest/download/ai-or-die-windows-x64.exe" target="_blank" rel="noopener">
+              <div class="dl-icon">
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
+              </div>
               <strong>Windows x64</strong>
               <span>ai-or-die-windows-x64.exe</span>
             </a>
           </div>
-          <p class="hint">Binaries are built automatically on every release via GitHub Actions.</p>
+          <p class="download-links fade-in">
+            Also available on <a href="https://github.com/animeshkundu/ai-or-die/pkgs/npm/ai-or-die" target="_blank" rel="noopener">GitHub Packages</a>
+            &middot; <a href="https://github.com/animeshkundu/ai-or-die/releases" target="_blank" rel="noopener">All releases</a>
+          </p>
+          <p class="hint fade-in">Binaries are built on every release via GitHub Actions. Links always point to the latest version.</p>
+          <p class="hint fade-in">macOS users: use <code>npx ai-or-die</code> (works natively on Apple Silicon and Intel).</p>
         </div>
       </section>
 
     </main>
 
+    <!-- FOOTER -->
     <footer class="site-footer">
       <div class="container">
         <div>
@@ -216,9 +364,12 @@ ai-or-die --dev</code></pre>
           &middot; <a href="https://github.com/animeshkundu/ai-or-die/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
         </div>
         <div class="footer-links">
+          <a href="docs.html">Docs</a>
           <a href="https://github.com/animeshkundu/ai-or-die" target="_blank" rel="noopener">GitHub</a>
           <a href="https://www.npmjs.com/package/ai-or-die" target="_blank" rel="noopener">npm</a>
+          <a href="https://github.com/animeshkundu/ai-or-die/pkgs/npm/ai-or-die" target="_blank" rel="noopener">GitHub Packages</a>
           <a href="https://github.com/animeshkundu/ai-or-die/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contribute</a>
+          <a href="https://github.com/animeshkundu/ai-or-die/releases" target="_blank" rel="noopener">Releases</a>
         </div>
       </div>
     </footer>

@@ -62,14 +62,57 @@ jobs:
           fi
           echo "released=true" >> $GITHUB_OUTPUT
 
+      - name: Generate release notes
+        id: notes
+        run: |
+          git fetch --tags --force --quiet
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="HEAD"
+          else
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+
+          FEATS=$(git log $RANGE --pretty="format:- %s" --extended-regexp --grep="^feat(\(|:)" || true)
+          FIXES=$(git log $RANGE --pretty="format:- %s" --extended-regexp --grep="^fix(\(|:)" || true)
+          DOCS=$(git log $RANGE --pretty="format:- %s" --extended-regexp --grep="^docs(\(|:)" || true)
+          CHORES=$(git log $RANGE --pretty="format:- %s" --extended-regexp --grep="^(chore|refactor|test)(\(|:)" || true)
+
+          BODY=""
+
+          if [ -n "$FEATS" ]; then
+            BODY="${BODY}## What's New\n\n${FEATS}\n\n"
+          fi
+          if [ -n "$FIXES" ]; then
+            BODY="${BODY}## Bug Fixes\n\n${FIXES}\n\n"
+          fi
+          if [ -n "$DOCS" ]; then
+            BODY="${BODY}## Documentation\n\n${DOCS}\n\n"
+          fi
+          if [ -n "$CHORES" ]; then
+            BODY="${BODY}## Maintenance\n\n${CHORES}\n\n"
+          fi
+
+          if [ -z "$BODY" ]; then
+            COMMITS=$(git log $RANGE --pretty="format:- %s" --no-merges)
+            BODY="## Changes\n\n${COMMITS}\n\n"
+          fi
+
+          BODY="${BODY}---\n\n"
+          BODY="${BODY}**Install:** \`npx ai-or-die\` or \`npm install -g ai-or-die\`\n\n"
+          BODY="${BODY}**Binaries:** Linux x64 and Windows x64 attached below (no Node.js required).\n\n"
+          BODY="${BODY}**Full changelog:** [CHANGELOG.md](https://github.com/animeshkundu/ai-or-die/blob/main/CHANGELOG.md)"
+
+          echo "body<<EOFNOTES" >> $GITHUB_OUTPUT
+          echo -e "$BODY" >> $GITHUB_OUTPUT
+          echo "EOFNOTES" >> $GITHUB_OUTPUT
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
-          body: |
-            Automated release for v${{ steps.version.outputs.version }}.
-            See CHANGELOG.md for details.
+          body: ${{ steps.notes.outputs.body }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
