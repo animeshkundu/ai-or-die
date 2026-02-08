@@ -364,14 +364,13 @@ class ClaudeCodeWebInterface {
         this.terminal.open(document.getElementById('terminal'));
         this.fitTerminal();
 
-        // Re-render terminal when Nerd Font finishes loading (lazy-loaded via media="print")
-        if (document.fonts && document.fonts.load) {
-            document.fonts.load('14px MesloLGS Nerd Font').then(() => {
+        // Re-render terminal when fonts finish loading
+        if (document.fonts) {
+            document.fonts.ready.then(() => {
+                const loaded = document.fonts.check('14px "MesloLGS Nerd Font"');
+                console.log(loaded ? '[Font] MesloLGS Nerd Font loaded' : '[Font] Using fallback font');
                 this.terminal.refresh(0, this.terminal.rows - 1);
                 this.fitTerminal();
-            }).catch(() => {
-                // Font not available — still refresh in case fallback font loaded late
-                this.terminal.refresh(0, this.terminal.rows - 1);
             });
         }
 

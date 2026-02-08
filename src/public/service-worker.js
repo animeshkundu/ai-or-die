@@ -1,7 +1,9 @@
-const CACHE_NAME = 'ai-or-die-v3';
+const CACHE_NAME = 'ai-or-die-v4';
 const urlsToCache = [
   '/',
   '/index.html',
+  '/fonts.css',
+  '/fonts/MesloLGSNerdFont-Regular.woff2',
   '/tokens.css',
   '/base.css',
   '/components/tabs.css',

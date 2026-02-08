@@ -252,4 +252,51 @@ test.describe('Nerd Font rendering infrastructure', () => {
     expect(splitUnicodeVersions[0]).toBe('11');
     expect(splitUnicodeVersions[1]).toBe('11');
   });
+
+  test('MesloLGS Nerd Font is available in the browser after load', async ({ page }) => {
+    const sessionId = await createSessionViaApi(port, 'Font Check');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    // Wait for all fonts to settle, then check if MesloLGS Nerd Font is available
+    const fontAvailable = await page.evaluate(() => {
+      return document.fonts.ready.then(() => {
+        return document.fonts.check('14px "MesloLGS Nerd Font"');
+      });
+    });
+
+    expect(fontAvailable).toBe(true);
+  });
+
+  test('self-hosted WOFF2 serves with correct MIME type', async ({ page }) => {
+    // Directly fetch the self-hosted font file from the server
+    const response = await page.request.get(`${url}/fonts/MesloLGSNerdFont-Regular.woff2`);
+    expect(response.status()).toBe(200);
+    const contentType = response.headers()['content-type'];
+    expect(contentType).toMatch(/font\/woff2|application\/octet-stream/);
+  });
+
+  test('no font-related network requests fail', async ({ page }) => {
+    const failedFontRequests = [];
+
+    page.on('requestfailed', (request) => {
+      const url = request.url();
+      if (url.includes('.woff2') || url.includes('.woff') || url.includes('nerd-font')) {
+        failedFontRequests.push({ url, error: request.failure()?.errorText });
+      }
+    });
+
+    const sessionId = await createSessionViaApi(port, 'Font Network Check');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    // Wait a bit for all font requests to settle
+    await page.waitForTimeout(3000);
+
+    expect(failedFontRequests).toEqual([]);
+  });
 });

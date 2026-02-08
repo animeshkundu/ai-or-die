@@ -33,7 +33,9 @@ class Split {
         
         // Initialize xterm.js terminal
         this.terminal = new Terminal({
-            fontFamily: this.app?.terminal?.options?.fontFamily || 'JetBrains Mono, monospace',
+            fontFamily: this.app?.terminal?.options?.fontFamily
+                || getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim()
+                || "'MesloLGS Nerd Font', 'MesloLGS NF', 'JetBrains Mono', monospace",
             fontSize: this.app?.terminal?.options?.fontSize || 14,
             cursorBlink: true,
             convertEol: true,

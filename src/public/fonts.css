@@ -1,0 +1,58 @@
+/* ============================================================
+   Nerd Font Loading — MesloLGS Nerd Font
+   Three-tier source: local install > self-hosted WOFF2 > CDN WOFF2
+   CDN pinned to v3.3.0 for reproducibility.
+   ============================================================ */
+
+@font-face {
+  font-family: 'MesloLGS Nerd Font';
+  font-style: normal;
+  font-weight: 400;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('MesloLGS Nerd Font'),
+       local('MesloLGS NF'),
+       local('MesloLGSNerdFont-Regular'),
+       local('MesloLGS Nerd Font Regular'),
+       url('fonts/MesloLGSNerdFont-Regular.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGSNerdFont-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'MesloLGS Nerd Font';
+  font-style: italic;
+  font-weight: 400;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('MesloLGS Nerd Font Italic'),
+       local('MesloLGS NF Italic'),
+       local('MesloLGSNerdFont-Italic'),
+       url('fonts/MesloLGSNerdFont-Italic.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGSNerdFont-Italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'MesloLGS Nerd Font';
+  font-style: normal;
+  font-weight: 700;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('MesloLGS Nerd Font Bold'),
+       local('MesloLGS NF Bold'),
+       local('MesloLGSNerdFont-Bold'),
+       url('fonts/MesloLGSNerdFont-Bold.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGSNerdFont-Bold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'MesloLGS Nerd Font';
+  font-style: italic;
+  font-weight: 700;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('MesloLGS Nerd Font Bold Italic'),
+       local('MesloLGS NF Bold Italic'),
+       local('MesloLGSNerdFont-BoldItalic'),
+       url('fonts/MesloLGSNerdFont-BoldItalic.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGSNerdFont-BoldItalic.woff2') format('woff2');
+}
