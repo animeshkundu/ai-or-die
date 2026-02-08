@@ -1,0 +1,2 @@
+# Force LF line endings for shell scripts (prevents CRLF corruption on Windows checkout)
+e2e/fixtures/fake-code.sh text eol=lf
