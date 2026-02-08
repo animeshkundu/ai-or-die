@@ -76,10 +76,10 @@ test.describe('Nerd Font visual rendering', () => {
     await waitForTerminalCanvas(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    const fontAvailable = await page.evaluate(() => {
-      return document.fonts.ready.then(() => {
-        return document.fonts.check('14px "JetBrains Mono NF"');
-      });
+    // Explicitly trigger font load (fonts only load when used on page)
+    const fontAvailable = await page.evaluate(async () => {
+      await document.fonts.load('14px "JetBrains Mono NF"');
+      return document.fonts.check('14px "JetBrains Mono NF"');
     });
 
     expect(fontAvailable).toBe(true);
@@ -92,10 +92,9 @@ test.describe('Nerd Font visual rendering', () => {
     await waitForTerminalCanvas(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    const fontAvailable = await page.evaluate(() => {
-      return document.fonts.ready.then(() => {
-        return document.fonts.check('14px "Fira Code NF"');
-      });
+    const fontAvailable = await page.evaluate(async () => {
+      await document.fonts.load('14px "Fira Code NF"');
+      return document.fonts.check('14px "Fira Code NF"');
     });
 
     expect(fontAvailable).toBe(true);
@@ -108,10 +107,9 @@ test.describe('Nerd Font visual rendering', () => {
     await waitForTerminalCanvas(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    const fontAvailable = await page.evaluate(() => {
-      return document.fonts.ready.then(() => {
-        return document.fonts.check('14px "Cascadia Code NF"');
-      });
+    const fontAvailable = await page.evaluate(async () => {
+      await document.fonts.load('14px "Cascadia Code NF"');
+      return document.fonts.check('14px "Cascadia Code NF"');
     });
 
     expect(fontAvailable).toBe(true);
