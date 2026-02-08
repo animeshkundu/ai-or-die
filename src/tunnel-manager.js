@@ -3,8 +3,11 @@
 const { spawn, execFile } = require('child_process');
 const os = require('os');
 
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 10;
 const URL_TIMEOUT_MS = 30000;
+const STABILITY_THRESHOLD_MS = 60000;  // 60s uptime = "stable", resets retryCount
+const MIN_RESTART_DELAY_MS = 1000;
+const MAX_RESTART_DELAY_MS = 30000;    // cap backoff at 30s
 
 class TunnelManager {
   constructor(options = {}) {
@@ -18,6 +21,16 @@ class TunnelManager {
     this.stopping = false;
     this.retryCount = 0;
     this.tunnelId = `aiordie-${os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '')}`;
+
+    // Resilience tracking
+    this._lastSpawnTime = null;
+    this._totalRestarts = 0;
+    this._stabilityTimer = null;
+    this._restartDelayTimer = null;
+    this._restartDelayResolve = null;
+
+    // Allow test overrides for timing constants
+    this._stabilityThresholdMs = options._stabilityThresholdMs || STABILITY_THRESHOLD_MS;
   }
 
   /**
@@ -44,6 +57,15 @@ class TunnelManager {
    */
   async stop() {
     this.stopping = true;
+    this._clearStabilityTimer();
+
+    // Abort any pending restart delay
+    clearTimeout(this._restartDelayTimer);
+    if (this._restartDelayResolve) {
+      this._restartDelayResolve();
+      this._restartDelayResolve = null;
+    }
+
     if (!this.process) return;
 
     return new Promise((resolve) => {
@@ -175,6 +197,7 @@ class TunnelManager {
    * No -p flag needed — port is already configured via _ensureTunnel().
    */
   async _spawn() {
+    this._lastSpawnTime = Date.now();
     const args = ['host', this.tunnelId];
 
     return new Promise((resolve) => {
@@ -203,6 +226,7 @@ class TunnelManager {
           this.publicUrl = match[0].trim();
           urlResolved = true;
           clearTimeout(urlTimeout);
+          this._startStabilityTimer();
           this.onUrl(this.publicUrl);
           resolve();
         }
@@ -227,6 +251,7 @@ class TunnelManager {
 
       this.process.on('exit', (code, signal) => {
         clearTimeout(urlTimeout);
+        this._clearStabilityTimer();
         this.process = null;
 
         if (!urlResolved) {
@@ -243,19 +268,75 @@ class TunnelManager {
   }
 
   /**
-   * Auto-restart with exponential backoff.
+   * Start the stability timer. After STABILITY_THRESHOLD_MS of uptime,
+   * reset retryCount so future crashes get a fresh retry budget.
+   */
+  _startStabilityTimer() {
+    this._clearStabilityTimer();
+    this._stabilityTimer = setTimeout(() => {
+      if (this.retryCount > 0) {
+        console.log(`  [tunnel] Stable for ${this._stabilityThresholdMs / 1000}s — retry counter reset (was ${this.retryCount}).`);
+        this.retryCount = 0;
+      }
+    }, this._stabilityThresholdMs);
+    // Don't let this timer keep the process alive during shutdown
+    if (this._stabilityTimer.unref) {
+      this._stabilityTimer.unref();
+    }
+  }
+
+  _clearStabilityTimer() {
+    if (this._stabilityTimer) {
+      clearTimeout(this._stabilityTimer);
+      this._stabilityTimer = null;
+    }
+  }
+
+  /**
+   * Auto-restart with capped exponential backoff.
+   * retryCount resets after stable uptime via _startStabilityTimer().
    */
   async _restart() {
+    this._totalRestarts++;
     this.retryCount++;
+
+    const uptimeMs = this._lastSpawnTime ? Date.now() - this._lastSpawnTime : 0;
+    const uptimeStr = uptimeMs > 60000
+      ? `${(uptimeMs / 60000).toFixed(1)}m`
+      : `${(uptimeMs / 1000).toFixed(0)}s`;
+
     if (this.retryCount > MAX_RETRIES) {
-      console.error(`  \x1b[31mTunnel crashed ${MAX_RETRIES} times. Giving up. Server continues on localhost.\x1b[0m\n`);
+      console.error(
+        `  \x1b[31mTunnel crashed ${MAX_RETRIES} times in quick succession. ` +
+        `Giving up. Server continues on localhost.\x1b[0m`
+      );
+      console.error(
+        `  Total lifetime restarts: ${this._totalRestarts}. ` +
+        `Last uptime before failure: ${uptimeStr}.`
+      );
       return;
     }
 
-    const delay = Math.pow(2, this.retryCount - 1) * 1000; // 1s, 2s, 4s
-    console.log(`  Tunnel exited unexpectedly. Restarting in ${delay / 1000}s (attempt ${this.retryCount}/${MAX_RETRIES})...`);
+    const delay = Math.min(
+      Math.pow(2, this.retryCount - 1) * MIN_RESTART_DELAY_MS,
+      MAX_RESTART_DELAY_MS
+    );
 
-    await new Promise((r) => setTimeout(r, delay));
+    console.log(
+      `  [tunnel] Connection lost after ${uptimeStr} uptime. ` +
+      `Restarting in ${delay / 1000}s ` +
+      `(attempt ${this.retryCount}/${MAX_RETRIES}, ` +
+      `lifetime restarts: ${this._totalRestarts})...`
+    );
+
+    await new Promise((resolve) => {
+      this._restartDelayResolve = resolve;
+      this._restartDelayTimer = setTimeout(resolve, delay);
+      if (this._restartDelayTimer.unref) {
+        this._restartDelayTimer.unref();
+      }
+    });
+    this._restartDelayResolve = null;
 
     if (this.stopping) return;
 
@@ -264,4 +345,7 @@ class TunnelManager {
   }
 }
 
-module.exports = { TunnelManager };
+module.exports = {
+  TunnelManager,
+  _constants: { MAX_RETRIES, URL_TIMEOUT_MS, STABILITY_THRESHOLD_MS, MIN_RESTART_DELAY_MS, MAX_RESTART_DELAY_MS }
+};

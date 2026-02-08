@@ -32,6 +32,7 @@ Central documentation for the ai-or-die project -- a Node.js web application tha
 - [ADR-0007: Design Token System](adrs/0007-design-token-system.md)
 - [ADR-0008: E2E Parallelization](adrs/0008-e2e-parallelization.md)
 - [ADR-0008: File Browser Architecture](adrs/0008-file-browser-architecture.md)
+- [ADR-0009: Output Throttling](adrs/0009-output-throttling.md)
 
 ## Agent Instructions
 
