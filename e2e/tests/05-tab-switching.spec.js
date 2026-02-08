@@ -20,7 +20,7 @@ test.describe('Tab switching: multiple sessions with isolated content', () => {
   });
 
   test.afterAll(async () => {
-    if (server) server.close();
+    if (server) await server.close();
   });
 
   test.afterEach(async ({ page }, testInfo) => {

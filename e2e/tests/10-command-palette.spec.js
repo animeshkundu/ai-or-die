@@ -18,7 +18,7 @@ test.describe('Command palette (Ctrl+K)', () => {
   });
 
   test.afterAll(async () => {
-    if (server) server.close();
+    if (server) await server.close();
   });
 
   test.afterEach(async ({ page }, testInfo) => {

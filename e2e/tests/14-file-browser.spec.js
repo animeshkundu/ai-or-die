@@ -31,7 +31,7 @@ test.describe('File browser', () => {
   });
 
   test.afterAll(async () => {
-    if (server) server.close();
+    if (server) await server.close();
     // Clean up fixture directory
     fs.rmSync(fixtureDir, { recursive: true, force: true });
   });

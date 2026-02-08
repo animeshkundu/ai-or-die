@@ -18,7 +18,7 @@ test.describe('Theme switching', () => {
   });
 
   test.afterAll(async () => {
-    if (server) server.close();
+    if (server) await server.close();
   });
 
   test.afterEach(async ({ page }, testInfo) => {

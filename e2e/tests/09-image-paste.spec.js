@@ -39,7 +39,7 @@ test.describe('Image paste: preview modal and upload', () => {
   });
 
   test.afterAll(async () => {
-    if (server) server.close();
+    if (server) await server.close();
   });
 
   test.afterEach(async ({ page }, testInfo) => {

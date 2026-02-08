@@ -19,7 +19,7 @@ test.describe('Font settings', () => {
   });
 
   test.afterAll(async () => {
-    if (server) server.close();
+    if (server) await server.close();
   });
 
   test.afterEach(async ({ page }, testInfo) => {

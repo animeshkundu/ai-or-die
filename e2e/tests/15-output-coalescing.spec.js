@@ -20,7 +20,7 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
   });
 
   test.afterAll(async () => {
-    if (server) server.close();
+    if (server) await server.close();
   });
 
   test.afterEach(async ({ page }, testInfo) => {
