@@ -8,6 +8,7 @@ const {
   joinSessionAndStartTerminal,
   focusTerminal,
   readTerminalContent,
+  waitForWsMessage,
 } = require('../helpers/terminal-helpers');
 
 // Minimal 1x1 red PNG encoded as base64 for clipboard tests
@@ -157,10 +158,8 @@ test.describe('Image paste: preview modal and upload', () => {
     // Modal should close after the image is processed
     await expect(modal).not.toBeVisible({ timeout: 5000 });
 
-    // Verify the server responded with image_upload_complete via WebSocket
-    const uploadComplete = page._wsMessages.find(
-      m => m.dir === 'recv' && m.type === 'image_upload_complete'
-    );
+    // Wait for the server to respond with image_upload_complete via WebSocket
+    const uploadComplete = await waitForWsMessage(page, 'recv', 'image_upload_complete', 10000);
     expect(uploadComplete).toBeTruthy();
     expect(uploadComplete.filePath).toBeTruthy();
     expect(uploadComplete.filePath).toContain('.claude-images');
@@ -250,10 +249,8 @@ test.describe('Image paste: preview modal and upload', () => {
     expect(uploadSent.base64).toBeTruthy();
     expect(uploadSent.mimeType).toBe('image/png');
 
-    // Verify the server responded with image_upload_complete
-    const uploadComplete = page._wsMessages.find(
-      m => m.dir === 'recv' && m.type === 'image_upload_complete'
-    );
+    // Wait for the server to respond with image_upload_complete
+    const uploadComplete = await waitForWsMessage(page, 'recv', 'image_upload_complete', 10000);
     expect(uploadComplete).toBeTruthy();
     expect(uploadComplete.filePath).toBeTruthy();
     expect(uploadComplete.mimeType).toBe('image/png');

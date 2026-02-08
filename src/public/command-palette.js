@@ -175,6 +175,35 @@ class CommandPaletteManager {
       }
     });
 
+    // VS Code Tunnel commands
+    actions.push({
+      id: 'vscode-tunnel-start',
+      title: 'VS Code Tunnel: Start',
+      section: 'Actions',
+      hotkey: 'ctrl+shift+v',
+      handler: () => {
+        if (app.toggleVSCodeTunnel) app.toggleVSCodeTunnel();
+      }
+    });
+
+    actions.push({
+      id: 'vscode-tunnel-stop',
+      title: 'VS Code Tunnel: Stop',
+      section: 'Actions',
+      handler: () => {
+        if (app.stopVSCodeTunnel) app.stopVSCodeTunnel();
+      }
+    });
+
+    actions.push({
+      id: 'vscode-tunnel-copy-url',
+      title: 'VS Code Tunnel: Copy URL',
+      section: 'Actions',
+      handler: () => {
+        if (app.copyVSCodeTunnelUrl) app.copyVSCodeTunnelUrl();
+      }
+    });
+
     this.ninja.data = actions;
   }
 }

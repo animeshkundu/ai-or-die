@@ -8,6 +8,7 @@ module.exports = defineConfig({
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 2 : 1,
   timeout: 60000,
+  updateSnapshots: 'missing',
   expect: {
     timeout: 15000,
     toHaveScreenshot: {
@@ -61,7 +62,7 @@ module.exports = defineConfig({
     },
     {
       name: 'new-features',
-      testMatch: /1[0-4]-.*\.spec\.js/,
+      testMatch: /1[0-5]-.*\.spec\.js/,
     },
   ],
 });

@@ -17,6 +17,7 @@ const SessionStore = require('./utils/session-store');
 const { getFileInfo, computeFileHash, isBinaryFile, sanitizeFileName, isBlockedExtension, formatFileSize, normalizePath, BLOCKED_EXTENSIONS } = require('./utils/file-utils');
 const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
+const { VSCodeTunnelManager } = require('./vscode-tunnel');
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -41,6 +42,10 @@ class ClaudeCodeWebServer {
     this.copilotBridge = new CopilotBridge();
     this.geminiBridge = new GeminiBridge();
     this.terminalBridge = new TerminalBridge();
+    this.vscodeTunnel = new VSCodeTunnelManager({
+      dev: this.dev,
+      onEvent: (sessionId, event) => this.handleVSCodeTunnelEvent(sessionId, event),
+    });
     this.sessionStore = new SessionStore();
     this.usageReader = new UsageReader(this.sessionDurationHours);
     this.usageAnalytics = new UsageAnalytics({
@@ -117,6 +122,8 @@ class ClaudeCodeWebServer {
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
     }
+    // Stop all VS Code tunnels
+    await this.vscodeTunnel.stopAll();
     // Clean up temp images for all sessions
     for (const [, session] of this.claudeSessions) {
       this.cleanupSessionImages(session);
@@ -394,6 +401,9 @@ class ClaudeCodeWebServer {
         }
       });
 
+      // Flush any pending output before cleanup
+      this._flushAndClearOutputTimer(session, sessionId);
+
       // Clean up temp images
       this.cleanupSessionImages(session);
 
@@ -417,7 +427,8 @@ class ClaudeCodeWebServer {
           codex: { alias: this.aliases.codex, available: this.codexBridge.isAvailable(), hasDangerousMode: true },
           copilot: { alias: this.aliases.copilot, available: this.copilotBridge.isAvailable(), hasDangerousMode: true },
           gemini: { alias: this.aliases.gemini, available: this.geminiBridge.isAvailable(), hasDangerousMode: true },
-          terminal: { alias: this.aliases.terminal, available: this.terminalBridge.isAvailable(), hasDangerousMode: false }
+          terminal: { alias: this.aliases.terminal, available: this.terminalBridge.isAvailable(), hasDangerousMode: false },
+          vscodeTunnel: { available: this.vscodeTunnel.isAvailableSync() }
         }
       });
     });
@@ -1035,7 +1046,8 @@ class ClaudeCodeWebServer {
       server,
       maxPayload: 8 * 1024 * 1024,
       perMessageDeflate: {
-        serverNoContextTakeover: true,
+        threshold: 1024,
+        serverNoContextTakeover: false,
         clientNoContextTakeover: true,
         serverMaxWindowBits: 13,
         clientMaxWindowBits: 13,
@@ -1233,6 +1245,18 @@ class ClaudeCodeWebServer {
         await this.handleImageUpload(wsId, data);
         break;
 
+      case 'start_vscode_tunnel':
+        await this.handleStartVSCodeTunnel(wsId, data);
+        break;
+
+      case 'stop_vscode_tunnel':
+        await this.handleStopVSCodeTunnel(wsId, data);
+        break;
+
+      case 'vscode_tunnel_status':
+        await this.handleVSCodeTunnelStatus(wsId);
+        break;
+
       default:
         if (this.dev) {
           console.log(`Unknown message type: ${data.type}`);
@@ -1428,7 +1452,7 @@ class ClaudeCodeWebServer {
           if (currentSession.outputBuffer.length > currentSession.maxBufferSize) {
             currentSession.outputBuffer.shift();
           }
-          this.broadcastToSession(sessionId, { type: 'output', data });
+          this._throttledOutputBroadcast(sessionId, data);
           // Notify non-joined connections about activity (throttled to 1/sec)
           const now = Date.now();
           const lastBroadcast = this.activityBroadcastTimestamps.get(sessionId) || 0;
@@ -1440,6 +1464,7 @@ class ClaudeCodeWebServer {
         onExit: (code, signal) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (currentSession) {
+            this._flushAndClearOutputTimer(currentSession, sessionId);
             currentSession.active = false;
             currentSession.agent = null;
           }
@@ -1492,6 +1517,7 @@ class ClaudeCodeWebServer {
       await bridge.stopSession(sessionId);
     }
 
+    this._flushAndClearOutputTimer(session, sessionId);
     const agentType = session.agent;
     session.active = false;
     session.agent = null;
@@ -1535,6 +1561,61 @@ class ClaudeCodeWebServer {
     });
   }
 
+  // Coalesces output into 16ms windows to reduce WebSocket send frequency.
+  // During heavy output (~500 PTY batches/sec), this reduces sends to ~60/sec,
+  // freeing the event loop for input message processing.
+  _throttledOutputBroadcast(sessionId, data) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+
+    if (!session._pendingOutput) {
+      session._pendingOutput = '';
+    }
+    session._pendingOutput += data;
+
+    if (!session._outputFlushTimer) {
+      session._outputFlushTimer = setTimeout(() => {
+        session._outputFlushTimer = null;
+        this._flushSessionOutput(sessionId);
+      }, 16);
+      if (session._outputFlushTimer.unref) {
+        session._outputFlushTimer.unref();
+      }
+    }
+  }
+
+  _flushSessionOutput(sessionId) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session || !session._pendingOutput) return;
+
+    const pending = session._pendingOutput;
+    session._pendingOutput = '';
+
+    // Skip broadcast if no clients connected (idle session)
+    if (session.connections.size === 0) return;
+
+    // Pre-serialize once for all clients
+    const msg = JSON.stringify({ type: 'output', data: pending });
+    session.connections.forEach(wsId => {
+      const wsInfo = this.webSocketConnections.get(wsId);
+      if (wsInfo &&
+          wsInfo.claudeSessionId === sessionId &&
+          wsInfo.ws.readyState === WebSocket.OPEN) {
+        wsInfo.ws.send(msg);
+      }
+    });
+  }
+
+  _flushAndClearOutputTimer(session, sessionId) {
+    if (session._outputFlushTimer) {
+      clearTimeout(session._outputFlushTimer);
+      session._outputFlushTimer = null;
+    }
+    if (session._pendingOutput) {
+      this._flushSessionOutput(sessionId);
+    }
+  }
+
   cleanupWebSocketConnection(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
@@ -1556,6 +1637,61 @@ class ClaudeCodeWebServer {
     this.webSocketConnections.delete(wsId);
   }
 
+  // ── VS Code Tunnel Handlers ────────────────────────────────
+
+  async handleStartVSCodeTunnel(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo || !wsInfo.claudeSessionId) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'vscode_tunnel_error',
+        message: 'Join a session first before starting a VS Code tunnel.',
+      });
+      return;
+    }
+
+    const sessionId = wsInfo.claudeSessionId;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+
+    const workingDir = session.workingDir || this.selectedWorkingDir || this.baseFolder;
+    const result = await this.vscodeTunnel.start(sessionId, workingDir);
+
+    if (!result.success) {
+      this.broadcastToSession(sessionId, {
+        type: 'vscode_tunnel_error',
+        error: result.error,
+        message: result.message || result.error,
+      });
+    }
+    // Success events are emitted via onEvent callback → handleVSCodeTunnelEvent
+  }
+
+  async handleStopVSCodeTunnel(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo || !wsInfo.claudeSessionId) return;
+
+    const sessionId = data.sessionId || wsInfo.claudeSessionId;
+    await this.vscodeTunnel.stop(sessionId);
+  }
+
+  async handleVSCodeTunnelStatus(wsId) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo || !wsInfo.claudeSessionId) return;
+
+    const status = this.vscodeTunnel.getStatus(wsInfo.claudeSessionId);
+    this.sendToWebSocket(wsInfo.ws, {
+      type: 'vscode_tunnel_status',
+      ...status,
+    });
+  }
+
+  /**
+   * Callback from VSCodeTunnelManager — forward events to the session's connections.
+   */
+  handleVSCodeTunnelEvent(sessionId, event) {
+    this.broadcastToSession(sessionId, event);
+  }
+
   close() {
     // Save sessions before closing
     this.saveSessionsToDisk();
@@ -1575,8 +1711,9 @@ class ClaudeCodeWebServer {
       this.server.close();
     }
     
-    // Stop all sessions
+    // Flush pending output and stop all sessions
     for (const [sessionId, session] of this.claudeSessions.entries()) {
+      this._flushAndClearOutputTimer(session, sessionId);
       if (session.active) {
         const bridge = this.getBridgeForAgent(session.agent);
         if (bridge) {

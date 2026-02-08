@@ -51,6 +51,7 @@
     <link rel="stylesheet" href="components/menus.css">
     <link rel="stylesheet" href="components/notifications.css">
     <link rel="stylesheet" href="components/file-browser.css">
+    <link rel="stylesheet" href="components/vscode-tunnel.css">
     <link rel="stylesheet" href="mobile.css">
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -105,6 +106,12 @@
                         <line x1="9" y1="14" x2="15" y2="14"/>
                     </svg>
                 </button>
+                <button class="tab-vscode-tunnel" id="vscodeTunnelBtn" title="VS Code Tunnel (Ctrl+Shift+V)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="16 18 22 12 16 6"/>
+                        <polyline points="8 6 2 12 8 18"/>
+                    </svg>
+                </button>
                 <button class="tab-attach-image" id="attachImageBtn" title="Attach Image">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" stroke-width="2">
@@ -122,6 +129,7 @@
             </div>
         </div>
 
+        <div class="vscode-tunnel-banner" id="vscodeTunnelBanner"></div>
 
         <div class="mobile-menu" id="mobileMenu">
             <div class="mobile-menu-header">
@@ -433,6 +441,7 @@
     <script src="icons.js"></script>
     <script src="file-browser.js"></script>
     <script src="file-editor.js"></script>
+    <script src="vscode-tunnel.js"></script>
     <script src="command-palette.js"></script>
     <script src="app.js"></script>
     <ninja-keys class="dark" id="commandPalette" hideBreadcrumbs></ninja-keys>
