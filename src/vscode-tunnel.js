@@ -302,11 +302,16 @@ class VSCodeTunnelManager {
 
     return new Promise((resolve) => {
       tunnel._lastSpawnTime = Date.now();
-      tunnel.process = spawn(this._command, args, {
+      const spawnOptions = {
         cwd: tunnel.workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
-      });
+      };
+      // Windows .cmd/.bat files require shell to execute
+      if (process.platform === 'win32') {
+        spawnOptions.shell = true;
+      }
+      tunnel.process = spawn(this._command, args, spawnOptions);
 
       let urlResolved = false;
       let outputBuffer = '';

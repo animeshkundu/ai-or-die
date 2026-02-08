@@ -516,3 +516,41 @@ Three new actions registered in `src/public/command-palette.js`:
 | Upload File | -- | Open the file picker for upload |
 
 See the [File Browser Specification](file-browser.md) for the complete feature documentation including server API, security model, preview types, and testing requirements.
+
+---
+
+## VS Code Tunnel Integration
+
+Source: `src/public/vscode-tunnel.js` (UI), `src/vscode-tunnel.js` (server manager)
+
+### app.js Integration
+
+| Property/Method | Description |
+|----------------|-------------|
+| `_vscodeTunnelUI` | Lazy-initialized `VSCodeTunnelUI` instance (created on first toggle or incoming event) |
+| `toggleVSCodeTunnel()` | Create UI if needed, call `toggle()` — starts tunnel if stopped, shows banner if running |
+| `stopVSCodeTunnel()` | Delegate to `_vscodeTunnelUI.stop()` |
+| `copyVSCodeTunnelUrl()` | Delegate to `_vscodeTunnelUI.copyUrl()` |
+
+### Keyboard Shortcut
+
+`Ctrl+Shift+V` triggers `toggleVSCodeTunnel()`. Registered in the global keydown handler alongside `Ctrl+B` (file browser).
+
+### UI Elements
+
+- Toolbar button: `#vscodeTunnelBtn` with visual state classes (`.starting`, `.running`, `.error`)
+- Status banner: `#vscodeTunnelBanner` with `.visible` class toggle
+
+### WebSocket Message Routing
+
+Events `vscode_tunnel_started`, `vscode_tunnel_status`, `vscode_tunnel_auth`, and `vscode_tunnel_error` are forwarded from the `handleMessage` switch to `_vscodeTunnelUI.handleMessage()`. If the UI instance doesn't exist, it is created on-demand.
+
+### Command Palette Actions
+
+| Action | Shortcut | Description |
+|--------|----------|-------------|
+| Start VS Code Tunnel | `Ctrl+Shift+V` | Toggle tunnel on/off |
+| Stop VS Code Tunnel | -- | Stop running tunnel |
+| Copy VS Code Tunnel URL | -- | Copy URL to clipboard |
+
+See the [VS Code Tunnel Specification](vscode-tunnel.md) for the complete feature documentation including server manager, binary discovery, auth flow, and WebSocket protocol.

@@ -40,19 +40,19 @@
      * Send start command via WebSocket.
      */
     start() {
-      if (!this.app || !this.app.ws) return;
+      if (!this.app) return;
       this._setStatus('starting');
       this._bannerDismissed = false;
       this._renderBanner();
-      this.app.ws.send(JSON.stringify({ type: 'start_vscode_tunnel' }));
+      this.app.send({ type: 'start_vscode_tunnel' });
     }
 
     /**
      * Send stop command via WebSocket.
      */
     stop() {
-      if (!this.app || !this.app.ws) return;
-      this.app.ws.send(JSON.stringify({ type: 'stop_vscode_tunnel' }));
+      if (!this.app) return;
+      this.app.send({ type: 'stop_vscode_tunnel' });
       this._setStatus('stopped');
       this.url = null;
       this.authUrl = null;
