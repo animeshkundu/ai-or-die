@@ -21,6 +21,11 @@
     color: var(--text-primary);
 }
 
+.ctx-item span:not(.ctx-icon):not(.shortcut) {
+    flex: 1;
+    text-align: left;
+}
+
 .ctx-icon {
     display: inline-flex;
     align-items: center;
