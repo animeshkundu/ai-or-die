@@ -13,6 +13,7 @@ concurrency:
 jobs:
   test:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -29,6 +30,7 @@ jobs:
 
   test-browser-golden:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -54,6 +56,7 @@ jobs:
 
   test-browser-functional-core:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -79,6 +82,7 @@ jobs:
 
   test-browser-functional-extended:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -104,6 +108,7 @@ jobs:
 
   test-browser-mobile:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -131,6 +136,7 @@ jobs:
 
   test-browser-visual:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
     strategy:
       fail-fast: false
       matrix:
@@ -171,6 +177,7 @@ jobs:
 
   test-browser-new-features:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -196,6 +203,7 @@ jobs:
 
   build-binary:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
     strategy:
       matrix:
         include:

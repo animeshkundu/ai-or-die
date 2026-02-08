@@ -148,4 +148,37 @@ test.describe('Context menu: right-click terminal shows menu', () => {
       expect(Math.abs(icon.left - firstLeft)).toBeLessThanOrEqual(1);
     }
   });
+
+  test('text labels are left-aligned at a consistent position', async ({ page }) => {
+    await setupTerminalPage(page);
+
+    // Open context menu
+    const terminalArea = page.locator('[data-tid="terminal"] .xterm-screen, #terminal .xterm-screen').first();
+    await terminalArea.click({ button: 'right', position: { x: 100, y: 50 } });
+
+    const menu = page.locator('[data-tid="context-menu"]');
+    await expect(menu).toBeVisible();
+
+    // Collect bounding rects of every text label span (not .ctx-icon, not .shortcut)
+    const labelData = await menu.locator('.ctx-item span:not(.ctx-icon):not(.shortcut)').evaluateAll(spans =>
+      spans.map(s => {
+        const rect = s.getBoundingClientRect();
+        const style = window.getComputedStyle(s);
+        return { left: rect.left, textAlign: style.textAlign };
+      })
+    );
+
+    expect(labelData.length).toBeGreaterThanOrEqual(7);
+
+    // All text labels should be left-aligned
+    for (const label of labelData) {
+      expect(label.textAlign).toBe('left');
+    }
+
+    // All text labels should start at the same horizontal position
+    const firstLabelLeft = labelData[0].left;
+    for (const label of labelData) {
+      expect(Math.abs(label.left - firstLabelLeft)).toBeLessThanOrEqual(1);
+    }
+  });
 });
