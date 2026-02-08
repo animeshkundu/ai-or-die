@@ -153,7 +153,7 @@ test.describe('Visual regression', () => {
     await page.waitForSelector('.tool-card', { timeout: 10000 });
     await page.waitForTimeout(500);
 
-    // Terminal card is always available
+    // Terminal card is always available (sorted first after UI modernization)
     const availableCard = page.locator('.tool-card:not(.disabled)').first();
     if (await availableCard.isVisible()) {
       await expect(availableCard).toHaveScreenshot('tool-card-available.png');

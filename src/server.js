@@ -430,9 +430,9 @@ class ClaudeCodeWebServer {
           codex: { alias: this.aliases.codex, available: this.codexBridge.isAvailable(), hasDangerousMode: true },
           copilot: { alias: this.aliases.copilot, available: this.copilotBridge.isAvailable(), hasDangerousMode: true },
           gemini: { alias: this.aliases.gemini, available: this.geminiBridge.isAvailable(), hasDangerousMode: true },
-          terminal: { alias: this.aliases.terminal, available: this.terminalBridge.isAvailable(), hasDangerousMode: false },
-          vscodeTunnel: { available: this.vscodeTunnel.isAvailableSync() }
-        }
+          terminal: { alias: this.aliases.terminal, available: this.terminalBridge.isAvailable(), hasDangerousMode: false }
+        },
+        vscodeTunnel: { available: this.vscodeTunnel.isAvailableSync() }
       });
     });
 

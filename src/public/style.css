@@ -902,18 +902,7 @@ body {
     100% { transform: rotate(360deg); }
 }
 
-.start-prompt h2 {
-    margin-bottom: 12px;
-    color: var(--text-primary);
-}
-
-.start-prompt p {
-    margin-bottom: 20px;
-    color: var(--text-secondary);
-    line-height: 1.5;
-}
-
-/* Legacy start-buttons replaced by .tool-cards-grid */
+/* Start prompt heading/subtitle styles moved to components/cards.css */
 
 .error-message h3 {
     color: var(--error);
@@ -1864,14 +1853,8 @@ pre, code {
         max-width: 90%;
     }
     
-    .start-prompt h2 {
-        font-size: 20px;
-    }
-    
-    .start-prompt p {
-        font-size: 14px;
-    }
-    
+    /* Start prompt mobile overrides in components/cards.css */
+
     /* Modal styles are handled in the Mobile Modal Fixes section above */
 }
 
@@ -1912,7 +1895,7 @@ pre, code {
         font-size: 11px;
     }
     
-    /* Legacy start-buttons replaced by .tool-cards-grid */
+    /* Legacy start-buttons replaced by .tool-cards-list */
     
     /* Extra terminal fixes for very small screens */
     #terminal {
@@ -2073,89 +2056,7 @@ pre, code {
 
 /* Commands UI removed */
 
-/* Tool Cards Grid */
-.tool-cards-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
-  padding: 16px;
-  max-width: 700px;
-  margin: 0 auto;
-}
-
-.tool-card {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  cursor: pointer;
-  transition: border-color 0.2s, transform 0.15s;
-}
-
-.tool-card:hover:not(.disabled) {
-  border-color: var(--accent);
-  transform: translateY(-2px);
-  box-shadow: 0 4px 20px var(--accent-glow);
-  background: var(--accent-soft);
-}
-
-.tool-card.disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.tool-card-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 700;
-  font-size: 14px;
-  color: #fff;
-  flex-shrink: 0;
-  font-family: var(--font-mono);
-}
-
-.tool-card-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.tool-card-name {
-  font-weight: 600;
-  font-size: 14px;
-  color: var(--text-primary);
-}
-
-.tool-card-desc {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 2px;
-}
-
-.tool-card-btn {
-  padding: 6px 14px;
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-@media (max-width: 480px) {
-  .tool-cards-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    padding: 12px;
-  }
-  .tool-card {
-    flex-direction: column;
-    text-align: center;
-    padding: 12px;
-  }
-}
+/* Tool card styles moved to components/cards.css */
 
 /* ========================================
    Image Preview Modal

@@ -342,13 +342,7 @@
         max-width: 90%;
     }
 
-    .start-prompt h2 {
-        font-size: 20px;
-    }
-
-    .start-prompt p {
-        font-size: 14px;
-    }
+    /* Start prompt mobile overrides in components/cards.css */
 
     /* Modal styles are handled in the Mobile Modal Fixes section above */
 }
@@ -390,7 +384,7 @@
         font-size: 11px;
     }
 
-    /* Legacy start-buttons replaced by .tool-cards-grid */
+    /* Legacy start-buttons replaced by .tool-cards-list */
 
     /* Extra terminal fixes for very small screens */
     #terminal {

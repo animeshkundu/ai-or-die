@@ -1,40 +1,104 @@
-/* cards.css — Tool cards grid and card items */
+/* cards.css — Tool cards list and card items */
 
-/* Tool Cards Grid */
-.tool-cards-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
-  padding: 16px;
-  max-width: 700px;
+/* Tool Cards List (single-column) */
+.tool-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) 0;
+  max-width: 560px;
+  width: 100%;
   margin: 0 auto;
 }
 
+/* Section divider between available and unavailable tools */
+.tool-cards-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tool-cards-divider::before,
+.tool-cards-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-default);
+}
+
+/* Card base */
 .tool-card {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: border-color 0.2s, transform 0.15s;
+  min-height: 64px;
+  transition:
+    background-color var(--duration-fast) var(--ease-default),
+    border-color var(--duration-fast) var(--ease-default),
+    box-shadow var(--duration-fast) var(--ease-default),
+    transform var(--duration-fast) var(--ease-default);
 }
 
+/* Hover — default accent tint */
 .tool-card:hover:not(.disabled) {
-  border-color: var(--accent);
-  transform: translateY(-2px);
-  box-shadow: 0 4px 20px var(--accent-glow);
-  background: var(--accent-soft);
+  background: var(--surface-elevated);
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
 }
 
+/* Per-tool brand color hover tints */
+.tool-card[data-tool="terminal"]:hover:not(.disabled) {
+  border-color: rgba(113, 113, 122, 0.5);
+  background: rgba(113, 113, 122, 0.08);
+}
+.tool-card[data-tool="claude"]:hover:not(.disabled) {
+  border-color: rgba(217, 119, 6, 0.5);
+  background: rgba(217, 119, 6, 0.08);
+}
+.tool-card[data-tool="codex"]:hover:not(.disabled) {
+  border-color: rgba(5, 150, 105, 0.5);
+  background: rgba(5, 150, 105, 0.08);
+}
+.tool-card[data-tool="copilot"]:hover:not(.disabled) {
+  border-color: rgba(99, 102, 241, 0.5);
+  background: rgba(99, 102, 241, 0.08);
+}
+.tool-card[data-tool="gemini"]:hover:not(.disabled) {
+  border-color: rgba(37, 99, 235, 0.5);
+  background: rgba(37, 99, 235, 0.08);
+}
+
+/* Focus visible for keyboard navigation */
+.tool-card:focus-visible {
+  outline: 2px solid var(--accent-default);
+  outline-offset: 2px;
+}
+
+/* Active/pressed state */
+.tool-card:active:not(.disabled) {
+  transform: translateY(0);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Disabled card */
 .tool-card.disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
-/* Staggered entry animation for tool cards */
+/* Staggered entry animation */
 .tool-card-enter {
   animation: toolCardFadeIn var(--duration-slow) var(--ease-out) both;
 }
@@ -42,7 +106,7 @@
 @keyframes toolCardFadeIn {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -50,75 +114,127 @@
   }
 }
 
-.tool-card.disabled .tool-card-enter {
-  /* Disabled cards still animate in but stay dimmed */
-}
-
-/* Install hint for disabled tool cards */
-.tool-card-hint {
-  font-size: 10px;
-  color: var(--text-muted);
-  margin-top: 4px;
-  font-family: var(--font-mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Start prompt subtitle */
-.start-prompt-subtitle {
-  color: var(--text-secondary);
-  font-size: 14px;
-  margin-bottom: 16px;
-  line-height: 1.5;
-}
-
+/* Icon container with gradient background and glassy highlight */
 .tool-card-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 8px;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 14px;
-  color: #fff;
   flex-shrink: 0;
-  font-family: var(--font-mono);
+  position: relative;
+  overflow: hidden;
 }
 
+.tool-card-icon::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15);
+  pointer-events: none;
+}
+
+/* Desaturate icon for disabled cards */
+.tool-card.disabled .tool-card-icon {
+  filter: grayscale(1) brightness(0.7);
+}
+
+/* Card info */
 .tool-card-info {
   flex: 1;
   min-width: 0;
 }
 
 .tool-card-name {
-  font-weight: 600;
-  font-size: 14px;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
   color: var(--text-primary);
+  line-height: var(--leading-tight);
 }
 
 .tool-card-desc {
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--text-secondary);
-  margin-top: 2px;
+  margin-top: var(--space-0-5);
+  line-height: var(--leading-normal);
 }
 
-.tool-card-btn {
-  padding: 6px 14px;
-  font-size: 13px;
+/* Install hint for disabled tool cards */
+.tool-card-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Hover-reveal right arrow chevron for available cards */
+.tool-card-arrow {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  opacity: 0;
+  transform: translateX(-4px);
+  transition:
+    opacity var(--duration-fast) var(--ease-default),
+    transform var(--duration-fast) var(--ease-default);
+}
+
+.tool-card:hover:not(.disabled) .tool-card-arrow {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+/* "Not installed" status label for disabled cards */
+.tool-card-status {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--text-muted);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-full);
   white-space: nowrap;
 }
 
+/* Start prompt heading */
+.start-prompt-heading {
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  line-height: var(--leading-tight);
+  margin-bottom: var(--space-2);
+}
+
+/* Start prompt subtitle */
+.start-prompt-subtitle {
+  color: var(--text-muted);
+  font-size: var(--text-md);
+  margin-bottom: var(--space-4);
+  line-height: var(--leading-normal);
+}
+
+/* Mobile responsive */
 @media (max-width: 480px) {
-  .tool-cards-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
-    padding: 12px;
+  .tool-cards-list {
+    max-width: 100%;
+    gap: var(--space-1-5);
+    padding: var(--space-3) 0;
   }
   .tool-card {
-    flex-direction: column;
-    text-align: center;
-    padding: 12px;
+    min-height: 56px;
+    padding: var(--space-2-5) var(--space-3);
+  }
+  .tool-card-icon {
+    width: 36px;
+    height: 36px;
+  }
+  .tool-card-icon svg {
+    width: 18px;
+    height: 18px;
   }
 }

@@ -1277,11 +1277,12 @@ describe('E2E: VS Code Tunnel', function () {
     server.close();
   });
 
-  it('should report vscodeTunnel in config tools', async function () {
+  it('should report vscodeTunnel in config (top-level, not inside tools)', async function () {
     const res = await httpRequest('GET', `http://127.0.0.1:${port}/api/config`);
     assert.strictEqual(res.statusCode, 200);
-    assert(res.body.tools.vscodeTunnel !== undefined, 'Expected vscodeTunnel in tools config');
-    assert(typeof res.body.tools.vscodeTunnel.available === 'boolean');
+    assert(res.body.vscodeTunnel !== undefined, 'Expected vscodeTunnel at top level of config');
+    assert(typeof res.body.vscodeTunnel.available === 'boolean');
+    assert(res.body.tools.vscodeTunnel === undefined, 'vscodeTunnel should not be in tools');
   });
 
   it('should require session join before starting tunnel', async function () {

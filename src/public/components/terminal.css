@@ -219,18 +219,7 @@
     100% { transform: rotate(360deg); }
 }
 
-.start-prompt h2 {
-    margin-bottom: 12px;
-    color: var(--text-primary);
-}
-
-.start-prompt p {
-    margin-bottom: 20px;
-    color: var(--text-secondary);
-    line-height: 1.5;
-}
-
-/* Legacy start-buttons replaced by .tool-cards-grid */
+/* Start prompt heading/subtitle styles moved to components/cards.css */
 
 .error-message h3 {
     color: var(--error);
