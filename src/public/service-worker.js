@@ -1,10 +1,12 @@
 // Bump this version when urlsToCache entries are added or removed.
 // Content changes to existing files are handled by the network-first fetch strategy.
-const CACHE_NAME = 'ai-or-die-v5';
+const CACHE_NAME = 'ai-or-die-v6';
 const urlsToCache = [
   '/',
   '/index.html',
   '/fonts.css',
+  // Only pre-cache the default font (MesloLGS). Other Nerd Font families
+  // are cached on-demand via the network-first fetch handler when selected.
   '/fonts/MesloLGSNerdFont-Regular.woff2',
   '/fonts/MesloLGSNerdFont-Bold.woff2',
   '/fonts/MesloLGSNerdFont-Italic.woff2',

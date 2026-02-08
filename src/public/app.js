@@ -370,6 +370,7 @@ class ClaudeCodeWebInterface {
             document.fonts.ready.then(() => {
                 const loaded = document.fonts.check('14px "MesloLGS Nerd Font"');
                 console.log(loaded ? '[Font] MesloLGS Nerd Font loaded' : '[Font] Using fallback font');
+                this.terminal.clearTextureAtlas();
                 this.terminal.refresh(0, this.terminal.rows - 1);
                 this.fitTerminal();
             });
@@ -377,6 +378,7 @@ class ClaudeCodeWebInterface {
             // document.fonts.ready is a one-shot promise that won't fire again
             // when Bold loads after output coalescing delay triggers bold rendering
             document.fonts.addEventListener('loadingdone', () => {
+                this.terminal.clearTextureAtlas();
                 this.terminal.refresh(0, this.terminal.rows - 1);
                 this.fitTerminal();
             });
@@ -1533,7 +1535,7 @@ class ClaudeCodeWebInterface {
     loadSettings() {
         const defaults = {
             fontSize: 14,
-            fontFamily: "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace",
+            fontFamily: "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
             cursorStyle: 'block',
             cursorBlink: true,
             scrollback: 1000,
@@ -1541,10 +1543,19 @@ class ClaudeCodeWebInterface {
             theme: 'midnight',
             dangerousMode: false
         };
-        
+
         try {
             const saved = localStorage.getItem('cc-web-settings');
-            return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+            if (!saved) return defaults;
+            const settings = { ...defaults, ...JSON.parse(saved) };
+            // Migrate old fontFamily values that lack MesloLGS Nerd Font fallback
+            if (settings.fontFamily && !settings.fontFamily.includes('MesloLGS Nerd Font')) {
+                settings.fontFamily = settings.fontFamily.replace(
+                    /,\s*monospace\s*$/,
+                    ", 'MesloLGS Nerd Font', monospace"
+                );
+            }
+            return settings;
         } catch (error) {
             console.error('Failed to load settings:', error);
             return defaults;
@@ -1554,7 +1565,7 @@ class ClaudeCodeWebInterface {
     saveSettings() {
         const settings = {
             fontSize: parseInt(document.getElementById('fontSize').value),
-            fontFamily: document.getElementById('fontFamily')?.value || "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace",
+            fontFamily: document.getElementById('fontFamily')?.value || "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
             cursorStyle: document.getElementById('cursorStyle')?.value || 'block',
             cursorBlink: document.getElementById('cursorBlink')?.checked ?? true,
             scrollback: parseInt(document.getElementById('scrollback')?.value || '1000'),
@@ -1596,6 +1607,7 @@ class ClaudeCodeWebInterface {
             selectionBackground: style.getPropertyValue('--terminal-selection').trim() || undefined,
         };
 
+        this.terminal.clearTextureAtlas();
         this.fitTerminal();
     }
 

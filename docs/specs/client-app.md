@@ -119,7 +119,7 @@ The main application controller. Instantiated once on page load.
     cursor: '#f0f6fc',
     // Full 16-color ANSI palette configured
   },
-  fontFamily: "reads from CSS --font-mono token; defaults to 'MesloLGS Nerd Font', 'MesloLGS NF', 'JetBrains Mono', monospace",
+  fontFamily: "reads from CSS --font-mono token; defaults to 'MesloLGS Nerd Font', 'JetBrains Mono NF', 'Fira Code NF', 'Cascadia Code NF', monospace",
   fontSize: 14,          // 13 on mobile
   lineHeight: 1.2,
   scrollback: 10000,
@@ -131,13 +131,42 @@ The terminal auto-resizes via `FitAddon` triggered by a `ResizeObserver` on the 
 
 ### Font Loading Strategy
 
-Font declarations live in `src/public/fonts.css` with a three-tier source strategy:
+Font declarations live in `src/public/fonts.css` with a three-tier source strategy per family:
 
-1. **`local()`** — user's installed font (supports both Nerd Fonts v2 "MesloLGS NF" and v3 "MesloLGS Nerd Font" naming)
-2. **Self-hosted WOFF2** — `src/public/fonts/MesloLGSNerdFont-*.woff2` (4 variants: Regular, Bold, Italic, BoldItalic)
+1. **`local()`** — user's installed font (v3 naming preferred; v2 "MesloLGS NF" deprioritized after self-hosted WOFF2)
+2. **Self-hosted WOFF2** — `src/public/fonts/` (14 files across 4 families)
 3. **CDN fallback** — jsDelivr CDN pinned to `mshaugh/nerdfont-webfonts@v3.3.0`
 
-The Regular weight is preloaded via `<link rel="preload">` for fast availability. After all fonts settle (`document.fonts.ready`), the terminal is refreshed to re-render with the correct glyphs.
+**Supported Nerd Font families:**
+| CSS Family Name | WOFF2 Prefix | Variants |
+|---|---|---|
+| `'MesloLGS Nerd Font'` | MesloLGSNerdFont | Regular, Bold, Italic, BoldItalic |
+| `'JetBrains Mono NF'` | JetBrainsMonoNerdFont | Regular, Bold, Italic, BoldItalic |
+| `'Fira Code NF'` | FiraCodeNerdFont | Regular, Bold |
+| `'Cascadia Code NF'` | CaskaydiaCoveNerdFont | Regular, Bold, Italic, BoldItalic |
+
+Every font option in the settings dropdown appends `'MesloLGS Nerd Font'` as a CSS fallback to ensure PUA glyphs render even for fonts without Nerd Font variants (Consolas, System Monospace).
+
+MesloLGS Regular + Bold are preloaded via `<link rel="preload">`. Other fonts load on-demand when selected.
+
+### Font Load Refresh
+
+When fonts finish loading, the terminal must rebuild its canvas glyph atlas:
+
+```js
+document.fonts.ready.then(() => {
+    this.terminal.clearTextureAtlas(); // invalidate cached glyph bitmaps
+    this.terminal.refresh(0, this.terminal.rows - 1);
+    this.fitTerminal();
+});
+document.fonts.addEventListener('loadingdone', () => {
+    this.terminal.clearTextureAtlas();
+    this.terminal.refresh(0, this.terminal.rows - 1);
+    this.fitTerminal();
+});
+```
+
+`clearTextureAtlas()` is required because `refresh()` alone reuses stale atlas bitmaps rasterized before the web font loaded. Both main terminal (`app.js`) and split pane terminals (`splits.js`) implement this pattern.
 
 ### Folder Browser
 
