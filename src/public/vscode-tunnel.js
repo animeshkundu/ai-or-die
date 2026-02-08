@@ -118,7 +118,7 @@
         case 'vscode_tunnel_error':
           this._setStatus('error');
           this._bannerDismissed = false;
-          this._renderError(data.message || data.error);
+          this._renderError(data.message || data.error, data.install);
           break;
       }
     }
@@ -236,8 +236,14 @@
       this._bindBannerEvents();
     }
 
-    _renderError(message) {
+    _renderError(message, installInfo) {
       const isNotFound = message === 'not_found' || (message && message.includes('not found'));
+
+      if (isNotFound && installInfo) {
+        this._renderNotFoundInstall(installInfo);
+        return;
+      }
+
       let msgHtml;
       if (isNotFound) {
         msgHtml = `VS Code CLI not found. <a href="https://code.visualstudio.com/download" target="_blank" rel="noopener">Install VS Code</a> and add <code>code</code> to your PATH.`;
@@ -262,6 +268,62 @@
           </svg>
         </button>
       `;
+      this._bindBannerEvents();
+    }
+
+    _renderNotFoundInstall(installInfo) {
+      let methodsHtml = '';
+      for (const method of (installInfo.methods || [])) {
+        if (method.command) {
+          const escaped = this._escapeHtml(method.command);
+          methodsHtml += `<div class="vst-install-method">
+            <code class="vst-install-cmd">${escaped}</code>
+            <button class="vst-btn vst-copy-cmd-btn" data-cmd="${escaped}">Copy</button>
+          </div>`;
+          if (method.note) {
+            methodsHtml += `<div class="vst-install-note">${this._escapeHtml(method.note)}</div>`;
+          }
+        } else if (method.url) {
+          methodsHtml += `<div class="vst-install-method">
+            <a href="${this._escapeHtml(method.url)}" target="_blank" rel="noopener">${this._escapeHtml(method.label)}</a>
+          </div>`;
+          if (method.note) {
+            methodsHtml += `<div class="vst-install-note">${this._escapeHtml(method.note)}</div>`;
+          }
+        }
+      }
+
+      this.banner.classList.add('visible');
+      this.banner.innerHTML = `
+        <span class="vst-icon error">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+          </svg>
+        </span>
+        <div class="vst-message vst-install-panel">
+          <div>VS Code CLI (<code>code</code>) not found.</div>
+          <div class="vst-install-methods">${methodsHtml}</div>
+        </div>
+        <div class="vst-actions">
+          <button class="vst-btn vst-retry-btn">Re-check</button>
+        </div>
+        <button class="vst-close vst-dismiss-btn" title="Dismiss">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      `;
+
+      // Wire up copy buttons
+      this.banner.querySelectorAll('.vst-copy-cmd-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          navigator.clipboard.writeText(btn.dataset.cmd).then(() => {
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+          });
+        });
+      });
+
       this._bindBannerEvents();
     }
 

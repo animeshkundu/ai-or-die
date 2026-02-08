@@ -212,6 +212,41 @@
     background: var(--status-error, #ef4444);
 }
 
+/* VS Code install panel in banner */
+.vst-install-panel {
+    white-space: normal;
+    overflow: visible;
+}
+
+.vst-install-methods {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.vst-install-method {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.vst-install-cmd {
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    padding: 2px 8px;
+    border-radius: 4px;
+    user-select: all;
+}
+
+.vst-install-note {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-style: italic;
+    margin-left: 4px;
+}
+
 /* Mobile responsive */
 @media (max-width: 768px) {
     .vscode-tunnel-banner {

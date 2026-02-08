@@ -18,6 +18,7 @@ const { getFileInfo, computeFileHash, isBinaryFile, sanitizeFileName, isBlockedE
 const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
 const { VSCodeTunnelManager } = require('./vscode-tunnel');
+const InstallAdvisor = require('./install-advisor');
 
 /** Max bytes to accumulate before flushing coalesced output immediately */
 const MAX_COALESCE_BYTES = 32 * 1024;
@@ -49,6 +50,7 @@ class ClaudeCodeWebServer {
       dev: this.dev,
       onEvent: (sessionId, event) => this.handleVSCodeTunnelEvent(sessionId, event),
     });
+    this.installAdvisor = new InstallAdvisor();
     this.sessionStore = new SessionStore();
     this.usageReader = new UsageReader(this.sessionDurationHours);
     this.usageAnalytics = new UsageAnalytics({
@@ -419,21 +421,61 @@ class ClaudeCodeWebServer {
       res.json({ success: true, message: 'Session deleted' });
     });
 
-    this.app.get('/api/config', (req, res) => {
+    this.app.get('/api/config', async (req, res) => {
+      const toolEntries = {
+        claude: { bridge: this.claudeBridge, hasDangerousMode: true },
+        codex: { bridge: this.codexBridge, hasDangerousMode: true },
+        copilot: { bridge: this.copilotBridge, hasDangerousMode: true },
+        gemini: { bridge: this.geminiBridge, hasDangerousMode: true },
+        terminal: { bridge: this.terminalBridge, hasDangerousMode: false },
+      };
+
+      const tools = {};
+      for (const [id, entry] of Object.entries(toolEntries)) {
+        const available = entry.bridge.isAvailable();
+        tools[id] = {
+          alias: this.aliases[id],
+          available,
+          hasDangerousMode: entry.hasDangerousMode,
+        };
+        if (!available && id !== 'terminal') {
+          tools[id].install = this.installAdvisor.getInstallInfo(id);
+        }
+      }
+
+      let prerequisites = null;
+      const hasUnavailable = Object.values(tools).some(t => !t.available);
+      if (hasUnavailable) {
+        prerequisites = await this.installAdvisor.detectPrerequisites();
+      }
+
+      const vscodeTunnelAvailable = this.vscodeTunnel.isAvailableSync();
       res.json({
         folderMode: this.folderMode,
         selectedWorkingDir: this.selectedWorkingDir,
         baseFolder: this.baseFolder,
         aliases: this.aliases,
-        tools: {
-          claude: { alias: this.aliases.claude, available: this.claudeBridge.isAvailable(), hasDangerousMode: true },
-          codex: { alias: this.aliases.codex, available: this.codexBridge.isAvailable(), hasDangerousMode: true },
-          copilot: { alias: this.aliases.copilot, available: this.copilotBridge.isAvailable(), hasDangerousMode: true },
-          gemini: { alias: this.aliases.gemini, available: this.geminiBridge.isAvailable(), hasDangerousMode: true },
-          terminal: { alias: this.aliases.terminal, available: this.terminalBridge.isAvailable(), hasDangerousMode: false }
+        tools,
+        vscodeTunnel: {
+          available: vscodeTunnelAvailable,
+          ...(!vscodeTunnelAvailable ? { install: this.installAdvisor.getInstallInfo('vscode') } : {}),
         },
-        vscodeTunnel: { available: this.vscodeTunnel.isAvailableSync() }
+        ...(prerequisites ? { prerequisites } : {}),
       });
+    });
+
+    this.app.post('/api/tools/:toolId/recheck', async (req, res) => {
+      const { toolId } = req.params;
+      const bridge = this.getBridgeForAgent(toolId);
+      if (!bridge) {
+        return res.status(404).json({ error: 'Unknown tool' });
+      }
+
+      bridge.clearAvailabilityCache();
+      await bridge.initCommand();
+
+      const available = bridge.isAvailable();
+      res.json({ toolId, available });
     });
 
     this.app.post('/api/create-folder', (req, res) => {
@@ -1262,6 +1304,31 @@ class ClaudeCodeWebServer {
         await this.handleVSCodeTunnelStatus(wsId);
         break;
 
+      case 'open_install_terminal': {
+        const installInfo = this.installAdvisor.getInstallInfo(data.toolId);
+        if (!installInfo) {
+          this.sendToWebSocket(wsInfo.ws, { type: 'error', message: `Unknown tool: ${data.toolId}` });
+          break;
+        }
+        // Find the preferred install command
+        const method = installInfo.methods.find(m => m.id === (data.method || 'npm')) || installInfo.methods[0];
+        const command = method && method.command;
+
+        // Start terminal session first
+        await this.startToolSession(wsId, 'terminal', this.terminalBridge, {}, data.cols, data.rows);
+
+        if (command) {
+          // Wait for shell to initialize, then pre-type (not execute) the command
+          setTimeout(() => {
+            const session = this.claudeSessions.get(wsInfo.claudeSessionId);
+            if (session && session.active && session.agent === 'terminal') {
+              this.terminalBridge.sendInput(wsInfo.claudeSessionId, command).catch(() => {});
+            }
+          }, 800);
+        }
+        break;
+      }
+
       default:
         if (this.dev) {
           console.log(`Unknown message type: ${data.type}`);
@@ -1682,6 +1749,7 @@ class ClaudeCodeWebServer {
         type: 'vscode_tunnel_error',
         error: result.error,
         message: result.message || result.error,
+        ...(result.install ? { install: result.install } : {}),
       });
     }
     // Success events are emitted via onEvent callback → handleVSCodeTunnelEvent

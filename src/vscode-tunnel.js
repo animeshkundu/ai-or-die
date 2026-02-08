@@ -74,7 +74,8 @@ class VSCodeTunnelManager {
     // Check CLI availability
     const available = await this.isAvailable();
     if (!available) {
-      return { success: false, error: 'not_found', message: this._installInstructions() };
+      const installInfo = this._getInstallInfo();
+      return { success: false, error: 'not_found', message: this._installInstructions(), install: installInfo };
     }
 
     // Check authentication
@@ -284,6 +285,21 @@ class VSCodeTunnelManager {
       instructions += '\nThe `code` command is usually added to PATH automatically after installation.';
     }
     return instructions;
+  }
+
+  _getInstallInfo() {
+    try {
+      const InstallAdvisor = require('./install-advisor');
+      const advisor = new InstallAdvisor();
+      return advisor.getInstallInfo('vscode');
+    } catch {
+      return null;
+    }
+  }
+
+  clearAvailabilityCache() {
+    this._command = null;
+    this._initPromise = this._init();
   }
 
   /**

@@ -57,6 +57,11 @@ class BaseBridge {
     return result;
   }
 
+  clearAvailabilityCache() {
+    this._availableCache = null;
+    this._availableCacheTime = 0;
+  }
+
   commandExists(command) {
     try {
       const checker = this.isWindows ? 'where' : 'which';
