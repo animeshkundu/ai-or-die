@@ -35,7 +35,7 @@ class Split {
         this.terminal = new Terminal({
             fontFamily: this.app?.terminal?.options?.fontFamily
                 || getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim()
-                || "'MesloLGS Nerd Font', 'MesloLGS NF', 'JetBrains Mono', monospace",
+                || "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
             fontSize: this.app?.terminal?.options?.fontSize || 14,
             cursorBlink: true,
             convertEol: true,
@@ -61,6 +61,24 @@ class Split {
         }
 
         this.terminal.open(terminalDiv);
+
+        // Re-render split terminal when fonts finish loading
+        if (document.fonts) {
+            document.fonts.ready.then(() => {
+                this.terminal.clearTextureAtlas();
+                this.terminal.refresh(0, this.terminal.rows - 1);
+                if (this.fitAddon) {
+                    try { this.fitAddon.fit(); } catch (_) {}
+                }
+            });
+            document.fonts.addEventListener('loadingdone', () => {
+                this.terminal.clearTextureAtlas();
+                this.terminal.refresh(0, this.terminal.rows - 1);
+                if (this.fitAddon) {
+                    try { this.fitAddon.fit(); } catch (_) {}
+                }
+            });
+        }
 
         // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
         attachClipboardHandler(this.terminal, (data) => {

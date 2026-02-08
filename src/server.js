@@ -1517,13 +1517,15 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(sessionId);
     if (!session || !session.active) return;
 
-    const bridge = this.getBridgeForAgent(session.agent);
+    // Capture agent type before stopSession — the onExit callback
+    // may set session.agent to null during the await.
+    const agentType = session.agent;
+    const bridge = this.getBridgeForAgent(agentType);
     if (bridge) {
       await bridge.stopSession(sessionId);
     }
 
     this._flushAndClearOutputTimer(session, sessionId);
-    const agentType = session.agent;
     session.active = false;
     session.agent = null;
     session.lastActivity = new Date();
@@ -1713,7 +1715,7 @@ class ClaudeCodeWebServer {
     this.broadcastToSession(sessionId, event);
   }
 
-  close() {
+  async close() {
     // Save sessions before closing
     this.saveSessionsToDisk();
 
@@ -1732,17 +1734,19 @@ class ClaudeCodeWebServer {
       this.server.close();
     }
     
-    // Flush pending output and stop all sessions
+    // Flush pending output and stop all sessions, awaiting clean shutdown
+    const stopPromises = [];
     for (const [sessionId, session] of this.claudeSessions.entries()) {
       this._flushAndClearOutputTimer(session, sessionId);
       if (session.active) {
         const bridge = this.getBridgeForAgent(session.agent);
         if (bridge) {
-          bridge.stopSession(sessionId);
+          stopPromises.push(bridge.stopSession(sessionId));
         }
       }
     }
-    
+    await Promise.allSettled(stopPromises);
+
     // Clear all data
     this.claudeSessions.clear();
     this.webSocketConnections.clear();

@@ -11,10 +11,10 @@
   font-stretch: normal;
   font-display: swap;
   src: local('MesloLGS Nerd Font'),
-       local('MesloLGS NF'),
        local('MesloLGSNerdFont-Regular'),
        local('MesloLGS Nerd Font Regular'),
        url('fonts/MesloLGSNerdFont-Regular.woff2') format('woff2'),
+       local('MesloLGS NF'),
        url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGSNerdFont-Regular.woff2') format('woff2');
 }
 
@@ -25,9 +25,9 @@
   font-stretch: normal;
   font-display: swap;
   src: local('MesloLGS Nerd Font Italic'),
-       local('MesloLGS NF Italic'),
        local('MesloLGSNerdFont-Italic'),
        url('fonts/MesloLGSNerdFont-Italic.woff2') format('woff2'),
+       local('MesloLGS NF Italic'),
        url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGSNerdFont-Italic.woff2') format('woff2');
 }
 
@@ -38,9 +38,9 @@
   font-stretch: normal;
   font-display: swap;
   src: local('MesloLGS Nerd Font Bold'),
-       local('MesloLGS NF Bold'),
        local('MesloLGSNerdFont-Bold'),
        url('fonts/MesloLGSNerdFont-Bold.woff2') format('woff2'),
+       local('MesloLGS NF Bold'),
        url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGSNerdFont-Bold.woff2') format('woff2');
 }
 
@@ -51,8 +51,157 @@
   font-stretch: normal;
   font-display: swap;
   src: local('MesloLGS Nerd Font Bold Italic'),
-       local('MesloLGS NF Bold Italic'),
        local('MesloLGSNerdFont-BoldItalic'),
        url('fonts/MesloLGSNerdFont-BoldItalic.woff2') format('woff2'),
+       local('MesloLGS NF Bold Italic'),
        url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/MesloLGSNerdFont-BoldItalic.woff2') format('woff2');
+}
+
+/* ============================================================
+   Nerd Font Loading — JetBrains Mono Nerd Font
+   Three-tier source: local install > self-hosted WOFF2 > CDN WOFF2
+   CDN pinned to v3.3.0 for reproducibility.
+   ============================================================ */
+
+@font-face {
+  font-family: 'JetBrains Mono NF';
+  font-style: normal;
+  font-weight: 400;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('JetBrains Mono Nerd Font'),
+       local('JetBrainsMonoNerdFont-Regular'),
+       local('JetBrains Mono Nerd Font Regular'),
+       url('fonts/JetBrainsMonoNerdFont-Regular.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/JetBrainsMonoNerdFont-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono NF';
+  font-style: italic;
+  font-weight: 400;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('JetBrains Mono Nerd Font'),
+       local('JetBrainsMonoNerdFont-Italic'),
+       local('JetBrains Mono Nerd Font Italic'),
+       url('fonts/JetBrainsMonoNerdFont-Italic.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/JetBrainsMonoNerdFont-Italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono NF';
+  font-style: normal;
+  font-weight: 700;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('JetBrains Mono Nerd Font'),
+       local('JetBrainsMonoNerdFont-Bold'),
+       local('JetBrains Mono Nerd Font Bold'),
+       url('fonts/JetBrainsMonoNerdFont-Bold.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/JetBrainsMonoNerdFont-Bold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'JetBrains Mono NF';
+  font-style: italic;
+  font-weight: 700;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('JetBrains Mono Nerd Font'),
+       local('JetBrainsMonoNerdFont-BoldItalic'),
+       local('JetBrains Mono Nerd Font Bold Italic'),
+       url('fonts/JetBrainsMonoNerdFont-BoldItalic.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/JetBrainsMonoNerdFont-BoldItalic.woff2') format('woff2');
+}
+
+/* ============================================================
+   Nerd Font Loading — Fira Code Nerd Font
+   Three-tier source: local install > self-hosted WOFF2 > CDN WOFF2
+   CDN pinned to v3.3.0 for reproducibility.
+   Note: Fira Code has no italic variants.
+   ============================================================ */
+
+@font-face {
+  font-family: 'Fira Code NF';
+  font-style: normal;
+  font-weight: 400;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('Fira Code Nerd Font'),
+       local('FiraCodeNerdFont-Regular'),
+       local('Fira Code Nerd Font Regular'),
+       url('fonts/FiraCodeNerdFont-Regular.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/FiraCodeNerdFont-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Fira Code NF';
+  font-style: normal;
+  font-weight: 700;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('Fira Code Nerd Font'),
+       local('FiraCodeNerdFont-Bold'),
+       local('Fira Code Nerd Font Bold'),
+       url('fonts/FiraCodeNerdFont-Bold.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/FiraCodeNerdFont-Bold.woff2') format('woff2');
+}
+
+/* ============================================================
+   Nerd Font Loading — Cascadia Code Nerd Font
+   Three-tier source: local install > self-hosted WOFF2 > CDN WOFF2
+   CDN pinned to v3.3.0 for reproducibility.
+   ============================================================ */
+
+@font-face {
+  font-family: 'Cascadia Code NF';
+  font-style: normal;
+  font-weight: 400;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('CaskaydiaCove Nerd Font'),
+       local('CaskaydiaCoveNerdFont-Regular'),
+       local('CaskaydiaCove Nerd Font Regular'),
+       url('fonts/CaskaydiaCoveNerdFont-Regular.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/CaskaydiaCoveNerdFont-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Cascadia Code NF';
+  font-style: italic;
+  font-weight: 400;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('CaskaydiaCove Nerd Font'),
+       local('CaskaydiaCoveNerdFont-Italic'),
+       local('CaskaydiaCove Nerd Font Italic'),
+       url('fonts/CaskaydiaCoveNerdFont-Italic.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/CaskaydiaCoveNerdFont-Italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Cascadia Code NF';
+  font-style: normal;
+  font-weight: 700;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('CaskaydiaCove Nerd Font'),
+       local('CaskaydiaCoveNerdFont-Bold'),
+       local('CaskaydiaCove Nerd Font Bold'),
+       url('fonts/CaskaydiaCoveNerdFont-Bold.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/CaskaydiaCoveNerdFont-Bold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Cascadia Code NF';
+  font-style: italic;
+  font-weight: 700;
+  font-stretch: normal;
+  font-display: swap;
+  src: local('CaskaydiaCove Nerd Font'),
+       local('CaskaydiaCoveNerdFont-BoldItalic'),
+       local('CaskaydiaCove Nerd Font Bold Italic'),
+       url('fonts/CaskaydiaCoveNerdFont-BoldItalic.woff2') format('woff2'),
+       url('https://cdn.jsdelivr.net/gh/mshaugh/nerdfont-webfonts@v3.3.0/build/fonts/CaskaydiaCoveNerdFont-BoldItalic.woff2') format('woff2');
 }

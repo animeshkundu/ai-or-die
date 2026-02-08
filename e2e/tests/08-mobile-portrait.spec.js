@@ -20,7 +20,7 @@ test.describe('Mobile portrait: app renders and works at mobile viewport sizes',
   });
 
   test.afterAll(async () => {
-    if (server) server.close();
+    if (server) await server.close();
   });
 
   test.afterEach(async ({ page }, testInfo) => {

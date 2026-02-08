@@ -21,7 +21,7 @@ test.describe('Nerd Font rendering infrastructure', () => {
   });
 
   test.afterAll(async () => {
-    if (server) server.close();
+    if (server) await server.close();
   });
 
   test.afterEach(async ({ page }, testInfo) => {
@@ -90,10 +90,10 @@ test.describe('Nerd Font rendering infrastructure', () => {
     await waitForTerminalCanvas(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    // Save JetBrains Mono into localStorage as if user had set it
+    // Save JetBrains Mono NF into localStorage as if user had set it
     await page.evaluate(() => {
       const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
-      settings.fontFamily = "'JetBrains Mono', monospace";
+      settings.fontFamily = "'JetBrains Mono NF', 'MesloLGS Nerd Font', monospace";
       localStorage.setItem('cc-web-settings', JSON.stringify(settings));
     });
 
@@ -110,8 +110,8 @@ test.describe('Nerd Font rendering infrastructure', () => {
     });
 
     expect(fontFamily).not.toBeNull();
-    expect(fontFamily).toContain('JetBrains Mono');
-    expect(fontFamily).not.toMatch(/Meslo.*Nerd/i);
+    expect(fontFamily).toContain('JetBrains Mono NF');
+    expect(fontFamily).toContain('MesloLGS Nerd Font');
   });
 
   test('CJK and powerline characters occupy correct cell widths', async ({ page }) => {

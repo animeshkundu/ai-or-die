@@ -286,8 +286,10 @@ class BaseBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
-        session.active = false;
-        this.sessions.delete(sessionId);
+        if (this.sessions.has(sessionId)) {
+          session.active = false;
+          this.sessions.delete(sessionId);
+        }
         onExit(exitCode, signal);
       });
 
@@ -301,8 +303,10 @@ class BaseBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
-        session.active = false;
-        this.sessions.delete(sessionId);
+        if (this.sessions.has(sessionId)) {
+          session.active = false;
+          this.sessions.delete(sessionId);
+        }
         onError(error);
       });
 
@@ -394,38 +398,46 @@ class BaseBridge {
       return;
     }
 
-    try {
-      if (session.killTimeout) {
-        clearTimeout(session.killTimeout);
-        session.killTimeout = null;
-      }
-
-      if (session.active && session.process) {
-        // On Windows, SIGTERM/SIGKILL are not supported by some node-pty builds.
-        // Use kill() without arguments which triggers the platform-appropriate termination.
-        try {
-          session.process.kill();
-        } catch (e) {
-          // Fallback: try SIGTERM for Unix compatibility
-          try { session.process.kill('SIGTERM'); } catch (_) { /* ignore */ }
-        }
-
-        session.killTimeout = setTimeout(() => {
-          if (session.active && session.process) {
-            try {
-              session.process.kill();
-            } catch (_) {
-              try { session.process.kill('SIGKILL'); } catch (__) { /* ignore */ }
-            }
-          }
-        }, 5000);
-      }
-    } catch (error) {
-      console.warn(`Error stopping ${this.toolName} session ${sessionId}:`, error.message);
-    }
-
+    // Mark inactive and remove from map immediately so onExit guard skips
     session.active = false;
     this.sessions.delete(sessionId);
+
+    if (session.killTimeout) {
+      clearTimeout(session.killTimeout);
+      session.killTimeout = null;
+    }
+
+    if (!session.process) return;
+
+    // Return a promise that resolves when the PTY process actually exits
+    // (or after a bounded timeout), so callers can await clean shutdown.
+    return new Promise((resolve) => {
+      const cleanup = () => {
+        if (session.killTimeout) {
+          clearTimeout(session.killTimeout);
+          session.killTimeout = null;
+        }
+        resolve();
+      };
+
+      try {
+        session.process.onExit(() => cleanup());
+      } catch (_) {
+        // onExit may fail if process already exited
+      }
+
+      try {
+        session.process.kill();
+      } catch (e) {
+        try { session.process.kill('SIGTERM'); } catch (_) { /* ignore */ }
+      }
+
+      // Bounded timeout: don't wait forever for ConPTY cleanup
+      session.killTimeout = setTimeout(() => {
+        session.killTimeout = null;
+        resolve();
+      }, 3000);
+    });
   }
 
   getSession(sessionId) {

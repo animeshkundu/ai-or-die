@@ -196,35 +196,51 @@ async function waitForWebSocket(page, timeoutMs = 15000) {
 
 /**
  * Join a pre-created session and start a terminal tool.
- * Waits for the WebSocket to be connected (app.init() now connects early),
- * then joins and starts the terminal.
+ * Waits for init() to fully complete (WebSocket + session tab manager loaded),
+ * then joins the session and starts the terminal tool.
  * @param {import('@playwright/test').Page} page
  * @param {string} sessionId
  */
 async function joinSessionAndStartTerminal(page, sessionId) {
-  // app.init() connects the WebSocket early, so just wait for it
-  await waitForWebSocket(page, 20000);
-
-  await page.evaluate((sid) => {
-    window.app.send({ type: 'join_session', sessionId: sid });
-  }, sessionId);
-
+  // Wait for init() to fully complete: WebSocket open AND session tabs loaded.
+  // This prevents racing with init()'s own join_session calls.
   await page.waitForFunction(
-    () => window.app.currentClaudeSessionId != null,
-    { timeout: 15000 }
+    () => window.app && window.app.sessionTabManager
+      && window.app.socket && window.app.socket.readyState === 1,
+    { timeout: 20000 }
   );
 
+  // Use the app's joinSession method (returns a promise that resolves
+  // when session_joined is received) instead of raw send() to avoid
+  // racing with init()'s own session management.
+  await page.evaluate(async (sid) => {
+    await window.app.joinSession(sid);
+  }, sessionId);
+
+  // Start the terminal tool
   await page.evaluate(() => {
     window.app.startToolSession('terminal');
   });
 
+  // Wait for the overlay to hide (terminal_started message hides it)
   await page.waitForFunction(() => {
     const overlay = document.getElementById('overlay');
     return !overlay || overlay.style.display === 'none';
   }, { timeout: 30000 });
 
-  // Drain initial shell output
-  await page.waitForTimeout(5000);
+  // Wait for shell prompt to appear instead of a fixed 5s sleep
+  await page.waitForFunction(() => {
+    const term = window.app && window.app.terminal;
+    if (!term) return false;
+    const buf = term.buffer.active;
+    for (let i = 0; i < buf.length; i++) {
+      const line = buf.getLine(i);
+      if (line && line.translateToString(true).trim().length > 0) return true;
+    }
+    return false;
+  }, { timeout: 10000 }).catch(() => {});
+  // Brief settle time for any remaining shell initialization
+  await page.waitForTimeout(500);
 }
 
 /**

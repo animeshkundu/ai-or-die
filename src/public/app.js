@@ -370,6 +370,7 @@ class ClaudeCodeWebInterface {
             document.fonts.ready.then(() => {
                 const loaded = document.fonts.check('14px "MesloLGS Nerd Font"');
                 console.log(loaded ? '[Font] MesloLGS Nerd Font loaded' : '[Font] Using fallback font');
+                this.terminal.clearTextureAtlas();
                 this.terminal.refresh(0, this.terminal.rows - 1);
                 this.fitTerminal();
             });
@@ -377,6 +378,7 @@ class ClaudeCodeWebInterface {
             // document.fonts.ready is a one-shot promise that won't fire again
             // when Bold loads after output coalescing delay triggers bold rendering
             document.fonts.addEventListener('loadingdone', () => {
+                this.terminal.clearTextureAtlas();
                 this.terminal.refresh(0, this.terminal.rows - 1);
                 this.fitTerminal();
             });
@@ -775,15 +777,18 @@ class ClaudeCodeWebInterface {
                 }
                 
                 // Show appropriate UI based on session state
-                console.log('[session_joined] Checking if should show overlay. Active:', message.active);
-                if (message.active) {
+                console.log('[session_joined] Checking if should show overlay. Active:', message.active, 'toolStartPending:', !!this._toolStartPending);
+                if (this._toolStartPending) {
+                    // A tool start is in flight — don't overwrite the loading spinner
+                    console.log('[session_joined] Tool start pending, preserving overlay');
+                } else if (message.active) {
                     console.log('[session_joined] Session is active, hiding overlay');
                     this.hideOverlay();
                 } else {
                     // Session exists but Claude is not running
                     // Check if this is a brand new session (empty output buffer indicates new)
                     const isNewSession = !message.outputBuffer || message.outputBuffer.length === 0;
-                    
+
                     if (isNewSession) {
                         console.log('[session_joined] New session detected, showing start prompt');
                         this.showOverlay('startPrompt');
@@ -821,6 +826,7 @@ class ClaudeCodeWebInterface {
             case 'copilot_started':
             case 'gemini_started':
             case 'terminal_started': {
+                this._toolStartPending = false;
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 this.loadSessions();
@@ -867,6 +873,7 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'exit':
+                this._toolStartPending = false;
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} exited with code ${message.code}\x1b[0m`);
                 
@@ -880,6 +887,7 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'error':
+                this._toolStartPending = false;
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.showError(message.message);
                 
@@ -1135,7 +1143,11 @@ class ClaudeCodeWebInterface {
     }
 
     startToolSession(toolId) {
-        if (!this.currentClaudeSessionId) return;
+        if (!this.currentClaudeSessionId) {
+            console.warn('[startToolSession] No active session, cannot start tool:', toolId);
+            return;
+        }
+        this._toolStartPending = true;
         const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
         const dangerousMode = settings.dangerousMode || false;
         const options = {};
@@ -1609,7 +1621,7 @@ class ClaudeCodeWebInterface {
     loadSettings() {
         const defaults = {
             fontSize: 14,
-            fontFamily: "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace",
+            fontFamily: "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
             cursorStyle: 'block',
             cursorBlink: true,
             scrollback: 1000,
@@ -1617,10 +1629,19 @@ class ClaudeCodeWebInterface {
             theme: 'midnight',
             dangerousMode: false
         };
-        
+
         try {
             const saved = localStorage.getItem('cc-web-settings');
-            return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+            if (!saved) return defaults;
+            const settings = { ...defaults, ...JSON.parse(saved) };
+            // Migrate old fontFamily values that lack MesloLGS Nerd Font fallback
+            if (settings.fontFamily && !settings.fontFamily.includes('MesloLGS Nerd Font')) {
+                settings.fontFamily = settings.fontFamily.replace(
+                    /,\s*monospace\s*$/,
+                    ", 'MesloLGS Nerd Font', monospace"
+                );
+            }
+            return settings;
         } catch (error) {
             console.error('Failed to load settings:', error);
             return defaults;
@@ -1630,7 +1651,7 @@ class ClaudeCodeWebInterface {
     saveSettings() {
         const settings = {
             fontSize: parseInt(document.getElementById('fontSize').value),
-            fontFamily: document.getElementById('fontFamily')?.value || "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace",
+            fontFamily: document.getElementById('fontFamily')?.value || "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
             cursorStyle: document.getElementById('cursorStyle')?.value || 'block',
             cursorBlink: document.getElementById('cursorBlink')?.checked ?? true,
             scrollback: parseInt(document.getElementById('scrollback')?.value || '1000'),
@@ -1672,6 +1693,7 @@ class ClaudeCodeWebInterface {
             selectionBackground: style.getPropertyValue('--terminal-selection').trim() || undefined,
         };
 
+        this.terminal.clearTextureAtlas();
         this.fitTerminal();
     }
 
