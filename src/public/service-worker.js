@@ -1,9 +1,14 @@
-const CACHE_NAME = 'ai-or-die-v4';
+// Bump this version when urlsToCache entries are added or removed.
+// Content changes to existing files are handled by the network-first fetch strategy.
+const CACHE_NAME = 'ai-or-die-v5';
 const urlsToCache = [
   '/',
   '/index.html',
   '/fonts.css',
   '/fonts/MesloLGSNerdFont-Regular.woff2',
+  '/fonts/MesloLGSNerdFont-Bold.woff2',
+  '/fonts/MesloLGSNerdFont-Italic.woff2',
+  '/fonts/MesloLGSNerdFont-BoldItalic.woff2',
   '/tokens.css',
   '/base.css',
   '/components/tabs.css',

@@ -366,9 +366,17 @@ class ClaudeCodeWebInterface {
 
         // Re-render terminal when fonts finish loading
         if (document.fonts) {
+            // One-shot: handle initial font load
             document.fonts.ready.then(() => {
                 const loaded = document.fonts.check('14px "MesloLGS Nerd Font"');
                 console.log(loaded ? '[Font] MesloLGS Nerd Font loaded' : '[Font] Using fallback font');
+                this.terminal.refresh(0, this.terminal.rows - 1);
+                this.fitTerminal();
+            });
+            // Persistent: handle late-loading Bold/Italic variants
+            // document.fonts.ready is a one-shot promise that won't fire again
+            // when Bold loads after output coalescing delay triggers bold rendering
+            document.fonts.addEventListener('loadingdone', () => {
                 this.terminal.refresh(0, this.terminal.rows - 1);
                 this.fitTerminal();
             });

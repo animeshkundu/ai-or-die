@@ -19,6 +19,9 @@ const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
 const { VSCodeTunnelManager } = require('./vscode-tunnel');
 
+/** Max bytes to accumulate before flushing coalesced output immediately */
+const MAX_COALESCE_BYTES = 32 * 1024;
+
 class ClaudeCodeWebServer {
   constructor(options = {}) {
     this.port = options.port != null ? options.port : 7777;
@@ -1051,7 +1054,7 @@ class ClaudeCodeWebServer {
         clientNoContextTakeover: true,
         serverMaxWindowBits: 13,
         clientMaxWindowBits: 13,
-        zlibDeflateOptions: { level: 6 }
+        zlibDeflateOptions: { level: 1 }
       },
       verifyClient: (info) => {
         if (!this.noAuth && this.auth) {
@@ -1184,7 +1187,9 @@ class ClaudeCodeWebServer {
               try {
                 const inputBridge = this.getBridgeForAgent(session.agent);
                 if (inputBridge) {
-                  await inputBridge.sendInput(wsInfo.claudeSessionId, data.data);
+                  inputBridge.sendInput(wsInfo.claudeSessionId, data.data).catch(error => {
+                    if (this.dev) console.error(`Input write failed for session ${wsInfo.claudeSessionId}:`, error.message);
+                  });
                 }
               } catch (error) {
                 if (this.dev) {
@@ -1564,6 +1569,8 @@ class ClaudeCodeWebServer {
   // Coalesces output into 16ms windows to reduce WebSocket send frequency.
   // During heavy output (~500 PTY batches/sec), this reduces sends to ~60/sec,
   // freeing the event loop for input message processing.
+  // Flushes immediately when pending output exceeds MAX_COALESCE_BYTES to
+  // bound event loop blocking and provide yield points for input processing.
   _throttledOutputBroadcast(sessionId, data) {
     const session = this.claudeSessions.get(sessionId);
     if (!session) return;
@@ -1572,6 +1579,16 @@ class ClaudeCodeWebServer {
       session._pendingOutput = '';
     }
     session._pendingOutput += data;
+
+    // Cap: flush immediately when buffer exceeds threshold
+    if (session._pendingOutput.length > MAX_COALESCE_BYTES) {
+      if (session._outputFlushTimer) {
+        clearTimeout(session._outputFlushTimer);
+        session._outputFlushTimer = null;
+      }
+      this._flushSessionOutput(sessionId);
+      return;
+    }
 
     if (!session._outputFlushTimer) {
       session._outputFlushTimer = setTimeout(() => {
@@ -1601,6 +1618,10 @@ class ClaudeCodeWebServer {
       if (wsInfo &&
           wsInfo.claudeSessionId === sessionId &&
           wsInfo.ws.readyState === WebSocket.OPEN) {
+        // Backpressure: skip clients that can't consume fast enough
+        if (wsInfo.ws.bufferedAmount > 256 * 1024) {
+          return; // Data remains in outputBuffer for replay on reconnection
+        }
         wsInfo.ws.send(msg);
       }
     });
