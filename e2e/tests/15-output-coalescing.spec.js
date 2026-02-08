@@ -44,12 +44,9 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
       m.dir === 'recv' && m.type === 'output'
     ).length;
 
-    // Generate 200 lines of output rapidly via a loop
-    const marker = `COALESCE_${Date.now()}`;
-    const isWin = process.platform === 'win32';
-    const cmd = isWin
-      ? `for /L %i in (1,1,200) do @echo ${marker}_%i`
-      : `for i in $(seq 1 200); do echo ${marker}_$i; done`;
+    // Generate 200 lines of output rapidly via node (cross-platform)
+    const marker = `COAL_${Date.now()}`;
+    const cmd = `node -e "for(let i=1;i<=200;i++) console.log('${marker}_'+i)"`;
 
     await typeInTerminal(page, cmd);
     await pressKey(page, 'Enter');
@@ -63,7 +60,7 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
       m.dir === 'recv' && m.type === 'output'
     ).length - msgCountBefore;
 
-    // With 200 echo commands, without coalescing we'd see 200+ output messages.
+    // With 200 console.log calls, without coalescing we'd see 200+ output messages.
     // With 16ms coalescing, multiple PTY batches are merged into single sends.
     // The exact count depends on system speed but should be well under 200.
     expect(outputMsgCount).toBeGreaterThan(0);
@@ -73,11 +70,9 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
   test('all output arrives intact despite coalescing', async ({ page }) => {
     await setupTerminalPage(page);
 
+    // Use node for cross-platform output generation
     const marker = `INTACT_${Date.now()}`;
-    const isWin = process.platform === 'win32';
-    const cmd = isWin
-      ? `for /L %i in (1,1,50) do @echo ${marker}_%i`
-      : `for i in $(seq 1 50); do echo ${marker}_$i; done`;
+    const cmd = `node -e "for(let i=1;i<=50;i++) console.log('${marker}_'+i)"`;
 
     await typeInTerminal(page, cmd);
     await pressKey(page, 'Enter');
@@ -92,7 +87,7 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
 
     // First burst
     const marker1 = `BURST1_${Date.now()}`;
-    await typeInTerminal(page, `echo ${marker1}`);
+    await typeInTerminal(page, `node -e "console.log('${marker1}')"`);
     await pressKey(page, 'Enter');
     await waitForTerminalText(page, marker1, 10000);
 
@@ -101,7 +96,7 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
 
     // Second burst
     const marker2 = `BURST2_${Date.now()}`;
-    await typeInTerminal(page, `echo ${marker2}`);
+    await typeInTerminal(page, `node -e "console.log('${marker2}')"`);
     await pressKey(page, 'Enter');
     await waitForTerminalText(page, marker2, 10000);
   });
@@ -110,13 +105,9 @@ test.describe('Output coalescing: batched broadcasts during heavy output', () =>
     await setupTerminalPage(page);
 
     const marker = `EXIT_${Date.now()}`;
-    const isWin = process.platform === 'win32';
 
-    // Echo a marker and immediately exit
-    const cmd = isWin
-      ? `echo ${marker} & exit`
-      : `echo ${marker} && exit`;
-    await typeInTerminal(page, cmd);
+    // Echo a marker and immediately exit (cross-platform via node)
+    await typeInTerminal(page, `node -e "console.log('${marker}'); process.exit(0)"`);
     await pressKey(page, 'Enter');
 
     // The marker should appear even though exit follows immediately
