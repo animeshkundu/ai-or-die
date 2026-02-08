@@ -42,15 +42,61 @@ class SessionTabManager {
         }
     }
     
-    sendNotification(title, body, sessionId) {
+    /**
+     * Send a notification for a background session event.
+     * @param {object|string} opts - Notification options object, or title string (legacy)
+     * @param {string} [legacyBody] - Body text (legacy positional arg)
+     * @param {string} [legacySessionId] - Session ID (legacy positional arg)
+     */
+    sendNotification(opts, legacyBody, legacySessionId) {
+        // Support both object and legacy positional args
+        let title, body, sessionId, notifType;
+        if (typeof opts === 'object' && opts !== null) {
+            ({ title, body, sessionId, type: notifType } = opts);
+        } else {
+            title = opts;
+            body = legacyBody;
+            sessionId = legacySessionId;
+        }
+
         // Don't send notification for active tab
         if (sessionId === this.activeTabId) return;
 
+        // Prepend hostname for multi-machine context
+        const hostname = this.claudeInterface?.hostname || '';
+        const fullTitle = hostname ? `[${hostname}] ${title}` : title;
+
+        // Check user preference for desktop notifications
+        const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+        const desktopEnabled = settings.notifDesktop !== false;
+
         // Try desktop notifications when the page is not visible
-        if (document.visibilityState !== 'visible') {
+        if (document.visibilityState !== 'visible' && desktopEnabled) {
             if ('Notification' in window && Notification.permission === 'granted') {
+                // Prefer service worker showNotification() for Windows Notification Center
+                if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+                    navigator.serviceWorker.ready.then(registration => {
+                        registration.showNotification(fullTitle, {
+                            body: body,
+                            icon: '/favicon.ico',
+                            tag: sessionId,
+                            requireInteraction: false,
+                            silent: false,
+                            data: { sessionId },
+                            actions: [
+                                { action: 'switch-tab', title: 'Open Session' }
+                            ]
+                        });
+                    }).catch(err => {
+                        console.error('SW showNotification failed:', err);
+                    });
+                    console.log(`Desktop notification sent (SW): ${fullTitle}`);
+                    return;
+                }
+
+                // Fallback to basic Notification API
                 try {
-                    const notification = new Notification(title, {
+                    const notification = new Notification(fullTitle, {
                         body: body,
                         icon: '/favicon.ico',
                         tag: sessionId,
@@ -65,7 +111,7 @@ class SessionTabManager {
                     };
 
                     setTimeout(() => notification.close(), 5000);
-                    console.log(`Desktop notification sent: ${title}`);
+                    console.log(`Desktop notification sent: ${fullTitle}`);
                     return; // Desktop notification succeeded; no need for in-app toast
                 } catch (error) {
                     console.error('Desktop notification failed:', error);
@@ -74,10 +120,10 @@ class SessionTabManager {
         }
 
         // In-app toast: show for background tabs even when page is visible
-        this.showMobileNotification(title, body, sessionId);
+        this.showMobileNotification(fullTitle, body, sessionId, notifType);
     }
-    
-    showMobileNotification(title, body, sessionId) {
+
+    showMobileNotification(title, body, sessionId, notifType) {
         // Update page title to show notification
         const originalTitle = document.title;
         let flashCount = 0;
@@ -169,26 +215,80 @@ class SessionTabManager {
             }
         }, 5000);
         
-        // Play a sound if possible (create a simple beep)
+        // Play notification chime
+        this.playNotificationChime(notifType || 'idle');
+    }
+
+    /**
+     * Play a synthesized notification chime via Web Audio API.
+     * @param {'success'|'error'|'idle'} type - The notification type
+     */
+    playNotificationChime(type = 'idle') {
+        // Respect user mute setting
+        const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+        if (settings.notifSound === false) return;
+
+        const volume = typeof settings.notifVolume === 'number'
+            ? (settings.notifVolume / 100) * 0.3
+            : 0.3;
+        if (volume <= 0) return;
+
         try {
-            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const oscillator = audioContext.createOscillator();
-            const gainNode = audioContext.createGain();
-            
-            oscillator.connect(gainNode);
-            gainNode.connect(audioContext.destination);
-            
-            oscillator.frequency.value = 800;
-            oscillator.type = 'sine';
-            
-            gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
-            
-            oscillator.start(audioContext.currentTime);
-            oscillator.stop(audioContext.currentTime + 0.2);
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const t = ctx.currentTime;
+
+            if (type === 'success') {
+                // Ascending two-tone: C5 (523Hz) → E5 (659Hz)
+                this._playTone(ctx, t, 523, 'sine', volume, 0.15);
+                this._playTone(ctx, t + 0.2, 659, 'sine', volume, 0.15);
+            } else if (type === 'error') {
+                // Descending two-tone: E4 (330Hz) → C4 (262Hz)
+                this._playTone(ctx, t, 330, 'triangle', volume * 0.67, 0.12);
+                this._playTone(ctx, t + 0.16, 262, 'triangle', volume * 0.67, 0.12);
+            } else {
+                // Idle: single soft tone G5 (784Hz)
+                this._playTone(ctx, t, 784, 'sine', volume * 0.5, 0.2);
+            }
         } catch (e) {
             console.log('Audio notification not available');
         }
+    }
+
+    /** @private Abbreviate a path to its last 2 segments */
+    _abbreviatePath(dir) {
+        if (!dir) return '';
+        const parts = dir.replace(/\\/g, '/').split('/').filter(Boolean);
+        return parts.length > 2 ? '.../' + parts.slice(-2).join('/') : dir;
+    }
+
+    /** @private Build rich notification body from session data */
+    _buildNotifBody(session, duration) {
+        const parts = [];
+        if (session.workingDir) {
+            parts.push(this._abbreviatePath(session.workingDir));
+        }
+        const agentType = session.toolType || 'claude';
+        const agentName = this.getAlias(agentType);
+        if (duration > 0) {
+            parts.push(`${Math.round(duration / 1000)}s | ${agentName}`);
+        } else {
+            parts.push(agentName);
+        }
+        return parts.join('\n');
+    }
+
+    /** @private Play a single tone with gain envelope */
+    _playTone(ctx, startTime, freq, waveform, gain, duration) {
+        const osc = ctx.createOscillator();
+        const gainNode = ctx.createGain();
+        osc.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        osc.type = waveform;
+        osc.frequency.value = freq;
+        gainNode.gain.setValueAtTime(gain, startTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + duration);
+        osc.start(startTime);
+        osc.stop(startTime + duration);
     }
 
     getOrderedTabIds() {
@@ -1031,11 +1131,12 @@ class SessionTabManager {
                             this.updateUnreadIndicator(sessionId, true);
                             
                             // Send notification that Claude appears to have finished
-                            this.sendNotification(
-                                `${sessionName} — ${this.getAlias('claude')} appears finished`,
-                                `No output for 90 seconds (worked for ${Math.round(duration / 1000)}s)`,
-                                sessionId
-                            );
+                            this.sendNotification({
+                                title: `${sessionName} — ${this.getAlias(currentSession.toolType || 'claude')} appears finished`,
+                                body: this._buildNotifBody(currentSession, duration),
+                                sessionId,
+                                type: 'idle',
+                            });
                         }
                     }
                 }
@@ -1092,11 +1193,12 @@ class SessionTabManager {
             session.unreadOutput = true;
             this.updateUnreadIndicator(sessionId, true);
             
-            this.sendNotification(
-                `${sessionName}`,
-                message,
-                sessionId
-            );
+            this.sendNotification({
+                title: `${sessionName} — ${message}`,
+                body: this._buildNotifBody(session, duration),
+                sessionId,
+                type: 'success',
+            });
         }
     }
     
@@ -1160,11 +1262,12 @@ class SessionTabManager {
                 
                 // Send notification for error in background session
                 const sessionName = session.name || 'Session';
-                this.sendNotification(
-                    `Error in ${sessionName}`,
-                    'A command has failed or the session encountered an error',
-                    sessionId
-                );
+                this.sendNotification({
+                    title: `${sessionName} — Error detected`,
+                    body: this._buildNotifBody(session, 0),
+                    sessionId,
+                    type: 'error',
+                });
             }
         }
     }

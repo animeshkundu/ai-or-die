@@ -1,6 +1,6 @@
 // Bump this version when urlsToCache entries are added or removed.
 // Content changes to existing files are handled by the network-first fetch strategy.
-const CACHE_NAME = 'ai-or-die-v6';
+const CACHE_NAME = 'ai-or-die-v7';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -128,4 +128,32 @@ self.addEventListener('message', event => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
+});
+
+// Handle notification clicks (for Windows Notification Center / Action Center)
+self.addEventListener('notificationclick', event => {
+  const data = event.notification.data || {};
+  const sessionId = data.sessionId;
+  event.notification.close();
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then(clientList => {
+        // Try to focus an existing window
+        for (const client of clientList) {
+          if ('focus' in client) {
+            client.focus();
+            client.postMessage({
+              type: 'NOTIFICATION_CLICK',
+              sessionId,
+            });
+            return;
+          }
+        }
+        // No existing window — open a new one
+        if (clients.openWindow) {
+          return clients.openWindow('/');
+        }
+      })
+  );
 });

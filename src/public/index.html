@@ -289,6 +289,22 @@
                         <input type="checkbox" id="dangerousMode">
                         <small class="setting-warning">Skips permission prompts. Use in trusted environments only.</small>
                     </div>
+                    <div class="setting-group setting-divider">
+                        <label><strong>Notifications</strong></label>
+                    </div>
+                    <div class="setting-group">
+                        <label for="notifSound">Sound:</label>
+                        <input type="checkbox" id="notifSound" checked>
+                    </div>
+                    <div class="setting-group">
+                        <label for="notifVolume">Volume:</label>
+                        <input type="range" id="notifVolume" min="0" max="100" value="30">
+                        <span id="notifVolumeValue">30%</span>
+                    </div>
+                    <div class="setting-group">
+                        <label for="notifDesktop">Desktop Alerts:</label>
+                        <input type="checkbox" id="notifDesktop" checked>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>

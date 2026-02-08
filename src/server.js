@@ -454,6 +454,7 @@ class ClaudeCodeWebServer {
         folderMode: this.folderMode,
         selectedWorkingDir: this.selectedWorkingDir,
         baseFolder: this.baseFolder,
+        hostname: os.hostname(),
         aliases: this.aliases,
         tools,
         vscodeTunnel: {

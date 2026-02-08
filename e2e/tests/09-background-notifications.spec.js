@@ -327,4 +327,240 @@ test.describe('Background session notifications', () => {
       await contextB.close();
     }
   });
+
+  test('toast shows hostname prefix in notification title', async ({ page }) => {
+    setupPageCapture(page);
+
+    const sessionA = await createSessionViaApi(port, 'Hostname A');
+    const sessionB = await createSessionViaApi(port, 'Hostname B');
+
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+
+    await joinSessionAndStartTerminal(page, sessionA);
+
+    await page.evaluate(async (sid) => {
+      window.app.sessionTabManager.addTab(sid, 'Hostname B', 'idle');
+    }, sessionB);
+
+    // Set a known hostname on the app instance
+    const toastText = await page.evaluate((bgSessionId) => {
+      return new Promise((resolve) => {
+        window.app.hostname = 'TEST-MACHINE';
+        const stm = window.app.sessionTabManager;
+        stm.sendNotification({
+          title: 'Hostname B — Build completed',
+          body: 'test body',
+          sessionId: bgSessionId,
+          type: 'success',
+        });
+        setTimeout(() => {
+          const toast = document.querySelector('.mobile-notification');
+          resolve(toast ? toast.textContent : '');
+        }, 500);
+      });
+    }, sessionB);
+
+    expect(toastText).toContain('[TEST-MACHINE]');
+    expect(toastText).toContain('Hostname B');
+  });
+
+  test('toast shows working directory and agent type in body', async ({ page }) => {
+    setupPageCapture(page);
+
+    const sessionA = await createSessionViaApi(port, 'Context A');
+    const sessionB = await createSessionViaApi(port, 'Context B');
+
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+
+    await joinSessionAndStartTerminal(page, sessionA);
+
+    await page.evaluate(async (sid) => {
+      const stm = window.app.sessionTabManager;
+      stm.addTab(sid, 'Context B', 'idle');
+      // Inject workingDir and toolType into the session data
+      const session = stm.activeSessions.get(sid);
+      if (session) {
+        session.workingDir = '/home/user/projects/my-app';
+        session.toolType = 'claude';
+      }
+    }, sessionB);
+
+    const toastBody = await page.evaluate((bgSessionId) => {
+      return new Promise((resolve) => {
+        const stm = window.app.sessionTabManager;
+        stm.sendNotification({
+          title: 'Context B — Task completed',
+          body: stm._buildNotifBody(stm.activeSessions.get(bgSessionId), 45000),
+          sessionId: bgSessionId,
+          type: 'success',
+        });
+        setTimeout(() => {
+          const toast = document.querySelector('.mobile-notification');
+          resolve(toast ? toast.textContent : '');
+        }, 500);
+      });
+    }, sessionB);
+
+    expect(toastBody).toContain('projects/my-app');
+    expect(toastBody).toContain('Claude');
+  });
+
+  test('notification type controls chime frequency', async ({ page }) => {
+    setupPageCapture(page);
+
+    const session = await createSessionViaApi(port, 'Chime Test');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, session);
+
+    // Spy on oscillator frequencies for each chime type
+    const frequencies = await page.evaluate(() => {
+      const results = {};
+
+      // Monkey-patch AudioContext to capture oscillator frequencies
+      const OrigAudioContext = window.AudioContext || window.webkitAudioContext;
+
+      for (const type of ['success', 'error', 'idle']) {
+        const freqs = [];
+        window.AudioContext = class extends OrigAudioContext {
+          createOscillator() {
+            const osc = super.createOscillator();
+            const origSet = Object.getOwnPropertyDescriptor(
+              osc.frequency.__proto__, 'value'
+            )?.set;
+            Object.defineProperty(osc.frequency, 'value', {
+              set(v) { freqs.push(v); if (origSet) origSet.call(this, v); },
+              get() { return osc.frequency.defaultValue; },
+            });
+            return osc;
+          }
+        };
+
+        window.app.sessionTabManager.playNotificationChime(type);
+        results[type] = [...freqs];
+      }
+
+      window.AudioContext = OrigAudioContext;
+      return results;
+    });
+
+    expect(frequencies.success).toEqual([523, 659]);
+    expect(frequencies.error).toEqual([330, 262]);
+    expect(frequencies.idle).toEqual([784]);
+  });
+
+  test('notification sound respects mute setting', async ({ page }) => {
+    setupPageCapture(page);
+
+    const session = await createSessionViaApi(port, 'Mute Test');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, session);
+
+    const audioCreated = await page.evaluate(() => {
+      // Disable sound in settings
+      const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+      settings.notifSound = false;
+      localStorage.setItem('cc-web-settings', JSON.stringify(settings));
+
+      // Spy on AudioContext creation
+      let created = false;
+      const OrigAudioContext = window.AudioContext || window.webkitAudioContext;
+      window.AudioContext = class extends OrigAudioContext {
+        constructor() { super(); created = true; }
+      };
+
+      window.app.sessionTabManager.playNotificationChime('success');
+
+      window.AudioContext = OrigAudioContext;
+      return created;
+    });
+
+    expect(audioCreated).toBe(false);
+  });
+
+  test('notification volume setting controls gain level', async ({ page }) => {
+    setupPageCapture(page);
+
+    const session = await createSessionViaApi(port, 'Volume Test');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, session);
+
+    const gainValue = await page.evaluate(() => {
+      // Set volume to 50%
+      const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+      settings.notifSound = true;
+      settings.notifVolume = 50;
+      localStorage.setItem('cc-web-settings', JSON.stringify(settings));
+
+      let capturedGain = null;
+      const OrigAudioContext = window.AudioContext || window.webkitAudioContext;
+      window.AudioContext = class extends OrigAudioContext {
+        createGain() {
+          const node = super.createGain();
+          const origSetValue = node.gain.setValueAtTime.bind(node.gain);
+          node.gain.setValueAtTime = (value, time) => {
+            if (capturedGain === null) capturedGain = value;
+            return origSetValue(value, time);
+          };
+          return node;
+        }
+      };
+
+      window.app.sessionTabManager.playNotificationChime('idle');
+
+      window.AudioContext = OrigAudioContext;
+      return capturedGain;
+    });
+
+    // 50% of 0.3 max = 0.15, then idle multiplies by 0.5 = 0.075
+    expect(gainValue).toBeCloseTo(0.075, 2);
+  });
+
+  test('command completion patterns include hostname context', async ({ page }) => {
+    setupPageCapture(page);
+
+    const sessionA = await createSessionViaApi(port, 'Completion A');
+    const sessionB = await createSessionViaApi(port, 'Completion B');
+
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionA);
+
+    await page.evaluate(async (sid) => {
+      const stm = window.app.sessionTabManager;
+      stm.addTab(sid, 'Completion B', 'idle');
+      const session = stm.activeSessions.get(sid);
+      if (session) {
+        session.workingDir = '/workspace/api';
+        session.toolType = 'claude';
+      }
+    }, sessionB);
+
+    // Set hostname and trigger command completion
+    const toastText = await page.evaluate((bgSessionId) => {
+      return new Promise((resolve) => {
+        window.app.hostname = 'BUILD-BOX';
+        const stm = window.app.sessionTabManager;
+        stm.checkForCommandCompletion(bgSessionId, 'build successful', Date.now() - 30000);
+        setTimeout(() => {
+          const toast = document.querySelector('.mobile-notification');
+          resolve(toast ? toast.textContent : '');
+        }, 500);
+      });
+    }, sessionB);
+
+    expect(toastText).toContain('[BUILD-BOX]');
+    expect(toastText).toContain('Completion B');
+    expect(toastText).toContain('Build completed successfully');
+  });
 });
