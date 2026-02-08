@@ -5,10 +5,13 @@ const path = require('path');
 const os = require('os');
 const fs = require('fs');
 
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 10;
 const URL_TIMEOUT_MS = 30000;
 const HEALTH_CHECK_INTERVAL_MS = 60000;
 const DEFAULT_MAX_TUNNELS = 5;
+const STABILITY_THRESHOLD_MS = 60000;  // 60s uptime = "stable", resets retryCount
+const MIN_RESTART_DELAY_MS = 1000;
+const MAX_RESTART_DELAY_MS = 30000;    // cap backoff at 30s
 
 /**
  * Manages VS Code tunnel processes on a per-session basis.
@@ -91,6 +94,12 @@ class VSCodeTunnelManager {
       retryCount: 0,
       stopping: false,
       name: `aiordie-${sessionId.slice(0, 12).replace(/[^a-z0-9-]/gi, '')}`,
+      // Resilience tracking
+      _lastSpawnTime: null,
+      _totalRestarts: 0,
+      _stabilityTimer: null,
+      _restartDelayTimer: null,
+      _restartDelayResolve: null,
     };
     this.tunnels.set(sessionId, tunnel);
 
@@ -121,6 +130,14 @@ class VSCodeTunnelManager {
     if (!tunnel) return { success: true };
 
     tunnel.stopping = true;
+    this._clearStabilityTimer(tunnel);
+
+    // Abort any pending restart delay
+    clearTimeout(tunnel._restartDelayTimer);
+    if (tunnel._restartDelayResolve) {
+      tunnel._restartDelayResolve();
+      tunnel._restartDelayResolve = null;
+    }
 
     if (tunnel.process) {
       await new Promise((resolve) => {
@@ -284,6 +301,7 @@ class VSCodeTunnelManager {
     ];
 
     return new Promise((resolve) => {
+      tunnel._lastSpawnTime = Date.now();
       tunnel.process = spawn(this._command, args, {
         cwd: tunnel.workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -339,6 +357,7 @@ class VSCodeTunnelManager {
           tunnel.status = 'running';
           urlResolved = true;
           clearTimeout(urlTimeout);
+          this._startStabilityTimer(tunnel);
           this._emitEvent(sessionId, 'vscode_tunnel_started', { url: tunnel.url });
           resolve();
         }
@@ -368,6 +387,7 @@ class VSCodeTunnelManager {
 
       tunnel.process.on('exit', (code, signal) => {
         clearTimeout(urlTimeout);
+        this._clearStabilityTimer(tunnel);
         tunnel.process = null;
 
         if (!urlResolved) {
@@ -389,25 +409,61 @@ class VSCodeTunnelManager {
   }
 
   /**
-   * Auto-restart with exponential backoff.
+   * Start the stability timer. After STABILITY_THRESHOLD_MS of uptime,
+   * reset retryCount so future crashes get a fresh retry budget.
+   */
+  _startStabilityTimer(tunnel) {
+    this._clearStabilityTimer(tunnel);
+    tunnel._stabilityTimer = setTimeout(() => {
+      if (tunnel.retryCount > 0) {
+        console.warn(`[VSCODE-TUNNEL] Session ${tunnel.sessionId} stable for ${STABILITY_THRESHOLD_MS / 1000}s — retry counter reset (was ${tunnel.retryCount}).`);
+        tunnel.retryCount = 0;
+      }
+    }, STABILITY_THRESHOLD_MS);
+    if (tunnel._stabilityTimer.unref) {
+      tunnel._stabilityTimer.unref();
+    }
+  }
+
+  _clearStabilityTimer(tunnel) {
+    if (tunnel._stabilityTimer) {
+      clearTimeout(tunnel._stabilityTimer);
+      tunnel._stabilityTimer = null;
+    }
+  }
+
+  /**
+   * Auto-restart with capped exponential backoff.
+   * retryCount resets after stable uptime via _startStabilityTimer().
    */
   async _restart(sessionId) {
     const tunnel = this.tunnels.get(sessionId);
     if (!tunnel || tunnel.stopping) return;
 
+    tunnel._totalRestarts++;
     tunnel.retryCount++;
+
+    const uptimeMs = tunnel._lastSpawnTime ? Date.now() - tunnel._lastSpawnTime : 0;
+    const uptimeStr = uptimeMs > 60000
+      ? `${(uptimeMs / 60000).toFixed(1)}m`
+      : `${(uptimeMs / 1000).toFixed(0)}s`;
+
     if (tunnel.retryCount > MAX_RETRIES) {
       tunnel.status = 'error';
-      tunnel.lastError = `Tunnel crashed ${MAX_RETRIES} times. Giving up.`;
+      tunnel.lastError = `Tunnel crashed ${MAX_RETRIES} times in quick succession. Giving up.`;
       this._emitEvent(sessionId, 'vscode_tunnel_error', {
         message: tunnel.lastError,
         fatal: true,
       });
+      console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: ${tunnel.lastError} Total lifetime restarts: ${tunnel._totalRestarts}. Last uptime: ${uptimeStr}.`);
       this.tunnels.delete(sessionId);
       return;
     }
 
-    const delay = Math.pow(2, tunnel.retryCount - 1) * 1000;
+    const delay = Math.min(
+      Math.pow(2, tunnel.retryCount - 1) * MIN_RESTART_DELAY_MS,
+      MAX_RESTART_DELAY_MS
+    );
     tunnel.status = 'restarting';
     this._emitEvent(sessionId, 'vscode_tunnel_status', {
       status: 'restarting',
@@ -415,9 +471,20 @@ class VSCodeTunnelManager {
       maxRetries: MAX_RETRIES,
     });
 
-    console.warn(`[VSCODE-TUNNEL] Session ${sessionId} tunnel exited. Restarting in ${delay / 1000}s (attempt ${tunnel.retryCount}/${MAX_RETRIES})`);
+    console.warn(
+      `[VSCODE-TUNNEL] Session ${sessionId} lost after ${uptimeStr} uptime. ` +
+      `Restarting in ${delay / 1000}s (attempt ${tunnel.retryCount}/${MAX_RETRIES}, ` +
+      `lifetime restarts: ${tunnel._totalRestarts})...`
+    );
 
-    await new Promise((r) => setTimeout(r, delay));
+    await new Promise((resolve) => {
+      tunnel._restartDelayResolve = resolve;
+      tunnel._restartDelayTimer = setTimeout(resolve, delay);
+      if (tunnel._restartDelayTimer.unref) {
+        tunnel._restartDelayTimer.unref();
+      }
+    });
+    tunnel._restartDelayResolve = null;
 
     if (!tunnel.stopping && this.tunnels.has(sessionId)) {
       tunnel.url = null;

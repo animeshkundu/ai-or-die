@@ -111,6 +111,9 @@ describe('VSCodeTunnelManager', function () {
         status: 'running',
         process: null,
         stopping: false,
+        _stabilityTimer: null,
+        _restartDelayTimer: null,
+        _restartDelayResolve: null,
       });
 
       await manager.stop('test-session');
@@ -120,8 +123,8 @@ describe('VSCodeTunnelManager', function () {
 
   describe('stopAll', function () {
     it('should stop all tunnels', async function () {
-      manager.tunnels.set('s1', { status: 'running', process: null, stopping: false });
-      manager.tunnels.set('s2', { status: 'running', process: null, stopping: false });
+      manager.tunnels.set('s1', { status: 'running', process: null, stopping: false, _stabilityTimer: null, _restartDelayTimer: null, _restartDelayResolve: null });
+      manager.tunnels.set('s2', { status: 'running', process: null, stopping: false, _stabilityTimer: null, _restartDelayTimer: null, _restartDelayResolve: null });
 
       await manager.stopAll();
       assert.strictEqual(manager.tunnels.size, 0);
