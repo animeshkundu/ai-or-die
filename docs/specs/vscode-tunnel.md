@@ -112,9 +112,20 @@ Platform-specific candidate paths checked in order:
 
 ### Process Lifecycle
 
+The tunnel start is a two-phase process:
+
+**Phase 1 — Authentication:**
+1. **Auth check:** `code tunnel user show` (5s timeout) determines if user is already logged in
+2. **Login (if needed):** `code tunnel login --provider github` spawns the device-code flow
+3. **Stdout parsing:** Detects `github.com/login/device` URL and device code (`XXXX-YYYY`), also handles `microsoft.com/devicelogin` as fallback
+4. **Auth event:** Emits `vscode_tunnel_auth` with `authUrl` and `deviceCode` so the client can display the auth banner
+5. **Login timeout:** 2 minutes (`LOGIN_TIMEOUT_MS`) — kills login process and reports failure if exceeded
+6. **Cancellation:** User can click Cancel during login; `stop()` kills the login process via `tunnel._loginProcess`
+
+**Phase 2 — Tunnel:**
 1. **Spawn:** `code tunnel --accept-server-license-terms --no-sleep --name <name>`
-2. **Stdout parsing:** Detects auth URLs, device codes, and tunnel URLs via regex
-3. **URL timeout:** 30s warning if no URL appears (process kept alive for auth flow)
+2. **Stdout parsing:** Detects tunnel URL (`https://vscode.dev/tunnel/...`), also retains auth-URL parsing as a defensive fallback for token-expired-mid-session scenarios
+3. **URL timeout:** 30s warning if no URL appears (process kept alive)
 4. **Health check:** Every 60s, verifies tunnel process is still running
 5. **Auto-restart:** On non-zero exit, exponential backoff (1s → 30s cap, max 10 retries)
 6. **Stability reset:** After 60s stable uptime, retry counter resets to 0
@@ -128,6 +139,15 @@ Platform-specific candidate paths checked in order:
 | Env Variable | Default | Description |
 |-------------|---------|-------------|
 | `MAX_VSCODE_TUNNELS` | 5 | Max concurrent tunnels server-wide |
+
+### Constants
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `LOGIN_TIMEOUT_MS` | 120000 | Max time for user to complete device-code auth (2 minutes) |
+| `URL_TIMEOUT_MS` | 30000 | Max wait for tunnel URL after spawn |
+| `MAX_RETRIES` | 10 | Crash retry budget before giving up |
+| `STABILITY_THRESHOLD_MS` | 60000 | Uptime before retry counter resets |
 
 ---
 

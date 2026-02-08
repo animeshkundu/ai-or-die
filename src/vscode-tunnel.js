@@ -12,6 +12,7 @@ const DEFAULT_MAX_TUNNELS = 5;
 const STABILITY_THRESHOLD_MS = 60000;  // 60s uptime = "stable", resets retryCount
 const MIN_RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30000;    // cap backoff at 30s
+const LOGIN_TIMEOUT_MS = 120000;       // 2 minutes for user to complete device-code auth
 
 /**
  * Manages VS Code tunnel processes on a per-session basis.
@@ -78,16 +79,10 @@ class VSCodeTunnelManager {
       return { success: false, error: 'not_found', message: this._installInstructions(), install: installInfo };
     }
 
-    // Check authentication
-    const authed = await this._checkAuth();
-    if (!authed) {
-      // Auth will be handled interactively during spawn — the device code flow
-      // output is parsed from stdout and forwarded to the client
-    }
-
-    // Create tunnel state
+    // Create tunnel state early so stop() can cancel an in-progress login
     const tunnel = {
       process: null,
+      _loginProcess: null,
       url: null,
       status: 'starting',
       sessionId,
@@ -106,6 +101,27 @@ class VSCodeTunnelManager {
 
     this._emitEvent(sessionId, 'vscode_tunnel_status', { status: 'starting' });
     console.warn(`[VSCODE-TUNNEL] Starting tunnel for session ${sessionId} (cwd: ${tunnel.workingDir})`);
+
+    // Check authentication; if not authed, run explicit login flow
+    const authed = await this._checkAuth();
+    if (!authed) {
+      console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: not authenticated, starting login flow`);
+      const loginOk = await this._login(sessionId);
+      if (tunnel.stopping) {
+        this.tunnels.delete(sessionId);
+        return { success: false, error: 'Tunnel start cancelled' };
+      }
+      if (!loginOk) {
+        tunnel.status = 'error';
+        tunnel.lastError = 'Authentication failed or was cancelled';
+        this.tunnels.delete(sessionId);
+        this._emitEvent(sessionId, 'vscode_tunnel_error', {
+          message: 'Authentication failed or was cancelled. Click Retry to try again.',
+        });
+        return { success: false, error: 'Authentication failed or was cancelled' };
+      }
+      console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: login successful, starting tunnel`);
+    }
 
     // Start health check interval (once)
     this._ensureHealthCheck();
@@ -132,6 +148,12 @@ class VSCodeTunnelManager {
 
     tunnel.stopping = true;
     this._clearStabilityTimer(tunnel);
+
+    // Kill login process if in-progress
+    if (tunnel._loginProcess) {
+      try { tunnel._loginProcess.kill(); } catch {}
+      tunnel._loginProcess = null;
+    }
 
     // Abort any pending restart delay
     clearTimeout(tunnel._restartDelayTimer);
@@ -302,7 +324,106 @@ class VSCodeTunnelManager {
 
   clearAvailabilityCache() {
     this._command = null;
-    this._initPromise = this._init();
+    this._commandChecked = false;
+    this._available = false;
+    this._initPromise = this._findCommand().then((cmd) => {
+      this._command = cmd;
+      this._commandChecked = true;
+      this._available = !!cmd;
+    });
+  }
+
+  /**
+   * Run `code tunnel login --provider github` and wait for completion.
+   * Emits vscode_tunnel_auth events so the client can show the device code.
+   * Returns true if login succeeded, false otherwise.
+   */
+  async _login(sessionId) {
+    const tunnel = this.tunnels.get(sessionId);
+    if (!tunnel || tunnel.stopping) return false;
+
+    const args = ['tunnel', 'login', '--provider', 'github'];
+    const spawnOptions = {
+      cwd: tunnel.workingDir,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env },
+    };
+    if (process.platform === 'win32') {
+      spawnOptions.shell = true;
+    }
+
+    return new Promise((resolve) => {
+      tunnel._loginProcess = spawn(this._command, args, spawnOptions);
+
+      let outputBuffer = '';
+      let resolved = false;
+
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: login timed out after ${LOGIN_TIMEOUT_MS / 1000}s`);
+          try { tunnel._loginProcess.kill(); } catch {}
+          tunnel._loginProcess = null;
+          resolve(false);
+        }
+      }, LOGIN_TIMEOUT_MS);
+
+      tunnel._loginProcess.stdout.on('data', (data) => {
+        const output = data.toString();
+        outputBuffer += output;
+        if (this.dev) process.stdout.write(`  [vscode-login] ${output}`);
+
+        // Check for GitHub device code auth prompt
+        const githubMatch = output.match(/https:\/\/github\.com\/login\/device/i)
+          || outputBuffer.match(/https:\/\/github\.com\/login\/device/i);
+        if (githubMatch) {
+          const codeMatch = outputBuffer.match(/code\s+([A-Z0-9]{4}-[A-Z0-9]{4})/i);
+          const deviceCode = codeMatch ? codeMatch[1] : null;
+          this._emitEvent(sessionId, 'vscode_tunnel_auth', {
+            authUrl: 'https://github.com/login/device',
+            deviceCode,
+          });
+        }
+
+        // Also handle Microsoft devicelogin as fallback
+        const msMatch = output.match(/https:\/\/microsoft\.com\/devicelogin/i)
+          || outputBuffer.match(/https:\/\/microsoft\.com\/devicelogin/i);
+        if (msMatch) {
+          const codeMatch = outputBuffer.match(/code\s+([A-Z0-9]{6,9})/i);
+          const deviceCode = codeMatch ? codeMatch[1] : null;
+          this._emitEvent(sessionId, 'vscode_tunnel_auth', {
+            authUrl: 'https://microsoft.com/devicelogin',
+            deviceCode,
+          });
+        }
+      });
+
+      tunnel._loginProcess.stderr.on('data', (data) => {
+        const output = data.toString().trim();
+        if (output && this.dev) console.error(`  [vscode-login] ${output}`);
+      });
+
+      tunnel._loginProcess.on('error', (err) => {
+        clearTimeout(timeout);
+        if (!resolved) {
+          resolved = true;
+          console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: login process error: ${err.message}`);
+          tunnel._loginProcess = null;
+          resolve(false);
+        }
+      });
+
+      tunnel._loginProcess.on('exit', (code) => {
+        clearTimeout(timeout);
+        tunnel._loginProcess = null;
+        if (!resolved) {
+          resolved = true;
+          const success = code === 0;
+          console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: login exited with code ${code}`);
+          resolve(success);
+        }
+      });
+    });
   }
 
   /**
