@@ -1,0 +1,1021 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Documentation - ai-or-die</title>
+    <meta name="description" content="Complete documentation for ai-or-die: CLI reference, architecture, WebSocket and REST APIs, security, and configuration." />
+    <meta property="og:title" content="Documentation - ai-or-die" />
+    <meta property="og:description" content="Complete documentation for ai-or-die: CLI reference, architecture, APIs, security, and configuration." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://animesh.kundus.in/ai-or-die/screenshots/app-desktop-full.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Documentation - ai-or-die" />
+    <meta name="twitter:description" content="Complete documentation for ai-or-die: CLI reference, architecture, APIs, security, and configuration." />
+    <meta name="twitter:image" content="https://animesh.kundus.in/ai-or-die/screenshots/app-desktop-full.png" />
+    <link rel="canonical" href="https://animesh.kundus.in/ai-or-die/docs.html" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" />
+    <link rel="stylesheet" href="style.css" />
+    <style>
+      /* Docs layout */
+      .docs-wrap {
+        display: grid;
+        grid-template-columns: 260px 1fr;
+        min-height: calc(100vh - 64px);
+      }
+
+      /* Sidebar */
+      .docs-sidebar {
+        position: sticky;
+        top: 64px;
+        height: calc(100vh - 64px);
+        overflow-y: auto;
+        border-right: 1px solid var(--border);
+        background: var(--bg-alt);
+        padding: 24px 0;
+        scrollbar-width: thin;
+        scrollbar-color: var(--border) transparent;
+      }
+      .docs-sidebar::-webkit-scrollbar { width: 4px }
+      .docs-sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px }
+      .sidebar-label {
+        display: block;
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .08em;
+        color: var(--muted);
+        padding: 16px 24px 6px;
+      }
+      .sidebar-label:first-child { padding-top: 0 }
+      .docs-sidebar a {
+        display: block;
+        padding: 6px 24px;
+        font-size: 14px;
+        color: var(--muted);
+        font-weight: 500;
+        border-left: 2px solid transparent;
+        transition: color .15s, border-color .15s;
+      }
+      .docs-sidebar a:hover {
+        color: var(--text);
+        text-decoration: none;
+      }
+      .docs-sidebar a.active {
+        color: var(--accent);
+        border-left-color: var(--accent);
+      }
+
+      /* Mobile sidebar toggle */
+      .sidebar-toggle {
+        display: none;
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 200;
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: #0c0a14;
+        border: 0;
+        font-size: 22px;
+        cursor: pointer;
+        box-shadow: 0 4px 16px rgba(0,0,0,.4);
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+      }
+      .sidebar-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,.6);
+        z-index: 149;
+      }
+
+      /* Main content */
+      .docs-main {
+        padding: 40px 48px 80px;
+        max-width: 880px;
+        min-width: 0;
+      }
+      .docs-main h1 {
+        font-size: 36px;
+        font-weight: 800;
+        letter-spacing: -.02em;
+        margin-bottom: 8px;
+      }
+      .docs-main > .section-sub {
+        text-align: left;
+        margin-bottom: 48px;
+      }
+      .docs-main h2 {
+        font-size: 26px;
+        font-weight: 700;
+        letter-spacing: -.01em;
+        margin: 56px 0 16px;
+        padding-top: 24px;
+        border-top: 1px solid var(--border);
+      }
+      .docs-main h2:first-of-type {
+        margin-top: 0;
+        border-top: 0;
+        padding-top: 0;
+      }
+      .docs-main h3 {
+        font-size: 18px;
+        font-weight: 600;
+        margin: 32px 0 12px;
+      }
+      .docs-main h4 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 24px 0 8px;
+        color: var(--accent);
+      }
+      .docs-main p {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.7;
+        margin: 0 0 14px;
+      }
+      .docs-main ul, .docs-main ol {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.7;
+        margin: 0 0 14px;
+        padding-left: 24px;
+      }
+      .docs-main li { margin-bottom: 4px }
+      .docs-main strong { color: var(--text) }
+      .docs-main .snippet {
+        margin: 0 0 16px;
+        white-space: pre;
+        line-height: 1.6;
+      }
+      .docs-main .snippet code {
+        background: none;
+        padding: 0;
+        font-size: 13px;
+      }
+
+      /* Doc tables */
+      .doc-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 0 0 20px;
+        font-size: 14px;
+      }
+      .doc-table th {
+        text-align: left;
+        font-weight: 600;
+        color: var(--text);
+        padding: 10px 12px;
+        border-bottom: 2px solid var(--border);
+        white-space: nowrap;
+      }
+      .doc-table td {
+        padding: 8px 12px;
+        border-bottom: 1px solid var(--border);
+        color: var(--muted);
+        vertical-align: top;
+      }
+      .doc-table td code {
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .doc-table tr:last-child td { border-bottom: 0 }
+      .doc-table-wrap {
+        overflow-x: auto;
+        margin: 0 0 20px;
+      }
+
+      /* Architecture diagram */
+      .arch-diagram {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 24px;
+        margin: 0 0 20px;
+        font-family: var(--mono);
+        font-size: 13px;
+        color: #b0a8c8;
+        line-height: 1.6;
+        overflow-x: auto;
+        white-space: pre;
+      }
+
+      /* Callout */
+      .callout {
+        border-left: 3px solid var(--accent-2);
+        background: rgba(94, 196, 160, .06);
+        padding: 14px 18px;
+        border-radius: 0 8px 8px 0;
+        margin: 0 0 16px;
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .callout strong { color: var(--accent-2) }
+
+      /* Responsive */
+      @media (max-width: 900px) {
+        .docs-wrap {
+          grid-template-columns: 1fr;
+        }
+        .docs-sidebar {
+          position: fixed;
+          top: 64px;
+          left: 0;
+          width: 280px;
+          z-index: 150;
+          transform: translateX(-100%);
+          transition: transform .25s ease;
+        }
+        .docs-sidebar.open {
+          transform: translateX(0);
+        }
+        .sidebar-toggle {
+          display: flex;
+        }
+        .sidebar-overlay.open {
+          display: block;
+        }
+        .docs-main {
+          padding: 32px 24px 80px;
+        }
+        .docs-main h1 { font-size: 28px }
+        .docs-main h2 { font-size: 22px }
+      }
+    </style>
+  </head>
+  <body>
+
+    <!-- HEADER -->
+    <header class="site-header">
+      <div class="container nav">
+        <a href="index.html" class="brand">
+          <span class="brand-icon">&gt;_</span>
+          <span>ai-or-die</span>
+        </a>
+        <nav>
+          <a href="index.html">Home</a>
+          <a href="#doc-getting-started">Getting Started</a>
+          <a href="#doc-cli-reference">CLI</a>
+          <a href="#doc-architecture">Architecture</a>
+          <a href="#doc-websocket-api">API</a>
+          <a class="btn ghost" href="https://github.com/animeshkundu/ai-or-die" target="_blank" rel="noopener">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-3px;margin-right:6px"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+            GitHub
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <!-- DOCS LAYOUT -->
+    <div class="docs-wrap">
+
+      <!-- Sidebar -->
+      <aside class="docs-sidebar" id="sidebar">
+        <span class="sidebar-label">Documentation</span>
+        <a href="#doc-getting-started">Getting Started</a>
+        <a href="#doc-cli-reference">CLI Reference</a>
+        <a href="#doc-architecture">Architecture</a>
+        <a href="#doc-supported-tools">Supported Tools</a>
+        <a href="#doc-features">Features In Depth</a>
+        <a href="#doc-websocket-api">WebSocket API</a>
+        <a href="#doc-rest-api">REST API</a>
+        <a href="#doc-security">Security</a>
+        <a href="#doc-configuration">Configuration</a>
+        <a href="#doc-contributing">Contributing</a>
+      </aside>
+
+      <!-- Overlay for mobile sidebar -->
+      <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+      <!-- Mobile sidebar toggle -->
+      <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle navigation">&#9776;</button>
+
+      <!-- Main content -->
+      <main class="docs-main">
+        <h1>ai-or-die Documentation</h1>
+        <p class="section-sub">Complete reference for the universal AI coding terminal. One command, every tool, right in your browser.</p>
+
+        <!-- 1. GETTING STARTED -->
+        <h2 id="doc-getting-started">Getting Started</h2>
+
+        <h3>Install</h3>
+        <p>Three ways to get running:</p>
+
+        <h4>Option 1: npx (no install)</h4>
+        <pre class="snippet"><code>npx ai-or-die</code></pre>
+
+        <h4>Option 2: Global install</h4>
+        <pre class="snippet"><code>npm install -g ai-or-die
+ai-or-die</code></pre>
+
+        <h4>Option 3: Standalone binary</h4>
+        <p>Download a pre-built binary from the <a href="https://github.com/animeshkundu/ai-or-die/releases">releases page</a>. No Node.js required. Available for Linux x64 and Windows x64.</p>
+
+        <h3>First run</h3>
+        <p>When you run <code>npx ai-or-die</code>, the following happens:</p>
+        <ol>
+          <li>The server starts on port <strong>7777</strong> (configurable with <code>--port</code>).</li>
+          <li>A secure authentication token is generated automatically.</li>
+          <li>Your default browser opens with the token embedded in the URL.</li>
+          <li>ai-or-die scans your system for installed CLI tools (Claude, Copilot, Gemini, Codex).</li>
+          <li>Available tools appear as clickable cards in the UI. Unavailable tools are shown as disabled.</li>
+        </ol>
+
+        <h3>Tool auto-detection</h3>
+        <p>On startup, ai-or-die searches common installation paths for each supported CLI tool. It checks both standard system paths and tool-specific locations (for example, <code>~/.claude/local/claude</code> for Claude Code). Tools that are found become available in the browser interface.</p>
+
+        <h3>Folder mode</h3>
+        <p>Click the folder icon in the toolbar to browse and select a working directory for your session. The file browser is sandboxed to the base directory and its subdirectories. You can also create new folders directly from the UI.</p>
+
+        <!-- 2. CLI REFERENCE -->
+        <h2 id="doc-cli-reference">CLI Reference</h2>
+
+        <p>Full list of command-line flags:</p>
+
+        <div class="doc-table-wrap">
+          <table class="doc-table">
+            <thead>
+              <tr><th>Flag</th><th>Description</th><th>Default</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>-p, --port &lt;number&gt;</code></td><td>Server port</td><td>7777</td></tr>
+              <tr><td><code>--no-open</code></td><td>Don't auto-open the browser</td><td>false</td></tr>
+              <tr><td><code>--auth &lt;token&gt;</code></td><td>Set a specific auth token</td><td>auto-generated</td></tr>
+              <tr><td><code>--disable-auth</code></td><td>Disable authentication entirely</td><td>false</td></tr>
+              <tr><td><code>--https</code></td><td>Enable HTTPS</td><td>false</td></tr>
+              <tr><td><code>--cert &lt;path&gt;</code></td><td>SSL certificate file</td><td>-</td></tr>
+              <tr><td><code>--key &lt;path&gt;</code></td><td>SSL private key file</td><td>-</td></tr>
+              <tr><td><code>--dev</code></td><td>Development mode with verbose logging</td><td>false</td></tr>
+              <tr><td><code>--plan &lt;type&gt;</code></td><td>Subscription plan (<code>pro</code>, <code>max5</code>, <code>max20</code>)</td><td>max20</td></tr>
+              <tr><td><code>--claude-alias &lt;name&gt;</code></td><td>Display alias for Claude</td><td>Claude</td></tr>
+              <tr><td><code>--codex-alias &lt;name&gt;</code></td><td>Display alias for Codex</td><td>Codex</td></tr>
+              <tr><td><code>--copilot-alias &lt;name&gt;</code></td><td>Display alias for Copilot</td><td>Copilot</td></tr>
+              <tr><td><code>--gemini-alias &lt;name&gt;</code></td><td>Display alias for Gemini</td><td>Gemini</td></tr>
+              <tr><td><code>--terminal-alias &lt;name&gt;</code></td><td>Display alias for Terminal</td><td>Terminal</td></tr>
+              <tr><td><code>--tunnel</code></td><td>Enable Microsoft Dev Tunnel</td><td>false</td></tr>
+              <tr><td><code>--tunnel-allow-anonymous</code></td><td>Allow anonymous tunnel access</td><td>false</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Usage examples</h3>
+        <pre class="snippet"><code># Start on a custom port
+ai-or-die --port 8080
+
+# Use a specific auth token
+ai-or-die --auth my-secret-token
+
+# Headless mode (no browser auto-open)
+ai-or-die --no-open --port 3000
+
+# HTTPS with certificates
+ai-or-die --https --cert cert.pem --key key.pem
+
+# Remote access via Dev Tunnels
+ai-or-die --tunnel
+
+# Development mode with verbose output
+ai-or-die --dev
+
+# Custom tool names in the UI
+ai-or-die --claude-alias "Claude 4" --copilot-alias "GH Copilot"
+
+# Set subscription plan for usage tracking
+ai-or-die --plan pro</code></pre>
+
+        <!-- 3. ARCHITECTURE -->
+        <h2 id="doc-architecture">Architecture</h2>
+
+        <h3>High-level overview</h3>
+        <div class="arch-diagram">Browser (xterm.js)
+   |
+   | WebSocket
+   v
+Express Server  -->  Session Store (~/.ai-or-die/sessions.json)
+   |
+   | node-pty
+   v
+Claude / Copilot / Gemini / Codex / bash</div>
+
+        <h3>Entry point</h3>
+        <p><code>bin/ai-or-die.js</code> uses Commander.js for CLI parsing. It reads flags, resolves configuration, and hands off to the server module.</p>
+
+        <h3>Server</h3>
+        <p><code>src/server.js</code> runs an Express application with WebSocket support. It handles session management, authentication middleware, rate limiting (100 requests per minute per IP), static file serving for the client, and all REST API endpoints.</p>
+
+        <h3>Bridge layer</h3>
+        <p>Each CLI tool has its own bridge class (<code>src/*-bridge.js</code>) extending <code>BaseBridge</code>. Every bridge implements a common interface:</p>
+        <ul>
+          <li><code>startSession(sessionId, options)</code></li>
+          <li><code>sendInput(sessionId, data)</code></li>
+          <li><code>resize(sessionId, cols, rows)</code></li>
+          <li><code>stopSession(sessionId)</code></li>
+        </ul>
+        <p>Bridges handle platform-aware command discovery, process spawning via node-pty, and graceful shutdown (SIGTERM followed by SIGKILL after 5 seconds).</p>
+
+        <h3>Client</h3>
+        <p><code>src/public/</code> contains the browser application: vanilla JavaScript with xterm.js for terminal emulation, tabbed session management, PWA support via a service worker, and the file browser UI.</p>
+
+        <h3>Tunnel manager</h3>
+        <p><code>src/tunnel-manager.js</code> manages the Microsoft Dev Tunnel lifecycle. It handles login, tunnel creation, hosting, and cleanup.</p>
+
+        <h3>Session store</h3>
+        <p>File-based persistence at <code>~/.ai-or-die/sessions.json</code>. Sessions auto-save every 30 seconds using atomic writes. Stale sessions older than 7 days are cleaned up automatically on startup.</p>
+
+        <h3>Key design decisions</h3>
+        <ul>
+          <li><strong>Bridge-per-CLI architecture</strong> for extensibility. Adding a new tool means creating a new bridge class.</li>
+          <li><strong>Session-centric model</strong> with multi-device access. The same session can be viewed from different browsers.</li>
+          <li><strong>Output buffering</strong> keeps the last 1000 lines for reconnection replay.</li>
+          <li><strong>node-pty over child_process</strong> for full terminal emulation (colors, cursor movement, screen clearing).</li>
+          <li><strong>Authentication by default</strong>. Every server start generates a token unless explicitly disabled.</li>
+          <li><strong>Path validation and sandboxing</strong>. All file operations resolve symlinks and reject traversal attempts.</li>
+        </ul>
+
+        <!-- 4. SUPPORTED TOOLS -->
+        <h2 id="doc-supported-tools">Supported Tools</h2>
+
+        <h3>Claude Code</h3>
+        <p>Anthropic's AI coding assistant for code generation, editing, and reasoning.</p>
+        <ul>
+          <li>Install: <a href="https://claude.ai/code" target="_blank" rel="noopener">https://claude.ai/code</a></li>
+          <li>Auto-trust prompt handling: ai-or-die automatically accepts Claude's workspace trust prompt so sessions start without manual intervention.</li>
+          <li>Dangerous flag: <code>--dangerously-skip-permissions</code></li>
+        </ul>
+
+        <h3>GitHub Copilot</h3>
+        <p>GitHub's AI pair programmer for suggestions and code completion.</p>
+        <ul>
+          <li>Install: <a href="https://github.com/features/copilot" target="_blank" rel="noopener">https://github.com/features/copilot</a></li>
+          <li>Dangerous flag: <code>--yolo</code></li>
+        </ul>
+
+        <h3>Google Gemini</h3>
+        <p>Google's multimodal AI assistant.</p>
+        <ul>
+          <li>Install: <a href="https://github.com/google-gemini/gemini-cli" target="_blank" rel="noopener">https://github.com/google-gemini/gemini-cli</a></li>
+        </ul>
+
+        <h3>OpenAI Codex</h3>
+        <p>OpenAI's code generation agent.</p>
+        <ul>
+          <li>Install: <a href="https://openai.com/codex" target="_blank" rel="noopener">https://openai.com/codex</a></li>
+          <li>Dangerous flag: <code>--dangerously-bypass-approvals-and-sandbox</code></li>
+        </ul>
+
+        <h3>Terminal</h3>
+        <p>Raw shell access. Uses bash on Linux and PowerShell on Windows. Always available regardless of whether other tools are installed.</p>
+
+        <div class="callout">
+          <strong>Note:</strong> Tools that are not installed show as disabled in the UI. Install any of them at any time and they will appear on the next server restart.
+        </div>
+
+        <!-- 5. FEATURES IN DEPTH -->
+        <h2 id="doc-features">Features In Depth</h2>
+
+        <h3>Multi-session support</h3>
+        <ul>
+          <li>Tabbed interface with drag-and-drop reordering.</li>
+          <li>Each tab runs a different tool independently.</li>
+          <li>Sessions persist across server restarts (the output buffer is saved to disk).</li>
+          <li>MRU (most recently used) tracking for session switching.</li>
+        </ul>
+
+        <h3>Real-time terminal</h3>
+        <ul>
+          <li>xterm.js with full 256-color ANSI support.</li>
+          <li>WebSocket streaming with output coalescing at approximately 60fps (16ms intervals).</li>
+          <li>Terminal search with Ctrl+F or the search icon in the toolbar.</li>
+          <li>Theme switching with 10+ built-in themes.</li>
+          <li>Customizable font size and font family (MesloLGS Nerd Font by default).</li>
+        </ul>
+
+        <h3>File browser</h3>
+        <ul>
+          <li>Open with Ctrl+B or the toolbar button.</li>
+          <li>Browse directories, preview files (images, text, JSON, CSV, PDF).</li>
+          <li>Edit files with Ace Editor, including auto-save and conflict detection.</li>
+          <li>Upload files via drag-and-drop, the file picker, or clipboard paste.</li>
+          <li>Download files directly from the browser.</li>
+          <li>Security: path validation, executable blocklist, and rate limiting on writes.</li>
+        </ul>
+
+        <h3>Usage analytics</h3>
+        <ul>
+          <li>Track Claude token usage with burn rate predictions.</li>
+          <li>Plan-specific limits: Pro (19K tokens), Max5 (88K), Max20 (220K).</li>
+          <li>5-hour rolling session windows.</li>
+          <li>Visual indicators with confidence scoring.</li>
+          <li>Real-time session timer.</li>
+        </ul>
+
+        <h3>Remote access (Dev Tunnels)</h3>
+        <ul>
+          <li>Built-in Microsoft Dev Tunnels support.</li>
+          <li>Run: <code>ai-or-die --tunnel</code></li>
+          <li>Auto-login and persistent named tunnels per machine.</li>
+          <li>Auth is disabled when a tunnel is active (the tunnel controls access).</li>
+          <li>Requires the <code>devtunnel</code> CLI to be installed.</li>
+        </ul>
+
+        <h3>VS Code tunnel integration</h3>
+        <ul>
+          <li>Per-session VS Code tunnel support.</li>
+          <li>Open your working directory in VS Code from the browser.</li>
+          <li>Health monitoring with auto-restart.</li>
+        </ul>
+
+        <h3>Progressive Web App (PWA)</h3>
+        <ul>
+          <li>Installable on any device.</li>
+          <li>Offline-capable shell with service worker caching.</li>
+          <li>Works on iOS Safari, Android Chrome, and desktop browsers.</li>
+        </ul>
+
+        <h3>Command palette</h3>
+        <ul>
+          <li>Open with Ctrl+K.</li>
+          <li>Quick access to sessions, tools, settings, and the file browser.</li>
+          <li>Fuzzy search across all available commands.</li>
+        </ul>
+
+        <h3>Image handling</h3>
+        <ul>
+          <li>Paste images directly into terminal sessions.</li>
+          <li>Drag-and-drop image support.</li>
+          <li>Preview modal with captions.</li>
+          <li>Temp file management with auto-cleanup.</li>
+        </ul>
+
+        <h3>Split views</h3>
+        <ul>
+          <li>Side-by-side terminal splits.</li>
+          <li>Independent WebSocket connections per split.</li>
+          <li>Resizable split containers.</li>
+        </ul>
+
+        <h3>Cross-platform</h3>
+        <ul>
+          <li>Windows (ConPTY) and Linux support.</li>
+          <li>CI-tested on both platforms.</li>
+          <li>Standalone SEA binaries available (no Node.js required).</li>
+        </ul>
+
+        <!-- 6. WEBSOCKET API -->
+        <h2 id="doc-websocket-api">WebSocket API</h2>
+
+        <h3>Connection</h3>
+        <pre class="snippet"><code># Standard
+ws://localhost:7777?token={authToken}
+
+# HTTPS
+wss://localhost:7777?token={authToken}
+
+# Auto-join an existing session
+ws://localhost:7777?token={authToken}&amp;sessionId={sessionId}</code></pre>
+
+        <h3>Client-to-server messages</h3>
+
+        <h4>create_session</h4>
+        <p>Create a new session.</p>
+        <pre class="snippet"><code>{
+  "type": "create_session",
+  "name": "My Claude Session",
+  "workingDir": "/home/user/project"
+}</code></pre>
+
+        <h4>join_session</h4>
+        <p>Connect to an existing session. Receives the output buffer replay.</p>
+        <pre class="snippet"><code>{
+  "type": "join_session",
+  "sessionId": "abc-123"
+}</code></pre>
+
+        <h4>leave_session</h4>
+        <p>Disconnect from a session without stopping the tool.</p>
+        <pre class="snippet"><code>{
+  "type": "leave_session",
+  "sessionId": "abc-123"
+}</code></pre>
+
+        <h4>start_claude / start_codex / start_copilot / start_gemini / start_terminal</h4>
+        <p>Launch a CLI tool in the current session.</p>
+        <pre class="snippet"><code>{
+  "type": "start_claude",
+  "sessionId": "abc-123",
+  "cols": 120,
+  "rows": 40,
+  "dangerous": false
+}</code></pre>
+        <p>The <code>dangerous</code> field enables the tool's dangerous/yolo mode flag when set to <code>true</code>.</p>
+
+        <h4>input</h4>
+        <p>Send user input to the running tool.</p>
+        <pre class="snippet"><code>{
+  "type": "input",
+  "sessionId": "abc-123",
+  "data": "Hello, Claude!\r"
+}</code></pre>
+
+        <h4>resize</h4>
+        <p>Adjust terminal dimensions.</p>
+        <pre class="snippet"><code>{
+  "type": "resize",
+  "sessionId": "abc-123",
+  "cols": 160,
+  "rows": 50
+}</code></pre>
+
+        <h4>stop</h4>
+        <p>Terminate the running tool in a session.</p>
+        <pre class="snippet"><code>{
+  "type": "stop",
+  "sessionId": "abc-123"
+}</code></pre>
+
+        <h4>ping</h4>
+        <p>Keepalive message.</p>
+        <pre class="snippet"><code>{
+  "type": "ping"
+}</code></pre>
+
+        <h4>get_usage</h4>
+        <p>Request current token usage data.</p>
+        <pre class="snippet"><code>{
+  "type": "get_usage",
+  "sessionId": "abc-123"
+}</code></pre>
+
+        <h3>Server-to-client messages</h3>
+
+        <h4>connected</h4>
+        <p>Sent immediately after WebSocket connection is established.</p>
+        <pre class="snippet"><code>{
+  "type": "connected",
+  "sessions": [
+    { "id": "abc-123", "name": "My Session", "toolRunning": "claude" }
+  ]
+}</code></pre>
+
+        <h4>session_created</h4>
+        <pre class="snippet"><code>{
+  "type": "session_created",
+  "sessionId": "abc-123",
+  "name": "My Session"
+}</code></pre>
+
+        <h4>session_joined</h4>
+        <p>Includes the output buffer for replay.</p>
+        <pre class="snippet"><code>{
+  "type": "session_joined",
+  "sessionId": "abc-123",
+  "buffer": "... previous output ..."
+}</code></pre>
+
+        <h4>session_left</h4>
+        <pre class="snippet"><code>{
+  "type": "session_left",
+  "sessionId": "abc-123"
+}</code></pre>
+
+        <h4>claude_started / codex_started / copilot_started / gemini_started / terminal_started</h4>
+        <pre class="snippet"><code>{
+  "type": "claude_started",
+  "sessionId": "abc-123"
+}</code></pre>
+
+        <h4>output</h4>
+        <p>Terminal output from the running tool. Delivered as raw strings (may contain ANSI escape codes).</p>
+        <pre class="snippet"><code>{
+  "type": "output",
+  "sessionId": "abc-123",
+  "data": "\u001b[32mHello from Claude\u001b[0m\r\n"
+}</code></pre>
+
+        <h4>exit</h4>
+        <p>The tool process has exited.</p>
+        <pre class="snippet"><code>{
+  "type": "exit",
+  "sessionId": "abc-123",
+  "code": 0
+}</code></pre>
+
+        <h4>error</h4>
+        <pre class="snippet"><code>{
+  "type": "error",
+  "message": "Session not found"
+}</code></pre>
+
+        <h4>claude_stopped / codex_stopped / copilot_stopped / gemini_stopped / terminal_stopped</h4>
+        <pre class="snippet"><code>{
+  "type": "claude_stopped",
+  "sessionId": "abc-123"
+}</code></pre>
+
+        <h4>usage_update</h4>
+        <pre class="snippet"><code>{
+  "type": "usage_update",
+  "sessionId": "abc-123",
+  "usage": {
+    "tokensUsed": 12500,
+    "tokenLimit": 220000,
+    "burnRate": 450,
+    "confidence": 0.85
+  }
+}</code></pre>
+
+        <h4>session_deleted</h4>
+        <pre class="snippet"><code>{
+  "type": "session_deleted",
+  "sessionId": "abc-123"
+}</code></pre>
+
+        <h4>pong</h4>
+        <pre class="snippet"><code>{
+  "type": "pong"
+}</code></pre>
+
+        <h4>info</h4>
+        <p>Informational messages from the server (for example, tunnel URL, startup status).</p>
+        <pre class="snippet"><code>{
+  "type": "info",
+  "message": "Dev tunnel ready at https://abc123.devtunnels.ms"
+}</code></pre>
+
+        <h3>Session lifecycle</h3>
+        <ol>
+          <li>Client connects via WebSocket. Server sends <code>connected</code> with the list of existing sessions.</li>
+          <li>Client sends <code>create_session</code>. Server responds with <code>session_created</code>.</li>
+          <li>Client sends <code>start_claude</code> (or another tool). Server responds with <code>claude_started</code>.</li>
+          <li>Server streams <code>output</code> messages as the tool produces data.</li>
+          <li>Client sends <code>input</code> messages for user keystrokes.</li>
+          <li>When the tool exits, server sends <code>exit</code> followed by <code>claude_stopped</code>.</li>
+          <li>Client can <code>leave_session</code> and later <code>join_session</code> to reconnect with buffer replay.</li>
+        </ol>
+
+        <!-- 7. REST API -->
+        <h2 id="doc-rest-api">REST API</h2>
+
+        <p>All endpoints require authentication unless noted. Pass the token as a header (<code>Authorization: Bearer &lt;token&gt;</code>) or query parameter (<code>?token=&lt;token&gt;</code>).</p>
+
+        <div class="doc-table-wrap">
+          <table class="doc-table">
+            <thead>
+              <tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>GET</code></td><td><code>/auth-status</code></td><td>Check if authentication is required (no auth needed for this endpoint)</td></tr>
+              <tr><td><code>POST</code></td><td><code>/auth-verify</code></td><td>Validate an auth token</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/health</code></td><td>Server health check</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/config</code></td><td>Server configuration and tool availability</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/sessions/list</code></td><td>List all sessions</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/sessions/create</code></td><td>Create a new session</td></tr>
+              <tr><td><code>DELETE</code></td><td><code>/api/sessions/:id</code></td><td>Delete a session</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/sessions/:id/stop-tool</code></td><td>Stop the running tool in a session</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/folders</code></td><td>Browse directories</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/folders/select</code></td><td>Select working directory</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/create-folder</code></td><td>Create a directory</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/files</code></td><td>List directory contents</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/files/stat</code></td><td>File metadata</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/files/content</code></td><td>Read text file content</td></tr>
+              <tr><td><code>PUT</code></td><td><code>/api/files/content</code></td><td>Save text file (with hash for conflict detection)</td></tr>
+              <tr><td><code>POST</code></td><td><code>/api/files/upload</code></td><td>Upload file (base64, 10MB limit)</td></tr>
+              <tr><td><code>GET</code></td><td><code>/api/files/download</code></td><td>Download or stream a file</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>Example requests</h3>
+
+        <h4>Check server health</h4>
+        <pre class="snippet"><code>curl http://localhost:7777/api/health \
+  -H "Authorization: Bearer YOUR_TOKEN"</code></pre>
+
+        <h4>List sessions</h4>
+        <pre class="snippet"><code>curl http://localhost:7777/api/sessions/list \
+  -H "Authorization: Bearer YOUR_TOKEN"</code></pre>
+
+        <h4>Create a session</h4>
+        <pre class="snippet"><code>curl -X POST http://localhost:7777/api/sessions/create \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "My Session", "workingDir": "/home/user/project"}'</code></pre>
+
+        <h4>Save a file (with conflict detection)</h4>
+        <pre class="snippet"><code>curl -X PUT http://localhost:7777/api/files/content \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/home/user/project/index.js", "content": "...", "hash": "abc123"}'</code></pre>
+
+        <!-- 8. SECURITY -->
+        <h2 id="doc-security">Security</h2>
+
+        <h3>Authentication</h3>
+        <p>A unique token is auto-generated on every server start and embedded in the browser URL. You can set your own with <code>--auth &lt;token&gt;</code> or disable it entirely with <code>--disable-auth</code>. The token is accepted as a Bearer token in the <code>Authorization</code> header or as a <code>?token=</code> query parameter.</p>
+
+        <h3>Rate limiting</h3>
+        <p>100 requests per minute per IP address by default. File write operations are limited to 30 per minute.</p>
+
+        <h3>Path validation</h3>
+        <p>All file paths are validated with symlink resolution. Directory traversal attempts (using <code>..</code> or absolute paths outside the sandbox) are rejected with a 403 response.</p>
+
+        <h3>HTTPS support</h3>
+        <p>Enable TLS with the <code>--https</code> flag along with <code>--cert</code> and <code>--key</code> pointing to your SSL certificate and private key files.</p>
+
+        <h3>File upload safety</h3>
+        <ul>
+          <li>Executable extension blocklist: <code>.exe</code>, <code>.bat</code>, <code>.cmd</code>, <code>.com</code>, <code>.msi</code>, <code>.scr</code>, <code>.ps1</code>, and others.</li>
+          <li>10MB maximum file size.</li>
+          <li>30 write operations per minute rate limit.</li>
+        </ul>
+
+        <h3>Content security</h3>
+        <p>All file content responses include <code>X-Content-Type-Options: nosniff</code>, <code>Cache-Control: no-store</code>, and sandbox headers to prevent execution of served content.</p>
+
+        <h3>No data leaks</h3>
+        <p>Everything runs locally on your machine. There is no telemetry, no external API calls, and no data collection. Your code never leaves your machine unless you explicitly enable <code>--tunnel</code> for remote access.</p>
+
+        <!-- 9. CONFIGURATION -->
+        <h2 id="doc-configuration">Configuration</h2>
+
+        <h3>Session persistence</h3>
+        <p>Sessions are saved to <code>~/.ai-or-die/sessions.json</code> every 30 seconds. This file stores session metadata, working directories, tool state, and the output buffer for each session.</p>
+
+        <h3>Plan configuration</h3>
+        <p>Set the subscription plan with the <code>--plan</code> flag or the <code>CLAUDE_PLAN</code> environment variable. This controls token usage tracking limits.</p>
+
+        <div class="doc-table-wrap">
+          <table class="doc-table">
+            <thead>
+              <tr><th>Plan</th><th>Token limit</th><th>Cost</th><th>Messages</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>pro</code></td><td>19,000</td><td>$18.00</td><td>250</td></tr>
+              <tr><td><code>max5</code></td><td>88,000</td><td>$35.00</td><td>1,000</td></tr>
+              <tr><td><code>max20</code></td><td>220,000</td><td>$140.00</td><td>2,000</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>A custom plan mode uses P90-based detection to infer limits from observed usage patterns.</p>
+
+        <h3>Tool aliases</h3>
+        <p>Rename tools in the UI with alias flags or environment variables:</p>
+        <pre class="snippet"><code># Via flags
+ai-or-die --claude-alias "Claude 4" --codex-alias "GPT Codex"
+
+# Via environment variables
+export CLAUDE_ALIAS="Claude 4"
+export CODEX_ALIAS="GPT Codex"
+ai-or-die</code></pre>
+
+        <h3>Themes</h3>
+        <p>10+ built-in terminal themes, switchable from the UI settings panel or the command palette (Ctrl+K). Theme preference is persisted in the browser's local storage.</p>
+
+        <h3>Fonts</h3>
+        <p>The default terminal font is MesloLGS Nerd Font. Font size and family are configurable through the settings panel. Changes apply immediately to all open terminals.</p>
+
+        <!-- 10. CONTRIBUTING -->
+        <h2 id="doc-contributing">Contributing</h2>
+
+        <h3>Quick setup</h3>
+        <pre class="snippet"><code>git clone https://github.com/animeshkundu/ai-or-die.git
+cd ai-or-die
+npm install
+npm run dev</code></pre>
+
+        <h3>Testing</h3>
+        <ul>
+          <li>Unit tests: <code>npm test</code> (Mocha with Node's built-in assert module)</li>
+          <li>Browser tests: <code>npm run test:browser</code> (Playwright)</li>
+          <li>Validation: <code>bash scripts/validate.sh</code> (Linux/macOS) or <code>powershell scripts/validate.ps1</code> (Windows)</li>
+        </ul>
+
+        <h3>Code style</h3>
+        <ul>
+          <li>Node.js with CommonJS modules</li>
+          <li>2 spaces for indentation</li>
+          <li>Single quotes for strings</li>
+          <li>Semicolons required</li>
+          <li>kebab-case for file names, PascalCase for classes, camelCase for functions and variables</li>
+          <li>Tests in <code>test/*.test.js</code></li>
+        </ul>
+
+        <h3>Adding a new tool</h3>
+        <ol>
+          <li>Create a bridge class in <code>src/</code> extending <code>BaseBridge</code> (see existing bridges as examples).</li>
+          <li>Implement <code>startSession</code>, <code>sendInput</code>, <code>resize</code>, and <code>stopSession</code>.</li>
+          <li>Register the bridge in <code>src/server.js</code>.</li>
+          <li>Add a WebSocket handler for <code>start_&lt;toolname&gt;</code>.</li>
+          <li>Add the tool to the client UI in <code>src/public/app.js</code>.</li>
+        </ol>
+
+        <h3>PR guidelines</h3>
+        <ul>
+          <li>Tests are required for all changes.</li>
+          <li>Update <code>docs/specs/</code> when code behavior changes.</li>
+          <li>Follow Conventional Commits: <code>feat:</code>, <code>fix:</code>, <code>docs:</code>, <code>test:</code>, <code>chore:</code>, <code>refactor:</code>.</li>
+        </ul>
+
+        <h3>Build standalone binary</h3>
+        <pre class="snippet"><code>npm run build:sea</code></pre>
+        <p>This produces a Node.js Single Executable Application (SEA) binary that includes all dependencies. The output binary can be distributed without requiring Node.js on the target machine.</p>
+
+      </main>
+    </div>
+
+    <!-- FOOTER -->
+    <footer class="site-footer">
+      <div class="container">
+        <div>
+          <span class="brand-sm">ai-or-die</span>
+          &middot; &copy; <span id="year"></span>
+          &middot; <a href="https://github.com/animeshkundu/ai-or-die/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/animeshkundu/ai-or-die" target="_blank" rel="noopener">GitHub</a>
+          <a href="https://www.npmjs.com/package/ai-or-die" target="_blank" rel="noopener">npm</a>
+          <a href="https://github.com/animeshkundu/ai-or-die/releases" target="_blank" rel="noopener">Releases</a>
+          <a href="https://github.com/animeshkundu/ai-or-die/blob/main/CONTRIBUTING.md" target="_blank" rel="noopener">Contribute</a>
+        </div>
+      </div>
+    </footer>
+
+    <script>
+      // Year
+      document.getElementById('year').textContent = new Date().getFullYear();
+
+      // Mobile sidebar toggle
+      const sidebar = document.getElementById('sidebar');
+      const overlay = document.getElementById('sidebarOverlay');
+      const toggle = document.getElementById('sidebarToggle');
+
+      function openSidebar() {
+        sidebar.classList.add('open');
+        overlay.classList.add('open');
+      }
+      function closeSidebar() {
+        sidebar.classList.remove('open');
+        overlay.classList.remove('open');
+      }
+
+      toggle.addEventListener('click', function () {
+        if (sidebar.classList.contains('open')) {
+          closeSidebar();
+        } else {
+          openSidebar();
+        }
+      });
+      overlay.addEventListener('click', closeSidebar);
+
+      // Close sidebar on link click (mobile)
+      sidebar.querySelectorAll('a').forEach(function (link) {
+        link.addEventListener('click', closeSidebar);
+      });
+
+      // Active state tracking via IntersectionObserver
+      var sidebarLinks = sidebar.querySelectorAll('a[href^="#"]');
+      var sections = [];
+      sidebarLinks.forEach(function (link) {
+        var id = link.getAttribute('href').slice(1);
+        var el = document.getElementById(id);
+        if (el) sections.push({ id: id, el: el, link: link });
+      });
+
+      var observer = new IntersectionObserver(function (entries) {
+        entries.forEach(function (entry) {
+          if (entry.isIntersecting) {
+            sidebarLinks.forEach(function (l) { l.classList.remove('active'); });
+            var match = sections.find(function (s) { return s.el === entry.target; });
+            if (match) match.link.classList.add('active');
+          }
+        });
+      }, {
+        rootMargin: '-80px 0px -60% 0px',
+        threshold: 0
+      });
+
+      sections.forEach(function (s) { observer.observe(s.el); });
+
+      // Smooth scroll for sidebar links
+      sidebarLinks.forEach(function (link) {
+        link.addEventListener('click', function (e) {
+          var id = this.getAttribute('href').slice(1);
+          var target = document.getElementById(id);
+          if (target) {
+            e.preventDefault();
+            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            history.pushState(null, '', '#' + id);
+          }
+        });
+      });
+    </script>
+  </body>
+</html>
