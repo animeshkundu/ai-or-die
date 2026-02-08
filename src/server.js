@@ -394,6 +394,9 @@ class ClaudeCodeWebServer {
         }
       });
 
+      // Flush any pending output before cleanup
+      this._flushAndClearOutputTimer(session, sessionId);
+
       // Clean up temp images
       this.cleanupSessionImages(session);
 
@@ -1034,7 +1037,8 @@ class ClaudeCodeWebServer {
       server,
       maxPayload: 8 * 1024 * 1024,
       perMessageDeflate: {
-        serverNoContextTakeover: true,
+        threshold: 1024,
+        serverNoContextTakeover: false,
         clientNoContextTakeover: true,
         serverMaxWindowBits: 13,
         clientMaxWindowBits: 13,
@@ -1427,7 +1431,7 @@ class ClaudeCodeWebServer {
           if (currentSession.outputBuffer.length > currentSession.maxBufferSize) {
             currentSession.outputBuffer.shift();
           }
-          this.broadcastToSession(sessionId, { type: 'output', data });
+          this._throttledOutputBroadcast(sessionId, data);
           // Notify non-joined connections about activity (throttled to 1/sec)
           const now = Date.now();
           const lastBroadcast = this.activityBroadcastTimestamps.get(sessionId) || 0;
@@ -1439,6 +1443,7 @@ class ClaudeCodeWebServer {
         onExit: (code, signal) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (currentSession) {
+            this._flushAndClearOutputTimer(currentSession, sessionId);
             currentSession.active = false;
             currentSession.agent = null;
           }
@@ -1491,6 +1496,7 @@ class ClaudeCodeWebServer {
       await bridge.stopSession(sessionId);
     }
 
+    this._flushAndClearOutputTimer(session, sessionId);
     const agentType = session.agent;
     session.active = false;
     session.agent = null;
@@ -1534,6 +1540,61 @@ class ClaudeCodeWebServer {
     });
   }
 
+  // Coalesces output into 16ms windows to reduce WebSocket send frequency.
+  // During heavy output (~500 PTY batches/sec), this reduces sends to ~60/sec,
+  // freeing the event loop for input message processing.
+  _throttledOutputBroadcast(sessionId, data) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+
+    if (!session._pendingOutput) {
+      session._pendingOutput = '';
+    }
+    session._pendingOutput += data;
+
+    if (!session._outputFlushTimer) {
+      session._outputFlushTimer = setTimeout(() => {
+        session._outputFlushTimer = null;
+        this._flushSessionOutput(sessionId);
+      }, 16);
+      if (session._outputFlushTimer.unref) {
+        session._outputFlushTimer.unref();
+      }
+    }
+  }
+
+  _flushSessionOutput(sessionId) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session || !session._pendingOutput) return;
+
+    const pending = session._pendingOutput;
+    session._pendingOutput = '';
+
+    // Skip broadcast if no clients connected (idle session)
+    if (session.connections.size === 0) return;
+
+    // Pre-serialize once for all clients
+    const msg = JSON.stringify({ type: 'output', data: pending });
+    session.connections.forEach(wsId => {
+      const wsInfo = this.webSocketConnections.get(wsId);
+      if (wsInfo &&
+          wsInfo.claudeSessionId === sessionId &&
+          wsInfo.ws.readyState === WebSocket.OPEN) {
+        wsInfo.ws.send(msg);
+      }
+    });
+  }
+
+  _flushAndClearOutputTimer(session, sessionId) {
+    if (session._outputFlushTimer) {
+      clearTimeout(session._outputFlushTimer);
+      session._outputFlushTimer = null;
+    }
+    if (session._pendingOutput) {
+      this._flushSessionOutput(sessionId);
+    }
+  }
+
   cleanupWebSocketConnection(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
@@ -1574,8 +1635,9 @@ class ClaudeCodeWebServer {
       this.server.close();
     }
     
-    // Stop all sessions
+    // Flush pending output and stop all sessions
     for (const [sessionId, session] of this.claudeSessions.entries()) {
+      this._flushAndClearOutputTimer(session, sessionId);
       if (session.active) {
         const bridge = this.getBridgeForAgent(session.agent);
         if (bridge) {

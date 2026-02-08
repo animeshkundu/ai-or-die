@@ -24,6 +24,12 @@ Central documentation for the ai-or-die project -- a Node.js web application tha
 - [ADR-0002: DevTunnels over ngrok](adrs/0002-devtunnels-over-ngrok.md)
 - [ADR-0003: Multi-Tool Architecture](adrs/0003-multi-tool-architecture.md)
 - [ADR-0004: Cross-Platform Support](adrs/0004-cross-platform-support.md)
+- [ADR-0005: Single Binary Distribution](adrs/0005-single-binary-distribution.md)
+- [ADR-0006: Test-Driven Bug Fixes](adrs/0006-test-driven-bug-fixes.md)
+- [ADR-0007: Design Token System](adrs/0007-design-token-system.md)
+- [ADR-0008: E2E Parallelization](adrs/0008-e2e-parallelization.md)
+- [ADR-0008: File Browser Architecture](adrs/0008-file-browser-architecture.md)
+- [ADR-0009: Output Throttling](adrs/0009-output-throttling.md)
 
 ## Agent Instructions
 
