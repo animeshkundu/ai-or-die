@@ -998,7 +998,8 @@ class ClaudeCodeWebServer {
         '.json': 'application/json',
         '.png': 'image/png',
         '.svg': 'image/svg+xml',
-        '.ico': 'image/x-icon'
+        '.ico': 'image/x-icon',
+        '.woff2': 'font/woff2'
       };
       res.setHeader('Content-Type', mimeTypes[ext] || 'application/octet-stream');
       res.send(data);
