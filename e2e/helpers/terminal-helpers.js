@@ -227,6 +227,25 @@ async function joinSessionAndStartTerminal(page, sessionId) {
   await page.waitForTimeout(5000);
 }
 
+/**
+ * Wait for a specific WebSocket message type to appear in page._wsMessages.
+ * Polls until the message is found or timeout is reached.
+ * @param {import('@playwright/test').Page} page
+ * @param {string} dir - 'sent' or 'recv'
+ * @param {string} type - message type to wait for
+ * @param {number} [timeoutMs=5000]
+ * @returns {Promise<object>} the matched message
+ */
+async function waitForWsMessage(page, dir, type, timeoutMs = 5000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const msg = page._wsMessages.find(m => m.dir === dir && m.type === type);
+    if (msg) return msg;
+    await page.waitForTimeout(100);
+  }
+  return null;
+}
+
 module.exports = {
   waitForAppReady,
   waitForTerminalCanvas,
@@ -239,5 +258,6 @@ module.exports = {
   setupPageCapture,
   attachFailureArtifacts,
   waitForWebSocket,
+  waitForWsMessage,
   joinSessionAndStartTerminal,
 };

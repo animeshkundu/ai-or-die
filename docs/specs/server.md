@@ -235,6 +235,9 @@ All messages are JSON. The `type` field determines the handler.
 | `stop` | Terminate the running agent process. |
 | `ping` | Keep-alive. Server responds with `{ type: "pong" }`. |
 | `get_usage` | Request usage statistics. Server responds with `usage_update`. |
+| `start_vscode_tunnel` | Start a VS Code tunnel for the current session. Requires `join_session` first. |
+| `stop_vscode_tunnel` | Stop the VS Code tunnel for the current session. |
+| `vscode_tunnel_status` | Request current tunnel status. Server responds with `vscode_tunnel_status`. |
 
 | Server Message | Description |
 |---------------|-------------|
@@ -256,6 +259,10 @@ All messages are JSON. The `type` field determines the handler.
 | `session_error` | Sent to non-joined connections on error. Fields: `sessionId`, `sessionName`. |
 | `session_started` | Sent to non-joined connections when a tool starts. Fields: `sessionId`, `sessionName`, `agent`. |
 | `session_stopped` | Sent to non-joined connections when a tool stops. Fields: `sessionId`, `sessionName`, `agent`. |
+| `vscode_tunnel_started` | VS Code tunnel is running. Fields: `url`. |
+| `vscode_tunnel_status` | Tunnel status change. Fields: `status` (starting/running/stopped/restarting/error), `url`, `pid`. |
+| `vscode_tunnel_auth` | Authentication required. Fields: `authUrl`, `deviceCode`. Client should display the URL/code for the user. |
+| `vscode_tunnel_error` | Tunnel error. Fields: `message`, `error`, `fatal` (optional). |
 
 ### Broadcasting
 

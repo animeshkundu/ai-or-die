@@ -17,6 +17,7 @@ const SessionStore = require('./utils/session-store');
 const { getFileInfo, computeFileHash, isBinaryFile, sanitizeFileName, isBlockedExtension, formatFileSize, normalizePath, BLOCKED_EXTENSIONS } = require('./utils/file-utils');
 const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
+const { VSCodeTunnelManager } = require('./vscode-tunnel');
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -41,6 +42,10 @@ class ClaudeCodeWebServer {
     this.copilotBridge = new CopilotBridge();
     this.geminiBridge = new GeminiBridge();
     this.terminalBridge = new TerminalBridge();
+    this.vscodeTunnel = new VSCodeTunnelManager({
+      dev: this.dev,
+      onEvent: (sessionId, event) => this.handleVSCodeTunnelEvent(sessionId, event),
+    });
     this.sessionStore = new SessionStore();
     this.usageReader = new UsageReader(this.sessionDurationHours);
     this.usageAnalytics = new UsageAnalytics({
@@ -117,6 +122,8 @@ class ClaudeCodeWebServer {
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
     }
+    // Stop all VS Code tunnels
+    await this.vscodeTunnel.stopAll();
     // Clean up temp images for all sessions
     for (const [, session] of this.claudeSessions) {
       this.cleanupSessionImages(session);
@@ -420,7 +427,8 @@ class ClaudeCodeWebServer {
           codex: { alias: this.aliases.codex, available: this.codexBridge.isAvailable(), hasDangerousMode: true },
           copilot: { alias: this.aliases.copilot, available: this.copilotBridge.isAvailable(), hasDangerousMode: true },
           gemini: { alias: this.aliases.gemini, available: this.geminiBridge.isAvailable(), hasDangerousMode: true },
-          terminal: { alias: this.aliases.terminal, available: this.terminalBridge.isAvailable(), hasDangerousMode: false }
+          terminal: { alias: this.aliases.terminal, available: this.terminalBridge.isAvailable(), hasDangerousMode: false },
+          vscodeTunnel: { available: this.vscodeTunnel.isAvailableSync() }
         }
       });
     });
@@ -1237,6 +1245,18 @@ class ClaudeCodeWebServer {
         await this.handleImageUpload(wsId, data);
         break;
 
+      case 'start_vscode_tunnel':
+        await this.handleStartVSCodeTunnel(wsId, data);
+        break;
+
+      case 'stop_vscode_tunnel':
+        await this.handleStopVSCodeTunnel(wsId, data);
+        break;
+
+      case 'vscode_tunnel_status':
+        await this.handleVSCodeTunnelStatus(wsId);
+        break;
+
       default:
         if (this.dev) {
           console.log(`Unknown message type: ${data.type}`);
@@ -1615,6 +1635,61 @@ class ClaudeCodeWebServer {
     }
 
     this.webSocketConnections.delete(wsId);
+  }
+
+  // ── VS Code Tunnel Handlers ────────────────────────────────
+
+  async handleStartVSCodeTunnel(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo || !wsInfo.claudeSessionId) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'vscode_tunnel_error',
+        message: 'Join a session first before starting a VS Code tunnel.',
+      });
+      return;
+    }
+
+    const sessionId = wsInfo.claudeSessionId;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+
+    const workingDir = session.workingDir || this.selectedWorkingDir || this.baseFolder;
+    const result = await this.vscodeTunnel.start(sessionId, workingDir);
+
+    if (!result.success) {
+      this.broadcastToSession(sessionId, {
+        type: 'vscode_tunnel_error',
+        error: result.error,
+        message: result.message || result.error,
+      });
+    }
+    // Success events are emitted via onEvent callback → handleVSCodeTunnelEvent
+  }
+
+  async handleStopVSCodeTunnel(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo || !wsInfo.claudeSessionId) return;
+
+    const sessionId = data.sessionId || wsInfo.claudeSessionId;
+    await this.vscodeTunnel.stop(sessionId);
+  }
+
+  async handleVSCodeTunnelStatus(wsId) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo || !wsInfo.claudeSessionId) return;
+
+    const status = this.vscodeTunnel.getStatus(wsInfo.claudeSessionId);
+    this.sendToWebSocket(wsInfo.ws, {
+      type: 'vscode_tunnel_status',
+      ...status,
+    });
+  }
+
+  /**
+   * Callback from VSCodeTunnelManager — forward events to the session's connections.
+   */
+  handleVSCodeTunnelEvent(sessionId, event) {
+    this.broadcastToSession(sessionId, event);
   }
 
   close() {
