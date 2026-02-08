@@ -167,6 +167,86 @@ describe('VSCodeTunnelManager', function () {
     });
   });
 
+  describe('authentication flow', function () {
+    it('should call _login when not authenticated', async function () {
+      manager._command = 'fake';
+      manager._commandChecked = true;
+      manager._available = true;
+
+      let loginCalled = false;
+      let spawnCalled = false;
+
+      // Stub _checkAuth to return false (not authenticated)
+      manager._checkAuth = async () => false;
+      // Stub _login to return true (login succeeded)
+      manager._login = async () => { loginCalled = true; return true; };
+      // Stub _spawn to no-op
+      manager._spawn = async () => { spawnCalled = true; };
+
+      const result = await manager.start('test-session', '/tmp');
+      assert.strictEqual(loginCalled, true, '_login should have been called');
+      assert.strictEqual(spawnCalled, true, '_spawn should have been called after login');
+      assert.strictEqual(result.success, true);
+    });
+
+    it('should return error when login fails', async function () {
+      manager._command = 'fake';
+      manager._commandChecked = true;
+      manager._available = true;
+
+      const events = [];
+      manager.onEvent = (sessionId, event) => { events.push(event); };
+
+      // Stub _checkAuth to return false (not authenticated)
+      manager._checkAuth = async () => false;
+      // Stub _login to return false (login failed)
+      manager._login = async () => false;
+
+      const result = await manager.start('test-session', '/tmp');
+      assert.strictEqual(result.success, false);
+      assert(result.error.includes('Authentication failed'));
+      // Should have emitted an error event
+      const errorEvent = events.find(e => e.type === 'vscode_tunnel_error');
+      assert(errorEvent, 'Should emit vscode_tunnel_error event');
+    });
+
+    it('should skip _login when already authenticated', async function () {
+      manager._command = 'fake';
+      manager._commandChecked = true;
+      manager._available = true;
+
+      let loginCalled = false;
+
+      // Stub _checkAuth to return true (already authenticated)
+      manager._checkAuth = async () => true;
+      manager._login = async () => { loginCalled = true; return true; };
+      manager._spawn = async () => {};
+
+      await manager.start('test-session', '/tmp');
+      assert.strictEqual(loginCalled, false, '_login should NOT have been called');
+    });
+  });
+
+  describe('clearAvailabilityCache', function () {
+    it('should reset state and re-run discovery', async function () {
+      // Set initial state
+      manager._command = '/usr/bin/code';
+      manager._commandChecked = true;
+      manager._available = true;
+
+      manager.clearAvailabilityCache();
+
+      // Should have reset state
+      assert.strictEqual(manager._command, null);
+      assert.strictEqual(manager._commandChecked, false);
+      assert.strictEqual(manager._available, false);
+
+      // Wait for re-discovery to complete
+      await manager._initPromise;
+      assert.strictEqual(manager._commandChecked, true);
+    });
+  });
+
   describe('_installInstructions', function () {
     it('should return platform-specific instructions', function () {
       const instructions = manager._installInstructions();
