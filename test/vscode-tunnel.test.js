@@ -129,25 +129,38 @@ describe('VSCodeTunnelManager', function () {
   });
 
   describe('event callback', function () {
-    it('should emit events via onEvent callback', async function () {
+    it('should not emit events when CLI is not found', async function () {
       const events = [];
       manager.onEvent = (sessionId, event) => {
         events.push({ sessionId, ...event });
       };
 
-      // Force not found to trigger error event path
+      // Force not found — start() returns early before emitting any events
       manager._command = null;
       manager._commandChecked = true;
       manager._available = false;
 
-      await manager.start('test-session', '/tmp');
+      const result = await manager.start('test-session', '/tmp');
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.error, 'not_found');
 
-      // No event emitted for not_found — it returns immediately
-      // But a status event was emitted for 'starting'
-      // Check that at least the starting event fired
-      const startingEvent = events.find(e => e.type === 'vscode_tunnel_status' && e.status === 'starting');
-      assert(startingEvent, 'Expected a starting status event');
-      assert.strictEqual(startingEvent.sessionId, 'test-session');
+      // No events emitted because start() returns before creating tunnel state
+      assert.strictEqual(events.length, 0, 'Expected no events when CLI not found');
+    });
+
+    it('should invoke onEvent with correct sessionId', function () {
+      const events = [];
+      manager.onEvent = (sessionId, event) => {
+        events.push({ sessionId, ...event });
+      };
+
+      // Manually call _emitEvent to verify the callback works
+      manager._emitEvent('test-session', 'vscode_tunnel_status', { status: 'starting' });
+
+      assert.strictEqual(events.length, 1);
+      assert.strictEqual(events[0].sessionId, 'test-session');
+      assert.strictEqual(events[0].type, 'vscode_tunnel_status');
+      assert.strictEqual(events[0].status, 'starting');
     });
   });
 
