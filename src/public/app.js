@@ -777,15 +777,18 @@ class ClaudeCodeWebInterface {
                 }
                 
                 // Show appropriate UI based on session state
-                console.log('[session_joined] Checking if should show overlay. Active:', message.active);
-                if (message.active) {
+                console.log('[session_joined] Checking if should show overlay. Active:', message.active, 'toolStartPending:', !!this._toolStartPending);
+                if (this._toolStartPending) {
+                    // A tool start is in flight — don't overwrite the loading spinner
+                    console.log('[session_joined] Tool start pending, preserving overlay');
+                } else if (message.active) {
                     console.log('[session_joined] Session is active, hiding overlay');
                     this.hideOverlay();
                 } else {
                     // Session exists but Claude is not running
                     // Check if this is a brand new session (empty output buffer indicates new)
                     const isNewSession = !message.outputBuffer || message.outputBuffer.length === 0;
-                    
+
                     if (isNewSession) {
                         console.log('[session_joined] New session detected, showing start prompt');
                         this.showOverlay('startPrompt');
@@ -823,6 +826,7 @@ class ClaudeCodeWebInterface {
             case 'copilot_started':
             case 'gemini_started':
             case 'terminal_started': {
+                this._toolStartPending = false;
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
                 this.loadSessions();
@@ -869,6 +873,7 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'exit':
+                this._toolStartPending = false;
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} exited with code ${message.code}\x1b[0m`);
                 
@@ -882,6 +887,7 @@ class ClaudeCodeWebInterface {
                 break;
                 
             case 'error':
+                this._toolStartPending = false;
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.showError(message.message);
                 
@@ -1061,7 +1067,11 @@ class ClaudeCodeWebInterface {
     }
 
     startToolSession(toolId) {
-        if (!this.currentClaudeSessionId) return;
+        if (!this.currentClaudeSessionId) {
+            console.warn('[startToolSession] No active session, cannot start tool:', toolId);
+            return;
+        }
+        this._toolStartPending = true;
         const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
         const dangerousMode = settings.dangerousMode || false;
         const options = {};
