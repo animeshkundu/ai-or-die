@@ -1664,15 +1664,16 @@ class ClaudeCodeWebServer {
     }
     session._pendingOutput += data;
 
-    // Cap: flush via setImmediate when buffer exceeds threshold.
-    // Using setImmediate (not synchronous) yields to process.nextTick input
-    // handlers, ensuring keystrokes jump ahead of large output flushes.
+    // Cap: flush immediately when buffer exceeds threshold.
+    // Input priority is handled by process.nextTick in the message handler —
+    // keystrokes jump ahead of pending I/O callbacks naturally without needing
+    // to defer flushes here (deferring causes output accumulation during bursts).
     if (session._pendingOutput.length > MAX_COALESCE_BYTES) {
       if (session._outputFlushTimer) {
         clearTimeout(session._outputFlushTimer);
         session._outputFlushTimer = null;
       }
-      setImmediate(() => this._flushSessionOutput(sessionId));
+      this._flushSessionOutput(sessionId);
       return;
     }
 
