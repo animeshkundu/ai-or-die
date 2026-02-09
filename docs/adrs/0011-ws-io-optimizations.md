@@ -31,7 +31,7 @@ Replace the `outputBuffer` array with a fixed-capacity `CircularBuffer` (`src/ut
 
 ### C. Input priority scheduling
 
-Dispatch input messages (`type: 'input'`) via `process.nextTick()` so they run before output-related timers (`setTimeout`, `setImmediate`) in the event loop. The MAX_COALESCE_BYTES immediate flush is deferred to `setImmediate()` (instead of synchronous) to yield to pending input. This creates a clear priority hierarchy: `nextTick (input) > setImmediate (deferred flush) > setTimeout (coalesce timer)`.
+Dispatch input messages (`type: 'input'`) via `process.nextTick()` so they run before output-related timers (`setTimeout`) in the event loop. The MAX_COALESCE_BYTES overflow flush remains synchronous (not deferred) because input priority is already handled by `nextTick` in the message handler — deferring the flush via `setImmediate` was found to cause output accumulation during initial bursts without measurable benefit. The effective priority is: `nextTick (input) > I/O callbacks (output flush) > setTimeout (coalesce timer)`.
 
 ### D. Binary WebSocket frames for terminal output
 
@@ -74,4 +74,4 @@ Explicitly setting `socket.setNoDelay(true)` was found to be redundant — the `
 
 - The 16ms coalescing window (ADR-0009) remains the fundamental output batching mechanism. These optimizations reduce per-flush cost, not flush frequency.
 - Worker threads (optimization F in the POC) showed less benefit than B+C+D+E combined and carry COM threading risk on Windows. Deferred pending multi-session isolation needs.
-- The event loop priority hierarchy is: `process.nextTick` (input) > `setImmediate` (deferred output flush) > `setTimeout` (coalescing timer).
+- The event loop priority hierarchy is: `process.nextTick` (input) > I/O callbacks (synchronous overflow flush) > `setTimeout` (coalescing timer).
