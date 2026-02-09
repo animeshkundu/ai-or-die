@@ -147,7 +147,13 @@ function setupPageCapture(page) {
       try { page._wsMessages.push({ dir: 'sent', ...JSON.parse(frame.payload) }); } catch {}
     });
     ws.on('framereceived', (frame) => {
-      try { page._wsMessages.push({ dir: 'recv', ...JSON.parse(frame.payload) }); } catch {}
+      try {
+        const parsed = JSON.parse(frame.payload);
+        page._wsMessages.push({ dir: 'recv', ...parsed });
+      } catch {
+        // Binary frame (terminal output) — not valid JSON
+        page._wsMessages.push({ dir: 'recv', type: 'output', data: String(frame.payload) });
+      }
     });
   });
 

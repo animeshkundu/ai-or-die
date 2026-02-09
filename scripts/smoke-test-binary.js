@@ -72,7 +72,8 @@ function wsSend(ws, data) {
 function waitForMessage(ws, type, timeoutMs = 10000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { cleanup(); reject(new Error(`Timeout waiting for "${type}"`)); }, timeoutMs);
-    function onMessage(raw) {
+    function onMessage(raw, isBinary) {
+      if (isBinary) return; // Skip binary terminal output frames
       const msg = JSON.parse(raw.toString());
       if (msg.type === type) { cleanup(); resolve(msg); }
     }
@@ -84,7 +85,11 @@ function waitForMessage(ws, type, timeoutMs = 10000) {
 function collectMessages(ws, type, durationMs = 5000) {
   return new Promise((resolve) => {
     const collected = [];
-    function onMessage(raw) {
+    function onMessage(raw, isBinary) {
+      if (isBinary) {
+        if (type === 'output') collected.push({ type: 'output', data: raw.toString() });
+        return;
+      }
       const msg = JSON.parse(raw.toString());
       if (msg.type === type) collected.push(msg);
     }
