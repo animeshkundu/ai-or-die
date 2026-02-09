@@ -667,7 +667,8 @@ class ClaudeCodeWebInterface {
             
             try {
                 this.socket = new WebSocket(wsUrl);
-                
+                this.socket.binaryType = 'arraybuffer';
+
                 this.socket.onopen = () => {
                     this.reconnectAttempts = 0;
                     this.updateStatus('Connected');
@@ -691,7 +692,14 @@ class ClaudeCodeWebInterface {
                 };
             
             this.socket.onmessage = (event) => {
-                this.handleMessage(JSON.parse(event.data));
+                if (event.data instanceof ArrayBuffer) {
+                    // Binary frame = raw terminal output (no JSON overhead)
+                    const text = new TextDecoder().decode(event.data);
+                    this.handleBinaryOutput(text);
+                } else {
+                    // Text frame = JSON control message
+                    this.handleMessage(JSON.parse(event.data));
+                }
             };
             
             this.socket.onclose = (event) => {
@@ -738,6 +746,21 @@ class ClaudeCodeWebInterface {
     send(data) {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify(data));
+        }
+    }
+
+    handleBinaryOutput(text) {
+        // Binary WebSocket frames carry raw terminal output — same processing
+        // as the JSON 'output' message type but without parse/serialize overhead
+        const filteredData = text.replace(/\x1b\[\[?[IO]/g, '');
+        this.terminal.write(filteredData);
+
+        if (this.sessionTabManager && this.currentClaudeSessionId) {
+            this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
+        }
+
+        if (this.planDetector) {
+            this.planDetector.processOutput(text);
         }
     }
 

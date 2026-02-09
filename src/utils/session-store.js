@@ -1,6 +1,7 @@
 const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
+const CircularBuffer = require('./circular-buffer');
 
 class SessionStore {
     constructor() {
@@ -32,7 +33,8 @@ class SessionStore {
                 lastActivity: session.lastActivity || new Date(),
                 workingDir: session.workingDir || process.cwd(),
                 active: false, // Always set to false when saving (processes won't persist)
-                outputBuffer: Array.isArray(session.outputBuffer) ? session.outputBuffer.slice(-100) : [], // Keep last 100 lines
+                outputBuffer: (session.outputBuffer && typeof session.outputBuffer.slice === 'function')
+                    ? session.outputBuffer.slice(-100) : [], // Keep last 100 lines
                 connections: [], // Clear connections (they won't persist)
                 lastAccessed: session.lastAccessed || Date.now(),
                 // Session-specific usage tracking
@@ -125,7 +127,7 @@ class SessionStore {
                     lastActivity: session.lastActivity ? new Date(session.lastActivity) : new Date(),
                     active: false,
                     connections: new Set(),
-                    outputBuffer: session.outputBuffer || [],
+                    outputBuffer: CircularBuffer.fromArray(session.outputBuffer || [], 1000),
                     maxBufferSize: 1000,
                     // Restore usage data if available
                     usageData: session.usageData || null

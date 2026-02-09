@@ -1,0 +1,16 @@
+{
+  "name": "ws-perf-poc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WebSocket I/O performance POC for ai-or-die",
+  "scripts": {
+    "bench": "node run-all.js",
+    "bench:full": "node run-all.js --full",
+    "server": "node server.js",
+    "proxy": "node latency-proxy.js"
+  },
+  "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.10",
+    "ws": "8.18.0"
+  }
+}
