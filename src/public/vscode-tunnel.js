@@ -11,8 +11,10 @@
       this.button = document.getElementById('vscodeTunnelBtn');
       this.banner = document.getElementById('vscodeTunnelBanner');
 
-      this.status = 'stopped'; // stopped | starting | running | error
+      this.status = 'stopped'; // stopped | starting | running | degraded | error
       this.url = null;
+      this.localUrl = null;
+      this.publicUrl = null;
       this.authUrl = null;
       this.deviceCode = null;
       this._bannerDismissed = false;
@@ -24,7 +26,7 @@
     toggle() {
       if (this.status === 'stopped' || this.status === 'error') {
         this.start();
-      } else if (this.status === 'running' || this.status === 'starting') {
+      } else if (this.status === 'running' || this.status === 'starting' || this.status === 'degraded') {
         // Re-show the banner if dismissed
         if (this._bannerDismissed) {
           this._bannerDismissed = false;
@@ -55,6 +57,8 @@
       this.app.send({ type: 'stop_vscode_tunnel' });
       this._setStatus('stopped');
       this.url = null;
+      this.localUrl = null;
+      this.publicUrl = null;
       this.authUrl = null;
       this.deviceCode = null;
       this._renderBanner();
@@ -91,6 +95,8 @@
       switch (data.type) {
         case 'vscode_tunnel_started':
           this.url = data.url;
+          this.localUrl = data.localUrl || null;
+          this.publicUrl = data.publicUrl || null;
           this._setStatus('running');
           this._bannerDismissed = false;
           this._renderBanner();
@@ -99,8 +105,12 @@
         case 'vscode_tunnel_status':
           this._setStatus(data.status);
           if (data.url) this.url = data.url;
+          if (data.localUrl !== undefined) this.localUrl = data.localUrl;
+          if (data.publicUrl !== undefined) this.publicUrl = data.publicUrl;
           if (data.status === 'stopped') {
             this.url = null;
+            this.localUrl = null;
+            this.publicUrl = null;
             this.authUrl = null;
             this.deviceCode = null;
           }
@@ -144,7 +154,9 @@
       if (!this.button) return;
       this.button.classList.remove('starting', 'running', 'error');
       if (this.status !== 'stopped') {
-        this.button.classList.add(this.status === 'restarting' ? 'starting' : this.status);
+        const btnClass = (this.status === 'restarting' || this.status === 'degraded')
+          ? 'starting' : this.status;
+        this.button.classList.add(btnClass);
       }
     }
 
@@ -162,6 +174,8 @@
         this._renderAuthBanner();
       } else if (this.status === 'starting' || this.status === 'restarting') {
         this._renderStartingBanner();
+      } else if (this.status === 'degraded') {
+        this._renderDegradedBanner();
       } else if (this.status === 'running' && this.url) {
         this._renderRunningBanner();
       }
@@ -210,7 +224,8 @@
     }
 
     _renderRunningBanner() {
-      const shortUrl = this.url.replace('https://', '');
+      const displayUrl = this.url || '';
+      const shortUrl = displayUrl.replace(/^https?:\/\//, '').replace(/\?.*$/, '');
       this.banner.innerHTML = `
         <span class="vst-icon running">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -219,12 +234,28 @@
           </svg>
         </span>
         <span class="vst-message">
-          VS Code Tunnel:
-          <span class="vst-url" title="${this._escapeHtml(this.url)}">${this._escapeHtml(shortUrl)}</span>
+          VS Code:
+          <span class="vst-url" title="${this._escapeHtml(displayUrl)}">${this._escapeHtml(shortUrl)}</span>
         </span>
         <div class="vst-actions">
           <button class="vst-btn vst-copy-btn">Copy URL</button>
           <button class="vst-btn primary vst-open-btn">Open</button>
+          <button class="vst-btn danger vst-stop-btn">Stop</button>
+        </div>
+        <button class="vst-close vst-dismiss-btn" title="Dismiss">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      `;
+      this._bindBannerEvents();
+    }
+
+    _renderDegradedBanner() {
+      this.banner.innerHTML = `
+        <span class="vst-spinner"></span>
+        <span class="vst-message">VS Code Tunnel reconnecting... Server running locally.</span>
+        <div class="vst-actions">
           <button class="vst-btn danger vst-stop-btn">Stop</button>
         </div>
         <button class="vst-close vst-dismiss-btn" title="Dismiss">
@@ -246,7 +277,7 @@
 
       let msgHtml;
       if (isNotFound) {
-        msgHtml = `VS Code CLI not found. <a href="https://code.visualstudio.com/download" target="_blank" rel="noopener">Install VS Code</a> and add <code>code</code> to your PATH.`;
+        msgHtml = `Required CLI not found. Install <a href="https://code.visualstudio.com/download" target="_blank" rel="noopener">VS Code</a> (<code>code</code>) and <code>devtunnel</code> CLI.`;
       } else {
         msgHtml = `VS Code Tunnel error: ${this._escapeHtml(message)}`;
       }

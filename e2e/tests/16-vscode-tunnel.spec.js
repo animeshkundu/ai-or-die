@@ -14,6 +14,7 @@ const fs = require('fs');
 test.describe('VS Code Tunnel button', () => {
   let server, port, url;
   let originalCommand, originalChecked, originalAvailable;
+  let originalDevtunnelCommand, originalDevtunnelChecked, originalDevtunnelAvailable;
 
   test.beforeAll(async () => {
     const result = await createServer();
@@ -26,6 +27,9 @@ test.describe('VS Code Tunnel button', () => {
     originalCommand = server.vscodeTunnel._command;
     originalChecked = server.vscodeTunnel._commandChecked;
     originalAvailable = server.vscodeTunnel._available;
+    originalDevtunnelCommand = server.vscodeTunnel._devtunnelCommand;
+    originalDevtunnelChecked = server.vscodeTunnel._devtunnelChecked;
+    originalDevtunnelAvailable = server.vscodeTunnel._devtunnelAvailable;
   });
 
   test.afterAll(async () => {
@@ -42,6 +46,9 @@ test.describe('VS Code Tunnel button', () => {
       server.vscodeTunnel._command = originalCommand;
       server.vscodeTunnel._commandChecked = originalChecked;
       server.vscodeTunnel._available = originalAvailable;
+      server.vscodeTunnel._devtunnelCommand = originalDevtunnelCommand;
+      server.vscodeTunnel._devtunnelChecked = originalDevtunnelChecked;
+      server.vscodeTunnel._devtunnelAvailable = originalDevtunnelAvailable;
     }
     await attachFailureArtifacts(page, testInfo);
   });
@@ -166,25 +173,33 @@ test.describe('VS Code Tunnel button', () => {
     expect(recvMsg).toBeTruthy();
   });
 
-  test('mock stub shows auth banner then tunnel URL', async ({ page }) => {
+  test('mock stub shows starting banner then devtunnels.ms URL', async ({ page }) => {
     // Skip on CI until mock stub timing is hardened — the core bug fix
     // is validated by the not-found tests above. This test validates
-    // the happy-path UI with a fake code binary.
+    // the happy-path UI with fake code + devtunnel binaries.
     test.skip(!!process.env.CI, 'Mock stub test skipped on CI — runs locally');
 
-    // Determine the correct fake-code script for this platform
-    const stubName = process.platform === 'win32' ? 'fake-code.cmd' : 'fake-code.sh';
-    const stubPath = path.resolve(__dirname, '..', 'fixtures', stubName);
+    // Determine the correct fake scripts for this platform
+    const ext = process.platform === 'win32' ? '.cmd' : '.sh';
+    const codeStubPath = path.resolve(__dirname, '..', 'fixtures', `fake-code${ext}`);
+    const devtunnelStubPath = path.resolve(__dirname, '..', 'fixtures', `fake-devtunnel${ext}`);
 
-    if (!fs.existsSync(stubPath)) {
-      test.skip(true, `Stub script not found: ${stubPath}`);
+    if (!fs.existsSync(codeStubPath)) {
+      test.skip(true, `Stub script not found: ${codeStubPath}`);
+      return;
+    }
+    if (!fs.existsSync(devtunnelStubPath)) {
+      test.skip(true, `Stub script not found: ${devtunnelStubPath}`);
       return;
     }
 
-    // Inject the fake code command into the server's VSCodeTunnelManager
-    server.vscodeTunnel._command = stubPath;
+    // Inject both fake commands into the server's VSCodeTunnelManager
+    server.vscodeTunnel._command = codeStubPath;
     server.vscodeTunnel._commandChecked = true;
     server.vscodeTunnel._available = true;
+    server.vscodeTunnel._devtunnelCommand = devtunnelStubPath;
+    server.vscodeTunnel._devtunnelChecked = true;
+    server.vscodeTunnel._devtunnelAvailable = true;
 
     await setupWithSession(page);
 
@@ -198,27 +213,16 @@ test.describe('VS Code Tunnel button', () => {
     // Wait for the banner to appear (starting state)
     await page.waitForSelector('#vscodeTunnelBanner.visible', { timeout: 5000 });
 
-    // Wait for auth banner with device code
+    // Wait for the devtunnels.ms URL to appear (running state)
     await page.waitForFunction(
       () => {
         const banner = document.getElementById('vscodeTunnelBanner');
-        return banner && banner.textContent.includes('github.com/login/device');
+        return banner && banner.textContent.includes('devtunnels.ms');
       },
-      { timeout: 5000 }
-    );
-    const authText = await page.$eval('#vscodeTunnelBanner', el => el.textContent);
-    expect(authText).toContain('ABCD-1234');
-
-    // Wait for the tunnel URL to appear (running state)
-    await page.waitForFunction(
-      () => {
-        const banner = document.getElementById('vscodeTunnelBanner');
-        return banner && banner.textContent.includes('vscode.dev/tunnel');
-      },
-      { timeout: 5000 }
+      { timeout: 15000 }
     );
     const urlText = await page.$eval('#vscodeTunnelBanner', el => el.textContent);
-    expect(urlText).toContain('vscode.dev/tunnel/mock-e2e-test');
+    expect(urlText).toContain('mock-e2e-test.devtunnels.ms');
 
     // Verify Copy URL and Open and Stop buttons are present
     const copyBtn = await page.$('#vscodeTunnelBanner .vst-copy-btn');

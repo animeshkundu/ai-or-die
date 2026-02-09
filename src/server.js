@@ -459,6 +459,7 @@ class ClaudeCodeWebServer {
         tools,
         vscodeTunnel: {
           available: vscodeTunnelAvailable,
+          devtunnelAvailable: this.vscodeTunnel._devtunnelAvailable,
           ...(!vscodeTunnelAvailable ? { install: this.installAdvisor.getInstallInfo('vscode') } : {}),
         },
         ...(prerequisites ? { prerequisites } : {}),
