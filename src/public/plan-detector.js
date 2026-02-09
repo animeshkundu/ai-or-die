@@ -9,6 +9,25 @@ class PlanDetector {
         this.maxBufferSize = 10000;
         this.onPlanDetected = null;
         this.onPlanModeChange = null;
+        // Overlap buffer for detecting triggers that span chunk boundaries
+        this._lastChunkTail = '';
+        // All keywords that could trigger a state change — checked against
+        // each new output chunk instead of the entire buffer every time
+        this._triggerKeywords = [
+            'Plan mode is active',
+            'MUST NOT make any edits',
+            'present your plan by calling the ExitPlanMode tool',
+            'Starting plan mode',
+            'Implementation Plan',
+            '### ',
+            'Plan:',
+            'Plan Overview',
+            'Proposed Solution',
+            'approved your plan',
+            'start coding',
+            'Plan mode exited',
+            'Exiting plan mode'
+        ];
     }
 
     processOutput(data) {
@@ -25,7 +44,17 @@ class PlanDetector {
             this.outputBuffer = this.outputBuffer.slice(-this.maxBufferSize / 2);
         }
 
-        // Convert buffer to text for analysis
+        // Stage 1: Quick trigger scan on the new chunk only (O(k) where k = chunk size).
+        // Prepend overlap from the previous chunk to catch triggers spanning boundaries.
+        const cleanChunk = data
+            .replace(/\x1b\[[0-9;]*m/g, '')
+            .replace(/\x1b\[[0-9]*[A-Za-z]/g, '');
+        const scanTarget = this._lastChunkTail + cleanChunk;
+        this._lastChunkTail = cleanChunk.slice(-64);
+
+        if (!this._triggerKeywords.some(t => scanTarget.includes(t))) return;
+
+        // Stage 2: Full buffer analysis — only runs when a trigger keyword is found
         const recentText = this.getRecentText();
 
         // Check for plan mode activation
@@ -157,6 +186,7 @@ class PlanDetector {
         this.outputBuffer = [];
         this.planModeActive = false;
         this.currentPlan = null;
+        this._lastChunkTail = '';
     }
 
     stopMonitoring() {
@@ -164,11 +194,13 @@ class PlanDetector {
         this.outputBuffer = [];
         this.planModeActive = false;
         this.currentPlan = null;
+        this._lastChunkTail = '';
     }
 
     clearBuffer() {
         this.outputBuffer = [];
         this.currentPlan = null;
+        this._lastChunkTail = '';
     }
 
     getPlanModeStatus() {

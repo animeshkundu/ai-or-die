@@ -19,6 +19,7 @@ const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
 const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
+const CircularBuffer = require('./utils/circular-buffer');
 
 /** Max bytes to accumulate before flushing coalesced output immediately */
 const MAX_COALESCE_BYTES = 32 * 1024;
@@ -326,7 +327,7 @@ class ClaudeCodeWebServer {
         agent: null, // 'claude' | 'codex' when started
         workingDir: validWorkingDir,
         connections: new Set(),
-        outputBuffer: [],
+        outputBuffer: new CircularBuffer(1000),
         sessionStartTime: null,
         sessionUsage: {
           requests: 0,
@@ -1146,13 +1147,29 @@ class ClaudeCodeWebServer {
     };
     this.webSocketConnections.set(wsId, wsInfo);
 
-    ws.on('message', async (message) => {
+    ws.on('message', (message) => {
       try {
         const data = JSON.parse(message);
-        await this.handleMessage(wsId, data);
+        if (data.type === 'input') {
+          // Input gets highest priority via nextTick — runs before
+          // output flush timers (setTimeout/setImmediate) in the event loop
+          process.nextTick(() => {
+            this.handleMessage(wsId, data).catch(error => {
+              if (this.dev) console.error('Error handling input:', error);
+            });
+          });
+        } else {
+          this.handleMessage(wsId, data).catch(error => {
+            if (this.dev) console.error('Error handling message:', error);
+            this.sendToWebSocket(ws, {
+              type: 'error',
+              message: 'Failed to process message'
+            });
+          });
+        }
       } catch (error) {
         if (this.dev) {
-          console.error('Error handling message:', error);
+          console.error('Error parsing message:', error);
         }
         this.sendToWebSocket(ws, {
           type: 'error',
@@ -1367,7 +1384,7 @@ class ClaudeCodeWebServer {
       active: false,
       workingDir: validWorkingDir,
       connections: new Set([wsId]),
-      outputBuffer: [],
+      outputBuffer: new CircularBuffer(1000),
       sessionStartTime: null, // Will be set when Claude starts
       sessionUsage: {
         requests: 0,
@@ -1522,9 +1539,6 @@ class ClaudeCodeWebServer {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;
           currentSession.outputBuffer.push(data);
-          if (currentSession.outputBuffer.length > currentSession.maxBufferSize) {
-            currentSession.outputBuffer.shift();
-          }
           this._throttledOutputBroadcast(sessionId, data);
           // Notify non-joined connections about activity (throttled to 1/sec)
           const now = Date.now();
@@ -1650,13 +1664,15 @@ class ClaudeCodeWebServer {
     }
     session._pendingOutput += data;
 
-    // Cap: flush immediately when buffer exceeds threshold
+    // Cap: flush via setImmediate when buffer exceeds threshold.
+    // Using setImmediate (not synchronous) yields to process.nextTick input
+    // handlers, ensuring keystrokes jump ahead of large output flushes.
     if (session._pendingOutput.length > MAX_COALESCE_BYTES) {
       if (session._outputFlushTimer) {
         clearTimeout(session._outputFlushTimer);
         session._outputFlushTimer = null;
       }
-      this._flushSessionOutput(sessionId);
+      setImmediate(() => this._flushSessionOutput(sessionId));
       return;
     }
 
@@ -1681,8 +1697,9 @@ class ClaudeCodeWebServer {
     // Skip broadcast if no clients connected (idle session)
     if (session.connections.size === 0) return;
 
-    // Pre-serialize once for all clients
-    const msg = JSON.stringify({ type: 'output', data: pending });
+    // Send terminal output as binary WebSocket frames — skips JSON
+    // serialization/escaping and avoids zlib thread pool contention
+    const binaryMsg = Buffer.from(pending, 'utf-8');
     session.connections.forEach(wsId => {
       const wsInfo = this.webSocketConnections.get(wsId);
       if (wsInfo &&
@@ -1692,7 +1709,7 @@ class ClaudeCodeWebServer {
         if (wsInfo.ws.bufferedAmount > 256 * 1024) {
           return; // Data remains in outputBuffer for replay on reconnection
         }
-        wsInfo.ws.send(msg);
+        wsInfo.ws.send(binaryMsg, { binary: true, compress: false });
       }
     });
   }

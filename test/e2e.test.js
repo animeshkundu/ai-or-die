@@ -18,7 +18,8 @@ function waitForMessage(ws, type, timeoutMs = 5000) {
       reject(new Error(`Timed out waiting for message type "${type}" after ${timeoutMs}ms`));
     }, timeoutMs);
 
-    function onMessage(raw) {
+    function onMessage(raw, isBinary) {
+      if (isBinary) return; // Skip binary terminal output frames
       const msg = JSON.parse(raw.toString());
       if (msg.type === type) {
         cleanup();
@@ -49,7 +50,14 @@ function collectMessages(ws, type, durationMs = 3000) {
   return new Promise((resolve) => {
     const collected = [];
 
-    function onMessage(raw) {
+    function onMessage(raw, isBinary) {
+      if (isBinary) {
+        // Binary frames are terminal output — collect if type matches
+        if (type === 'output') {
+          collected.push({ type: 'output', data: raw.toString() });
+        }
+        return;
+      }
       const msg = JSON.parse(raw.toString());
       if (msg.type === type) {
         collected.push(msg);
