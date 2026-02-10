@@ -62,6 +62,36 @@ class Split {
 
         this.terminal.open(terminalDiv);
 
+        // WebGL renderer with Canvas fallback
+        if (typeof WebglAddon !== 'undefined') {
+            try {
+                this.webglAddon = new WebglAddon.WebglAddon();
+                this.webglAddon.onContextLoss(() => {
+                    this.webglAddon.dispose();
+                    this.webglAddon = null;
+                    if (typeof CanvasAddon !== 'undefined') {
+                        try {
+                            this.canvasAddon = new CanvasAddon.CanvasAddon();
+                            this.terminal.loadAddon(this.canvasAddon);
+                        } catch (_) {}
+                    }
+                });
+                this.terminal.loadAddon(this.webglAddon);
+            } catch (e) {
+                if (typeof CanvasAddon !== 'undefined') {
+                    try {
+                        this.canvasAddon = new CanvasAddon.CanvasAddon();
+                        this.terminal.loadAddon(this.canvasAddon);
+                    } catch (_) {}
+                }
+            }
+        } else if (typeof CanvasAddon !== 'undefined') {
+            try {
+                this.canvasAddon = new CanvasAddon.CanvasAddon();
+                this.terminal.loadAddon(this.canvasAddon);
+            } catch (_) {}
+        }
+
         // Re-render split terminal when fonts finish loading
         if (document.fonts) {
             document.fonts.ready.then(() => {
@@ -154,7 +184,8 @@ class Split {
         }
         
         this.socket = new WebSocket(wsUrl);
-        
+        this.socket.binaryType = 'arraybuffer';
+
         this.socket.onopen = () => {
             console.log(`[Split ${this.index}] Connected to session ${sessionId}`);
             // Send initial resize
@@ -163,11 +194,16 @@ class Split {
         };
         
         this.socket.onmessage = (event) => {
-            try {
-                const msg = JSON.parse(event.data);
-                this.handleMessage(msg);
-            } catch (error) {
-                console.error(`[Split ${this.index}] Error handling message:`, error);
+            if (event.data instanceof ArrayBuffer) {
+                // Binary frame = raw terminal output (Uint8Array direct write)
+                this.terminal.write(new Uint8Array(event.data));
+            } else {
+                try {
+                    const msg = JSON.parse(event.data);
+                    this.handleMessage(msg);
+                } catch (error) {
+                    console.error(`[Split ${this.index}] Error handling message:`, error);
+                }
             }
         };
         

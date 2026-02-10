@@ -449,12 +449,52 @@
     } else {
       termContainer.style.marginRight = '';
     }
-    // Refit terminal after transition
-    setTimeout(function () {
-      if (this.app && this.app.fitAddon) {
-        try { this.app.fitAddon.fit(); } catch (e) { /* ignore */ }
+
+    // Clear any pending resize from previous toggle
+    var self = this;
+    if (this._resizeTimer) {
+      clearTimeout(this._resizeTimer);
+      this._resizeTimer = null;
+    }
+    if (this._transitionHandler) {
+      this._panelEl.removeEventListener('transitionend', this._transitionHandler);
+    }
+
+    // Refit terminals when CSS transition completes (not on a hardcoded timer)
+    this._transitionHandler = function (e) {
+      if (e.propertyName !== 'transform') return;
+      self._panelEl.removeEventListener('transitionend', self._transitionHandler);
+      self._transitionHandler = null;
+      if (self._resizeTimer) {
+        clearTimeout(self._resizeTimer);
+        self._resizeTimer = null;
       }
-    }.bind(this), 250);
+      self._refitAllTerminals();
+    };
+    this._panelEl.addEventListener('transitionend', this._transitionHandler);
+
+    // Safety fallback (300ms = 200ms transition + 100ms buffer)
+    this._resizeTimer = setTimeout(function () {
+      self._resizeTimer = null;
+      if (self._transitionHandler) {
+        self._panelEl.removeEventListener('transitionend', self._transitionHandler);
+        self._transitionHandler = null;
+      }
+      self._refitAllTerminals();
+    }, 300);
+  };
+
+  FileBrowserPanel.prototype._refitAllTerminals = function () {
+    // Refit main terminal
+    if (this.app && this.app.fitAddon) {
+      try { this.app.fitTerminal(); } catch (e) { /* ignore */ }
+    }
+    // Refit split pane terminals
+    if (this.app && this.app.splitContainer && this.app.splitContainer.splits) {
+      this.app.splitContainer.splits.forEach(function (split) {
+        try { split.fit(); } catch (e) { /* ignore */ }
+      });
+    }
   };
 
   FileBrowserPanel.prototype._isOverlayMode = function () {

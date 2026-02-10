@@ -21,8 +21,13 @@ const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
 const CircularBuffer = require('./utils/circular-buffer');
 
-/** Max bytes to accumulate before flushing coalesced output immediately */
-const MAX_COALESCE_BYTES = 32 * 1024;
+/** Foreground/background session priority constants */
+const COALESCE_MS_FG = 16;       // 60 flushes/sec for active session
+const COALESCE_MS_BG = 200;      // 5 flushes/sec for background sessions
+const MAX_COALESCE_BYTES_FG = 32 * 1024;
+const MAX_COALESCE_BYTES_BG = 8 * 1024;
+const BACKPRESSURE_LIMIT_FG = 256 * 1024;
+const BACKPRESSURE_LIMIT_BG = 128 * 1024;
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -391,6 +396,7 @@ class ClaudeCodeWebServer {
         workingDir: validWorkingDir,
         connections: new Set(),
         outputBuffer: new CircularBuffer(1000),
+        priority: 'foreground',
         sessionStartTime: null,
         sessionUsage: {
           requests: 0,
@@ -1159,14 +1165,10 @@ class ClaudeCodeWebServer {
     this.wss = new WebSocket.Server({
       server,
       maxPayload: 8 * 1024 * 1024,
-      perMessageDeflate: {
-        threshold: 1024,
-        serverNoContextTakeover: false,
-        clientNoContextTakeover: true,
-        serverMaxWindowBits: 13,
-        clientMaxWindowBits: 13,
-        zlibDeflateOptions: { level: 1 }
-      },
+      // Compression disabled — binary frames already send with compress:false,
+      // and JSON control messages are small/infrequent. Saves ~300KB per connection
+      // in zlib context allocation and eliminates thread pool contention.
+      perMessageDeflate: false,
       verifyClient: (info) => {
         if (!this.noAuth && this.auth) {
           const url = new URL(info.req.url, 'ws://localhost');
@@ -1337,6 +1339,42 @@ class ClaudeCodeWebServer {
         }
         break;
       
+      case 'set_priority':
+        if (data.sessions && Array.isArray(data.sessions)) {
+          for (const entry of data.sessions) {
+            const prioSession = this.claudeSessions.get(entry.sessionId);
+            if (prioSession) {
+              const wasBg = prioSession.priority === 'background';
+              prioSession.priority = entry.priority;
+              // Flush pending output immediately on background → foreground transition
+              if (wasBg && entry.priority === 'foreground' &&
+                  prioSession._pendingChunks && prioSession._pendingChunks.length > 0) {
+                if (prioSession._outputFlushTimer) {
+                  clearTimeout(prioSession._outputFlushTimer);
+                  prioSession._outputFlushTimer = null;
+                }
+                this._flushSessionOutput(entry.sessionId);
+              }
+            }
+          }
+        }
+        break;
+
+      case 'flow_control':
+        if (data.action === 'pause') {
+          wsInfo._flowPaused = true;
+        } else if (data.action === 'resume') {
+          wsInfo._flowPaused = false;
+          // Flush any pending output immediately on resume
+          if (wsInfo.claudeSessionId) {
+            const fcSession = this.claudeSessions.get(wsInfo.claudeSessionId);
+            if (fcSession && fcSession._pendingChunks && fcSession._pendingChunks.length > 0) {
+              this._flushSessionOutput(wsInfo.claudeSessionId);
+            }
+          }
+        }
+        break;
+
       case 'resize':
         if (wsInfo.claudeSessionId) {
           // Verify the session exists and the WebSocket is part of it
@@ -1461,6 +1499,7 @@ class ClaudeCodeWebServer {
       workingDir: validWorkingDir,
       connections: new Set([wsId]),
       outputBuffer: new CircularBuffer(1000),
+      priority: 'foreground',
       sessionStartTime: null, // Will be set when Claude starts
       sessionUsage: {
         requests: 0,
@@ -1735,16 +1774,23 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(sessionId);
     if (!session) return;
 
-    if (!session._pendingOutput) {
-      session._pendingOutput = '';
+    if (!session._pendingChunks) {
+      session._pendingChunks = [];
+      session._pendingBytes = 0;
     }
-    session._pendingOutput += data;
+    session._pendingChunks.push(data);
+    session._pendingBytes += data.length;
+
+    // Select coalescing parameters based on session priority
+    const isForeground = session.priority !== 'background';
+    const maxBytes = isForeground ? MAX_COALESCE_BYTES_FG : MAX_COALESCE_BYTES_BG;
+    const coalesceMs = isForeground ? COALESCE_MS_FG : COALESCE_MS_BG;
 
     // Cap: flush immediately when buffer exceeds threshold.
     // Input priority is handled by process.nextTick in the message handler —
     // keystrokes jump ahead of pending I/O callbacks naturally without needing
     // to defer flushes here (deferring causes output accumulation during bursts).
-    if (session._pendingOutput.length > MAX_COALESCE_BYTES) {
+    if (session._pendingBytes > maxBytes) {
       if (session._outputFlushTimer) {
         clearTimeout(session._outputFlushTimer);
         session._outputFlushTimer = null;
@@ -1757,7 +1803,7 @@ class ClaudeCodeWebServer {
       session._outputFlushTimer = setTimeout(() => {
         session._outputFlushTimer = null;
         this._flushSessionOutput(sessionId);
-      }, 16);
+      }, coalesceMs);
       if (session._outputFlushTimer.unref) {
         session._outputFlushTimer.unref();
       }
@@ -1766,25 +1812,35 @@ class ClaudeCodeWebServer {
 
   _flushSessionOutput(sessionId) {
     const session = this.claudeSessions.get(sessionId);
-    if (!session || !session._pendingOutput) return;
+    if (!session || !session._pendingChunks || session._pendingChunks.length === 0) return;
 
-    const pending = session._pendingOutput;
-    session._pendingOutput = '';
+    const pending = session._pendingChunks.join('');
+    session._pendingChunks = [];
+    session._pendingBytes = 0;
 
     // Skip broadcast if no clients connected (idle session)
     if (session.connections.size === 0) return;
 
+    // Strip focus-tracking sequences server-side so clients can use
+    // the zero-copy Uint8Array write path (no string decode needed)
+    const cleaned = pending.replace(/\x1b\[\[?[IO]/g, '');
+
     // Send terminal output as binary WebSocket frames — skips JSON
     // serialization/escaping and avoids zlib thread pool contention
-    const binaryMsg = Buffer.from(pending, 'utf-8');
+    const binaryMsg = Buffer.from(cleaned, 'utf-8');
     session.connections.forEach(wsId => {
       const wsInfo = this.webSocketConnections.get(wsId);
       if (wsInfo &&
           wsInfo.claudeSessionId === sessionId &&
           wsInfo.ws.readyState === WebSocket.OPEN) {
+        // Flow control: skip clients that signaled pause
+        if (wsInfo._flowPaused) {
+          return; // Frame dropped for this client; circular buffer retains data for reconnection replay
+        }
         // Backpressure: skip clients that can't consume fast enough
-        if (wsInfo.ws.bufferedAmount > 256 * 1024) {
-          return; // Data remains in outputBuffer for replay on reconnection
+        const bpLimit = session.priority === 'background' ? BACKPRESSURE_LIMIT_BG : BACKPRESSURE_LIMIT_FG;
+        if (wsInfo.ws.bufferedAmount > bpLimit) {
+          return;
         }
         wsInfo.ws.send(binaryMsg, { binary: true, compress: false });
       }
@@ -1796,7 +1852,7 @@ class ClaudeCodeWebServer {
       clearTimeout(session._outputFlushTimer);
       session._outputFlushTimer = null;
     }
-    if (session._pendingOutput) {
+    if (session._pendingChunks && session._pendingChunks.length > 0) {
       this._flushSessionOutput(sessionId);
     }
   }
