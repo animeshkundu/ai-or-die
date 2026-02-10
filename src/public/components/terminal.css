@@ -94,7 +94,7 @@
     flex-direction: column;
     min-width: 0;
     background: var(--bg-primary);
-    transition: border-color 0.2s ease;
+    transition: border-color var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .split-pane.split-active {
@@ -122,7 +122,7 @@
   background: var(--border);
     cursor: col-resize;
     flex-shrink: 0;
-    transition: background 0.2s ease;
+    transition: background var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .split-divider:hover {
@@ -136,21 +136,22 @@
     z-index: 10;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
     opacity: 0.6;
-    transition: all 0.2s ease;
+    transition: background-color var(--duration-fast, 150ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
+                opacity var(--duration-fast, 150ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .split-close:hover {
     opacity: 1;
-    background: var(--bg-tertiary);
+    background: var(--surface-tertiary);
     color: var(--text-primary);
 }
 
@@ -181,7 +182,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    z-index: 5000;
+    z-index: var(--z-overlay);
     background-color: rgba(0, 0, 0, 0.92);
     display: flex;
     align-items: center;
@@ -273,7 +274,7 @@
 }
 
 /* Context menu for tabs */
-.pane-session-menu { position: absolute; z-index: 3000; min-width: 220px; background: var(--bg-secondary); border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); padding:6px; }
+.pane-session-menu { position: absolute; z-index: var(--z-overlay); min-width: 220px; background: var(--bg-secondary); border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); padding:6px; }
 .pane-session-item { padding:8px 10px; border-radius:6px; cursor:pointer; color: var(--text-primary); }
 .pane-session-item.used { color: var(--text-secondary); }
 .pane-session-item:hover { background: var(--bg-tertiary); }

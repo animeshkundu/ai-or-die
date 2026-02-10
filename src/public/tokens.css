@@ -106,16 +106,22 @@
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
 
+  /* --- Danger --- */
+  --danger-bg: #8b0000;
+  --danger-bg-hover: #a00000;
+  --danger-border: #660000;
+  --danger-border-hover: #800000;
+  --danger-text: #fff;
+  --danger-shadow: rgba(139, 0, 0, 0.5);
+
   /* --- Z-Index Scale --- */
   --z-base: 0;
-  --z-dropdown: 1000;
-  --z-sticky: 1100;
-  --z-modal-backdrop: 2000;
-  --z-modal: 2001;
-  --z-popover: 3000;
-  --z-overlay: 5000;
-  --z-toast: 10000;
-  --z-tooltip: 10001;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-overlay: 300;
+  --z-modal: 400;
+  --z-tooltip: 500;
+  --z-max: 9999;
 }
 
 /* ============================================================
@@ -225,7 +231,7 @@
   --terminal-bg: #fafafa;
   --terminal-fg: #1a1a1a;
   --terminal-cursor: #e05d00;
-  --terminal-selection: rgba(224, 93, 0, 0.15);
+  --terminal-selection: rgba(224, 93, 0, 0.35);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);

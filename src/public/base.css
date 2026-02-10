@@ -106,7 +106,7 @@ pre, code {
     font-size: 14px;
     font-weight: 500;
     text-decoration: none;
-    transition: top var(--duration-fast) ease;
+    transition: top var(--duration-fast) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .skip-to-content:focus {

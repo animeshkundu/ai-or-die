@@ -15,7 +15,7 @@ describe('SessionStore', function() {
     } catch (error) {
       // Directory might already exist
     }
-    
+
     sessionStore = new SessionStore();
     // Override the default session file path for testing
     sessionStore.storageDir = tempDir;
@@ -37,8 +37,9 @@ describe('SessionStore', function() {
         ['session1', { id: 'session1', name: 'Test Session', created: new Date() }]
       ]);
 
+      sessionStore.markDirty();
       await sessionStore.saveSessions(testSessions);
-      
+
       const fileExists = await fs.access(sessionStore.sessionsFile).then(() => true).catch(() => false);
       assert.strictEqual(fileExists, true);
     });
@@ -56,13 +57,63 @@ describe('SessionStore', function() {
       const testSessions = new Map([
         ['session1', { id: 'session1', name: 'Test Session', created: new Date() }]
       ]);
+      sessionStore.markDirty();
       await sessionStore.saveSessions(testSessions);
-      
+
       // Then load them
       const loadedSessions = await sessionStore.loadSessions();
       assert(loadedSessions instanceof Map);
       assert.strictEqual(loadedSessions.size, 1);
       assert(loadedSessions.has('session1'));
+    });
+  });
+
+  describe('dirty-flag', function() {
+    it('should skip save when not dirty', async function() {
+      const testSessions = new Map([
+        ['session1', { id: 'session1', name: 'Test Session', created: new Date() }]
+      ]);
+
+      // Do not call markDirty -- save should return early
+      const result = await sessionStore.saveSessions(testSessions);
+      assert.strictEqual(result, true);
+
+      // File should NOT exist since save was skipped
+      const fileExists = await fs.access(sessionStore.sessionsFile).then(() => true).catch(() => false);
+      assert.strictEqual(fileExists, false);
+    });
+
+    it('should save when dirty', async function() {
+      const testSessions = new Map([
+        ['session1', { id: 'session1', name: 'Test Session', created: new Date() }]
+      ]);
+
+      sessionStore.markDirty();
+      const result = await sessionStore.saveSessions(testSessions);
+      assert.strictEqual(result, true);
+
+      // File SHOULD exist since dirty flag was set
+      const fileExists = await fs.access(sessionStore.sessionsFile).then(() => true).catch(() => false);
+      assert.strictEqual(fileExists, true);
+    });
+
+    it('should reset dirty after successful save', async function() {
+      const testSessions = new Map([
+        ['session1', { id: 'session1', name: 'Test Session', created: new Date() }]
+      ]);
+
+      sessionStore.markDirty();
+      await sessionStore.saveSessions(testSessions);
+
+      // Dirty flag should now be false -- delete the file to prove next save skips
+      await fs.unlink(sessionStore.sessionsFile);
+
+      const result = await sessionStore.saveSessions(testSessions);
+      assert.strictEqual(result, true);
+
+      // File should NOT exist because save was skipped (not dirty)
+      const fileExists = await fs.access(sessionStore.sessionsFile).then(() => true).catch(() => false);
+      assert.strictEqual(fileExists, false);
     });
   });
 });

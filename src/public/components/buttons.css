@@ -12,7 +12,7 @@
     cursor: pointer;
     padding: 4px;
     border-radius: 4px;
-    transition: all 0.2s;
+    transition: all var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -33,7 +33,7 @@
     font-family: var(--font-sans);
     font-size: 12px;
     font-weight: 500;
-    transition: all 0.2s ease;
+    transition: all var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .btn:hover:not(:disabled) {
@@ -80,18 +80,18 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: #8b0000;
-    color: white;
-    border: 2px solid #660000;
+    background-color: var(--danger-bg);
+    color: var(--danger-text);
+    border: 2px solid var(--danger-border);
     border-radius: 6px;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: all var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .btn-danger-skip:hover {
-    background-color: #a00000;
-    border-color: #800000;
-    box-shadow: 0 0 10px rgba(139, 0, 0, 0.5);
+    background-color: var(--danger-bg-hover);
+    border-color: var(--danger-border-hover);
+    box-shadow: 0 0 10px var(--danger-shadow);
 }
 
 .btn-danger-skip svg {
@@ -145,7 +145,7 @@
     position: fixed;
     bottom: 80px;
     right: 20px;
-    z-index: 1000;
+    z-index: var(--z-modal);
     display: none;
     flex-direction: column;
     gap: 10px;
@@ -162,7 +162,7 @@
     border-radius: 50%;
     cursor: pointer;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    transition: all 0.3s ease;
+    transition: all var(--duration-slow, 300ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
     width: 56px;
     height: 56px;
 }
@@ -179,7 +179,7 @@
 }
 
 .mode-switcher-btn.switching {
-    animation: modeSwitchPulse 0.3s ease;
+    animation: modeSwitchPulse var(--duration-slow, 300ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 @keyframes modeSwitchPulse {
@@ -211,7 +211,7 @@
     border-radius: 50%;
     cursor: pointer;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    transition: all 0.3s ease;
+    transition: all var(--duration-slow, 300ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
     width: 56px;
     height: 56px;
 }
@@ -228,7 +228,7 @@
 }
 
 .escape-btn.pressed {
-    animation: escapeBtnPress 0.2s ease;
+    animation: escapeBtnPress var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 @keyframes escapeBtnPress {
@@ -243,3 +243,4 @@
     stroke: var(--error);
     flex-shrink: 0;
 }
+

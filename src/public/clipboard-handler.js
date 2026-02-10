@@ -21,6 +21,29 @@ function wrapBracketedPaste(text) {
 }
 
 /**
+ * Show a brief "Copied" toast indicator at the bottom of the screen.
+ */
+var _copiedToast = null;
+function showCopiedToast() {
+  if (typeof document === 'undefined') return;
+  // Deduplicate — remove existing toast before showing new one
+  if (_copiedToast && _copiedToast.parentNode) _copiedToast.remove();
+  var toast = document.createElement('div');
+  toast.textContent = 'Copied';
+  toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--surface-elevated);color:var(--text-primary);padding:6px 16px;border-radius:var(--radius-sm);font-size:13px;z-index:var(--z-tooltip,500);opacity:0;transition:opacity 0.2s;pointer-events:none;';
+  document.body.appendChild(toast);
+  _copiedToast = toast;
+  // Screen reader announcement
+  var sr = document.getElementById('srAnnounce');
+  if (sr) sr.textContent = 'Copied to clipboard';
+  requestAnimationFrame(function() { toast.style.opacity = '1'; });
+  setTimeout(function() {
+    toast.style.opacity = '0';
+    setTimeout(function() { toast.remove(); if (_copiedToast === toast) _copiedToast = null; }, 200);
+  }, 1500);
+}
+
+/**
  * Attach keyboard copy/paste shortcuts to an xterm.js terminal.
  *
  * Shortcuts:
@@ -47,7 +70,7 @@ function attachClipboardHandler(terminal, sendFn) {
     // Ctrl+C / Cmd+C: copy if selection exists, else let xterm send SIGINT
     if (mod && e.key === 'c' && !e.shiftKey) {
       if (terminal.hasSelection()) {
-        navigator.clipboard.writeText(terminal.getSelection()).catch(() => {});
+        navigator.clipboard.writeText(terminal.getSelection()).then(showCopiedToast).catch(() => {});
         terminal.clearSelection();
         return false; // prevent xterm from sending \x03
       }
@@ -65,7 +88,7 @@ function attachClipboardHandler(terminal, sendFn) {
     // Ctrl+Shift+C: copy (Linux terminal convention)
     if (e.ctrlKey && e.shiftKey && e.key === 'C') {
       if (terminal.hasSelection()) {
-        navigator.clipboard.writeText(terminal.getSelection()).catch(() => {});
+        navigator.clipboard.writeText(terminal.getSelection()).then(showCopiedToast).catch(() => {});
         terminal.clearSelection();
       }
       return false;
@@ -83,6 +106,7 @@ function attachClipboardHandler(terminal, sendFn) {
 // Attach utility functions as static properties for use by context menu
 attachClipboardHandler.normalizeLineEndings = normalizeLineEndings;
 attachClipboardHandler.wrapBracketedPaste = wrapBracketedPaste;
+attachClipboardHandler.showCopiedToast = showCopiedToast;
 
 // Browser: expose on window
 if (typeof window !== 'undefined') {
@@ -91,5 +115,5 @@ if (typeof window !== 'undefined') {
 
 // Node.js: CommonJS export for unit testing
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { attachClipboardHandler, normalizeLineEndings, wrapBracketedPaste };
+  module.exports = { attachClipboardHandler, normalizeLineEndings, wrapBracketedPaste, showCopiedToast };
 }

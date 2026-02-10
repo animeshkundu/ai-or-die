@@ -236,7 +236,10 @@
                 <div class="error-message" id="errorMessage" style="display: none;">
                     <h3>Connection Error</h3>
                     <p id="errorText"></p>
-                    <button id="retryBtn" class="btn btn-primary">Retry</button>
+                    <div style="display: flex; gap: 8px; justify-content: center; margin-top: 12px;">
+                        <button id="retryBtn" class="btn btn-primary">Retry Connection</button>
+                        <button class="btn btn-secondary" onclick="location.reload()">Refresh Page</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -301,10 +304,12 @@
                         <label for="showTokenStats">Token Stats:</label>
                         <input type="checkbox" id="showTokenStats" checked>
                     </div>
-                    <div class="setting-group">
-                        <label for="dangerousMode">Autonomous:</label>
+                    <div class="setting-group" style="border: 1px solid var(--status-warning, #f59e0b); border-radius: 6px; padding: 10px 12px; background: rgba(245, 158, 11, 0.08);">
+                        <label for="dangerousMode" style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 1.2em;">&#9888;</span> Autonomous:
+                        </label>
                         <input type="checkbox" id="dangerousMode">
-                        <small class="setting-warning">Skips permission prompts. Use in trusted environments only.</small>
+                        <small class="setting-warning" style="font-size: 13px; color: var(--status-warning, #f59e0b);">Skips permission prompts. Use in trusted environments only.</small>
                     </div>
                     <div class="setting-group setting-divider">
                         <label><strong>Notifications</strong></label>

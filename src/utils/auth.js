@@ -4,6 +4,10 @@ class AuthManager {
     constructor() {
         this.tokens = new Set();
         this.rateLimiter = new Map();
+        this._rateLimitCleanupInterval = setInterval(() => this.cleanupRateLimit(), 10 * 60 * 1000);
+        if (this._rateLimitCleanupInterval.unref) {
+            this._rateLimitCleanupInterval.unref();
+        }
     }
 
     generateToken() {
@@ -70,21 +74,29 @@ class AuthManager {
     rateLimit(identifier, maxRequests = 100, windowMs = 60000) {
         const now = Date.now();
         const windowStart = now - windowMs;
-        
+
         if (!this.rateLimiter.has(identifier)) {
-            this.rateLimiter.set(identifier, []);
+            this.rateLimiter.set(identifier, [now]);
+            return true;
         }
-        
+
         const requests = this.rateLimiter.get(identifier);
         const validRequests = requests.filter(timestamp => timestamp > windowStart);
-        
+
+        if (validRequests.length === 0) {
+            this.rateLimiter.delete(identifier);
+            this.rateLimiter.set(identifier, [now]);
+            return true;
+        }
+
         if (validRequests.length >= maxRequests) {
+            this.rateLimiter.set(identifier, validRequests);
             return false;
         }
-        
+
         validRequests.push(now);
         this.rateLimiter.set(identifier, validRequests);
-        
+
         return true;
     }
 
@@ -107,15 +119,22 @@ class AuthManager {
     cleanupRateLimit() {
         const now = Date.now();
         const oneHour = 60 * 60 * 1000;
-        
+
         for (const [identifier, requests] of this.rateLimiter.entries()) {
             const validRequests = requests.filter(timestamp => (now - timestamp) < oneHour);
-            
+
             if (validRequests.length === 0) {
                 this.rateLimiter.delete(identifier);
             } else {
                 this.rateLimiter.set(identifier, validRequests);
             }
+        }
+    }
+
+    destroy() {
+        if (this._rateLimitCleanupInterval) {
+            clearInterval(this._rateLimitCleanupInterval);
+            this._rateLimitCleanupInterval = null;
         }
     }
 }

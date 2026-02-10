@@ -8,7 +8,12 @@ class SessionStore {
         // Store sessions in user's home directory
         this.storageDir = path.join(os.homedir(), '.ai-or-die');
         this.sessionsFile = path.join(this.storageDir, 'sessions.json');
+        this._dirty = false;
         this.initializeStorage();
+    }
+
+    markDirty() {
+        this._dirty = true;
     }
 
     async initializeStorage() {
@@ -21,6 +26,8 @@ class SessionStore {
     }
 
     async saveSessions(sessions) {
+        if (!this._dirty) return true;
+
         try {
             // Ensure storage directory exists
             await fs.mkdir(this.storageDir, { recursive: true });
@@ -62,7 +69,8 @@ class SessionStore {
             // Ensure directory still exists before rename (handles race conditions)
             await fs.mkdir(this.storageDir, { recursive: true });
             await fs.rename(tempFile, this.sessionsFile);
-            
+            this._dirty = false;
+
             return true;
         } catch (error) {
             console.error('Failed to save sessions:', error.message);
