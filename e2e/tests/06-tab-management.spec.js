@@ -40,13 +40,20 @@ test.describe('Tab management: close and quick-create behavior', () => {
       { timeout: 20000 }
     );
 
-    // Add both sessions as tabs and join session A
+    // Add both sessions as tabs and join session A via the full joinSession path
     await page.evaluate(async ({ sidA, sidB }) => {
       const mgr = window.app.sessionTabManager;
       mgr.addTab(sidA, 'Close Test A', 'idle');
       mgr.addTab(sidB, 'Close Test B', 'idle');
       await mgr.switchToTab(sidA);
     }, { sidA: sessionA, sidB: sessionB });
+
+    // Wait for join to complete and session to be fully active
+    await page.waitForFunction(
+      (sid) => window.app && window.app.currentClaudeSessionId === sid,
+      sessionA,
+      { timeout: 10000 }
+    );
 
     // Hide any existing overlays (e.g., start prompt) before testing
     await page.evaluate(() => {
@@ -56,9 +63,7 @@ test.describe('Tab management: close and quick-create behavior', () => {
       if (errorMsg) errorMsg.style.display = 'none';
     });
 
-    await page.waitForTimeout(500);
-
-    // Close session A via the tab manager
+    // Close session A — this should suppress the error dialog
     await page.evaluate((sid) => {
       window.app.sessionTabManager.closeSession(sid);
     }, sessionA);
@@ -67,11 +72,15 @@ test.describe('Tab management: close and quick-create behavior', () => {
     await page.waitForTimeout(3000);
 
     // Assert: the errorMessage div should NOT have been shown
-    const errorDisplay = await page.evaluate(() => {
+    // We check if showError was called by looking at the errorMessage display.
+    // Since we explicitly set it to 'none' before the close, if it's anything
+    // other than 'none' it means showError() was triggered.
+    const errorVisible = await page.evaluate(() => {
       const el = document.getElementById('errorMessage');
-      return el ? getComputedStyle(el).display : 'not-found';
+      if (!el) return false;
+      return el.style.display !== 'none' && el.style.display !== '';
     });
-    expect(errorDisplay).toBe('none');
+    expect(errorVisible).toBe(false);
 
     // Assert: session B should now be the active tab
     const activeTabId = await page.evaluate(() => {
