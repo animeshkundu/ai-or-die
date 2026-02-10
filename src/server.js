@@ -51,6 +51,7 @@ class ClaudeCodeWebServer {
       dev: this.dev,
       onEvent: (sessionId, event) => this.handleVSCodeTunnelEvent(sessionId, event),
     });
+    this.tunnelManager = null; // Set via setTunnelManager() from CLI entry point
     this.installAdvisor = new InstallAdvisor();
     this.sessionStore = new SessionStore();
     this.usageReader = new UsageReader(this.sessionDurationHours);
@@ -112,10 +113,14 @@ class ClaudeCodeWebServer {
     process.on('beforeExit', () => this.saveSessionsToDisk());
   }
   
+  setTunnelManager(tm) {
+    this.tunnelManager = tm;
+  }
+
   async saveSessionsToDisk() {
     await this.sessionStore.saveSessions(this.claudeSessions);
   }
-  
+
   async handleShutdown() {
     // Prevent multiple shutdown attempts
     if (this.isShuttingDown) {
@@ -273,6 +278,64 @@ class ClaudeCodeWebServer {
       });
     });
     
+    // App-level tunnel status
+    this.app.get('/api/tunnel/status', (req, res) => {
+      if (!this.tunnelManager) {
+        return res.json({ running: false, publicUrl: null });
+      }
+      res.json(this.tunnelManager.getStatus());
+    });
+
+    // App-level tunnel restart
+    this.app.post('/api/tunnel/restart', (req, res) => {
+      if (!this.tunnelManager) {
+        return res.status(404).json({ error: 'No tunnel configured' });
+      }
+
+      // Broadcast warning to all connected clients before killing
+      this.webSocketConnections.forEach((wsInfo) => {
+        if (wsInfo.ws.readyState === WebSocket.OPEN) {
+          wsInfo.ws.send(JSON.stringify({ type: 'app_tunnel_restarting' }));
+        }
+      });
+
+      // Respond immediately, restart async
+      res.status(202).json({ message: 'Tunnel restart initiated' });
+
+      const broadcastTunnelStatus = (status) => {
+        this.webSocketConnections.forEach((wsInfo) => {
+          if (wsInfo.ws.readyState === WebSocket.OPEN) {
+            wsInfo.ws.send(JSON.stringify(status));
+          }
+        });
+      };
+
+      this.tunnelManager.restart().then((result) => {
+        if (result.success) {
+          broadcastTunnelStatus({
+            type: 'app_tunnel_status',
+            running: true,
+            publicUrl: result.publicUrl,
+          });
+        } else {
+          broadcastTunnelStatus({
+            type: 'app_tunnel_status',
+            running: false,
+            publicUrl: null,
+            error: result.error,
+          });
+        }
+      }).catch((err) => {
+        console.error('[tunnel] Restart failed:', err.message);
+        broadcastTunnelStatus({
+          type: 'app_tunnel_status',
+          running: false,
+          publicUrl: null,
+          error: err.message,
+        });
+      });
+    });
+
     // Get session persistence info
     this.app.get('/api/sessions/persistence', async (req, res) => {
       const metadata = await this.sessionStore.getSessionMetadata();
@@ -401,6 +464,7 @@ class ClaudeCodeWebServer {
         if (wsInfo && wsInfo.ws.readyState === WebSocket.OPEN) {
           wsInfo.ws.send(JSON.stringify({
             type: 'session_deleted',
+            sessionId: sessionId,
             message: 'Session has been deleted'
           }));
           wsInfo.ws.close();
@@ -1322,6 +1386,15 @@ class ClaudeCodeWebServer {
       case 'vscode_tunnel_status':
         await this.handleVSCodeTunnelStatus(wsId);
         break;
+
+      case 'app_tunnel_status': {
+        const wsInfo = this.webSocketConnections.get(wsId);
+        const status = this.tunnelManager ? this.tunnelManager.getStatus() : { running: false, publicUrl: null };
+        if (wsInfo && wsInfo.ws.readyState === WebSocket.OPEN) {
+          wsInfo.ws.send(JSON.stringify({ type: 'app_tunnel_status', ...status }));
+        }
+        break;
+      }
 
       case 'open_install_terminal': {
         const installInfo = this.installAdvisor.getInstallInfo(data.toolId);

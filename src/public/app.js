@@ -562,6 +562,12 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        // App Tunnel button
+        const appTunnelBtn = document.getElementById('appTunnelBtn');
+        if (appTunnelBtn) {
+            appTunnelBtn.addEventListener('click', () => this.toggleAppTunnel());
+        }
+
         // VS Code Tunnel button
         const vscodeTunnelBtn = document.getElementById('vscodeTunnelBtn');
         if (vscodeTunnelBtn) {
@@ -687,7 +693,10 @@ class ClaudeCodeWebInterface {
                     if (this.selectedWorkingDir) {
                         // Close session buttons removed with header
                     }
-                    
+
+                    // Request app tunnel status
+                    this.send({ type: 'app_tunnel_status' });
+
                     resolve();
                 };
             
@@ -960,16 +969,25 @@ class ClaudeCodeWebInterface {
                 }
                 break;
                 
-            case 'session_deleted':
-                this.showError(message.message);
+            case 'session_deleted': {
+                const deletedId = message.sessionId;
+                const isUserInitiated = this.sessionTabManager
+                    && deletedId
+                    && this.sessionTabManager.isUserDeletion(deletedId);
+                if (isUserInitiated) {
+                    this.sessionTabManager.clearUserDeletion(deletedId);
+                } else {
+                    this.showError(message.message);
+                }
                 this.currentClaudeSessionId = null;
                 this.currentClaudeSessionName = null;
                 this.updateSessionButton('Sessions');
-                if (this.sessionTabManager && message.sessionId) {
-                    this.sessionTabManager.closeSession(message.sessionId, { skipServerRequest: true });
+                if (this.sessionTabManager && deletedId) {
+                    this.sessionTabManager.closeSession(deletedId, { skipServerRequest: true });
                 }
                 this.loadSessions();
                 break;
+            }
                 
             case 'pong':
                 break;
@@ -1067,6 +1085,21 @@ class ClaudeCodeWebInterface {
                 } else if (window.VSCodeTunnelUI) {
                     this._vscodeTunnelUI = new window.VSCodeTunnelUI({ app: this });
                     this._vscodeTunnelUI.handleMessage(message);
+                }
+                break;
+
+            // App-level tunnel events
+            case 'app_tunnel_status':
+            case 'app_tunnel_restarting':
+                if (this._appTunnelUI) {
+                    this._appTunnelUI.handleMessage(message);
+                } else if (window.AppTunnelUI) {
+                    this._appTunnelUI = new window.AppTunnelUI({ app: this });
+                    this._appTunnelUI.handleMessage(message);
+                }
+                // Reset reconnect budget on tunnel restart
+                if (message.type === 'app_tunnel_restarting') {
+                    this.reconnectAttempts = 0;
                 }
                 break;
 
@@ -2026,6 +2059,16 @@ class ClaudeCodeWebInterface {
     copyVSCodeTunnelUrl() {
         if (this._vscodeTunnelUI) {
             this._vscodeTunnelUI.copyUrl();
+        }
+    }
+
+    // App Tunnel Methods
+    toggleAppTunnel() {
+        if (!this._appTunnelUI && window.AppTunnelUI) {
+            this._appTunnelUI = new window.AppTunnelUI({ app: this });
+        }
+        if (this._appTunnelUI) {
+            this._appTunnelUI.toggle();
         }
     }
 

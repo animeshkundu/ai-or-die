@@ -273,6 +273,57 @@
     outline: none;
 }
 
+/* Split new-tab button (Windows Terminal style) */
+.tab-new-split {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    margin-left: 4px;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    height: 28px;
+}
+
+.tab-new-main {
+    width: 24px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: transparent;
+    border: none;
+    border-right: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.tab-new-main:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.tab-new-dropdown {
+    width: 16px;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+    padding: 0;
+}
+
+.tab-new-dropdown:hover {
+    background-color: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+/* Legacy .tab-new kept for backwards compatibility */
 .tab-new {
     width: 28px;
     height: 28px;
