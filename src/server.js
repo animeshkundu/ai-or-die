@@ -396,6 +396,7 @@ class ClaudeCodeWebServer {
         workingDir: validWorkingDir,
         connections: new Set(),
         outputBuffer: new CircularBuffer(1000),
+        priority: 'foreground',
         sessionStartTime: null,
         sessionUsage: {
           requests: 0,
@@ -1498,6 +1499,7 @@ class ClaudeCodeWebServer {
       workingDir: validWorkingDir,
       connections: new Set([wsId]),
       outputBuffer: new CircularBuffer(1000),
+      priority: 'foreground',
       sessionStartTime: null, // Will be set when Claude starts
       sessionUsage: {
         requests: 0,
@@ -1833,7 +1835,7 @@ class ClaudeCodeWebServer {
           wsInfo.ws.readyState === WebSocket.OPEN) {
         // Flow control: skip clients that signaled pause
         if (wsInfo._flowPaused) {
-          return; // Data remains in outputBuffer for replay on reconnection
+          return; // Frame dropped for this client; circular buffer retains data for reconnection replay
         }
         // Backpressure: skip clients that can't consume fast enough
         const bpLimit = session.priority === 'background' ? BACKPRESSURE_LIMIT_BG : BACKPRESSURE_LIMIT_FG;

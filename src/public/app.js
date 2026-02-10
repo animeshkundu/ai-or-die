@@ -355,7 +355,7 @@ class ClaudeCodeWebInterface {
             fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim()
                 || "'MesloLGS Nerd Font', 'Meslo Nerd Font', 'JetBrains Mono', monospace",
             theme: {
-                background: 'transparent',
+                background: '#0d1117',
                 foreground: '#f0f6fc',
                 cursor: '#ff6b00',
                 cursorAccent: '#0d1117',
@@ -797,10 +797,13 @@ class ClaudeCodeWebInterface {
 
     reconnect() {
         this.disconnect();
+        // Reset flow control state so stale pause signals aren't sent on new connection
+        this._outputPaused = false;
+        this._pendingCallbacks = 0;
+        this._writtenBytes = 0;
         setTimeout(() => {
             this.connect().catch(err => console.error('Reconnection failed:', err));
         }, 1000);
-        // Reconnect button removed with header
     }
 
     send(data) {
@@ -815,7 +818,7 @@ class ClaudeCodeWebInterface {
 
         // Session activity + plan detector need string (lazy decode only when needed)
         if ((this.sessionTabManager && this.currentClaudeSessionId) || this.planDetector) {
-            const text = this._textDecoder.decode(data);
+            const text = this._textDecoder.decode(data, { stream: true });
             if (this.sessionTabManager && this.currentClaudeSessionId) {
                 this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
             }
