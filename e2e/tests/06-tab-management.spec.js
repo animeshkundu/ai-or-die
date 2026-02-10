@@ -129,9 +129,9 @@ test.describe('Tab management: close, quick-create, and dropdown behavior', () =
       { timeout: 10000 }
     );
 
-    // Record tab count before clicking quick-create
-    const tabCountBefore = await page.evaluate(() => {
-      return window.app.sessionTabManager.tabs.size;
+    // Record ALL existing session IDs before clicking quick-create
+    const existingIds = await page.evaluate(() => {
+      return Array.from(window.app.sessionTabManager.activeSessions.keys());
     });
 
     // Click the quick-create (plus) button via JS to avoid visibility/scroll issues
@@ -139,26 +139,30 @@ test.describe('Tab management: close, quick-create, and dropdown behavior', () =
       document.getElementById('tabNewBtn').click();
     });
 
-    // Wait for a new tab to appear (tab count increases)
+    // Wait for a new tab to appear (a session ID not in existingIds)
     await page.waitForFunction(
-      (prevCount) => {
+      (knownIds) => {
         const mgr = window.app && window.app.sessionTabManager;
-        return mgr && mgr.tabs.size > prevCount;
+        if (!mgr) return false;
+        for (const id of mgr.activeSessions.keys()) {
+          if (!knownIds.includes(id)) return true;
+        }
+        return false;
       },
-      tabCountBefore,
+      existingIds,
       { timeout: 10000 }
     );
 
-    // Verify the new session inherited the same workingDir
-    const newTabData = await page.evaluate((origSid) => {
+    // Find the newly created session (ID not in existingIds)
+    const newTabData = await page.evaluate((knownIds) => {
       const mgr = window.app.sessionTabManager;
       for (const [id, sessionData] of mgr.activeSessions) {
-        if (id !== origSid) {
+        if (!knownIds.includes(id)) {
           return { id, workingDir: sessionData.workingDir, name: sessionData.name };
         }
       }
       return null;
-    }, originalSessionId);
+    }, existingIds);
 
     expect(newTabData).toBeTruthy();
     expect(newTabData.workingDir).toBe(workingDir);
