@@ -222,4 +222,35 @@ describe('TunnelManager', function() {
       assert.strictEqual(tm.retryCount, 1); // reset, then incremented
     });
   });
+
+  describe('restart()', function() {
+    it('should return error when restart is already in progress', async function() {
+      const tm = new TunnelManager();
+      tm._restarting = true;
+
+      const result = await tm.restart();
+      assert.deepStrictEqual(result, { success: false, error: 'Restart already in progress' });
+    });
+
+    it('should reset retryCount to 0', async function() {
+      this.timeout(30000);
+      const tm = new TunnelManager();
+      tm.retryCount = 5;
+      tm.process = null;
+
+      // Stub _ensureTunnel and _spawn to prevent actual CLI calls
+      tm._ensureTunnel = async () => false;
+
+      await tm.restart();
+      assert.strictEqual(tm.retryCount, 0);
+    });
+  });
+
+  describe('getStatus()', function() {
+    it('should return running false and null publicUrl for a fresh instance', function() {
+      const tm = new TunnelManager();
+      const status = tm.getStatus();
+      assert.deepStrictEqual(status, { running: false, publicUrl: null });
+    });
+  });
 });
