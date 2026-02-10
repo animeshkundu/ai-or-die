@@ -8,6 +8,7 @@ class SessionTabManager {
         this.tabHistory = []; // most recently used order
         this.notificationsEnabled = false;
         this.idleTimeoutMs = 90000;
+        this._deletingSessionIds = new Set();
         this.requestNotificationPermission();
     }
 
@@ -422,11 +423,17 @@ class SessionTabManager {
         const tabsContainer = document.getElementById('tabsContainer');
         const newTabBtn = document.getElementById('tabNewBtn');
         
-        // New tab button
+        // New tab button — quick create
         newTabBtn?.addEventListener('click', () => {
+            this.quickCreateSession();
+        });
+
+        // Dropdown button — full folder browser flow
+        const newTabDropdown = document.getElementById('tabNewDropdown');
+        newTabDropdown?.addEventListener('click', () => {
             this.createNewSession();
         });
-        
+
         // Enable drag and drop for tabs
         if (tabsContainer) {
             tabsContainer.addEventListener('dragstart', (e) => {
@@ -601,10 +608,10 @@ class SessionTabManager {
 
     setupKeyboardShortcuts() {
         document.addEventListener('keydown', (e) => {
-            // Ctrl/Cmd + T: New tab
+            // Ctrl/Cmd + T: Quick new tab
             if ((e.ctrlKey || e.metaKey) && e.key === 't') {
                 e.preventDefault();
-                this.createNewSession();
+                this.quickCreateSession();
             }
             
             // Ctrl/Cmd + W: Close current tab
@@ -899,8 +906,9 @@ class SessionTabManager {
         this.updateOverflowMenu();
 
         if (!skipServerRequest) {
+            this._deletingSessionIds.add(sessionId);
             const authHeaders = window.authManager ? window.authManager.getAuthHeaders() : {};
-            fetch(`/api/sessions/${sessionId}`, { 
+            fetch(`/api/sessions/${sessionId}`, {
                 method: 'DELETE',
                 headers: authHeaders
             })
@@ -921,6 +929,14 @@ class SessionTabManager {
             }
         }
 
+    }
+
+    isUserDeletion(sessionId) {
+        return this._deletingSessionIds.has(sessionId);
+    }
+
+    clearUserDeletion(sessionId) {
+        this._deletingSessionIds.delete(sessionId);
     }
 
     renameTab(sessionId) {
@@ -1003,6 +1019,61 @@ class SessionTabManager {
         } else {
             // Fallback: show the folder browser modal directly
             document.getElementById('folderBrowserModal').classList.add('active');
+        }
+    }
+
+    async quickCreateSession() {
+        if (!this.claudeInterface) {
+            this.createNewSession();
+            return;
+        }
+
+        // Determine working directory from the active session
+        let workingDir = null;
+
+        if (this.activeTabId) {
+            const activeSession = this.activeSessions.get(this.activeTabId);
+            if (activeSession && activeSession.workingDir) {
+                workingDir = activeSession.workingDir;
+            }
+        }
+
+        if (!workingDir && this.claudeInterface) {
+            workingDir = this.claudeInterface.selectedWorkingDir;
+        }
+
+        // No directory available — fall back to folder browser
+        if (!workingDir) {
+            this.createNewSession();
+            return;
+        }
+
+        // Generate a name from the folder path
+        const separator = workingDir.includes('\\') ? '\\' : '/';
+        const folderName = workingDir.split(separator).filter(Boolean).pop() || 'Session';
+        const name = `${folderName} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+
+        try {
+            const response = await this.claudeInterface.authFetch('/api/sessions/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, workingDir })
+            });
+
+            if (!response.ok) throw new Error('Failed to create session');
+
+            const data = await response.json();
+
+            this.addTab(data.sessionId, name, 'idle', workingDir);
+            await this.switchToTab(data.sessionId);
+
+            if (this.claudeInterface && this.claudeInterface.loadSessions) {
+                this.claudeInterface.loadSessions();
+            }
+        } catch (error) {
+            console.error('Quick create session failed:', error);
+            // Fall back to folder browser on error
+            this.createNewSession();
         }
     }
 

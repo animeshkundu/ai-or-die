@@ -86,6 +86,32 @@ class CommandPaletteManager {
       }
     });
 
+    // --- New session (choose folder) ---
+    actions.push({
+      id: 'new-session-browse',
+      title: 'New Session (Choose Folder)',
+      section: 'Sessions',
+      handler: () => {
+        const app = window.app;
+        if (app && app.sessionTabManager) {
+          app.sessionTabManager.createNewSession();
+        }
+      }
+    });
+
+    // --- Restart Dev Tunnel ---
+    actions.push({
+      id: 'restart-tunnel',
+      title: 'Restart Dev Tunnel',
+      section: 'Server',
+      handler: () => {
+        const app = window.app;
+        if (app && app.restartAppTunnel) {
+          app.restartAppTunnel();
+        }
+      }
+    });
+
     // --- Theme switching ---
     const themes = [
       { value: 'midnight', label: 'Midnight' },

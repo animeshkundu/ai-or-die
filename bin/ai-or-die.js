@@ -11,7 +11,7 @@ try {
   const openModule = require('open');
   open = openModule.default || openModule;
 } catch { open = null; }
-const { startServer } = require('../src/server');
+const { ClaudeCodeWebServer } = require('../src/server');
 
 const program = new Command();
 
@@ -104,7 +104,8 @@ async function main() {
       console.log('\n🔐 AUTHENTICATION ENABLED');
     }
 
-    const server = await startServer(serverOptions);
+    const app = new ClaudeCodeWebServer(serverOptions);
+    const httpServer = await app.start();
 
     const protocol = options.https ? 'https' : 'http';
     const baseUrl = `${protocol}://localhost:${port}`;
@@ -129,6 +130,7 @@ async function main() {
           if (open && options.open) open(tunnelUrl).catch(() => {});
         }
       });
+      app.setTunnelManager(tunnel);
       await tunnel.start();
     } else if (options.open) {
       try { if (open) await open(url); } catch (error) {
@@ -141,7 +143,7 @@ async function main() {
     const shutdown = async () => {
       console.log('\nShutting down server...');
       if (tunnel) await tunnel.stop();
-      server.close(() => {
+      httpServer.close(() => {
         console.log('Server closed');
         process.exit(0);
       });

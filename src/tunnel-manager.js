@@ -19,6 +19,7 @@ class TunnelManager {
     this.process = null;
     this.publicUrl = null;
     this.stopping = false;
+    this._restarting = false;
     this.retryCount = 0;
     this.tunnelId = `aiordie-${os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '')}`;
 
@@ -82,6 +83,75 @@ class TunnelManager {
 
       try { this.process.kill(); } catch {}
     });
+  }
+
+  /**
+   * Restart the tunnel process. Kills current process, resets state, re-spawns.
+   * Skips CLI check and login (already validated at startup).
+   * Returns { success, publicUrl } or { success, error }.
+   */
+  async restart() {
+    if (this._restarting) {
+      return { success: false, error: 'Restart already in progress' };
+    }
+
+    this._restarting = true;
+    console.log('  [tunnel] User-initiated restart...');
+
+    try {
+      // Kill current process
+      this._clearStabilityTimer();
+      clearTimeout(this._restartDelayTimer);
+      if (this._restartDelayResolve) {
+        this._restartDelayResolve();
+        this._restartDelayResolve = null;
+      }
+
+      if (this.process) {
+        await new Promise((resolve) => {
+          const timeout = setTimeout(() => {
+            try { this.process.kill('SIGKILL'); } catch {}
+            resolve();
+          }, 5000);
+          this.process.once('exit', () => {
+            clearTimeout(timeout);
+            resolve();
+          });
+          try { this.process.kill(); } catch {}
+        });
+      }
+
+      // Reset state
+      this.process = null;
+      this.publicUrl = null;
+      this.stopping = false;
+      this.retryCount = 0;
+
+      // Re-ensure tunnel config and spawn
+      const tunnelReady = await this._ensureTunnel();
+      if (!tunnelReady) {
+        return { success: false, error: 'Failed to configure tunnel' };
+      }
+
+      await this._spawn();
+
+      if (this.publicUrl) {
+        return { success: true, publicUrl: this.publicUrl };
+      }
+      return { success: false, error: 'Tunnel started but no public URL detected' };
+    } finally {
+      this._restarting = false;
+    }
+  }
+
+  /**
+   * Get current tunnel status.
+   */
+  getStatus() {
+    return {
+      running: this.process !== null && !this.stopping,
+      publicUrl: this.publicUrl || null,
+    };
   }
 
   /**
@@ -259,8 +329,8 @@ class TunnelManager {
           resolve();
         }
 
-        // Auto-restart if not intentionally stopped
-        if (!this.stopping && code !== 0) {
+        // Auto-restart if not intentionally stopped or restarting
+        if (!this.stopping && !this._restarting && code !== 0) {
           this._restart();
         }
       });

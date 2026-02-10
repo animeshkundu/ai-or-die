@@ -269,3 +269,65 @@
         max-width: 200px;
     }
 }
+
+/* ── App Tunnel (reuses vst-* banner styles) ─────────────── */
+
+.tab-app-tunnel {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s, background 0.2s;
+    position: relative;
+}
+
+.tab-app-tunnel:hover {
+    color: var(--accent);
+    background: var(--accent-soft, rgba(255, 107, 0, 0.1));
+}
+
+.tab-app-tunnel:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.tab-app-tunnel.starting svg {
+    animation: vst-spin 1.5s linear infinite;
+}
+
+.tab-app-tunnel.running {
+    color: var(--status-success, #22c55e);
+}
+
+.tab-app-tunnel.running::after {
+    content: '';
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--status-success, #22c55e);
+}
+
+.app-tunnel-banner {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+}
+
+.app-tunnel-banner.visible {
+    display: flex;
+}
