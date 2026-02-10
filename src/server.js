@@ -458,7 +458,10 @@ class ClaudeCodeWebServer {
         }
       }
       
-      // Disconnect all WebSocket connections for this session
+      // Notify WebSocket connections that this session was deleted
+      // Do NOT close the WS — the client may already be joined to a
+      // different session on the same connection. Let the client handle
+      // cleanup via the session_deleted message.
       session.connections.forEach(wsId => {
         const wsInfo = this.webSocketConnections.get(wsId);
         if (wsInfo && wsInfo.ws.readyState === WebSocket.OPEN) {
@@ -467,7 +470,6 @@ class ClaudeCodeWebServer {
             sessionId: sessionId,
             message: 'Session has been deleted'
           }));
-          wsInfo.ws.close();
         }
       });
 
