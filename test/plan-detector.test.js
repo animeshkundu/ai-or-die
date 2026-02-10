@@ -149,4 +149,70 @@ describe('PlanDetector', () => {
       assert.strictEqual(detector.planModeActive, false);
     });
   });
+
+  describe('batched output processing', () => {
+    it('should detect plan in large concatenated chunk', () => {
+      let planModeChanged = false;
+      detector.onPlanModeChange = (active) => {
+        if (active) planModeChanged = true;
+      };
+
+      // Simulate what happens when _flushPlanDetection concatenates
+      // multiple smaller chunks into one big string
+      const normalOutput = 'Hello world\r\nProcessing files...\r\nDone.\r\n';
+      const planTrigger = 'Plan mode is active. You MUST NOT make any edits.\r\n';
+      const bigChunk = normalOutput + planTrigger;
+      detector.processOutput(bigChunk);
+
+      assert.strictEqual(planModeChanged, true,
+        'should detect plan mode in a large concatenated chunk');
+      assert.strictEqual(detector.planModeActive, true);
+    });
+
+    it('should detect plan content in concatenated output', () => {
+      let detectedPlan = null;
+      detector.onPlanDetected = (plan) => {
+        detectedPlan = plan;
+      };
+
+      // Activate plan mode first
+      detector.processOutput('Plan mode is active\r\n');
+
+      // Send a large chunk with plan content
+      const planContent = [
+        'Some preamble output...\r\n',
+        '## Implementation Plan:\r\n',
+        '### 1. First step\r\n',
+        'Do something important\r\n',
+        '### 2. Second step\r\n',
+        'Do something else\r\n',
+        '### 3. Third step\r\n',
+        'Finish up\r\n'
+      ].join('');
+      detector.processOutput(planContent);
+
+      assert.ok(detectedPlan, 'should have detected a plan from batched output');
+      assert.ok(detectedPlan.content.includes('Implementation Plan'),
+        'plan content should include the plan header');
+    });
+
+    it('should detect plan end in concatenated output after activation', () => {
+      // Activate plan mode
+      detector.processOutput('Plan mode is active\r\n');
+      assert.strictEqual(detector.planModeActive, true);
+
+      let planModeEnded = false;
+      detector.onPlanModeChange = (active) => {
+        if (!active) planModeEnded = true;
+      };
+
+      // Large chunk that includes plan end trigger
+      const bigChunk = 'Some output...\r\nUser has approved your plan\r\nContinuing...\r\n';
+      detector.processOutput(bigChunk);
+
+      assert.strictEqual(planModeEnded, true,
+        'should detect plan mode end in concatenated chunk');
+      assert.strictEqual(detector.planModeActive, false);
+    });
+  });
 });

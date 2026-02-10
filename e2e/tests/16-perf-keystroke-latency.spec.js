@@ -147,6 +147,6 @@ test.describe('Performance: keystroke latency under heavy output', () => {
 
     // Assertions
     expect(valid.length).toBeGreaterThanOrEqual(5); // At least 5 probes completed
-    expect(p50).toBeLessThan(2000); // p50 under 2 seconds
+    expect(p50).toBeLessThan(500); // p50 under 500ms — meaningful regression guard
   });
 });

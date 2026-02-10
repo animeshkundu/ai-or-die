@@ -419,33 +419,43 @@ test.describe('Background session notifications', () => {
     await joinSessionAndStartTerminal(page, session);
 
     // Spy on oscillator frequencies for each chime type
+    // Note: AudioContext is reused across calls, so we patch createOscillator
+    // on the instance rather than replacing the constructor
     const frequencies = await page.evaluate(() => {
       const results = {};
-
-      // Monkey-patch AudioContext to capture oscillator frequencies
-      const OrigAudioContext = window.AudioContext || window.webkitAudioContext;
+      const stm = window.app.sessionTabManager;
 
       for (const type of ['success', 'error', 'idle']) {
         const freqs = [];
-        window.AudioContext = class extends OrigAudioContext {
-          createOscillator() {
-            const osc = super.createOscillator();
-            const origSet = Object.getOwnPropertyDescriptor(
-              osc.frequency.__proto__, 'value'
-            )?.set;
-            Object.defineProperty(osc.frequency, 'value', {
-              set(v) { freqs.push(v); if (origSet) origSet.call(this, v); },
-              get() { return osc.frequency.defaultValue; },
-            });
-            return osc;
-          }
+
+        // Trigger one chime to ensure _audioCtx is created
+        if (!stm._audioCtx) {
+          const OrigAC = window.AudioContext || window.webkitAudioContext;
+          stm._audioCtx = new OrigAC();
+        }
+
+        // Patch createOscillator on the reused instance
+        const ctx = stm._audioCtx;
+        const origCreateOsc = ctx.createOscillator.bind(ctx);
+        ctx.createOscillator = function() {
+          const osc = origCreateOsc();
+          const origSet = Object.getOwnPropertyDescriptor(
+            osc.frequency.__proto__, 'value'
+          )?.set;
+          Object.defineProperty(osc.frequency, 'value', {
+            set(v) { freqs.push(v); if (origSet) origSet.call(this, v); },
+            get() { return osc.frequency.defaultValue; },
+          });
+          return osc;
         };
 
-        window.app.sessionTabManager.playNotificationChime(type);
+        stm.playNotificationChime(type);
         results[type] = [...freqs];
+
+        // Restore original
+        ctx.createOscillator = origCreateOsc;
       }
 
-      window.AudioContext = OrigAudioContext;
       return results;
     });
 

@@ -235,7 +235,12 @@ class SessionTabManager {
         if (volume <= 0) return;
 
         try {
-            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            if (!this._audioCtx) {
+                this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            const ctx = this._audioCtx;
+            // Resume if suspended (browsers suspend after user gesture timeout)
+            if (ctx.state === 'suspended') ctx.resume();
             const t = ctx.currentTime;
 
             if (type === 'success') {
@@ -497,10 +502,14 @@ class SessionTabManager {
             }
         });
         
-        // Update overflow on window resize
+        // Update overflow on window resize (debounced to avoid layout thrashing)
+        let resizeTimeout;
         window.addEventListener('resize', () => {
-            this.updateTabOverflow();
-            this.updateOverflowMenu();
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                this.updateTabOverflow();
+                this.updateOverflowMenu();
+            }, 150);
         });
     }
     
@@ -856,7 +865,7 @@ class SessionTabManager {
     reorderTabsByLastAccessed() {
         const tabsContainer = document.getElementById('tabsContainer');
         if (!tabsContainer) return;
-        
+
         // Get all tabs sorted by last accessed time (most recent first)
         const sortedIds = this.getOrderedTabIds()
             .sort((a, b) => {
@@ -867,22 +876,35 @@ class SessionTabManager {
                 return timeB - timeA; // Most recent first
             });
 
+        // Use DocumentFragment to batch DOM mutations into a single reflow
+        const fragment = document.createDocumentFragment();
         sortedIds.forEach((sessionId) => {
             const tabElement = this.tabs.get(sessionId);
             if (tabElement) {
-                tabsContainer.appendChild(tabElement);
+                fragment.appendChild(tabElement);
             }
         });
+        tabsContainer.appendChild(fragment);
 
         this.tabOrder = sortedIds;
-        
+
         // Update overflow on mobile
         this.updateTabOverflow();
     }
 
-    closeSession(sessionId, { skipServerRequest = false } = {}) {
+    closeSession(sessionId, { skipServerRequest = false, skipConfirmation = false } = {}) {
         const tab = this.tabs.get(sessionId);
         if (!tab) return;
+
+        // Confirm before closing sessions with an active process
+        if (!skipConfirmation && !skipServerRequest) {
+            const session = this.activeSessions.get(sessionId);
+            if (session && session.active) {
+                if (!confirm('Close session? The running process will be stopped.')) {
+                    return;
+                }
+            }
+        }
 
         const orderedIds = this.getOrderedTabIds();
         const closedIndex = orderedIds.indexOf(sessionId);

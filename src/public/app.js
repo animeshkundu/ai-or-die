@@ -49,6 +49,15 @@ class ClaudeCodeWebInterface {
         this._LOW_WATER = 2;
         this._outputPaused = false;
 
+        // Write coalescing: batch binary frames into a single terminal.write per rAF
+        this._pendingWrites = [];
+        this._rafPending = false;
+
+        // Deferred plan detection: accumulate binary data, decode after 100ms idle
+        this._planDetectChunks = [];
+        this._planDetectTimer = null;
+        this._planTextDecoder = new TextDecoder();
+
         this.init();
     }
 
@@ -139,10 +148,39 @@ class ClaudeCodeWebInterface {
             // - Inactive/new session → showOverlay('startPrompt') for tool selection
             // Do NOT force-hide here — it overrides the handler's decision.
         } else {
-            console.log('[Init] No sessions found, showing folder browser');
-            // No sessions - hide loading overlay and show folder picker to create first session
-            this.hideOverlay();
-            this.showFolderBrowser();
+            console.log('[Init] No sessions found, auto-creating first session');
+            // No sessions — auto-create one with the server's baseFolder (always valid)
+            const workingDir = this.selectedWorkingDir;
+            if (workingDir) {
+                try {
+                    const sep = workingDir.includes('\\') ? '\\' : '/';
+                    const folderName = workingDir.split(sep).filter(Boolean).pop() || 'Session';
+                    const name = `${folderName} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                    const response = await this.authFetch('/api/sessions/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name, workingDir })
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.sessionTabManager.addTab(data.sessionId, name, 'idle', workingDir);
+                        await this.sessionTabManager.switchToTab(data.sessionId);
+                        // switchToTab handler will show startPrompt for tool selection
+                    } else {
+                        // Server rejected — fall back to folder browser
+                        this.hideOverlay();
+                        this.showFolderBrowser();
+                    }
+                } catch (err) {
+                    console.error('[Init] Auto-create session failed:', err);
+                    this.hideOverlay();
+                    this.showFolderBrowser();
+                }
+            } else {
+                // No baseFolder available — fall back to folder browser
+                this.hideOverlay();
+                this.showFolderBrowser();
+            }
         }
         
         // All sessions go background when tab is hidden, restore on visible
@@ -191,6 +229,10 @@ class ClaudeCodeWebInterface {
                 this.tools = cfg.tools || {};
                 this._configPrerequisites = cfg.prerequisites || null;
                 this.hostname = cfg.hostname || '';
+                // Store baseFolder so first-run can auto-create a session
+                if (cfg.baseFolder) {
+                    this.selectedWorkingDir = this.selectedWorkingDir || cfg.baseFolder;
+                }
             }
         } catch (_) { /* best-effort */ }
     }
@@ -495,6 +537,16 @@ class ClaudeCodeWebInterface {
                 this.send({ type: 'resize', cols, rows });
             }
         });
+
+        // Sync terminal colors when the CSS theme changes (data-theme attribute)
+        const themeObserver = new MutationObserver((mutations) => {
+            for (const m of mutations) {
+                if (m.attributeName === 'data-theme' && this.terminal) {
+                    this.syncTerminalTheme();
+                }
+            }
+        });
+        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     }
 
     showSessionSelectionModal() {
@@ -770,19 +822,19 @@ class ClaudeCodeWebInterface {
                     setTimeout(() => this.reconnect(), this.reconnectDelay * Math.pow(2, this.reconnectAttempts));
                     this.reconnectAttempts++;
                 } else {
-                    this.showError('Connection lost. Please check your network and try again.');
+                    this.showError(`Connection lost after ${this.maxReconnectAttempts} attempts.\n\nYour session data is preserved on the server.\n\u2022 Check your network connection\n\u2022 The server may have restarted \u2014 try refreshing the page`);
                 }
             };
             
             this.socket.onerror = (error) => {
                 console.error('WebSocket error:', error);
-                this.showError('Failed to connect to the server');
+                this.showError('Failed to connect to the server.\n\n\u2022 Check that the server is running\n\u2022 Verify your network connection\n\u2022 Try refreshing the page');
                 reject(error);
             };
             
         } catch (error) {
             console.error('Failed to create WebSocket:', error);
-            this.showError('Failed to create connection');
+            this.showError('Failed to create connection.\n\n\u2022 Check that the server URL is correct\n\u2022 Try refreshing the page');
             reject(error);
         }
         });
@@ -801,6 +853,13 @@ class ClaudeCodeWebInterface {
         this._outputPaused = false;
         this._pendingCallbacks = 0;
         this._writtenBytes = 0;
+        this._pendingWrites = [];
+        this._rafPending = false;
+        this._planDetectChunks = [];
+        if (this._planDetectTimer) {
+            clearTimeout(this._planDetectTimer);
+            this._planDetectTimer = null;
+        }
         setTimeout(() => {
             this.connect().catch(err => console.error('Reconnection failed:', err));
         }, 1000);
@@ -813,19 +872,78 @@ class ClaudeCodeWebInterface {
     }
 
     handleBinaryOutput(data) {
-        // Uint8Array direct write with flow control
-        this._writeToTerminal(new Uint8Array(data));
+        const chunk = new Uint8Array(data);
 
-        // Session activity + plan detector need string (lazy decode only when needed)
-        if ((this.sessionTabManager && this.currentClaudeSessionId) || this.planDetector) {
+        // 1. Queue the chunk for coalesced terminal write
+        this._pendingWrites.push(chunk);
+        if (!this._rafPending) {
+            this._rafPending = true;
+            requestAnimationFrame(() => this._flushWrites());
+        }
+
+        // 2. Session activity tracking (cheap — runs per frame)
+        if (this.sessionTabManager && this.currentClaudeSessionId) {
             const text = this._textDecoder.decode(data, { stream: true });
-            if (this.sessionTabManager && this.currentClaudeSessionId) {
-                this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
-            }
-            if (this.planDetector) {
-                this.planDetector.processOutput(text);
+            this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
+        }
+
+        // 3. Deferred plan detection — accumulate chunks, decode after 100ms idle
+        if (this.planDetector) {
+            this._planDetectChunks.push(chunk);
+            if (this._planDetectTimer) clearTimeout(this._planDetectTimer);
+            this._planDetectTimer = setTimeout(() => this._flushPlanDetection(), 100);
+        }
+    }
+
+    // Concatenate all queued chunks and write to terminal once per animation frame
+    _flushWrites() {
+        this._rafPending = false;
+        const chunks = this._pendingWrites;
+        this._pendingWrites = [];
+        if (chunks.length === 0) return;
+
+        // Concatenate into a single Uint8Array
+        let combined;
+        if (chunks.length === 1) {
+            combined = chunks[0];
+        } else {
+            let totalLen = 0;
+            for (let i = 0; i < chunks.length; i++) totalLen += chunks[i].byteLength;
+            combined = new Uint8Array(totalLen);
+            let offset = 0;
+            for (let i = 0; i < chunks.length; i++) {
+                combined.set(chunks[i], offset);
+                offset += chunks[i].byteLength;
             }
         }
+
+        this._writeToTerminal(combined);
+    }
+
+    // Decode accumulated binary chunks and run plan detection
+    _flushPlanDetection() {
+        this._planDetectTimer = null;
+        const chunks = this._planDetectChunks;
+        this._planDetectChunks = [];
+        if (chunks.length === 0 || !this.planDetector) return;
+
+        // Concatenate then decode once
+        let combined;
+        if (chunks.length === 1) {
+            combined = chunks[0];
+        } else {
+            let totalLen = 0;
+            for (let i = 0; i < chunks.length; i++) totalLen += chunks[i].byteLength;
+            combined = new Uint8Array(totalLen);
+            let offset = 0;
+            for (let i = 0; i < chunks.length; i++) {
+                combined.set(chunks[i], offset);
+                offset += chunks[i].byteLength;
+            }
+        }
+
+        const text = this._planTextDecoder.decode(combined, { stream: true });
+        this.planDetector.processOutput(text);
     }
 
     // Flow control using xterm.js callback-counting watermark pattern
@@ -1551,7 +1669,8 @@ class ClaudeCodeWebInterface {
             const spinner = document.getElementById('loadingSpinner');
             if (overlay && overlay.style.display !== 'none' &&
                 spinner && spinner.style.display !== 'none') {
-                this.showError(`${toolAlias} did not start within 45 seconds. The CLI tool may not be installed or is unresponsive.`);
+                const toolCmd = toolId === 'terminal' ? 'shell' : toolId;
+                this.showError(`${toolAlias} did not start within 45 seconds.\n\nTroubleshooting:\n\u2022 Check that ${toolAlias} CLI is installed (run '${toolCmd} --version')\n\u2022 Ensure it's in your PATH\n\u2022 Try restarting the session`);
             }
         }, 45000);
 
@@ -1592,9 +1711,11 @@ class ClaudeCodeWebInterface {
                 });
                 this.terminal.loadAddon(this.webglAddon);
             } catch (e) {
+                console.log('[Renderer] WebGL unavailable, using Canvas renderer');
                 this._loadCanvasAddon();
             }
         } else {
+            console.log('[Renderer] WebGL unavailable, using Canvas renderer');
             this._loadCanvasAddon();
         }
     }
@@ -1605,8 +1726,10 @@ class ClaudeCodeWebInterface {
                 this.canvasAddon = new CanvasAddon.CanvasAddon();
                 this.terminal.loadAddon(this.canvasAddon);
             } catch (e) {
-                // DOM fallback — no addon needed
+                console.log('[Renderer] Canvas unavailable, using DOM renderer (slower)');
             }
+        } else {
+            console.log('[Renderer] Canvas unavailable, using DOM renderer (slower)');
         }
     }
 
@@ -1837,6 +1960,9 @@ class ClaudeCodeWebInterface {
                     if (sel) {
                         try {
                             await navigator.clipboard.writeText(sel);
+                            if (window.attachClipboardHandler?.showCopiedToast) {
+                                window.attachClipboardHandler.showCopiedToast();
+                            }
                         } catch { showClipboardError(); }
                     }
                     break;
@@ -1990,8 +2116,31 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    hideModal(overlayId) {
+        const overlay = document.getElementById(overlayId);
+        if (!overlay) return;
+        const content = overlay.querySelector('.modal-content');
+        if (content) {
+            content.classList.add('closing');
+            overlay.classList.add('closing');
+            setTimeout(() => {
+                content.classList.remove('closing');
+                overlay.classList.remove('closing');
+                overlay.classList.remove('active');
+                overlay.style.display = 'none';
+            }, 150);
+        } else {
+            overlay.classList.remove('active');
+            overlay.style.display = 'none';
+        }
+    }
+
     showError(message) {
-        document.getElementById('errorText').textContent = message;
+        const errorText = document.getElementById('errorText');
+        errorText.style.whiteSpace = 'pre-line';
+        errorText.textContent = message;
+        const srAnnounce = document.getElementById('srAnnounce');
+        if (srAnnounce) srAnnounce.textContent = message;
         this.showOverlay('errorMessage');
     }
 
@@ -2032,8 +2181,8 @@ class ClaudeCodeWebInterface {
     }
 
     hideSettings() {
-        document.getElementById('settingsModal').classList.remove('active');
-        
+        this.hideModal('settingsModal');
+
         // Restore body scroll
         if (this.isMobile) {
             document.body.style.overflow = '';
@@ -2112,7 +2261,10 @@ class ClaudeCodeWebInterface {
         this.terminal.options.cursorBlink = settings.cursorBlink ?? true;
         if (settings.scrollback) this.terminal.options.scrollback = settings.scrollback;
 
-        // Update terminal theme colors to match the current CSS theme
+        this.syncTerminalTheme();
+    }
+
+    syncTerminalTheme() {
         const style = getComputedStyle(document.documentElement);
         this.terminal.options.theme = {
             background: style.getPropertyValue('--terminal-bg').trim() || style.getPropertyValue('--surface-primary').trim(),
@@ -2263,8 +2415,7 @@ class ClaudeCodeWebInterface {
     }
 
     closeFolderBrowser() {
-        const modal = document.getElementById('folderBrowserModal');
-        modal.classList.remove('active');
+        this.hideModal('folderBrowserModal');
         
         // Restore body scroll
         if (this.isMobile) {
@@ -2455,7 +2606,7 @@ class ClaudeCodeWebInterface {
                 return;
             } catch (error) {
                 console.error('Failed to set working directory:', error);
-                this.showError('Failed to set working directory');
+                this.showError('Failed to set working directory.\n\n\u2022 The folder may not exist or be inaccessible\n\u2022 Try selecting a different folder');
                 return;
             }
         }
@@ -2558,8 +2709,8 @@ class ClaudeCodeWebInterface {
     }
     
     hideMobileSessionsModal() {
-        document.getElementById('mobileSessionsModal').classList.remove('active');
-        
+        this.hideModal('mobileSessionsModal');
+
         // Restore body scroll
         if (this.isMobile) {
             document.body.style.overflow = '';
@@ -2777,7 +2928,7 @@ class ClaudeCodeWebInterface {
             }
         } catch (error) {
             console.error('Failed to delete session:', error);
-            this.showError('Failed to delete session');
+            this.showError('Failed to delete session.\n\n\u2022 The session may have already been removed\n\u2022 Try refreshing the page');
         }
     }
     
@@ -2846,13 +2997,13 @@ class ClaudeCodeWebInterface {
     }
     
     hideNewSessionModal() {
-        document.getElementById('newSessionModal').classList.remove('active');
-        
+        this.hideModal('newSessionModal');
+
         // Restore body scroll
         if (this.isMobile) {
             document.body.style.overflow = '';
         }
-        
+
         document.getElementById('sessionName').value = '';
         document.getElementById('sessionWorkingDir').value = '';
     }
@@ -2894,7 +3045,7 @@ class ClaudeCodeWebInterface {
             this.loadSessions();
         } catch (error) {
             console.error('Failed to create session:', error);
-            this.showError('Failed to create session');
+            this.showError('Failed to create session.\n\n\u2022 Check that the working directory exists\n\u2022 The server may be unreachable \u2014 try refreshing');
         }
     }
     
@@ -2949,8 +3100,7 @@ class ClaudeCodeWebInterface {
     }
     
     hidePlanModal() {
-        const modal = document.getElementById('planModal');
-        modal.classList.remove('active');
+        this.hideModal('planModal');
     }
     
     acceptPlan() {

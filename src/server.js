@@ -112,17 +112,49 @@ class ClaudeCodeWebServer {
     // Sweep old temp images every 30 minutes
     this.imageSweepInterval = setInterval(() => this.sweepOldTempImages(), 30 * 60 * 1000);
 
+    // Evict stale inactive sessions older than 7 days every 5 minutes
+    this.sessionEvictionInterval = setInterval(() => {
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      for (const [id, session] of this.claudeSessions) {
+        if (!session.active && session.connections.size === 0 && new Date(session.lastActivity || session.created).getTime() < sevenDaysAgo) {
+          this.claudeSessions.delete(id);
+          this.sessionStore.markDirty();
+        }
+      }
+    }, 5 * 60 * 1000);
+
     // Also save on process exit
     process.on('SIGINT', () => this.handleShutdown());
     process.on('SIGTERM', () => this.handleShutdown());
-    process.on('beforeExit', () => this.saveSessionsToDisk());
+    process.on('beforeExit', () => this.saveSessionsToDisk(true));
+    process.on('uncaughtException', (err) => {
+      console.error('Uncaught exception:', err);
+      // Synchronous save — async is unsafe after uncaught exception
+      try {
+        const data = this.sessionStore.serializeForSave
+          ? this.sessionStore.serializeForSave(this.claudeSessions)
+          : JSON.stringify([...this.claudeSessions.entries()]);
+        const fs = require('fs');
+        fs.writeFileSync(this.sessionStore.sessionsFile + '.crash', data);
+      } catch (saveErr) {
+        console.error('Failed to save sessions on crash:', saveErr);
+      }
+      process.exit(1);
+    });
+    process.on('unhandledRejection', (reason) => {
+      console.error('Unhandled rejection:', reason);
+      // Don't swallow — let it propagate to uncaughtException on Node 15+
+    });
   }
   
   setTunnelManager(tm) {
     this.tunnelManager = tm;
   }
 
-  async saveSessionsToDisk() {
+  async saveSessionsToDisk(force = false) {
+    if (force) {
+      this.sessionStore.markDirty();
+    }
     await this.sessionStore.saveSessions(this.claudeSessions);
   }
 
@@ -134,9 +166,12 @@ class ClaudeCodeWebServer {
     this.isShuttingDown = true;
 
     console.log('\nGracefully shutting down...');
-    await this.saveSessionsToDisk();
+    await this.saveSessionsToDisk(true);
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
+    }
+    if (this.sessionEvictionInterval) {
+      clearInterval(this.sessionEvictionInterval);
     }
     // Stop all VS Code tunnels
     await this.vscodeTunnel.stopAll();
@@ -144,7 +179,7 @@ class ClaudeCodeWebServer {
     for (const [, session] of this.claudeSessions) {
       this.cleanupSessionImages(session);
     }
-    this.close();
+    await this.close();
     process.exit(0);
   }
 
@@ -410,15 +445,16 @@ class ClaudeCodeWebServer {
       };
       
       this.claudeSessions.set(sessionId, session);
-      
+      this.sessionStore.markDirty();
+
       // Save sessions after creating new one
       this.saveSessionsToDisk();
-      
+
       if (this.dev) {
         console.log(`Created new session: ${sessionId} (${session.name})`);
       }
-      
-      res.json({ 
+
+      res.json({
         success: true,
         sessionId,
         session: {
@@ -487,6 +523,7 @@ class ClaudeCodeWebServer {
 
       this.claudeSessions.delete(sessionId);
       this.activityBroadcastTimestamps.delete(sessionId);
+      this.sessionStore.markDirty();
 
       // Save sessions after deletion — await to ensure persistence
       await this.saveSessionsToDisk();
@@ -671,44 +708,44 @@ class ClaudeCodeWebServer {
           const entries = await fs.promises.readdir(currentPath, { withFileTypes: true });
           const filtered = entries.filter(e => showHidden || !e.name.startsWith('.'));
 
-          const mapped = [];
-          for (const entry of filtered) {
-            const itemPath = path.join(currentPath, entry.name);
-            const isDir = entry.isDirectory();
-            let size = null;
-            let modified = null;
-            let extension = null;
-            let mimeCategory = null;
-            let editable = false;
+          const statResults = await Promise.all(
+            filtered.map(async (entry) => {
+              const itemPath = path.join(currentPath, entry.name);
+              const isDir = entry.isDirectory();
+              let size = null;
+              let modified = null;
+              let extension = null;
+              let mimeCategory = null;
+              let editable = false;
 
-            if (!isDir) {
               try {
                 const st = await fs.promises.stat(itemPath);
-                size = st.size;
                 modified = st.mtime.toISOString();
+                if (!isDir) {
+                  size = st.size;
+                }
               } catch { /* skip stat errors */ }
-              const info = getFileInfo(itemPath);
-              extension = info.extension;
-              mimeCategory = info.mimeCategory;
-              editable = info.editable;
-            } else {
-              try {
-                const st = await fs.promises.stat(itemPath);
-                modified = st.mtime.toISOString();
-              } catch { /* skip */ }
-            }
 
-            mapped.push({
-              name: entry.name,
-              path: normalizePath(itemPath),
-              isDirectory: isDir,
-              size,
-              modified,
-              extension,
-              mimeCategory,
-              editable,
-            });
-          }
+              if (!isDir) {
+                const info = getFileInfo(itemPath);
+                extension = info.extension;
+                mimeCategory = info.mimeCategory;
+                editable = info.editable;
+              }
+
+              return {
+                name: entry.name,
+                path: normalizePath(itemPath),
+                isDirectory: isDir,
+                size,
+                modified,
+                extension,
+                mimeCategory,
+                editable,
+              };
+            })
+          );
+          const mapped = statResults;
 
           // Sort: directories first, then alphabetical
           mapped.sort((a, b) => {
@@ -851,7 +888,7 @@ class ClaudeCodeWebServer {
     });
 
     // GET /api/files/download — Stream file with inline/attachment support
-    this.app.get('/api/files/download', (req, res) => {
+    this.app.get('/api/files/download', async (req, res) => {
       const filePath = req.query.path;
       if (!filePath) return res.status(400).json({ error: 'Path is required' });
 
@@ -860,7 +897,7 @@ class ClaudeCodeWebServer {
 
       const resolvedPath = validation.path;
       try {
-        const stat = fs.statSync(resolvedPath);
+        const stat = await fs.promises.stat(resolvedPath);
         if (stat.isDirectory()) {
           return res.status(400).json({ error: 'Cannot download a directory' });
         }
@@ -1368,7 +1405,8 @@ class ClaudeCodeWebServer {
           // Flush any pending output immediately on resume
           if (wsInfo.claudeSessionId) {
             const fcSession = this.claudeSessions.get(wsInfo.claudeSessionId);
-            if (fcSession && fcSession._pendingChunks && fcSession._pendingChunks.length > 0) {
+            if (!fcSession) break; // Session was deleted
+            if (fcSession._pendingChunks && fcSession._pendingChunks.length > 0) {
               this._flushSessionOutput(wsInfo.claudeSessionId);
             }
           }
@@ -1399,6 +1437,8 @@ class ClaudeCodeWebServer {
       
       case 'stop':
         if (wsInfo.claudeSessionId) {
+          const stopSession = this.claudeSessions.get(wsInfo.claudeSessionId);
+          if (!stopSession) break; // Session was deleted
           await this.stopToolSession(wsInfo.claudeSessionId);
         }
         break;
@@ -1514,7 +1554,8 @@ class ClaudeCodeWebServer {
     
     this.claudeSessions.set(sessionId, session);
     wsInfo.claudeSessionId = sessionId;
-    
+    this.sessionStore.markDirty();
+
     // Save sessions after creating new one
     this.saveSessionsToDisk();
     
@@ -1654,6 +1695,7 @@ class ClaudeCodeWebServer {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;
           currentSession.outputBuffer.push(data);
+          this.sessionStore.markDirty();
           this._throttledOutputBroadcast(sessionId, data);
           // Notify non-joined connections about activity (throttled to 1/sec)
           const now = Date.now();
@@ -1669,6 +1711,7 @@ class ClaudeCodeWebServer {
             this._flushAndClearOutputTimer(currentSession, sessionId);
             currentSession.active = false;
             currentSession.agent = null;
+            this.sessionStore.markDirty();
           }
           this.broadcastToSession(sessionId, { type: 'exit', code, signal });
           this.activityBroadcastTimestamps.delete(sessionId);
@@ -1679,6 +1722,7 @@ class ClaudeCodeWebServer {
           if (currentSession) {
             currentSession.active = false;
             currentSession.agent = null;
+            this.sessionStore.markDirty();
           }
           this.broadcastToSession(sessionId, { type: 'error', message: error.message });
           this.broadcastSessionActivity(sessionId, 'session_error');
@@ -1692,6 +1736,7 @@ class ClaudeCodeWebServer {
       if (!session.sessionStartTime) {
         session.sessionStartTime = new Date();
       }
+      this.sessionStore.markDirty();
 
       this.broadcastToSession(sessionId, {
         type: `${toolName}_started`,
@@ -1726,6 +1771,7 @@ class ClaudeCodeWebServer {
     session.active = false;
     session.agent = null;
     session.lastActivity = new Date();
+    this.sessionStore.markDirty();
     this.broadcastToSession(sessionId, { type: `${agentType}_stopped` });
     this.activityBroadcastTimestamps.delete(sessionId);
     this.broadcastSessionActivity(sessionId, 'session_stopped', { agent: agentType });
@@ -1813,38 +1859,44 @@ class ClaudeCodeWebServer {
   _flushSessionOutput(sessionId) {
     const session = this.claudeSessions.get(sessionId);
     if (!session || !session._pendingChunks || session._pendingChunks.length === 0) return;
+    if (session._flushing) return; // Prevent concurrent flush
+    session._flushing = true;
 
-    const pending = session._pendingChunks.join('');
-    session._pendingChunks = [];
-    session._pendingBytes = 0;
+    try {
+      const pending = session._pendingChunks.join('');
+      session._pendingChunks = [];
+      session._pendingBytes = 0;
 
-    // Skip broadcast if no clients connected (idle session)
-    if (session.connections.size === 0) return;
+      // Skip broadcast if no clients connected (idle session)
+      if (session.connections.size === 0) return;
 
-    // Strip focus-tracking sequences server-side so clients can use
-    // the zero-copy Uint8Array write path (no string decode needed)
-    const cleaned = pending.replace(/\x1b\[\[?[IO]/g, '');
+      // Strip focus-tracking sequences server-side so clients can use
+      // the zero-copy Uint8Array write path (no string decode needed)
+      const cleaned = pending.replace(/\x1b\[\[?[IO]/g, '');
 
-    // Send terminal output as binary WebSocket frames — skips JSON
-    // serialization/escaping and avoids zlib thread pool contention
-    const binaryMsg = Buffer.from(cleaned, 'utf-8');
-    session.connections.forEach(wsId => {
-      const wsInfo = this.webSocketConnections.get(wsId);
-      if (wsInfo &&
-          wsInfo.claudeSessionId === sessionId &&
-          wsInfo.ws.readyState === WebSocket.OPEN) {
-        // Flow control: skip clients that signaled pause
-        if (wsInfo._flowPaused) {
-          return; // Frame dropped for this client; circular buffer retains data for reconnection replay
+      // Send terminal output as binary WebSocket frames — skips JSON
+      // serialization/escaping and avoids zlib thread pool contention
+      const binaryMsg = Buffer.from(cleaned, 'utf-8');
+      session.connections.forEach(wsId => {
+        const wsInfo = this.webSocketConnections.get(wsId);
+        if (wsInfo &&
+            wsInfo.claudeSessionId === sessionId &&
+            wsInfo.ws.readyState === WebSocket.OPEN) {
+          // Flow control: skip clients that signaled pause
+          if (wsInfo._flowPaused) {
+            return; // Frame dropped for this client; circular buffer retains data for reconnection replay
+          }
+          // Backpressure: skip clients that can't consume fast enough
+          const bpLimit = session.priority === 'background' ? BACKPRESSURE_LIMIT_BG : BACKPRESSURE_LIMIT_FG;
+          if (wsInfo.ws.bufferedAmount > bpLimit) {
+            return;
+          }
+          wsInfo.ws.send(binaryMsg, { binary: true, compress: false });
         }
-        // Backpressure: skip clients that can't consume fast enough
-        const bpLimit = session.priority === 'background' ? BACKPRESSURE_LIMIT_BG : BACKPRESSURE_LIMIT_FG;
-        if (wsInfo.ws.bufferedAmount > bpLimit) {
-          return;
-        }
-        wsInfo.ws.send(binaryMsg, { binary: true, compress: false });
-      }
-    });
+      });
+    } finally {
+      session._flushing = false;
+    }
   }
 
   _flushAndClearOutputTimer(session, sessionId) {
@@ -1882,7 +1934,8 @@ class ClaudeCodeWebServer {
 
   async handleStartVSCodeTunnel(wsId, data) {
     const wsInfo = this.webSocketConnections.get(wsId);
-    if (!wsInfo || !wsInfo.claudeSessionId) {
+    if (!wsInfo) return;
+    if (!wsInfo.claudeSessionId) {
       this.sendToWebSocket(wsInfo.ws, {
         type: 'vscode_tunnel_error',
         message: 'Join a session first before starting a VS Code tunnel.',
@@ -1936,7 +1989,7 @@ class ClaudeCodeWebServer {
 
   async close() {
     // Save sessions before closing
-    this.saveSessionsToDisk();
+    await this.saveSessionsToDisk(true);
 
     // Clear auto-save interval
     if (this.autoSaveInterval) {
@@ -1945,7 +1998,10 @@ class ClaudeCodeWebServer {
     if (this.imageSweepInterval) {
       clearInterval(this.imageSweepInterval);
     }
-    
+    if (this.sessionEvictionInterval) {
+      clearInterval(this.sessionEvictionInterval);
+    }
+
     if (this.wss) {
       this.wss.close();
     }
@@ -2120,11 +2176,14 @@ class ClaudeCodeWebServer {
         session.tempImages = [];
       }
       while (session.tempImages.length >= 1000) {
-        // Remove oldest by created date
-        const sorted = session.tempImages.slice().sort((a, b) => a.created - b.created);
-        const oldest = sorted[0];
+        // Remove oldest by created date (O(n) scan instead of sort)
+        let oldestIdx = 0;
+        for (let i = 1; i < session.tempImages.length; i++) {
+          if (session.tempImages[i].created < session.tempImages[oldestIdx].created) oldestIdx = i;
+        }
+        const oldest = session.tempImages[oldestIdx];
         try { fs.unlinkSync(oldest.path); } catch { /* ignore */ }
-        session.tempImages = session.tempImages.filter(img => img !== oldest);
+        session.tempImages.splice(oldestIdx, 1);
       }
 
       // Validate base64 data
@@ -2153,7 +2212,7 @@ class ClaudeCodeWebServer {
         return;
       }
 
-      const filePath = this.saveImageToTemp(session, data);
+      const filePath = await this.saveImageToTemp(session, data);
 
       this.sendToWebSocket(wsInfo.ws, {
         type: 'image_upload_complete',
@@ -2170,7 +2229,7 @@ class ClaudeCodeWebServer {
     }
   }
 
-  saveImageToTemp(session, data) {
+  async saveImageToTemp(session, data) {
     // Primary temp dir: .claude-images inside the session working directory
     let tempDir = path.join(session.workingDir, '.claude-images');
     try {
@@ -2189,8 +2248,10 @@ class ClaudeCodeWebServer {
 
     // Auto-create .gitignore in tempDir
     const gitignorePath = path.join(tempDir, '.gitignore');
-    if (!fs.existsSync(gitignorePath)) {
-      fs.writeFileSync(gitignorePath, '*\n');
+    try {
+      await fs.promises.access(gitignorePath);
+    } catch {
+      await fs.promises.writeFile(gitignorePath, '*\n');
     }
 
     // Generate unique filename
@@ -2199,7 +2260,7 @@ class ClaudeCodeWebServer {
     const filePath = path.join(tempDir, filename);
 
     // Write the image file
-    fs.writeFileSync(filePath, Buffer.from(data.base64, 'base64'));
+    await fs.promises.writeFile(filePath, Buffer.from(data.base64, 'base64'));
 
     // Track the temp image
     if (!session.tempImages) {
