@@ -37,6 +37,18 @@ class ClaudeCodeWebInterface {
         this.sessionTimerInterval = null;
         
         this.splitContainer = null;
+
+        // Cached TextDecoder for lazy string decode on hot path
+        this._textDecoder = new TextDecoder();
+
+        // Flow control state (xterm.js recommended callback-counting pattern)
+        this._pendingCallbacks = 0;
+        this._writtenBytes = 0;
+        this._CALLBACK_BYTE_LIMIT = 100 * 1024;  // Request callback every 100KB
+        this._HIGH_WATER = 5;   // Pending callback count threshold
+        this._LOW_WATER = 2;
+        this._outputPaused = false;
+
         this.init();
     }
 
@@ -133,6 +145,26 @@ class ClaudeCodeWebInterface {
             this.showFolderBrowser();
         }
         
+        // All sessions go background when tab is hidden, restore on visible
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                // Mark all sessions as background
+                if (this.sessionTabManager) {
+                    const sessions = [];
+                    const allTabs = this.sessionTabManager.tabs || new Map();
+                    allTabs.forEach((_, sid) => {
+                        sessions.push({ sessionId: sid, priority: 'background' });
+                    });
+                    if (sessions.length > 0) {
+                        this.send({ type: 'set_priority', sessions });
+                    }
+                }
+            } else if (this.currentClaudeSessionId) {
+                // Restore foreground for active session
+                this.sendSessionPriority(this.currentClaudeSessionId);
+            }
+        });
+
         window.addEventListener('resize', () => {
             this.fitTerminal();
         });
@@ -348,7 +380,7 @@ class ClaudeCodeWebInterface {
             allowProposedApi: true,
             scrollback: 10000,
             rightClickSelectsWord: false,
-            allowTransparency: true,
+            allowTransparency: false,
             // Disable focus tracking to prevent ^[[I and ^[[O sequences
             windowOptions: {
                 reportFocus: false
@@ -375,6 +407,10 @@ class ClaudeCodeWebInterface {
         }
 
         this.terminal.open(document.getElementById('terminal'));
+
+        // WebGL renderer: 3-10x faster than DOM (0.7ms vs 5-10ms per frame)
+        this._loadGpuRenderer();
+
         this.fitTerminal();
 
         // Re-render terminal when fonts finish loading
@@ -395,6 +431,22 @@ class ClaudeCodeWebInterface {
                 this.terminal.refresh(0, this.terminal.rows - 1);
                 this.fitTerminal();
             });
+        }
+
+        // Debounced ResizeObserver — catches all layout changes (sidebar,
+        // browser zoom, DevTools toggle) and refits all terminals
+        const termContainerEl = document.querySelector('.terminal-container');
+        if (termContainerEl && typeof ResizeObserver !== 'undefined') {
+            let resizeTimeout;
+            new ResizeObserver(() => {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    this.fitTerminal();
+                    if (this.splitContainer && this.splitContainer.splits) {
+                        this.splitContainer.splits.forEach(s => { try { s.fit(); } catch (_) {} });
+                    }
+                }, 50);
+            }).observe(termContainerEl);
         }
 
         // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
@@ -702,9 +754,8 @@ class ClaudeCodeWebInterface {
             
             this.socket.onmessage = (event) => {
                 if (event.data instanceof ArrayBuffer) {
-                    // Binary frame = raw terminal output (no JSON overhead)
-                    const text = new TextDecoder().decode(event.data);
-                    this.handleBinaryOutput(text);
+                    // Binary frame — pass raw ArrayBuffer to handleBinaryOutput
+                    this.handleBinaryOutput(event.data);
                 } else {
                     // Text frame = JSON control message
                     this.handleMessage(JSON.parse(event.data));
@@ -758,18 +809,42 @@ class ClaudeCodeWebInterface {
         }
     }
 
-    handleBinaryOutput(text) {
-        // Binary WebSocket frames carry raw terminal output — same processing
-        // as the JSON 'output' message type but without parse/serialize overhead
-        const filteredData = text.replace(/\x1b\[\[?[IO]/g, '');
-        this.terminal.write(filteredData);
+    handleBinaryOutput(data) {
+        // Uint8Array direct write with flow control
+        this._writeToTerminal(new Uint8Array(data));
 
-        if (this.sessionTabManager && this.currentClaudeSessionId) {
-            this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
+        // Session activity + plan detector need string (lazy decode only when needed)
+        if ((this.sessionTabManager && this.currentClaudeSessionId) || this.planDetector) {
+            const text = this._textDecoder.decode(data);
+            if (this.sessionTabManager && this.currentClaudeSessionId) {
+                this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
+            }
+            if (this.planDetector) {
+                this.planDetector.processOutput(text);
+            }
         }
+    }
 
-        if (this.planDetector) {
-            this.planDetector.processOutput(text);
+    // Flow control using xterm.js callback-counting watermark pattern
+    // (recommended by xterm.js docs, used by ttyd and Tabby)
+    _writeToTerminal(data) {
+        this._writtenBytes += data.byteLength || data.length;
+        if (this._writtenBytes > this._CALLBACK_BYTE_LIMIT) {
+            this.terminal.write(data, () => {
+                this._pendingCallbacks = Math.max(this._pendingCallbacks - 1, 0);
+                if (this._outputPaused && this._pendingCallbacks < this._LOW_WATER) {
+                    this._outputPaused = false;
+                    this.send({ type: 'flow_control', action: 'resume' });
+                }
+            });
+            this._pendingCallbacks++;
+            this._writtenBytes = 0;
+            if (!this._outputPaused && this._pendingCallbacks > this._HIGH_WATER) {
+                this._outputPaused = true;
+                this.send({ type: 'flow_control', action: 'pause' });
+            }
+        } else {
+            this.terminal.write(data);  // Fast path — no callback overhead
         }
     }
 
@@ -1501,6 +1576,35 @@ class ClaudeCodeWebInterface {
         const hamburgerBtn = document.getElementById('hamburgerBtn');
         mobileMenu.classList.remove('active');
         hamburgerBtn.classList.remove('active');
+    }
+
+    _loadGpuRenderer() {
+        if (typeof WebglAddon !== 'undefined') {
+            try {
+                this.webglAddon = new WebglAddon.WebglAddon();
+                this.webglAddon.onContextLoss(() => {
+                    this.webglAddon.dispose();
+                    this.webglAddon = null;
+                    this._loadCanvasAddon();
+                });
+                this.terminal.loadAddon(this.webglAddon);
+            } catch (e) {
+                this._loadCanvasAddon();
+            }
+        } else {
+            this._loadCanvasAddon();
+        }
+    }
+
+    _loadCanvasAddon() {
+        if (typeof CanvasAddon !== 'undefined') {
+            try {
+                this.canvasAddon = new CanvasAddon.CanvasAddon();
+                this.terminal.loadAddon(this.canvasAddon);
+            } catch (e) {
+                // DOM fallback — no addon needed
+            }
+        }
     }
 
     fitTerminal() {
@@ -2604,7 +2708,10 @@ class ClaudeCodeWebInterface {
             
             // Send the join request
             this.send({ type: 'join_session', sessionId });
-            
+
+            // Signal session priority — joined session is foreground, others background
+            this.sendSessionPriority(sessionId);
+
             // Request usage stats when joining a session
             this.requestUsageStats();
             
@@ -2622,6 +2729,26 @@ class ClaudeCodeWebInterface {
     leaveSession() {
         this.send({ type: 'leave_session' });
         // Session dropdown removed - using tabs
+    }
+
+    sendSessionPriority(foregroundSessionId) {
+        if (!this.sessionTabManager) return;
+        const allTabs = this.sessionTabManager.tabs || new Map();
+        const sessions = [];
+        // Collect visible split pane session IDs
+        const splitSessionIds = new Set();
+        if (this.splitContainer && this.splitContainer.splits) {
+            this.splitContainer.splits.forEach(split => {
+                if (split.sessionId) splitSessionIds.add(split.sessionId);
+            });
+        }
+        allTabs.forEach((_, sid) => {
+            const isForeground = sid === foregroundSessionId || splitSessionIds.has(sid);
+            sessions.push({ sessionId: sid, priority: isForeground ? 'foreground' : 'background' });
+        });
+        if (sessions.length > 0) {
+            this.send({ type: 'set_priority', sessions });
+        }
     }
     
     async deleteSession(sessionId) {
