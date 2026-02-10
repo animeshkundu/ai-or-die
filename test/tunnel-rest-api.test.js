@@ -96,3 +96,56 @@ function request(port, method, urlPath, body) {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test suite with mock tunnel manager
+// ---------------------------------------------------------------------------
+
+(ClaudeCodeWebServer ? describe : describe.skip)('Tunnel REST API with mock tunnel manager', function () {
+  this.timeout(30000);
+
+  let server, port;
+
+  before(async function () {
+    this.timeout(30000);
+    server = new ClaudeCodeWebServer({ port: 0, noAuth: true });
+    const httpServer = await server.start();
+    port = httpServer.address().port;
+
+    const mockTunnelManager = {
+      getStatus: () => ({ running: true, publicUrl: 'https://mock.devtunnels.ms' }),
+      restart: async () => ({ success: true, publicUrl: 'https://mock.devtunnels.ms' }),
+      stop: async () => {},
+    };
+    server.setTunnelManager(mockTunnelManager);
+  });
+
+  after(function () {
+    if (server) server.close();
+  });
+
+  it('POST /api/tunnel/restart should return 202 and trigger restart', async function () {
+    const res = await request(port, 'POST', '/api/tunnel/restart');
+    assert.strictEqual(res.status, 202);
+    assert.strictEqual(res.body.message, 'Tunnel restart initiated');
+  });
+
+  it('GET /api/tunnel/status should return running status with mock tunnel', async function () {
+    const res = await request(port, 'GET', '/api/tunnel/status');
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.body.running, true);
+    assert.strictEqual(res.body.publicUrl, 'https://mock.devtunnels.ms');
+  });
+
+  it('POST /api/tunnel/restart with failing mock returns 202', async function () {
+    const failingMock = {
+      getStatus: () => ({ running: false, publicUrl: null }),
+      restart: async () => ({ success: false, error: 'Auth token expired' }),
+      stop: async () => {},
+    };
+    server.setTunnelManager(failingMock);
+
+    const res = await request(port, 'POST', '/api/tunnel/restart');
+    assert.strictEqual(res.status, 202);
+  });
+});

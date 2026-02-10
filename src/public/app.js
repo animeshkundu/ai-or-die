@@ -2072,6 +2072,15 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    restartAppTunnel() {
+        if (!this._appTunnelUI && window.AppTunnelUI) {
+            this._appTunnelUI = new window.AppTunnelUI({ app: this });
+        }
+        if (this._appTunnelUI) {
+            this._appTunnelUI.restart();
+        }
+    }
+
     openFileInViewer(filePath) {
         if (!this._fileBrowserPanel && window.fileBrowser) {
             this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({

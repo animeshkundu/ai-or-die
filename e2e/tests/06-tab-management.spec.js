@@ -7,7 +7,7 @@ const {
   attachFailureArtifacts,
 } = require('../helpers/terminal-helpers');
 
-test.describe('Tab management: close and quick-create behavior', () => {
+test.describe('Tab management: close, quick-create, and dropdown behavior', () => {
   let server, port, url;
 
   test.beforeAll(async () => {
@@ -89,38 +89,52 @@ test.describe('Tab management: close and quick-create behavior', () => {
     expect(activeTabId).toBe(sessionB);
   });
 
-  test('plus button quick-creates session with active tab working directory', async ({ page }) => {
+  test('quick-create inherits working directory from active tab', async ({ page }) => {
     setupPageCapture(page);
 
-    // Pre-create one session
-    const sessionA = await createSessionViaApi(port, 'Quick Create Base');
+    // Use the server's base folder (process.cwd()) as our workingDir —
+    // it is guaranteed to pass the server's path validation.
+    const res = await fetch(`http://127.0.0.1:${port}/api/sessions/create`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'WorkDir Test', workingDir: process.cwd() })
+    });
+    const data = await res.json();
+    expect(data.success).toBe(true);
+    const originalSessionId = data.sessionId;
+    const workingDir = data.session.workingDir;
 
     await page.goto(url);
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
 
-    // Wait for session tab manager to be ready with WebSocket open
+    // Wait for session tab manager and WebSocket to be ready
     await page.waitForFunction(
       () => window.app && window.app.sessionTabManager
         && window.app.socket && window.app.socket.readyState === 1,
       { timeout: 20000 }
     );
 
-    // Add and switch to the session tab
-    await page.evaluate(async (sid) => {
+    // Add the session tab with its workingDir and switch to it
+    await page.evaluate(async ({ sid, name, dir }) => {
       const mgr = window.app.sessionTabManager;
-      mgr.addTab(sid, 'Quick Create Base', 'idle');
+      mgr.addTab(sid, name, 'idle', dir);
       await mgr.switchToTab(sid);
-    }, sessionA);
+    }, { sid: originalSessionId, name: 'WorkDir Test', dir: workingDir });
 
-    await page.waitForTimeout(500);
+    // Wait for the tab to become active
+    await page.waitForFunction(
+      (sid) => window.app && window.app.sessionTabManager.activeTabId === sid,
+      originalSessionId,
+      { timeout: 10000 }
+    );
 
-    // Count tabs before clicking
+    // Record tab count before clicking quick-create
     const tabCountBefore = await page.evaluate(() => {
       return window.app.sessionTabManager.tabs.size;
     });
 
-    // Click the quick-create button via JS to avoid visibility/scroll issues
+    // Click the quick-create (plus) button via JS to avoid visibility/scroll issues
     await page.evaluate(() => {
       document.getElementById('tabNewBtn').click();
     });
@@ -135,10 +149,73 @@ test.describe('Tab management: close and quick-create behavior', () => {
       { timeout: 10000 }
     );
 
-    // Verify a new tab was created
-    const tabCountAfter = await page.evaluate(() => {
-      return window.app.sessionTabManager.tabs.size;
+    // Verify the new session inherited the same workingDir
+    const newTabData = await page.evaluate((origSid) => {
+      const mgr = window.app.sessionTabManager;
+      for (const [id, sessionData] of mgr.activeSessions) {
+        if (id !== origSid) {
+          return { id, workingDir: sessionData.workingDir, name: sessionData.name };
+        }
+      }
+      return null;
+    }, originalSessionId);
+
+    expect(newTabData).toBeTruthy();
+    expect(newTabData.workingDir).toBe(workingDir);
+
+    // The tab name should contain the folder name derived from the workingDir
+    const separator = workingDir.includes('\\') ? '\\' : '/';
+    const expectedFolder = workingDir.split(separator).filter(Boolean).pop();
+    expect(newTabData.name).toContain(expectedFolder);
+  });
+
+  test('dropdown chevron opens folder browser modal', async ({ page }) => {
+    setupPageCapture(page);
+
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+
+    // Wait for session tab manager to be initialized
+    await page.waitForFunction(
+      () => window.app && window.app.sessionTabManager,
+      { timeout: 20000 }
+    );
+
+    // Verify the dropdown button exists
+    const dropdownExists = await page.evaluate(() => {
+      return !!document.getElementById('tabNewDropdown');
     });
-    expect(tabCountAfter).toBeGreaterThan(tabCountBefore);
+    expect(dropdownExists).toBe(true);
+
+    // Click the dropdown chevron via JS to avoid visibility/scroll issues
+    await page.evaluate(() => {
+      document.getElementById('tabNewDropdown').click();
+    });
+
+    // Wait for the folder browser modal to become active
+    await page.waitForFunction(() => {
+      const modal = document.getElementById('folderBrowserModal');
+      return modal && modal.classList.contains('active');
+    }, { timeout: 5000 });
+
+    // Assert the modal is visible
+    const modalActive = await page.evaluate(() => {
+      const modal = document.getElementById('folderBrowserModal');
+      return modal && modal.classList.contains('active');
+    });
+    expect(modalActive).toBe(true);
+
+    // Close the modal
+    await page.evaluate(() => {
+      document.getElementById('folderBrowserModal').classList.remove('active');
+    });
+
+    // Verify it closed
+    const modalClosed = await page.evaluate(() => {
+      const modal = document.getElementById('folderBrowserModal');
+      return modal && !modal.classList.contains('active');
+    });
+    expect(modalClosed).toBe(true);
   });
 });

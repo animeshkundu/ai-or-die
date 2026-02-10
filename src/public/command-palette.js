@@ -106,10 +106,8 @@ class CommandPaletteManager {
       section: 'Server',
       handler: () => {
         const app = window.app;
-        if (app && app.toggleAppTunnel) {
-          // Ensure the UI is initialized, then restart
-          app.toggleAppTunnel();
-          if (app._appTunnelUI) app._appTunnelUI.restart();
+        if (app && app.restartAppTunnel) {
+          app.restartAppTunnel();
         }
       }
     });
