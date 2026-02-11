@@ -12,25 +12,25 @@ const MODEL_FILES = [
   {
     name: 'encoder.int8.onnx',
     url: `https://huggingface.co/csukuangfj/${MODEL_ID}/resolve/main/encoder.int8.onnx`,
-    expectedSize: 683671552,
+    expectedSize: 652184281,
     sha256: 'TODO_COMPUTE_HASH'
   },
   {
     name: 'decoder.int8.onnx',
     url: `https://huggingface.co/csukuangfj/${MODEL_ID}/resolve/main/decoder.int8.onnx`,
-    expectedSize: 12582912,
+    expectedSize: 11845275,
     sha256: 'TODO_COMPUTE_HASH'
   },
   {
     name: 'joiner.int8.onnx',
     url: `https://huggingface.co/csukuangfj/${MODEL_ID}/resolve/main/joiner.int8.onnx`,
-    expectedSize: 6710886,
+    expectedSize: 6355277,
     sha256: 'TODO_COMPUTE_HASH'
   },
   {
     name: 'tokens.txt',
     url: `https://huggingface.co/csukuangfj/${MODEL_ID}/resolve/main/tokens.txt`,
-    expectedSize: 96256,
+    expectedSize: 93939,
     sha256: 'TODO_COMPUTE_HASH'
   }
 ];
