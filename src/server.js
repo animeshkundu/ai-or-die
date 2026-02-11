@@ -1198,8 +1198,7 @@ class ClaudeCodeWebServer {
     ]);
 
     // Non-blocking STT init — downloads model if needed
-    if (this.sttEngine._status !== 'unavailable' &&
-        (this.sttEngine._enabled || this.sttEngine._sttEndpoint)) {
+    if (this.sttEngine._enabled || this.sttEngine._sttEndpoint) {
       this.sttEngine.initialize().catch(err => {
         if (this.dev) console.error('[STT] Init failed:', err.message);
       });
