@@ -208,17 +208,19 @@ describe('voice-integration: WebSocket voice protocol', function () {
     wsSend(ws, { type: 'start_terminal' });
     await waitForMessage(ws, 'terminal_started', 15000);
 
-    // Send 10 voice uploads rapidly (they will all get some error since STT is
-    // not actually ready, but they should all count toward the rate limit)
+    // Send 10 voice uploads with small delays to ensure server processes each
+    // (they will all get errors since STT is not ready, but they count toward rate limit)
     for (let i = 0; i < 10; i++) {
       wsSend(ws, {
         type: 'voice_upload',
         audio: createTestAudio(0.5)
       });
+      // Small delay between sends to avoid overwhelming the server
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
 
-    // Wait a bit for all 10 to be processed
-    await new Promise(resolve => setTimeout(resolve, 500));
+    // Wait for all 10 to be processed server-side
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     // 11th should hit rate limit
     wsSend(ws, {

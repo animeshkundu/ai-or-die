@@ -337,17 +337,14 @@ test.describe('@voice Voice Input UI', () => {
     await page.goto(serverInfo.url);
     await waitForAppReady(page);
 
-    // Programmatically set the mic button to processing state
-    await page.evaluate(() => {
+    // Programmatically set the mic button to processing state and verify in same evaluate
+    const hasProcessing = await page.evaluate(() => {
       const btn = document.getElementById('voiceInputBtn');
-      if (btn) {
-        btn.style.display = '';
-        btn.classList.add('processing');
-      }
+      if (!btn) return false;
+      btn.style.display = '';
+      btn.classList.add('processing');
+      return btn.classList.contains('processing');
     });
-
-    const micBtn = page.locator('#voiceInputBtn');
-    const hasProcessing = await micBtn.evaluate(el => el.classList.contains('processing'));
     expect(hasProcessing).toBe(true);
 
     // Clean up
