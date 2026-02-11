@@ -52,20 +52,23 @@ jobs:
           retention-days: 14
 
   voice-real-inference:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      # Cache the 670MB Parakeet V3 model — download once, reuse across runs
+      # Cache the 670MB Parakeet V3 model — download once per platform, reuse across runs
       - uses: actions/cache@v4
         id: model-cache
         with:
           path: ~/.ai-or-die/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
-          key: parakeet-v3-int8-${{ hashFiles('src/utils/model-manager.js') }}
+          key: parakeet-v3-int8-${{ matrix.os }}-${{ hashFiles('src/utils/model-manager.js') }}
 
       - run: npm ci
 

@@ -52,21 +52,25 @@ test.describe('@voice Voice Input UI', () => {
     await expect(micBtn).toBeAttached();
   });
 
-  test('@voice mic button hidden when STT not enabled and cloud unavailable', async ({ page }) => {
+  test('@voice mic button hidden when no voice backend available', async ({ page }) => {
     setupPageCapture(page);
+
+    // Remove SpeechRecognition before page loads to simulate no cloud support
+    await page.addInitScript(() => {
+      delete window.SpeechRecognition;
+      delete window.webkitSpeechRecognition;
+    });
 
     await page.goto(serverInfo.url);
     await waitForAppReady(page);
 
-    // When no --stt and SpeechRecognition not available, mic should be hidden
-    // Override SpeechRecognition to not exist
+    // With no --stt (localStatus: unavailable) AND no SpeechRecognition,
+    // the mic button should remain hidden
     const isHidden = await page.evaluate(() => {
-      // Simulate no cloud support
       const btn = document.getElementById('voiceInputBtn');
       if (!btn) return true;
       return btn.style.display === 'none' || getComputedStyle(btn).display === 'none';
     });
-    // Button is hidden by default until app logic shows it
     expect(isHidden).toBe(true);
   });
 
@@ -176,13 +180,19 @@ test.describe('@voice Voice Input UI', () => {
     expect(btnExists).toBe(true);
   });
 
-  test('@voice mic button disabled styling when feature unavailable', async ({ page }) => {
+  test('@voice mic button disabled styling when no backend available', async ({ page }) => {
     setupPageCapture(page);
+
+    // Remove SpeechRecognition to ensure no cloud fallback
+    await page.addInitScript(() => {
+      delete window.SpeechRecognition;
+      delete window.webkitSpeechRecognition;
+    });
 
     await page.goto(serverInfo.url);
     await waitForAppReady(page);
 
-    // The button should be either hidden or have disabled styling
+    // With no --stt and no SpeechRecognition, button should be hidden or disabled
     const btnState = await page.evaluate(() => {
       const btn = document.getElementById('voiceInputBtn');
       if (!btn) return 'missing';
