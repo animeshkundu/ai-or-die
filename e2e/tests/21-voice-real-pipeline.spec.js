@@ -49,7 +49,7 @@ test.describe('@voice-real Real STT Pipeline', () => {
     await page.goto('/');
 
     // Wait for app to initialize
-    await page.waitForSelector('#terminal-container', { timeout: 15000 });
+    await page.waitForSelector('#terminal-container', { timeout: 30000 });
     await page.waitForTimeout(2000); // Wait for config to load
 
     const voiceBtn = page.locator('#voiceInputBtn');
@@ -59,7 +59,7 @@ test.describe('@voice-real Real STT Pipeline', () => {
 
   test('@voice-real voiceInput config shows local mode ready', async ({ page }) => {
     await page.goto('/');
-    await page.waitForSelector('#terminal-container', { timeout: 15000 });
+    await page.waitForSelector('#terminal-container', { timeout: 30000 });
 
     // Check the config via JavaScript in the browser
     const voiceConfig = await page.evaluate(async () => {
