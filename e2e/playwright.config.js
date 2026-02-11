@@ -94,7 +94,6 @@ module.exports = defineConfig({
             '--use-file-for-fake-audio-capture=' + require('path').resolve(__dirname, '..', 'test', 'fixtures', 'hello-world.wav'),
           ],
         },
-        baseURL: 'http://localhost:7799',
       },
       grep: /@voice-real/,
     },

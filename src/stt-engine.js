@@ -8,6 +8,7 @@ const ModelManager = require('./utils/model-manager.js');
 const MAX_QUEUE_SIZE = 3;
 const TRANSCRIPTION_TIMEOUT_MS = 60000;
 const MAX_RESTART_DELAY_MS = 15000;
+const MAX_RESTART_ATTEMPTS = 5;
 
 class SttEngine {
   constructor(options = {}) {
@@ -20,12 +21,23 @@ class SttEngine {
     this._currentRequest = null;
     this._requestIdCounter = 0;
     this._restartAttempts = 0;
+    this._initPromise = null;
     this._modelManager = new ModelManager({
       modelsDir: options.modelsDir
     });
   }
 
-  async initialize() {
+  async initialize(onProgress) {
+    if (this._initPromise) return this._initPromise;
+    this._initPromise = this._doInitialize(onProgress);
+    try {
+      await this._initPromise;
+    } finally {
+      this._initPromise = null;
+    }
+  }
+
+  async _doInitialize(onProgress) {
     if (!this._enabled && !this._sttEndpoint) {
       this._status = 'unavailable';
       return;
@@ -44,6 +56,7 @@ class SttEngine {
       this._status = 'downloading';
       await this._modelManager.ensureModel((progress) => {
         this._downloadProgress = progress;
+        if (onProgress) onProgress(progress);
       });
     }
 
@@ -131,15 +144,23 @@ class SttEngine {
   _onWorkerExit(code) {
     console.error(`[stt-engine] Worker exited with code ${code}`);
 
-    // Reject the current in-flight request
-    if (this._currentRequest) {
-      clearTimeout(this._currentRequest.timer);
-      this._currentRequest.reject(new Error('STT worker crashed'));
-      this._currentRequest = null;
-      this._queue.shift();
+    // Reject all queued requests (includes the current in-flight request)
+    for (const req of this._queue) {
+      clearTimeout(req.timer);
+      req.reject(new Error('STT worker crashed'));
     }
+    this._queue = [];
+    this._currentRequest = null;
 
     this._worker = null;
+
+    // Give up after too many consecutive failures
+    if (this._restartAttempts >= MAX_RESTART_ATTEMPTS) {
+      console.error(`[stt-engine] Max restart attempts (${MAX_RESTART_ATTEMPTS}) reached, giving up`);
+      this._status = 'unavailable';
+      return;
+    }
+
     this._status = 'loading';
 
     // Restart with exponential backoff
@@ -184,6 +205,8 @@ class SttEngine {
           worker.on('message', (m) => this._onWorkerMessage(m));
           worker.on('exit', (c) => this._onWorkerExit(c));
 
+          // Drain any queued requests from the backoff window
+          this._processQueue();
           resolve();
         } else if (msg.type === 'error') {
           worker.off('message', onReady);
@@ -262,8 +285,14 @@ class SttEngine {
       const req = this._queue[idx];
       clearTimeout(req.timer);
       this._queue.splice(idx, 1);
+      let wasCurrent = false;
       if (this._currentRequest && this._currentRequest.id === id) {
         this._currentRequest = null;
+        wasCurrent = true;
+      }
+      // Process next item if the removed request was current
+      if (wasCurrent) {
+        this._processQueue();
       }
     }
   }

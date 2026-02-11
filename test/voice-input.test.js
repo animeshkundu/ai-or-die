@@ -282,22 +282,111 @@ describe('voice: message validation', function () {
   });
 
   it('rate limiting: 10 per minute per session', function () {
-    // Simulate the rate limiting logic from server.js
+    // Replicate the actual rate-limiting logic from server.js handleVoiceUpload
+    const MAX_PER_MINUTE = 10;
     const timestamps = [];
     const now = Date.now();
-    const MAX_PER_MINUTE = 10;
 
-    // Add 10 timestamps
-    for (let i = 0; i < MAX_PER_MINUTE; i++) {
-      timestamps.push(now);
+    function tryUpload(ts) {
+      const recent = timestamps.filter(t => ts - t < 60000);
+      timestamps.length = 0;
+      timestamps.push(...recent);
+      if (recent.length >= MAX_PER_MINUTE) {
+        return 'rejected';
+      }
+      timestamps.push(ts);
+      return 'accepted';
     }
 
-    // Filter recent (within 60s)
-    const recent = timestamps.filter(ts => now - ts < 60000);
-    assert.strictEqual(recent.length, MAX_PER_MINUTE);
+    // First 10 should be accepted
+    for (let i = 0; i < MAX_PER_MINUTE; i++) {
+      assert.strictEqual(tryUpload(now), 'accepted', `Request ${i + 1} should be accepted`);
+    }
 
-    // 11th should be rejected
-    assert(recent.length >= MAX_PER_MINUTE, '11th request should be rejected');
+    // 11th within the same minute should be rejected
+    assert.strictEqual(tryUpload(now), 'rejected', '11th request should be rejected');
+
+    // After 60s, requests should be accepted again
+    assert.strictEqual(tryUpload(now + 61000), 'accepted', 'Request after 60s should be accepted');
+  });
+});
+
+
+describe('voice: voice-handler.js pure functions', function () {
+  const VoiceHandler = require('../src/public/voice-handler');
+  const { float32ToInt16, resample, VoiceInputController } = VoiceHandler;
+
+  describe('float32ToInt16', function () {
+    it('converts normal range values correctly', function () {
+      const input = new Float32Array([0.5, -0.5]);
+      const output = float32ToInt16(input);
+      assert.strictEqual(output[0], 16383, '0.5 should map to 16383');
+      assert.strictEqual(output[1], -16384, '-0.5 should map to -16384');
+    });
+
+    it('converts boundary values correctly', function () {
+      const input = new Float32Array([1.0, -1.0]);
+      const output = float32ToInt16(input);
+      assert.strictEqual(output[0], 32767, '1.0 should map to 32767');
+      assert.strictEqual(output[1], -32768, '-1.0 should map to -32768');
+    });
+
+    it('clamps values beyond [-1, 1]', function () {
+      const input = new Float32Array([1.5, -1.5]);
+      const output = float32ToInt16(input);
+      assert.strictEqual(output[0], 32767, '1.5 should clamp to 32767');
+      assert.strictEqual(output[1], -32768, '-1.5 should clamp to -32768');
+    });
+
+    it('converts zero correctly', function () {
+      const input = new Float32Array([0.0]);
+      const output = float32ToInt16(input);
+      assert.strictEqual(output[0], 0, '0.0 should map to 0');
+    });
+  });
+
+  describe('resample', function () {
+    it('returns same length when rates match', function () {
+      const data = new Float32Array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+      const output = resample(data, 16000, 16000);
+      assert.strictEqual(output.length, data.length, 'same rate should return same length');
+    });
+
+    it('downsamples 2:1 to half length', function () {
+      const data = new Float32Array(3200);
+      for (let i = 0; i < data.length; i++) data[i] = Math.sin(i * 0.1);
+      const output = resample(data, 32000, 16000);
+      assert.strictEqual(output.length, Math.round(data.length / 2),
+        '32kHz to 16kHz should produce half the samples');
+    });
+
+    it('downsamples 3:1 to approximately one-third length', function () {
+      const data = new Float32Array(4800);
+      for (let i = 0; i < data.length; i++) data[i] = Math.sin(i * 0.1);
+      const output = resample(data, 48000, 16000);
+      assert.strictEqual(output.length, Math.round(data.length / 3),
+        '48kHz to 16kHz should produce ~1/3 the samples');
+    });
+  });
+
+  describe('VoiceInputController', function () {
+    it('constructor accepts mode and callbacks', function () {
+      let startCalled = false;
+      let errorCalled = false;
+      const ctrl = new VoiceInputController({
+        mode: 'cloud',
+        onRecordingStart: function () { startCalled = true; },
+        onError: function () { errorCalled = true; },
+      });
+      assert.strictEqual(ctrl._mode, 'cloud');
+      assert.strictEqual(typeof ctrl._onRecordingStart, 'function');
+      assert.strictEqual(typeof ctrl._onError, 'function');
+    });
+
+    it('isRecording returns false initially', function () {
+      const ctrl = new VoiceInputController({ mode: 'local' });
+      assert.strictEqual(ctrl.isRecording, false);
+    });
   });
 });
 

@@ -2309,7 +2309,6 @@ class ClaudeCodeWebServer {
       });
       return;
     }
-    recent.push(now);
 
     if (!this.sttEngine.isReady()) {
       this.sendToWebSocket(wsInfo.ws, {
@@ -2348,25 +2347,26 @@ class ClaudeCodeWebServer {
         return;
       }
 
+      if (audioBuffer.length % 2 !== 0) {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'voice_transcription_error',
+          message: 'Invalid audio data: buffer length must be even (16-bit PCM samples)'
+        });
+        return;
+      }
+
+      // All validation passed — count the request for rate limiting
+      recent.push(now);
+
       // Convert Int16 PCM buffer to Float32Array for sherpa-onnx
       const float32 = this._int16ToFloat32(audioBuffer);
 
-      // Transcribe with 60s timeout
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 60000);
+      const text = await this.sttEngine.transcribe(float32);
 
-      try {
-        const text = await this.sttEngine.transcribe(float32);
-        clearTimeout(timeout);
-
-        this.sendToWebSocket(wsInfo.ws, {
-          type: 'voice_transcription',
-          text
-        });
-      } catch (err) {
-        clearTimeout(timeout);
-        throw err;
-      }
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription',
+        text
+      });
     } catch (error) {
       if (this.dev) console.error('Voice upload error:', error);
       this.sendToWebSocket(wsInfo.ws, {
@@ -2380,7 +2380,9 @@ class ClaudeCodeWebServer {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
 
-    if (this.sttEngine.isReady()) {
+    const currentStatus = this.sttEngine.getStatus();
+
+    if (currentStatus === 'ready') {
       this.sendToWebSocket(wsInfo.ws, {
         type: 'voice_status',
         status: 'ready',
@@ -2389,9 +2391,21 @@ class ClaudeCodeWebServer {
       return;
     }
 
-    // Trigger model download/init and broadcast progress
+    // Already downloading or loading — return current status instead of re-initializing
+    if (currentStatus === 'downloading' || currentStatus === 'loading') {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_status',
+        status: currentStatus,
+        progress: this.sttEngine.getDownloadProgress(),
+      });
+      return;
+    }
+
+    // Trigger model download/init and broadcast progress with computed percent
     this.sttEngine.initialize((progress) => {
-      this.broadcastAll({ type: 'voice_model_progress', ...progress });
+      const fileProgress = progress.total > 0 ? progress.downloaded / progress.total : 0;
+      const overallPercent = Math.round(((progress.fileIndex + fileProgress) / progress.fileCount) * 100);
+      this.broadcastAll({ type: 'voice_model_progress', ...progress, percent: overallPercent });
     }).then(() => {
       this.broadcastAll({
         type: 'voice_status',
@@ -2423,11 +2437,9 @@ class ClaudeCodeWebServer {
   }
 
   _int16ToFloat32(int16Buffer) {
-    const int16 = new Int16Array(
-      int16Buffer.buffer,
-      int16Buffer.byteOffset,
-      int16Buffer.byteLength / 2
-    );
+    // Copy to ensure 2-byte alignment (Node.js Buffers may have odd byteOffset)
+    const aligned = new Uint8Array(int16Buffer).buffer;
+    const int16 = new Int16Array(aligned);
     const float32 = new Float32Array(int16.length);
     for (let i = 0; i < int16.length; i++) {
       float32[i] = int16[i] / 32768.0;

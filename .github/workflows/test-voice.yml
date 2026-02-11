@@ -92,7 +92,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: voice-real-inference
+          name: voice-real-inference-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/

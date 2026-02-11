@@ -22,8 +22,6 @@ var MAX_RECORDING_SECONDS = 120;
 var MIN_RECORDING_SECONDS = 0.5;
 var PUSH_TO_TALK_THRESHOLD_MS = 300;
 var TARGET_SAMPLE_RATE = 16000;
-var WS_PREFIX_BYTE = 0x01;
-
 // ---------------------------------------------------------------------------
 // Utility: Float32 → Int16 conversion
 // ---------------------------------------------------------------------------
@@ -308,8 +306,8 @@ LocalVoiceRecorder.prototype.start = function () {
 
     // Set up auto-stop timer
     self._autoStopTimer = setTimeout(function () {
-      if (self._recording && self._resolveStop) {
-        self._stopInternal();
+      if (self._recording) {
+        self._forceStop();
       }
     }, MAX_RECORDING_SECONDS * 1000);
 
@@ -449,6 +447,20 @@ LocalVoiceRecorder.prototype._stopInternal = function () {
   }
 };
 
+/**
+ * Force stop from auto-stop timer. Creates its own resolve handler
+ * so _stopInternal can resolve even when stop() was never called.
+ */
+LocalVoiceRecorder.prototype._forceStop = function () {
+  var self = this;
+  if (!self._recording) return;
+  // Provide a resolve handler so _stopInternal can deliver the result
+  if (!self._resolveStop) {
+    self._resolveStop = function () { /* discard — no external caller waiting */ };
+  }
+  self._stopInternal();
+};
+
 Object.defineProperty(LocalVoiceRecorder.prototype, 'isRecording', {
   get: function () { return this._recording; }
 });
@@ -516,6 +528,7 @@ LocalVoiceRecorder.prototype.destroy = function () {
  * @param {function} [options.onRecordingStop] - Called with { samples?, text?, durationMs }
  * @param {function} [options.onTranscription] - Called with transcription text (cloud mode)
  * @param {function} [options.onError] - Called with Error object
+ * @param {function} [options.onCancel] - Called when recording is cancelled (e.g. Escape key)
  */
 function VoiceInputController(options) {
   this._mode = options.mode || 'cloud';
@@ -523,6 +536,7 @@ function VoiceInputController(options) {
   this._onRecordingStop = options.onRecordingStop || null;
   this._onTranscription = options.onTranscription || null;
   this._onError = options.onError || null;
+  this._onCancel = options.onCancel || null;
 
   this._recorder = null;
   this._keydownTime = null;
@@ -590,6 +604,9 @@ VoiceInputController.prototype.stopRecording = function () {
 
     // Discard recordings shorter than MIN_RECORDING_SECONDS
     if (durationMs < MIN_RECORDING_SECONDS * 1000) {
+      if (self._onError) {
+        self._onError(new Error('Recording too short (minimum ' + MIN_RECORDING_SECONDS + ' seconds)'));
+      }
       return;
     }
 
@@ -615,6 +632,9 @@ VoiceInputController.prototype.cancelRecording = function () {
   if (this._recorder) {
     this._recorder.destroy();
     this._recorder = null;
+  }
+  if (this._onCancel) {
+    this._onCancel();
   }
 };
 
@@ -772,7 +792,6 @@ var voiceHandlerExports = {
   MIN_RECORDING_SECONDS: MIN_RECORDING_SECONDS,
   PUSH_TO_TALK_THRESHOLD_MS: PUSH_TO_TALK_THRESHOLD_MS,
   TARGET_SAMPLE_RATE: TARGET_SAMPLE_RATE,
-  WS_PREFIX_BYTE: WS_PREFIX_BYTE,
 
   // Utilities
   float32ToInt16: float32ToInt16,
