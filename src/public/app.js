@@ -102,7 +102,7 @@ class ClaudeCodeWebInterface {
         await this.loadConfig();
         this.setupTerminal();
         this.setupUI();
-        if (this.tools && this.tools.voiceInput) this.setupVoiceInput();
+        if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
         this.applySettings(this.loadSettings());
         this.applyAliasesToUI();
@@ -233,6 +233,7 @@ class ClaudeCodeWebInterface {
                     this.folderMode = cfg.folderMode;
                 }
                 this.tools = cfg.tools || {};
+                this.voiceInputConfig = cfg.voiceInput || null;
                 this._configPrerequisites = cfg.prerequisites || null;
                 this.hostname = cfg.hostname || '';
                 // Store baseFolder so first-run can auto-create a session
@@ -720,7 +721,7 @@ class ClaudeCodeWebInterface {
     }
 
     setupVoiceInput() {
-        const voiceCfg = this.tools.voiceInput;
+        const voiceCfg = this.voiceInputConfig;
         if (!voiceCfg) return;
 
         const btn = document.getElementById('voiceInputBtn');
@@ -1826,6 +1827,7 @@ class ClaudeCodeWebInterface {
             const resp = await this.authFetch('/api/config');
             const config = await resp.json();
             this.tools = config.tools || {};
+            this.voiceInputConfig = config.voiceInput || null;
             this._configPrerequisites = config.prerequisites || null;
             this.renderToolCards();
         } catch {
