@@ -2309,6 +2309,7 @@ class ClaudeCodeWebServer {
       });
       return;
     }
+    recent.push(now);
 
     if (!this.sttEngine.isReady()) {
       this.sendToWebSocket(wsInfo.ws, {
@@ -2355,8 +2356,6 @@ class ClaudeCodeWebServer {
         return;
       }
 
-      // All validation passed — count the request for rate limiting
-      recent.push(now);
 
       // Convert Int16 PCM buffer to Float32Array for sherpa-onnx
       const float32 = this._int16ToFloat32(audioBuffer);
