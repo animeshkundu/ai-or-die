@@ -114,8 +114,8 @@ test.describe('@voice-real Real STT Pipeline', () => {
     // The processing state may be very brief if inference is fast
     await expect(micBtn).not.toHaveClass(/recording/, { timeout: 15000 });
 
-    // Wait for any processing to complete
-    await expect(micBtn).not.toHaveClass(/processing/, { timeout: 30000 });
+    // Wait for any processing to complete — real inference on CI can take 30-60s
+    await expect(micBtn).not.toHaveClass(/processing/, { timeout: 60000 });
 
     // At this point, text should have been injected into the terminal.
     // The transcription of a 440Hz tone may be empty or garbled, but
