@@ -87,16 +87,22 @@ jobs:
         env:
           NODE_ENV: test
 
-      # Wait for server + model load (can take 15-20s)
-      - name: Wait for server ready
+      # Wait for server + model load (model load can take 15-30s)
+      - name: Wait for server and STT model ready
         run: |
-          for i in $(seq 1 60); do
-            if curl -s http://localhost:7799/api/config | grep -q '"localStatus"'; then
-              echo "Server ready"
-              break
+          echo "Waiting for server..."
+          for i in $(seq 1 90); do
+            STATUS=$(curl -s http://localhost:7799/api/config 2>/dev/null | grep -o '"localStatus":"[^"]*"' || echo "")
+            if echo "$STATUS" | grep -q '"ready"'; then
+              echo "Server and STT model ready: $STATUS"
+              exit 0
             fi
-            sleep 1
+            echo "  Attempt $i: $STATUS"
+            sleep 2
           done
+          echo "ERROR: Server did not become ready within 180s"
+          curl -s http://localhost:7799/api/config || echo "Server not reachable"
+          exit 1
 
       - name: Run real-pipeline E2E tests
         run: npx playwright test --config e2e/playwright.config.js --project voice-real-pipeline

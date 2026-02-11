@@ -86,9 +86,9 @@ async function main() {
 
   // 1. Verify model is downloaded
   const mm = new ModelManager();
-  const modelReady = mm.isModelReady();
+  const modelReady = await mm.isModelReady();
   console.log(`Model ready: ${modelReady}`);
-  assert(modelReady, 'Model not downloaded. Run: node scripts/download-model.js');
+  assert(modelReady === true, 'Model not downloaded. Run: node scripts/download-model.js');
 
   const modelDir = mm.getModelPath();
   console.log(`Model path: ${modelDir}`);
