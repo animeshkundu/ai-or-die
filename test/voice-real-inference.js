@@ -8,7 +8,7 @@ const assert = require('assert');
 const path = require('path');
 const fs = require('fs');
 const { Worker } = require('worker_threads');
-const { ModelManager } = require('../src/utils/model-manager');
+const ModelManager = require('../src/utils/model-manager');
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const WORKER_PATH = path.join(__dirname, '..', 'src', 'stt-worker.js');

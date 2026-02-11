@@ -76,7 +76,7 @@ jobs:
 
       # Run real inference test — actual sherpa-onnx with actual model
       - name: Run real inference tests
-        run: node test/voice-real-inference.test.js
+        run: node test/voice-real-inference.js
 
       # E2E with real STT: start server with --stt, run Playwright with fake audio
       - name: Install Playwright browsers
