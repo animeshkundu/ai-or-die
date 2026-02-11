@@ -197,7 +197,8 @@ describe('voice: SttEngine', function () {
 
     // Mock worker so transcribe() queues but never resolves
     engine._worker = {
-      postMessage: () => {}
+      postMessage: () => {},
+      terminate: async () => {}
     };
 
     const promises = [];

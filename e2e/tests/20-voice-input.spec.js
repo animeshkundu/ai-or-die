@@ -216,10 +216,10 @@ test.describe('@voice Voice Input UI', () => {
     await page.goto(serverInfo.url);
     await waitForAppReady(page);
 
-    // Programmatically show the download banner
+    // Programmatically show the download banner (override inline display:none)
     await page.evaluate(() => {
       const banner = document.getElementById('voiceDownloadBanner');
-      if (banner) banner.style.display = '';
+      if (banner) banner.style.display = 'flex';
     });
 
     const banner = page.locator('#voiceDownloadBanner');

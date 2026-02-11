@@ -2294,15 +2294,7 @@ class ClaudeCodeWebServer {
       return;
     }
 
-    if (!this.sttEngine.isReady()) {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'voice_transcription_error',
-        message: `Speech-to-text not ready (status: ${this.sttEngine.getStatus()})`
-      });
-      return;
-    }
-
-    // Rate limit: max 10 voice uploads per minute per session
+    // Rate limit: max 10 voice uploads per minute per session (check early to prevent abuse)
     const sessionId = wsInfo.claudeSessionId;
     if (!this._voiceUploadCounts.has(sessionId)) {
       this._voiceUploadCounts.set(sessionId, []);
@@ -2319,6 +2311,14 @@ class ClaudeCodeWebServer {
       return;
     }
     recent.push(now);
+
+    if (!this.sttEngine.isReady()) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription_error',
+        message: `Speech-to-text not ready (status: ${this.sttEngine.getStatus()})`
+      });
+      return;
+    }
 
     try {
       // Validate audio data
