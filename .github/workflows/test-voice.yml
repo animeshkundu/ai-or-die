@@ -78,31 +78,9 @@ jobs:
       - name: Run real inference tests
         run: node test/voice-real-inference.js
 
-      # E2E with real STT: start server with --stt, run Playwright with fake audio
+      # E2E with real STT: Playwright test starts its own server with STT in beforeAll
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-
-      - name: Start server with real STT
-        run: node bin/ai-or-die.js --stt --port 7799 --disable-auth &
-        env:
-          NODE_ENV: test
-
-      # Wait for server + model load (model load can take 15-30s)
-      - name: Wait for server and STT model ready
-        run: |
-          echo "Waiting for server..."
-          for i in $(seq 1 90); do
-            STATUS=$(curl -s http://localhost:7799/api/config 2>/dev/null | grep -o '"localStatus":"[^"]*"' || echo "")
-            if echo "$STATUS" | grep -q '"ready"'; then
-              echo "Server and STT model ready: $STATUS"
-              exit 0
-            fi
-            echo "  Attempt $i: $STATUS"
-            sleep 2
-          done
-          echo "ERROR: Server did not become ready within 180s"
-          curl -s http://localhost:7799/api/config || echo "Server not reachable"
-          exit 1
 
       - name: Run real-pipeline E2E tests
         run: npx playwright test --config e2e/playwright.config.js --project voice-real-pipeline
