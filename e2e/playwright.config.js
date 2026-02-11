@@ -82,5 +82,21 @@ module.exports = defineConfig({
       },
       grep: /@voice/,
     },
+    {
+      name: 'voice-real-pipeline',
+      testMatch: '21-voice-real-pipeline.spec.js',
+      use: {
+        permissions: ['clipboard-read', 'clipboard-write', 'microphone'],
+        launchOptions: {
+          args: [
+            '--use-fake-device-for-media-stream',
+            '--use-fake-ui-for-media-stream',
+            '--use-file-for-fake-audio-capture=' + require('path').resolve(__dirname, '..', 'test', 'fixtures', 'hello-world.wav'),
+          ],
+        },
+        baseURL: 'http://localhost:7799',
+      },
+      grep: /@voice-real/,
+    },
   ],
 });
