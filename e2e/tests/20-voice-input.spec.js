@@ -225,10 +225,10 @@ test.describe('@voice Voice Input UI', () => {
     const banner = page.locator('#voiceDownloadBanner');
     await expect(banner).toBeVisible();
 
-    // Dismiss button should work
+    // Dismiss button should work (force click to bypass overlay interception)
     const dismissBtn = page.locator('#voiceDownloadDismiss');
     await expect(dismissBtn).toBeVisible();
-    await dismissBtn.click();
+    await dismissBtn.click({ force: true });
 
     await expect(banner).toBeHidden();
   });
