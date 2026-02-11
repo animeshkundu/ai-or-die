@@ -38,6 +38,11 @@ class ClaudeCodeWebInterface {
         
         this.splitContainer = null;
 
+        // Voice input
+        this.voiceController = null;
+        this.voiceMode = null;
+        this._voiceTimerInterval = null;
+
         // Cached TextDecoder for lazy string decode on hot path
         this._textDecoder = new TextDecoder();
 
@@ -97,6 +102,7 @@ class ClaudeCodeWebInterface {
         await this.loadConfig();
         this.setupTerminal();
         this.setupUI();
+        if (this.tools && this.tools.voiceInput) this.setupVoiceInput();
         this.setupPlanDetector();
         this.applySettings(this.loadSettings());
         this.applyAliasesToUI();
@@ -713,6 +719,188 @@ class ClaudeCodeWebInterface {
         // Custom prompts dropdown removed
     }
 
+    setupVoiceInput() {
+        const voiceCfg = this.tools.voiceInput;
+        if (!voiceCfg) return;
+
+        const btn = document.getElementById('voiceInputBtn');
+        if (!btn) return;
+
+        // Determine mode: prefer local if ready, fall back to cloud
+        const localReady = voiceCfg.localStatus === 'ready';
+        const cloudAvailable = typeof window !== 'undefined' &&
+            !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
+        if (!localReady && !cloudAvailable) {
+            // Neither backend available — keep button hidden
+            return;
+        }
+
+        this.voiceMode = localReady ? 'local' : 'cloud';
+        btn.style.display = '';
+
+        const self = this;
+        const timerEl = btn.querySelector('.voice-timer');
+
+        this.voiceController = new window.VoiceHandler.VoiceInputController({
+            mode: this.voiceMode,
+            onRecordingStart: function () {
+                btn.classList.add('recording');
+                btn.classList.remove('processing');
+                btn.setAttribute('aria-pressed', 'true');
+                btn.title = 'Stop Recording (Ctrl+Shift+M)';
+                if (timerEl) {
+                    timerEl.style.display = '';
+                    timerEl.textContent = '0:00';
+                }
+                // Start timer
+                self._voiceTimerInterval = setInterval(function () {
+                    if (self.voiceController && timerEl) {
+                        var secs = self.voiceController.elapsed;
+                        var m = Math.floor(secs / 60);
+                        var s = secs % 60;
+                        timerEl.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+                    }
+                }, 1000);
+                // Announce to screen reader
+                var srEl = document.getElementById('srAnnounce');
+                if (srEl) srEl.textContent = 'Recording. Speak now.';
+            },
+            onRecordingStop: function (result) {
+                btn.classList.remove('recording');
+                btn.setAttribute('aria-pressed', 'false');
+                btn.title = 'Voice Input (Ctrl+Shift+M)';
+                if (timerEl) timerEl.style.display = 'none';
+                if (self._voiceTimerInterval) {
+                    clearInterval(self._voiceTimerInterval);
+                    self._voiceTimerInterval = null;
+                }
+
+                if (self.voiceMode === 'local' && result && result.samples) {
+                    btn.classList.add('processing');
+                    // Send PCM as binary with 0x01 prefix over WebSocket
+                    var prefix = new Uint8Array([0x01]);
+                    var pcmBytes = new Uint8Array(result.samples.buffer);
+                    var payload = new Uint8Array(prefix.length + pcmBytes.length);
+                    payload.set(prefix, 0);
+                    payload.set(pcmBytes, prefix.length);
+                    if (self.socket && self.socket.readyState === WebSocket.OPEN) {
+                        self.socket.send(payload.buffer);
+                    }
+                }
+                // Cloud mode: text comes via onTranscription, no processing state needed
+            },
+            onTranscription: function (text) {
+                btn.classList.remove('processing');
+                if (text && self.socket && self.socket.readyState === WebSocket.OPEN) {
+                    // Inject transcribed text as terminal input
+                    var normalized = text;
+                    if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
+                        normalized = attachClipboardHandler.normalizeLineEndings(text);
+                    }
+                    if (self.terminal && self.terminal.modes && self.terminal.modes.bracketedPasteMode) {
+                        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
+                            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                        }
+                    }
+                    self.send({ type: 'input', data: normalized });
+                }
+                var srEl = document.getElementById('srAnnounce');
+                if (srEl) srEl.textContent = 'Transcription complete.';
+            },
+            onError: function (err) {
+                btn.classList.remove('recording', 'processing');
+                btn.setAttribute('aria-pressed', 'false');
+                btn.title = 'Voice Input (Ctrl+Shift+M)';
+                if (timerEl) timerEl.style.display = 'none';
+                if (self._voiceTimerInterval) {
+                    clearInterval(self._voiceTimerInterval);
+                    self._voiceTimerInterval = null;
+                }
+                console.error('[Voice] Error:', err);
+                if (self.terminal) {
+                    self.terminal.write('\r\n\x1b[31m[Voice error] ' + (err.message || err) + '\x1b[0m\r\n');
+                }
+            }
+        });
+
+        // Button click: toggle recording
+        btn.addEventListener('click', function () {
+            self.voiceController.toggleRecording();
+        });
+
+        // Attach keyboard listeners (Ctrl+Shift+M, Escape)
+        this.voiceController.attachKeyboardListeners();
+
+        // Download banner dismiss
+        var dismissBtn = document.getElementById('voiceDownloadDismiss');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', function () {
+                var banner = document.getElementById('voiceDownloadBanner');
+                if (banner) {
+                    banner.classList.remove('visible');
+                    banner.style.display = 'none';
+                }
+            });
+        }
+    }
+
+    _handleVoiceMessage(message) {
+        var btn = document.getElementById('voiceInputBtn');
+        switch (message.type) {
+            case 'voice_transcription': {
+                if (btn) btn.classList.remove('processing');
+                var text = message.text || '';
+                if (text) {
+                    var normalized = text;
+                    if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
+                        normalized = attachClipboardHandler.normalizeLineEndings(text);
+                    }
+                    if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+                        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
+                            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                        }
+                    }
+                    this.send({ type: 'input', data: normalized });
+                }
+                var srEl = document.getElementById('srAnnounce');
+                if (srEl) srEl.textContent = 'Transcription complete.';
+                break;
+            }
+            case 'voice_transcription_error': {
+                if (btn) btn.classList.remove('processing');
+                if (this.terminal) {
+                    this.terminal.write('\r\n\x1b[31m[Voice error] ' + (message.message || 'Transcription failed') + '\x1b[0m\r\n');
+                }
+                break;
+            }
+            case 'voice_model_progress': {
+                var banner = document.getElementById('voiceDownloadBanner');
+                var fill = document.getElementById('voiceDownloadFill');
+                var pct = document.getElementById('voiceDownloadPercent');
+                var percent = message.percent || 0;
+
+                if (banner) {
+                    if (percent >= 100) {
+                        banner.classList.remove('visible');
+                        banner.style.display = 'none';
+                        // Switch to local mode now that model is ready
+                        if (this.voiceController) {
+                            this.voiceMode = 'local';
+                            this.voiceController.setMode('local');
+                        }
+                    } else {
+                        banner.style.display = '';
+                        banner.classList.add('visible');
+                    }
+                }
+                if (fill) fill.style.width = Math.min(percent, 100) + '%';
+                if (pct) pct.textContent = Math.round(percent) + '%';
+                break;
+            }
+        }
+    }
+
     setupSettingsModal() {
         const modal = document.getElementById('settingsModal');
         const closeBtn = document.getElementById('closeSettingsBtn');
@@ -1297,6 +1485,13 @@ class ClaudeCodeWebInterface {
                 if (message.type === 'app_tunnel_restarting') {
                     this.reconnectAttempts = 0;
                 }
+                break;
+
+            // Voice input events
+            case 'voice_transcription':
+            case 'voice_transcription_error':
+            case 'voice_model_progress':
+                this._handleVoiceMessage(message);
                 break;
 
             default:

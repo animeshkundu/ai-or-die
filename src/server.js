@@ -19,6 +19,7 @@ const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
 const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
+const SttEngine = require('./stt-engine');
 const CircularBuffer = require('./utils/circular-buffer');
 
 /** Foreground/background session priority constants */
@@ -58,6 +59,13 @@ class ClaudeCodeWebServer {
     });
     this.tunnelManager = null; // Set via setTunnelManager() from CLI entry point
     this.installAdvisor = new InstallAdvisor();
+    this.sttEngine = new SttEngine({
+      enabled: options.stt || !!options.sttEndpoint,
+      sttEndpoint: options.sttEndpoint,
+      modelsDir: options.sttModelDir,
+      numThreads: options.sttThreads ? parseInt(options.sttThreads, 10) : undefined,
+    });
+    this._voiceUploadCounts = new Map();
     this.sessionStore = new SessionStore();
     this.usageReader = new UsageReader(this.sessionDurationHours);
     this.usageAnalytics = new UsageAnalytics({
@@ -571,6 +579,10 @@ class ClaudeCodeWebServer {
           available: vscodeTunnelAvailable,
           devtunnelAvailable: this.vscodeTunnel._devtunnelAvailable,
           ...(!vscodeTunnelAvailable ? { install: this.installAdvisor.getInstallInfo('vscode') } : {}),
+        },
+        voiceInput: {
+          localStatus: this.sttEngine.getStatus(),
+          cloudAvailable: true,
         },
         ...(prerequisites ? { prerequisites } : {}),
       });
@@ -1185,6 +1197,14 @@ class ClaudeCodeWebServer {
       this.terminalBridge._commandReady,
     ]);
 
+    // Non-blocking STT init — downloads model if needed
+    if (this.sttEngine._status !== 'unavailable' &&
+        (this.sttEngine._enabled || this.sttEngine._sttEndpoint)) {
+      this.sttEngine.initialize().catch(err => {
+        if (this.dev) console.error('[STT] Init failed:', err.message);
+      });
+    }
+
     let server;
 
     if (this.useHttps) {
@@ -1453,6 +1473,22 @@ class ClaudeCodeWebServer {
 
       case 'image_upload':
         await this.handleImageUpload(wsId, data);
+        break;
+
+      case 'voice_upload':
+        await this.handleVoiceUpload(wsId, data);
+        break;
+
+      case 'voice_download_model':
+        await this.handleVoiceDownloadModel(wsId);
+        break;
+
+      case 'voice_status':
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'voice_status',
+          status: this.sttEngine.getStatus(),
+          progress: this.sttEngine.getDownloadProgress(),
+        });
         break;
 
       case 'start_vscode_tunnel':
@@ -2227,6 +2263,177 @@ class ClaudeCodeWebServer {
         message: 'Failed to save image: ' + error.message
       });
     }
+  }
+
+  async handleVoiceUpload(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+
+    if (!wsInfo.claudeSessionId) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription_error',
+        message: 'No session joined'
+      });
+      return;
+    }
+
+    const session = this.claudeSessions.get(wsInfo.claudeSessionId);
+    if (!session) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription_error',
+        message: 'Session not found'
+      });
+      return;
+    }
+
+    if (!session.active || !session.agent) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription_error',
+        message: 'No agent is running. Start an agent first.'
+      });
+      return;
+    }
+
+    if (!this.sttEngine.isReady()) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription_error',
+        message: `Speech-to-text not ready (status: ${this.sttEngine.getStatus()})`
+      });
+      return;
+    }
+
+    // Rate limit: max 10 voice uploads per minute per session
+    const sessionId = wsInfo.claudeSessionId;
+    if (!this._voiceUploadCounts.has(sessionId)) {
+      this._voiceUploadCounts.set(sessionId, []);
+    }
+    const timestamps = this._voiceUploadCounts.get(sessionId);
+    const now = Date.now();
+    const recent = timestamps.filter(ts => now - ts < 60000);
+    this._voiceUploadCounts.set(sessionId, recent);
+    if (recent.length >= 10) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription_error',
+        message: 'Rate limit exceeded: maximum 10 voice uploads per minute.'
+      });
+      return;
+    }
+    recent.push(now);
+
+    try {
+      // Validate audio data
+      if (!data.audio || typeof data.audio !== 'string') {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'voice_transcription_error',
+          message: 'Missing audio data'
+        });
+        return;
+      }
+
+      const audioBuffer = Buffer.from(data.audio, 'base64');
+
+      // Max 120s of 16kHz 16-bit mono PCM = 3,840,000 bytes
+      if (audioBuffer.length > 3840000) {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'voice_transcription_error',
+          message: 'Audio too long (max 120 seconds)'
+        });
+        return;
+      }
+
+      if (audioBuffer.length < 2) {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'voice_transcription_error',
+          message: 'Audio too short'
+        });
+        return;
+      }
+
+      // Convert Int16 PCM buffer to Float32Array for sherpa-onnx
+      const float32 = this._int16ToFloat32(audioBuffer);
+
+      // Transcribe with 60s timeout
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
+
+      try {
+        const text = await this.sttEngine.transcribe(float32);
+        clearTimeout(timeout);
+
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'voice_transcription',
+          text
+        });
+      } catch (err) {
+        clearTimeout(timeout);
+        throw err;
+      }
+    } catch (error) {
+      if (this.dev) console.error('Voice upload error:', error);
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription_error',
+        message: error.message || 'Transcription failed'
+      });
+    }
+  }
+
+  async handleVoiceDownloadModel(wsId) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+
+    if (this.sttEngine.isReady()) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_status',
+        status: 'ready',
+        progress: null,
+      });
+      return;
+    }
+
+    // Trigger model download/init and broadcast progress
+    this.sttEngine.initialize((progress) => {
+      this.broadcastAll({ type: 'voice_model_progress', ...progress });
+    }).then(() => {
+      this.broadcastAll({
+        type: 'voice_status',
+        status: this.sttEngine.getStatus(),
+        progress: null,
+      });
+    }).catch(err => {
+      if (this.dev) console.error('[STT] Download failed:', err.message);
+      this.broadcastAll({
+        type: 'voice_status',
+        status: 'unavailable',
+        error: err.message,
+      });
+    });
+
+    this.sendToWebSocket(wsInfo.ws, {
+      type: 'voice_status',
+      status: this.sttEngine.getStatus(),
+      progress: this.sttEngine.getDownloadProgress(),
+    });
+  }
+
+  broadcastAll(data) {
+    for (const [, wsInfo] of this.webSocketConnections) {
+      if (wsInfo.ws.readyState === WebSocket.OPEN) {
+        this.sendToWebSocket(wsInfo.ws, data);
+      }
+    }
+  }
+
+  _int16ToFloat32(int16Buffer) {
+    const int16 = new Int16Array(
+      int16Buffer.buffer,
+      int16Buffer.byteOffset,
+      int16Buffer.byteLength / 2
+    );
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768.0;
+    }
+    return float32;
   }
 
   async saveImageToTemp(session, data) {

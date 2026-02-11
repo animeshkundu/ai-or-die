@@ -50,6 +50,38 @@ No config files. No Docker. No complex setup. Just `npx ai-or-die` and start cod
 | **Cross-platform** | Windows (ConPTY) + Linux — tested in CI on both |
 | **PWA** | Installable web app with offline-capable shell |
 | **Standalone binaries** | Pre-built binaries for Linux x64 and Windows x64 — no Node.js required |
+| **Voice input** | Speak instead of type — cloud (Chrome/Edge) or local (private, offline) |
+
+## Voice Input
+
+Speak instead of type. Voice input supports two modes:
+
+- **Cloud mode** (Chrome/Edge) — uses the browser's built-in speech recognition. Instant, zero download. Always available on Chromium browsers.
+- **Local mode** (`--stt` flag) — runs Parakeet V3 speech-to-text on your machine via sherpa-onnx. Fully private, works offline.
+
+### Enabling Local Mode
+
+```bash
+ai-or-die --stt
+```
+
+On first use, the ~670MB model downloads automatically (cached at `~/.ai-or-die/models/`). The app remains fully usable during download.
+
+### Usage
+
+- Click the **mic button** in the toolbar, or press **Ctrl+Shift+M** to start/stop recording.
+- **Hold** Ctrl+Shift+M for push-to-talk (release to transcribe).
+- Press **Escape** to cancel a recording.
+- Transcribed text appears in the terminal input — review, edit, then press Enter.
+
+### Configuration
+
+| Flag | Description |
+|------|-------------|
+| `--stt` | Enable local speech-to-text |
+| `--stt-endpoint <url>` | Use an external OpenAI-compatible STT endpoint |
+| `--stt-model-dir <path>` | Custom model storage directory |
+| `--stt-threads <number>` | CPU threads for inference (default: auto, max 4) |
 
 ## Quick Start
 
@@ -100,6 +132,9 @@ ai-or-die --dev
 
 # Custom tool display names
 ai-or-die --claude-alias "Sonnet" --gemini-alias "Gem"
+
+# Enable local voice-to-text (private, offline)
+ai-or-die --stt
 ```
 
 ## CLI Reference
@@ -117,6 +152,10 @@ ai-or-die --claude-alias "Sonnet" --gemini-alias "Gem"
 | `--dev` | Verbose logging | `false` |
 | `--no-open` | Don't auto-open browser | `false` |
 | `--plan <type>` | Subscription plan (`pro`, `max5`, `max20`) | `max20` |
+| `--stt` | Enable local speech-to-text | `false` |
+| `--stt-endpoint <url>` | External STT endpoint (OpenAI-compatible) | |
+| `--stt-model-dir <path>` | Custom model directory | `~/.ai-or-die/models/` |
+| `--stt-threads <number>` | CPU threads for STT inference | auto (max 4) |
 
 ## Supported Tools
 

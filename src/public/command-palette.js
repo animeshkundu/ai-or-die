@@ -230,6 +230,16 @@ class CommandPaletteManager {
       }
     });
 
+    actions.push({
+      id: 'voice-input',
+      title: 'Voice Input: Toggle Recording',
+      section: 'Actions',
+      hotkey: 'ctrl+shift+m',
+      handler: () => {
+        if (app.voiceController) app.voiceController.toggleRecording();
+      }
+    });
+
     this.ninja.data = actions;
   }
 }

@@ -35,6 +35,10 @@ program
   .option('--terminal-alias <name>', 'display alias for Terminal (default: env TERMINAL_ALIAS or "Terminal")')
   .option('--tunnel', 'enable dev tunnel (requires devtunnel CLI installed)')
   .option('--tunnel-allow-anonymous', 'allow anonymous access to dev tunnel')
+  .option('--stt', 'enable local speech-to-text (downloads ~670MB Parakeet V3 model on first use)')
+  .option('--stt-endpoint <url>', 'use external STT endpoint (OpenAI-compatible)')
+  .option('--stt-model-dir <path>', 'custom directory for STT model files')
+  .option('--stt-threads <number>', 'CPU threads for STT inference (default: auto, max 4)')
   .parse();
 
 const options = program.opts();
@@ -85,7 +89,11 @@ async function main() {
       copilotAlias: options.copilotAlias || process.env.COPILOT_ALIAS || 'Copilot',
       geminiAlias: options.geminiAlias || process.env.GEMINI_ALIAS || 'Gemini',
       terminalAlias: options.terminalAlias || process.env.TERMINAL_ALIAS || 'Terminal',
-      folderMode: true // Always use folder mode
+      folderMode: true, // Always use folder mode
+      stt: options.stt || !!process.env.STT_ENABLED,
+      sttEndpoint: options.sttEndpoint || process.env.STT_ENDPOINT,
+      sttModelDir: options.sttModelDir || process.env.AI_OR_DIE_MODELS_DIR,
+      sttThreads: options.sttThreads || process.env.STT_THREADS,
     };
 
     console.log('Starting ai-or-die...');
