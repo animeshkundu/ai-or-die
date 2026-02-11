@@ -26,10 +26,14 @@ if (isSea) {
 
   // Extract native addon files from SEA assets
   const ptyPkg = `node-pty-${process.platform}-${process.arch}`;
+  const sherpaPlatform = process.platform === 'win32' ? 'win' : process.platform;
+  const sherpaPkg = `sherpa-onnx-${sherpaPlatform}-${process.arch}`;
   const assetKeys = sea.getAssetKeys();
 
   for (const key of assetKeys) {
-    if (key.startsWith(ptyPkg + '/')) {
+    if (key.startsWith(ptyPkg + '/') ||
+        key.startsWith(sherpaPkg + '/') ||
+        key.startsWith('sherpa-onnx-node/')) {
       const targetPath = path.join(tempDir, key);
       fs.mkdirSync(path.dirname(targetPath), { recursive: true });
       fs.writeFileSync(targetPath, new Uint8Array(sea.getRawAsset(key)));

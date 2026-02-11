@@ -68,5 +68,34 @@ module.exports = defineConfig({
       name: 'integrations',
       testMatch: /1[6-9]-.*\.spec\.js/,
     },
+    {
+      name: 'voice-e2e',
+      testMatch: '20-voice-input.spec.js',
+      use: {
+        permissions: ['clipboard-read', 'clipboard-write', 'microphone'],
+        launchOptions: {
+          args: [
+            '--use-fake-device-for-media-stream',
+            '--use-fake-ui-for-media-stream',
+          ],
+        },
+      },
+      grep: /@voice/,
+    },
+    {
+      name: 'voice-real-pipeline',
+      testMatch: '21-voice-real-pipeline.spec.js',
+      use: {
+        permissions: ['clipboard-read', 'clipboard-write', 'microphone'],
+        launchOptions: {
+          args: [
+            '--use-fake-device-for-media-stream',
+            '--use-fake-ui-for-media-stream',
+            '--use-file-for-fake-audio-capture=' + require('path').resolve(__dirname, '..', 'test', 'fixtures', 'hello-world.wav'),
+          ],
+        },
+      },
+      grep: /@voice-real/,
+    },
   ],
 });

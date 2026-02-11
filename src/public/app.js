@@ -38,6 +38,12 @@ class ClaudeCodeWebInterface {
         
         this.splitContainer = null;
 
+        // Voice input
+        this.voiceController = null;
+        this.voiceMode = null;
+        this._voiceTimerInterval = null;
+        this._voiceTranscriptionTimeout = null;
+
         // Cached TextDecoder for lazy string decode on hot path
         this._textDecoder = new TextDecoder();
 
@@ -97,6 +103,7 @@ class ClaudeCodeWebInterface {
         await this.loadConfig();
         this.setupTerminal();
         this.setupUI();
+        if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
         this.applySettings(this.loadSettings());
         this.applyAliasesToUI();
@@ -227,6 +234,7 @@ class ClaudeCodeWebInterface {
                     this.folderMode = cfg.folderMode;
                 }
                 this.tools = cfg.tools || {};
+                this.voiceInputConfig = cfg.voiceInput || null;
                 this._configPrerequisites = cfg.prerequisites || null;
                 this.hostname = cfg.hostname || '';
                 // Store baseFolder so first-run can auto-create a session
@@ -711,6 +719,274 @@ class ClaudeCodeWebInterface {
         this.setupMobileSessionsModal();
 
         // Custom prompts dropdown removed
+    }
+
+    setupVoiceInput() {
+        const voiceCfg = this.voiceInputConfig;
+        if (!voiceCfg) return;
+
+        const btn = document.getElementById('voiceInputBtn');
+        if (!btn) return;
+
+        // Determine mode: prefer local if ready, fall back to cloud
+        const localReady = voiceCfg.localStatus === 'ready';
+        const cloudAvailable = typeof window !== 'undefined' &&
+            !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
+        if (!localReady && !cloudAvailable) {
+            // Neither backend available — keep button hidden
+            return;
+        }
+
+        this.voiceMode = localReady ? 'local' : 'cloud';
+        btn.style.display = '';
+
+        const self = this;
+        const timerEl = btn.querySelector('.voice-timer');
+
+        this.voiceController = new window.VoiceHandler.VoiceInputController({
+            mode: this.voiceMode,
+            onRecordingStart: function () {
+                btn.classList.add('recording');
+                btn.classList.remove('processing');
+                btn.setAttribute('aria-pressed', 'true');
+                btn.title = 'Stop Recording (Ctrl+Shift+M)';
+                if (timerEl) {
+                    timerEl.style.display = '';
+                    timerEl.textContent = '0:00';
+                }
+                // Start timer
+                self._voiceTimerInterval = setInterval(function () {
+                    if (self.voiceController && timerEl) {
+                        var secs = self.voiceController.elapsed;
+                        var m = Math.floor(secs / 60);
+                        var s = secs % 60;
+                        timerEl.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+                    }
+                }, 1000);
+                // Announce to screen reader
+                var srEl = document.getElementById('srAnnounce');
+                if (srEl) srEl.textContent = 'Recording. Speak now.';
+            },
+            onRecordingStop: function (result) {
+                btn.classList.remove('recording');
+                btn.setAttribute('aria-pressed', 'false');
+                btn.title = 'Voice Input (Ctrl+Shift+M)';
+                if (timerEl) timerEl.style.display = 'none';
+                if (self._voiceTimerInterval) {
+                    clearInterval(self._voiceTimerInterval);
+                    self._voiceTimerInterval = null;
+                }
+
+                if (self.voiceMode === 'local' && result && result.samples) {
+                    btn.classList.add('processing');
+                    // Convert Int16 PCM to base64 efficiently (chunked to avoid call stack overflow)
+                    var pcmBytes = new Uint8Array(result.samples.buffer);
+                    var CHUNK_SIZE = 8192;
+                    var parts = [];
+                    for (var i = 0; i < pcmBytes.length; i += CHUNK_SIZE) {
+                        var chunk = pcmBytes.subarray(i, Math.min(i + CHUNK_SIZE, pcmBytes.length));
+                        parts.push(String.fromCharCode.apply(null, chunk));
+                    }
+                    var base64Audio = btoa(parts.join(''));
+                    self.send({
+                        type: 'voice_upload',
+                        audio: base64Audio,
+                        durationMs: result.durationMs
+                    });
+
+                    // Client-side timeout for transcription processing (90 seconds)
+                    self._voiceTranscriptionTimeout = setTimeout(function () {
+                        self._voiceTranscriptionTimeout = null;
+                        btn.classList.remove('processing');
+                        var errorMsg = 'Transcription timed out';
+                        // Show error toast
+                        var toast = document.createElement('div');
+                        toast.className = 'clipboard-toast';
+                        toast.textContent = errorMsg;
+                        document.body.appendChild(toast);
+                        setTimeout(function () { toast.remove(); }, 4000);
+                        if (self.terminal) {
+                            self.terminal.write('\r\n\x1b[31m[Voice error] ' + errorMsg + '\x1b[0m\r\n');
+                        }
+                    }, 90000);
+                }
+                // Cloud mode: text comes via onTranscription, no processing state needed
+            },
+            onTranscription: function (text) {
+                btn.classList.remove('processing');
+                // Clear transcription timeout
+                if (self._voiceTranscriptionTimeout) {
+                    clearTimeout(self._voiceTranscriptionTimeout);
+                    self._voiceTranscriptionTimeout = null;
+                }
+                if (text && self.socket && self.socket.readyState === WebSocket.OPEN) {
+                    // Inject transcribed text as terminal input
+                    var normalized = text;
+                    if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
+                        normalized = attachClipboardHandler.normalizeLineEndings(text);
+                    }
+                    if (self.terminal && self.terminal.modes && self.terminal.modes.bracketedPasteMode) {
+                        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
+                            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                        }
+                    }
+                    self.send({ type: 'input', data: normalized });
+                }
+                var srEl = document.getElementById('srAnnounce');
+                if (srEl) srEl.textContent = 'Transcription complete.';
+            },
+            onError: function (err) {
+                btn.classList.remove('recording', 'processing');
+                btn.setAttribute('aria-pressed', 'false');
+                btn.title = 'Voice Input (Ctrl+Shift+M)';
+                if (timerEl) timerEl.style.display = 'none';
+                if (self._voiceTimerInterval) {
+                    clearInterval(self._voiceTimerInterval);
+                    self._voiceTimerInterval = null;
+                }
+                // Clear transcription timeout on error
+                if (self._voiceTranscriptionTimeout) {
+                    clearTimeout(self._voiceTranscriptionTimeout);
+                    self._voiceTranscriptionTimeout = null;
+                }
+                console.error('[Voice] Error:', err);
+                var errorMessage = err.message || String(err);
+                if (self.terminal) {
+                    self.terminal.write('\r\n\x1b[31m[Voice error] ' + errorMessage + '\x1b[0m\r\n');
+                }
+                // Show error toast (reuse existing toast pattern)
+                var toastMsg = errorMessage;
+                if (errorMessage.indexOf('not-allowed') !== -1 || errorMessage.indexOf('Permission') !== -1 || errorMessage.indexOf('permission') !== -1) {
+                    toastMsg = errorMessage + '. Check browser permissions';
+                }
+                var toast = document.createElement('div');
+                toast.className = 'clipboard-toast';
+                toast.textContent = toastMsg;
+                document.body.appendChild(toast);
+                setTimeout(function () { toast.remove(); }, 4000);
+            },
+            onCancel: function () {
+                btn.classList.remove('recording', 'processing');
+                btn.setAttribute('aria-pressed', 'false');
+                btn.title = 'Voice Input (Ctrl+Shift+M)';
+                if (timerEl) timerEl.style.display = 'none';
+                if (self._voiceTimerInterval) {
+                    clearInterval(self._voiceTimerInterval);
+                    self._voiceTimerInterval = null;
+                }
+                var srEl = document.getElementById('srAnnounce');
+                if (srEl) srEl.textContent = 'Recording cancelled.';
+            }
+        });
+
+        // Button click: toggle recording
+        btn.addEventListener('click', function () {
+            self.voiceController.toggleRecording();
+        });
+
+        // Attach keyboard listeners (Ctrl+Shift+M, Escape)
+        this.voiceController.attachKeyboardListeners();
+
+        // Download banner dismiss
+        var dismissBtn = document.getElementById('voiceDownloadDismiss');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', function () {
+                var banner = document.getElementById('voiceDownloadBanner');
+                if (banner) {
+                    banner.classList.remove('visible');
+                    banner.style.display = 'none';
+                }
+            });
+        }
+    }
+
+    _handleVoiceMessage(message) {
+        var btn = document.getElementById('voiceInputBtn');
+        switch (message.type) {
+            case 'voice_transcription': {
+                if (btn) btn.classList.remove('processing');
+                // Clear client-side transcription timeout
+                if (this._voiceTranscriptionTimeout) {
+                    clearTimeout(this._voiceTranscriptionTimeout);
+                    this._voiceTranscriptionTimeout = null;
+                }
+                var text = message.text || '';
+                if (text) {
+                    var normalized = text;
+                    if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
+                        normalized = attachClipboardHandler.normalizeLineEndings(text);
+                    }
+                    if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+                        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
+                            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                        }
+                    }
+                    this.send({ type: 'input', data: normalized });
+                }
+                var srEl = document.getElementById('srAnnounce');
+                if (srEl) srEl.textContent = 'Transcription complete.';
+                break;
+            }
+            case 'voice_transcription_error': {
+                if (btn) btn.classList.remove('processing');
+                // Clear client-side transcription timeout
+                if (this._voiceTranscriptionTimeout) {
+                    clearTimeout(this._voiceTranscriptionTimeout);
+                    this._voiceTranscriptionTimeout = null;
+                }
+                if (this.terminal) {
+                    this.terminal.write('\r\n\x1b[31m[Voice error] ' + (message.message || 'Transcription failed') + '\x1b[0m\r\n');
+                }
+                break;
+            }
+            case 'voice_model_progress': {
+                var banner = document.getElementById('voiceDownloadBanner');
+                var fill = document.getElementById('voiceDownloadFill');
+                var pct = document.getElementById('voiceDownloadPercent');
+                var percent = message.percent || 0;
+
+                if (banner) {
+                    if (percent >= 100) {
+                        banner.classList.remove('visible');
+                        banner.style.display = 'none';
+                        // Switch to local mode now that model is ready
+                        if (this.voiceController) {
+                            this.voiceMode = 'local';
+                            this.voiceController.setMode('local');
+                        }
+                    } else {
+                        banner.style.display = '';
+                        banner.classList.add('visible');
+                    }
+                }
+                if (fill) fill.style.width = Math.min(percent, 100) + '%';
+                if (pct) pct.textContent = Math.round(percent) + '%';
+                break;
+            }
+            case 'voice_status': {
+                // Update voice input config status and show/hide mic button
+                if (message.voiceInput) {
+                    this.voiceInputConfig = message.voiceInput;
+                }
+                var localReady = this.voiceInputConfig && this.voiceInputConfig.localStatus === 'ready';
+                var cloudAvailable = typeof window !== 'undefined' &&
+                    !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+                if (btn) {
+                    if (localReady || cloudAvailable) {
+                        btn.style.display = '';
+                        // Update mode if local just became ready
+                        if (localReady && this.voiceMode !== 'local' && this.voiceController) {
+                            this.voiceMode = 'local';
+                            this.voiceController.setMode('local');
+                        }
+                    } else {
+                        btn.style.display = 'none';
+                    }
+                }
+                break;
+            }
+        }
     }
 
     setupSettingsModal() {
@@ -1299,6 +1575,14 @@ class ClaudeCodeWebInterface {
                 }
                 break;
 
+            // Voice input events
+            case 'voice_transcription':
+            case 'voice_transcription_error':
+            case 'voice_model_progress':
+            case 'voice_status':
+                this._handleVoiceMessage(message);
+                break;
+
             default:
                 console.log('Unknown message type:', message.type);
         }
@@ -1631,6 +1915,7 @@ class ClaudeCodeWebInterface {
             const resp = await this.authFetch('/api/config');
             const config = await resp.json();
             this.tools = config.tools || {};
+            this.voiceInputConfig = config.voiceInput || null;
             this._configPrerequisites = config.prerequisites || null;
             this.renderToolCards();
         } catch {
@@ -2827,7 +3112,34 @@ class ClaudeCodeWebInterface {
         }
     }
     
+    _cleanupVoiceState() {
+        // Cancel any active recording and clear processing state on session switch
+        if (this.voiceController && this.voiceController.isRecording) {
+            this.voiceController.cancelRecording();
+        }
+        // Clear processing spinner and transcription timeout
+        var btn = document.getElementById('voiceInputBtn');
+        if (btn) {
+            btn.classList.remove('recording', 'processing');
+            btn.setAttribute('aria-pressed', 'false');
+            btn.title = 'Voice Input (Ctrl+Shift+M)';
+        }
+        var timerEl = btn ? btn.querySelector('.voice-timer') : null;
+        if (timerEl) timerEl.style.display = 'none';
+        if (this._voiceTimerInterval) {
+            clearInterval(this._voiceTimerInterval);
+            this._voiceTimerInterval = null;
+        }
+        if (this._voiceTranscriptionTimeout) {
+            clearTimeout(this._voiceTranscriptionTimeout);
+            this._voiceTranscriptionTimeout = null;
+        }
+    }
+
     async joinSession(sessionId) {
+        // Clean up any active voice state before switching sessions
+        this._cleanupVoiceState();
+
         // Ensure we're connected first
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
             // Check if we're already connecting (readyState === 0 means CONNECTING)

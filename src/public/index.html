@@ -53,6 +53,7 @@
     <link rel="stylesheet" href="components/notifications.css">
     <link rel="stylesheet" href="components/file-browser.css">
     <link rel="stylesheet" href="components/vscode-tunnel.css">
+    <link rel="stylesheet" href="components/voice-input.css">
     <link rel="stylesheet" href="mobile.css">
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -137,6 +138,15 @@
                         <polyline points="21 15 16 10 5 21"/>
                     </svg>
                 </button>
+                <button class="tab-voice-input" id="voiceInputBtn" title="Voice Input (Ctrl+Shift+M)" style="display: none;" aria-label="Voice Input" aria-pressed="false">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                        <line x1="12" y1="19" x2="12" y2="23"/>
+                        <line x1="8" y1="23" x2="16" y2="23"/>
+                    </svg>
+                    <span class="voice-timer" style="display: none;">0:00</span>
+                </button>
                 <button class="tab-settings" id="settingsBtn" title="Settings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/>
@@ -148,6 +158,13 @@
 
         <div class="app-tunnel-banner" id="appTunnelBanner"></div>
         <div class="vscode-tunnel-banner" id="vscodeTunnelBanner"></div>
+        <div class="voice-download-banner" id="voiceDownloadBanner" style="display: none;">
+            <span class="voice-download-icon">&#11015;</span>
+            <span class="voice-download-text">Downloading speech recognition model (670 MB)...</span>
+            <div class="voice-download-progress"><div class="voice-download-fill" id="voiceDownloadFill"></div></div>
+            <span class="voice-download-percent" id="voiceDownloadPercent">0%</span>
+            <button class="voice-download-dismiss" id="voiceDownloadDismiss">&times;</button>
+        </div>
 
         <div class="mobile-menu" id="mobileMenu">
             <div class="mobile-menu-header">
@@ -482,6 +499,7 @@
     <script src="file-editor.js"></script>
     <script src="vscode-tunnel.js"></script>
     <script src="app-tunnel.js"></script>
+    <script src="voice-handler.js"></script>
     <script src="command-palette.js"></script>
     <script src="app.js"></script>
     <ninja-keys class="dark" id="commandPalette" hideBreadcrumbs></ninja-keys>

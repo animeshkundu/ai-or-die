@@ -33,6 +33,7 @@ async function bundle() {
     // Redirect @lydell/node-pty to our shim that handles SEA mode
     alias: {
       '@lydell/node-pty': path.join(ROOT, 'scripts', 'pty-sea-shim.js'),
+      'sherpa-onnx-node': path.join(ROOT, 'scripts', 'sherpa-onnx-sea-shim.js'),
     },
     external: [
       // Platform-specific packages are loaded dynamically by the shim
@@ -42,6 +43,13 @@ async function bundle() {
       '@lydell/node-pty-linux-arm64',
       '@lydell/node-pty-darwin-x64',
       '@lydell/node-pty-darwin-arm64',
+      // Platform-specific sherpa-onnx packages (loaded dynamically by the shim)
+      'sherpa-onnx-win-x64',
+      'sherpa-onnx-win-ia32',
+      'sherpa-onnx-linux-x64',
+      'sherpa-onnx-linux-arm64',
+      'sherpa-onnx-darwin-x64',
+      'sherpa-onnx-darwin-arm64',
       // open uses dynamic import() — lazy-loaded in bin/ai-or-die.js
       'open',
     ],
@@ -69,6 +77,25 @@ function collectAssets() {
     console.log(`Collected native addon files from @lydell/${ptyPkgName}`);
   } else {
     console.warn(`Warning: @lydell/${ptyPkgName} not found. Native PTY may not work in the binary.`);
+  }
+
+  // sherpa-onnx platform-specific native addon files (uses 'win' not 'win32')
+  const sherpaPlatform = PLATFORM === 'win32' ? 'win' : PLATFORM;
+  const sherpaPkgName = `sherpa-onnx-${sherpaPlatform}-${ARCH}`;
+  const sherpaPkgDir = path.join(ROOT, 'node_modules', sherpaPkgName);
+
+  if (fs.existsSync(sherpaPkgDir)) {
+    collectFilesRecursive(sherpaPkgDir, sherpaPkgName, assets);
+    console.log(`Collected native addon files from ${sherpaPkgName}`);
+  } else {
+    console.warn(`Warning: ${sherpaPkgName} not found. Local STT may not work in the binary.`);
+  }
+
+  // sherpa-onnx-node JS files (needed for the full API surface in SEA mode)
+  const sherpaNodeDir = path.join(ROOT, 'node_modules', 'sherpa-onnx-node');
+  if (fs.existsSync(sherpaNodeDir)) {
+    collectFilesRecursive(sherpaNodeDir, 'sherpa-onnx-node', assets);
+    console.log('Collected sherpa-onnx-node JS files');
   }
 
   console.log(`Total assets: ${Object.keys(assets).length}`);

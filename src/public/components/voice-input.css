@@ -1,0 +1,181 @@
+/* Voice Input Button */
+.tab-voice-input {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    transition: color 0.2s, background 0.2s;
+    position: relative;
+}
+
+.tab-voice-input:hover {
+    color: var(--accent);
+    background: var(--accent-soft, rgba(255, 107, 0, 0.1));
+}
+
+.tab-voice-input:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* Recording state */
+.tab-voice-input.recording {
+    color: var(--status-error, #ef4444);
+    animation: voice-pulse 1.5s ease-in-out infinite;
+}
+
+.tab-voice-input.recording svg {
+    fill: currentColor;
+    stroke: currentColor;
+}
+
+@keyframes voice-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.7; transform: scale(1.08); }
+}
+
+/* Processing state (spinner) */
+.tab-voice-input.processing svg {
+    display: none;
+}
+
+.tab-voice-input.processing::before {
+    content: '';
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: voice-spin 0.8s linear infinite;
+}
+
+@keyframes voice-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Timer */
+.voice-timer {
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    color: var(--text-secondary);
+    min-width: 28px;
+    text-align: center;
+}
+
+.tab-voice-input.recording .voice-timer {
+    color: var(--status-error, #ef4444);
+}
+
+/* ── Download Banner ────────────────────────────────────── */
+.voice-download-banner {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--text-primary);
+    animation: voice-slide-down 0.2s ease-out;
+    z-index: 100;
+    flex-shrink: 0;
+}
+
+.voice-download-banner.visible {
+    display: flex;
+}
+
+@keyframes voice-slide-down {
+    from { transform: translateY(-100%); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+}
+
+.voice-download-icon {
+    flex-shrink: 0;
+    font-size: 16px;
+}
+
+.voice-download-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.voice-download-progress {
+    width: 120px;
+    height: 4px;
+    background: var(--bg-tertiary);
+    border-radius: 2px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.voice-download-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    width: 0;
+    transition: width 0.3s ease;
+}
+
+.voice-download-percent {
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    color: var(--text-secondary);
+    min-width: 32px;
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.voice-download-dismiss {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.voice-download-dismiss:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+
+/* Mobile: larger touch targets */
+@media (pointer: coarse) {
+    .tab-voice-input {
+        min-width: 44px;
+        min-height: 44px;
+    }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+    .tab-voice-input.recording {
+        animation: none;
+    }
+
+    .tab-voice-input.processing::before {
+        animation: none;
+        border-top-color: var(--accent);
+        opacity: 0.6;
+    }
+
+    .voice-download-fill {
+        transition: none;
+    }
+}

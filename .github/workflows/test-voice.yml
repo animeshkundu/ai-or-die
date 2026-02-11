@@ -1,0 +1,99 @@
+name: Voice Input Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: voice-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  voice-unit:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npm test -- --grep "voice"
+
+  voice-e2e:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run voice E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project voice-e2e
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: voice-e2e-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  voice-real-inference:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Cache the 670MB Parakeet V3 model — download once per platform, reuse across runs
+      - uses: actions/cache@v4
+        id: model-cache
+        with:
+          path: ~/.ai-or-die/models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8
+          key: parakeet-v3-int8-${{ matrix.os }}-${{ hashFiles('src/utils/model-manager.js') }}
+
+      - run: npm ci
+
+      # Download model if not cached (first run only, ~2-3 min on GitHub runners)
+      - name: Download Parakeet V3 model
+        if: steps.model-cache.outputs.cache-hit != 'true'
+        run: node scripts/download-model.js
+
+      # Run real inference test — actual sherpa-onnx with actual model
+      - name: Run real inference tests
+        run: node test/voice-real-inference.js
+
+      # E2E with real STT: Playwright test starts its own server with STT in beforeAll
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      - name: Run real-pipeline E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project voice-real-pipeline
+
+      - name: Upload test artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: voice-real-inference-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
