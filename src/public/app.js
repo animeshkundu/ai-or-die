@@ -107,6 +107,7 @@ class ClaudeCodeWebInterface {
         
         await this.loadConfig();
         this.setupTerminal();
+        this._setupExtraKeys();
         this.setupUI();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
@@ -142,9 +143,10 @@ class ClaudeCodeWebInterface {
             this.splitContainer.setupDropZones();
         }
         
-        // Show mode switcher on mobile
+        // Show mode switcher and bottom nav on mobile
         if (this.isMobile) {
             this.showModeSwitcher();
+            this._setupBottomNav();
         }
         
         // Check if there are existing sessions
@@ -353,7 +355,31 @@ class ClaudeCodeWebInterface {
             });
         }
     }
-    
+
+    _setupBottomNav() {
+        const navVoice = document.getElementById('navVoice');
+        const navFiles = document.getElementById('navFiles');
+        const navMore = document.getElementById('navMore');
+        const navSettings = document.getElementById('navSettings');
+
+        if (this.voiceController || document.getElementById('voiceInputBtn')?.style.display !== 'none') {
+            if (navVoice) navVoice.style.display = '';
+        }
+
+        if (navFiles) navFiles.addEventListener('click', () => {
+            document.getElementById('browseFilesBtn')?.click();
+        });
+        if (navMore) navMore.addEventListener('click', () => {
+            document.getElementById('mobileMenu')?.classList.add('active');
+        });
+        if (navSettings) navSettings.addEventListener('click', () => {
+            document.getElementById('settingsBtn')?.click();
+        });
+        if (navVoice) navVoice.addEventListener('click', () => {
+            document.getElementById('voiceInputBtn')?.click();
+        });
+    }
+
     sendEscape() {
         // Send ESC key to terminal
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -403,7 +429,7 @@ class ClaudeCodeWebInterface {
     setupTerminal() {
         // Adjust font size for mobile devices
         const isMobile = this.detectMobile();
-        const fontSize = isMobile ? 12 : 14;
+        const fontSize = isMobile ? 14 : 14;
         
         this.terminal = new Terminal({
             fontSize: fontSize,
@@ -536,6 +562,19 @@ class ClaudeCodeWebInterface {
         this.setupTerminalContextMenu();
 
         this.terminal.onData((data) => {
+            if (this._ctrlModifierPending && data.length === 1) {
+                const charCode = data.charCodeAt(0);
+                if (charCode >= 97 && charCode <= 122) {
+                    data = String.fromCharCode(charCode - 96);
+                } else if (charCode >= 65 && charCode <= 90) {
+                    data = String.fromCharCode(charCode - 64);
+                }
+                this._ctrlModifierPending = false;
+                if (this.extraKeys) {
+                    this.extraKeys.ctrlActive = false;
+                    this.extraKeys._updateCtrlVisual();
+                }
+            }
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                 // Filter out focus tracking sequences before sending
                 const filteredData = data.replace(/\x1b\[\[?[IO]/g, '');
@@ -570,6 +609,35 @@ class ClaudeCodeWebInterface {
             }
         });
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    }
+
+    _setupExtraKeys() {
+        if (!this.isMobile || !window.visualViewport || typeof ExtraKeys === 'undefined') return;
+
+        this.extraKeys = new ExtraKeys({ app: this });
+
+        let prevHeight = window.visualViewport.height;
+        window.visualViewport.addEventListener('resize', () => {
+            const currentHeight = window.visualViewport.height;
+            const heightDiff = window.innerHeight - currentHeight;
+
+            if (heightDiff > 150) {
+                this.extraKeys.show();
+                const termEl = document.getElementById('terminal');
+                if (termEl) {
+                    termEl.style.height = (currentHeight - 44) + 'px';
+                    if (this.fitAddon) this.fitAddon.fit();
+                }
+            } else {
+                this.extraKeys.hide();
+                const termEl = document.getElementById('terminal');
+                if (termEl) {
+                    termEl.style.height = '';
+                    if (this.fitAddon) this.fitAddon.fit();
+                }
+            }
+            prevHeight = currentHeight;
+        });
     }
 
     showSessionSelectionModal() {
@@ -1040,10 +1108,19 @@ class ClaudeCodeWebInterface {
             });
         }
 
-        // Section collapse/expand
+        // Section collapse/expand (keyboard accessible)
         modal.querySelectorAll('.setting-section-header').forEach((header) => {
-            header.addEventListener('click', () => {
-                header.parentElement.classList.toggle('collapsed');
+            const toggle = () => {
+                const section = header.parentElement;
+                const isCollapsed = section.classList.toggle('collapsed');
+                header.setAttribute('aria-expanded', String(!isCollapsed));
+            };
+            header.addEventListener('click', toggle);
+            header.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggle();
+                }
             });
         });
 
@@ -2032,6 +2109,11 @@ class ClaudeCodeWebInterface {
     }
 
     _loadGpuRenderer() {
+        if (this.isMobile) {
+            console.log('[Renderer] Mobile detected, using Canvas renderer for reliability');
+            this._loadCanvasAddon();
+            return;
+        }
         if (typeof WebglAddon !== 'undefined') {
             try {
                 this.webglAddon = new WebglAddon.WebglAddon();

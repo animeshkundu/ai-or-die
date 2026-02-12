@@ -60,24 +60,35 @@ class CommandPaletteManager {
     });
   }
 
+  _hideShortcutsModal() {
+    if (window.app && typeof window.app.hideModal === 'function') {
+      window.app.hideModal('shortcutsModal');
+    } else {
+      const modal = document.getElementById('shortcutsModal');
+      if (modal) modal.classList.remove('active');
+      if (window.focusTrap) window.focusTrap.deactivate();
+    }
+  }
+
   _showShortcutsModal() {
     const modal = document.getElementById('shortcutsModal');
     if (!modal) return;
     modal.classList.add('active');
+    if (window.focusTrap) window.focusTrap.activate(modal);
 
     // Bind close handlers once
     if (!modal._bound) {
       modal._bound = true;
       const closeBtn = document.getElementById('closeShortcutsBtn');
       if (closeBtn) {
-        closeBtn.addEventListener('click', () => modal.classList.remove('active'));
+        closeBtn.addEventListener('click', () => this._hideShortcutsModal());
       }
       modal.addEventListener('click', (e) => {
-        if (e.target === modal) modal.classList.remove('active');
+        if (e.target === modal) this._hideShortcutsModal();
       });
       document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && modal.classList.contains('active')) {
-          modal.classList.remove('active');
+          this._hideShortcutsModal();
         }
       });
     }
@@ -150,6 +161,8 @@ class CommandPaletteManager {
       description: 'Close the currently active session tab',
       section: 'Sessions',
       handler: () => {
+        const tabs = document.querySelectorAll('.session-tab');
+        if (tabs.length <= 1) return; // Don't close the last session
         document.querySelector('.session-tab.active .tab-close')?.click();
       }
     });

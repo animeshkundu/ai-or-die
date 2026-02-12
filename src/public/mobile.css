@@ -301,6 +301,16 @@
         padding: 20px;
         max-width: 90%;
     }
+
+    /* Account for bottom nav height */
+    #app {
+        padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    }
+
+    /* Move mode switcher above bottom nav */
+    .mode-switcher {
+        bottom: calc(62px + env(safe-area-inset-bottom, 0px));
+    }
 }
 
 /* Extra small devices (phones in portrait) */

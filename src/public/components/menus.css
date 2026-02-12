@@ -50,7 +50,7 @@
 .ctx-item:hover,
 .ctx-item:focus {
     background: var(--accent);
-    color: #fff;
+    color: var(--text-inverse, #fff);
     outline: none;
 }
 .ctx-item:hover .shortcut,

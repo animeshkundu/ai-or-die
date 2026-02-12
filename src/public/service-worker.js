@@ -1,6 +1,6 @@
 // Bump this version when urlsToCache entries are added or removed.
 // Content changes to existing files are handled by the network-first fetch strategy.
-const CACHE_NAME = 'ai-or-die-v7';
+const CACHE_NAME = 'ai-or-die-v8';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -20,6 +20,7 @@ const urlsToCache = [
   '/components/cards.css',
   '/components/menus.css',
   '/components/notifications.css',
+  '/components/bottom-nav.css',
   '/mobile.css',
   '/style.css',
   '/app.js',
@@ -28,7 +29,9 @@ const urlsToCache = [
   '/session-manager.js',
   '/plan-detector.js',
   '/splits.js',
-  '/icons.js'
+  '/icons.js',
+  '/components/extra-keys.css',
+  '/extra-keys.js'
 ];
 
 // Install event - cache resources

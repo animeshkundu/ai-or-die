@@ -54,6 +54,8 @@
     <link rel="stylesheet" href="components/file-browser.css">
     <link rel="stylesheet" href="components/vscode-tunnel.css">
     <link rel="stylesheet" href="components/voice-input.css">
+    <link rel="stylesheet" href="components/bottom-nav.css">
+    <link rel="stylesheet" href="components/extra-keys.css">
     <link rel="stylesheet" href="mobile.css">
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -270,7 +272,7 @@
                 </div>
                 <div class="modal-body">
                     <div class="setting-section" data-section="terminal">
-                        <div class="setting-section-header">Terminal</div>
+                        <div class="setting-section-header" tabindex="0" role="button" aria-expanded="true">Terminal</div>
                         <div class="setting-section-content">
                             <div class="setting-group">
                                 <label for="themeSelect">Theme:</label>
@@ -330,7 +332,7 @@
                     </div>
 
                     <div class="setting-section" data-section="voice">
-                        <div class="setting-section-header">Voice Input</div>
+                        <div class="setting-section-header" tabindex="0" role="button" aria-expanded="true">Voice Input</div>
                         <div class="setting-section-content">
                             <div class="setting-group">
                                 <label for="voiceRecordingMode">Recording Mode:</label>
@@ -355,7 +357,7 @@
                     </div>
 
                     <div class="setting-section" data-section="notifications">
-                        <div class="setting-section-header">Notifications</div>
+                        <div class="setting-section-header" tabindex="0" role="button" aria-expanded="true">Notifications</div>
                         <div class="setting-section-content">
                             <div class="setting-group">
                                 <label for="notifSound">Sound:</label>
@@ -374,7 +376,7 @@
                     </div>
 
                     <div class="setting-section" data-section="display">
-                        <div class="setting-section-header">Display</div>
+                        <div class="setting-section-header" tabindex="0" role="button" aria-expanded="true">Display</div>
                         <div class="setting-section-content">
                             <div class="setting-group">
                                 <label for="showTokenStats">Token Stats:</label>
@@ -384,7 +386,7 @@
                     </div>
 
                     <div class="setting-section" data-section="advanced">
-                        <div class="setting-section-header">Advanced</div>
+                        <div class="setting-section-header" tabindex="0" role="button" aria-expanded="true">Advanced</div>
                         <div class="setting-section-content">
                             <div class="setting-group setting-group--warning">
                                 <label for="dangerousMode">Autonomous Mode:</label>
@@ -596,6 +598,37 @@
                 </div>
             </div>
         </div>
+
+        <!-- Bottom Navigation for Mobile -->
+        <nav class="bottom-nav" id="bottomNav" aria-label="Mobile navigation">
+            <button class="bottom-nav-item" id="navVoice" aria-label="Voice input" style="display:none">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+                    <line x1="12" y1="19" x2="12" y2="23"/>
+                </svg>
+                <span class="nav-label">Voice</span>
+            </button>
+            <button class="bottom-nav-item" id="navFiles" aria-label="Browse files">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span class="nav-label">Files</span>
+            </button>
+            <button class="bottom-nav-item" id="navMore" aria-label="More actions">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>
+                </svg>
+                <span class="nav-label">More</span>
+            </button>
+            <button class="bottom-nav-item" id="navSettings" aria-label="Settings">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>
+                </svg>
+                <span class="nav-label">Settings</span>
+            </button>
+        </nav>
     </div>
 
     <!-- Mobile Sessions Modal -->
@@ -629,6 +662,7 @@
     <script src="app-tunnel.js"></script>
     <script src="voice-handler.js"></script>
     <script src="command-palette.js"></script>
+    <script src="extra-keys.js"></script>
     <script src="app.js"></script>
     <ninja-keys class="dark" id="commandPalette" hideBreadcrumbs></ninja-keys>
     

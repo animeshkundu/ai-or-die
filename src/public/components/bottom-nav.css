@@ -1,0 +1,66 @@
+.bottom-nav {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 52px;
+    background: var(--surface-secondary);
+    border-top: 1px solid var(--border-default);
+    padding: 0 8px;
+    padding-bottom: env(safe-area-inset-bottom, 0);
+    z-index: var(--z-sticky);
+    align-items: center;
+    justify-content: space-around;
+}
+
+@media (max-width: 768px) {
+    .bottom-nav {
+        display: flex;
+    }
+    /* Hide desktop action buttons on mobile */
+    .tab-actions .tab-browse-files,
+    .tab-actions .tab-app-tunnel,
+    .tab-actions .tab-vscode-tunnel,
+    .tab-actions .tab-attach-image,
+    .tab-actions .tab-voice-input {
+        display: none !important;
+    }
+}
+
+.bottom-nav-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 6px 12px;
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    border-radius: var(--radius-md);
+    transition: color var(--duration-fast) var(--ease-default);
+    -webkit-tap-highlight-color: transparent;
+    min-width: 48px;
+}
+
+.bottom-nav-item:active {
+    background: var(--accent-soft);
+}
+
+.bottom-nav-item.active {
+    color: var(--accent-default);
+}
+
+.bottom-nav-item svg {
+    width: 20px;
+    height: 20px;
+}
+
+.bottom-nav-item .nav-label {
+    font-size: 10px;
+    line-height: 1;
+}

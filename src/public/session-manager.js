@@ -693,7 +693,7 @@ class SessionTabManager {
             <span class="sr-only">${statusLabel}</span>
             <div class="tab-content">
                 ${badgeHtml}
-                <span class="tab-name" title="${workingDir || sessionName}">${displayName}</span>
+                <span class="tab-name" title="${sessionName}">${displayName}</span>
             </div>
             <span class="tab-close" title="Close tab" aria-label="Close ${sessionName}">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -956,6 +956,7 @@ class SessionTabManager {
             const newNameSpan = document.createElement('span');
             newNameSpan.className = 'tab-name';
             newNameSpan.textContent = newName;
+            newNameSpan.title = newName;
             input.replaceWith(newNameSpan);
             
             // Update session data
