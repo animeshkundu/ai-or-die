@@ -150,10 +150,14 @@ class SessionTabManager {
         const toast = document.createElement('div');
         toast.className = 'mobile-notification';
 
-        toast.innerHTML = `
-            <div class="mobile-notification-title">${title}</div>
-            <div class="mobile-notification-body">${body}</div>
-        `;
+        const titleEl = document.createElement('div');
+        titleEl.className = 'mobile-notification-title';
+        titleEl.textContent = title;
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'mobile-notification-body';
+        bodyEl.textContent = body;
+        toast.appendChild(titleEl);
+        toast.appendChild(bodyEl);
         
         // Add CSS animation
         if (!document.querySelector('#mobileNotificationStyles')) {

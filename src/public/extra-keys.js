@@ -50,13 +50,19 @@ class ExtraKeys {
 
   _sendKey(data) {
     if (!this.app) return;
+    let toSend = data;
     if (this.ctrlActive) {
+      // Apply Ctrl modifier: convert single printable char to control code
+      if (data.length === 1) {
+        const code = data.charCodeAt(0);
+        if (code >= 97 && code <= 122) toSend = String.fromCharCode(code - 96); // a-z
+        else if (code >= 65 && code <= 90) toSend = String.fromCharCode(code - 64); // A-Z
+      }
       this.ctrlActive = false;
       this._updateCtrlVisual();
-      this.app.send({ type: 'input', data: data });
-    } else {
-      this.app.send({ type: 'input', data: data });
+      if (this.app._ctrlModifierPending) this.app._ctrlModifierPending = false;
     }
+    this.app.send({ type: 'input', data: toSend });
     if (this.app.terminal) this.app.terminal.focus();
   }
 

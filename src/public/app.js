@@ -1242,6 +1242,10 @@ class ClaudeCodeWebInterface {
         this._writtenBytes = 0;
         this._pendingWrites = [];
         this._rafPending = false;
+        // Clear stale input buffer to prevent ghost keystrokes after reconnect
+        this._inputBuffer = '';
+        this._inputFlushScheduled = false;
+        this._ctrlModifierPending = false;
         this._planDetectChunks = [];
         if (this._planDetectTimer) {
             clearTimeout(this._planDetectTimer);
