@@ -562,12 +562,14 @@ class ClaudeCodeWebInterface {
         this.setupTerminalContextMenu();
 
         this.terminal.onData((data) => {
-            if (this._ctrlModifierPending && data.length === 1) {
-                const charCode = data.charCodeAt(0);
-                if (charCode >= 97 && charCode <= 122) {
-                    data = String.fromCharCode(charCode - 96);
-                } else if (charCode >= 65 && charCode <= 90) {
-                    data = String.fromCharCode(charCode - 64);
+            if (this._ctrlModifierPending) {
+                if (data.length === 1) {
+                    const charCode = data.charCodeAt(0);
+                    if (charCode >= 97 && charCode <= 122) {
+                        data = String.fromCharCode(charCode - 96);
+                    } else if (charCode >= 65 && charCode <= 90) {
+                        data = String.fromCharCode(charCode - 64);
+                    }
                 }
                 this._ctrlModifierPending = false;
                 if (this.extraKeys) {
