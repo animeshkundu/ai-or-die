@@ -586,10 +586,10 @@ class ClaudeCodeWebInterface {
                 <div class="modal-body">
                     <div class="session-list">
                         ${this.claudeSessions.map(session => {
-                            const statusIcon = `<span class=\"dot ${session.active ? 'dot-on' : 'dot-idle'}\"></span>`;
+                            const statusIcon = `<span class=\"dot ${session.active ? 'dot-on' : 'dot-idle'}\" aria-hidden=\"true\"></span><span class=\"sr-only\">${session.active ? 'Active' : 'Idle'}</span>`;
                             const clientsText = session.connectedClients === 1 ? '1 client' : `${session.connectedClients} clients`;
                             return `
-                                <div class="session-item" data-session-id="${session.id}" style="cursor: pointer; padding: 15px; border: 1px solid #333; border-radius: 5px; margin-bottom: 10px;">
+                                <div class="session-item" data-session-id="${session.id}">
                                     <div class="session-info">
                                         <span class="session-status">${statusIcon}</span>
                                         <div class="session-details">
@@ -1126,13 +1126,12 @@ class ClaudeCodeWebInterface {
             };
             
             this.socket.onclose = (event) => {
-                this.updateStatus('Disconnected');
-                // Reconnect button removed with header
-                
                 if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
+                    this.updateStatus('Reconnecting...');
                     setTimeout(() => this.reconnect(), this.reconnectDelay * Math.pow(2, this.reconnectAttempts));
                     this.reconnectAttempts++;
                 } else {
+                    this.updateStatus('Disconnected');
                     this.showError(`Connection lost after ${this.maxReconnectAttempts} attempts.\n\nYour session data is preserved on the server.\n\u2022 Check your network connection\n\u2022 The server may have restarted \u2014 try refreshing the page`);
                 }
             };
@@ -1400,15 +1399,16 @@ class ClaudeCodeWebInterface {
                 this.hideOverlay();
                 this.loadSessions();
                 this.requestUsageStats();
+                const startedTool = message.type.replace('_started', '');
                 if (this.sessionTabManager && this.currentClaudeSessionId) {
                     this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                    // Extract tool type from message type (e.g. 'claude_started' → 'claude')
-                    const toolType = message.type.replace('_started', '');
-                    this.sessionTabManager.setTabToolType(this.currentClaudeSessionId, toolType === 'agent' ? 'claude' : toolType);
+                    this.sessionTabManager.setTabToolType(this.currentClaudeSessionId, startedTool === 'agent' ? 'claude' : startedTool);
                 }
+                const srStarted = document.getElementById('srAnnounce');
+                if (srStarted) srStarted.textContent = `${this.getAlias(startedTool)} started`;
                 break;
             }
-                
+
             case 'claude_stopped':
             case 'codex_stopped':
             case 'agent_stopped':
@@ -1417,6 +1417,8 @@ class ClaudeCodeWebInterface {
             case 'terminal_stopped': {
                 const stoppedTool = message.type.replace('_stopped', '');
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias(stoppedTool)} stopped\x1b[0m`);
+                const srStopped = document.getElementById('srAnnounce');
+                if (srStopped) srStopped.textContent = `${this.getAlias(stoppedTool)} stopped`;
                 // If terminal was opened for installation, refresh config to pick up newly installed tools
                 if (this._pendingInstallToolId) {
                     const pendingTool = this._pendingInstallToolId;
@@ -2161,12 +2163,14 @@ class ClaudeCodeWebInterface {
         caseBtn.addEventListener('click', () => {
             caseSensitive = !caseSensitive;
             caseBtn.classList.toggle('active', caseSensitive);
+            caseBtn.setAttribute('aria-pressed', String(caseSensitive));
             doSearch('next');
         });
 
         regexBtn.addEventListener('click', () => {
             useRegex = !useRegex;
             regexBtn.classList.toggle('active', useRegex);
+            regexBtn.setAttribute('aria-pressed', String(useRegex));
             doSearch('next');
         });
     }
@@ -2394,13 +2398,24 @@ class ClaudeCodeWebInterface {
                     e.preventDefault();
                     items[(currentIndex - 1 + items.length) % items.length].focus();
                     break;
+                case 'Home':
+                    e.preventDefault();
+                    if (items.length) items[0].focus();
+                    break;
+                case 'End':
+                    e.preventDefault();
+                    if (items.length) items[items.length - 1].focus();
+                    break;
                 case 'Enter':
+                case ' ':
                     e.preventDefault();
                     if (document.activeElement.classList.contains('ctx-item')) {
                         document.activeElement.click();
                     }
                     break;
                 case 'Escape':
+                case 'Tab':
+                    e.preventDefault();
                     menu.style.display = 'none';
                     if (activeTerminal) activeTerminal.focus();
                     break;
@@ -2414,8 +2429,27 @@ class ClaudeCodeWebInterface {
     }
 
     updateStatus(status) {
-        // Status display removed with header - status now shown in tabs
         console.log('Status:', status);
+        const indicator = document.getElementById('connectionStatus');
+        if (indicator) {
+            const isConnected = status === 'Connected';
+            const isReconnecting = status === 'Connecting...' || status === 'Reconnecting...';
+            if (isConnected) {
+                indicator.className = 'connection-status connected';
+                indicator.title = 'Connected to server';
+                indicator.setAttribute('aria-label', 'Connected to server');
+            } else if (isReconnecting) {
+                indicator.className = 'connection-status reconnecting';
+                indicator.title = 'Reconnecting...';
+                indicator.setAttribute('aria-label', 'Reconnecting to server');
+            } else {
+                indicator.className = 'connection-status disconnected';
+                indicator.title = 'Disconnected';
+                indicator.setAttribute('aria-label', 'Disconnected from server');
+            }
+        }
+        const srAnnounce = document.getElementById('srAnnounce');
+        if (srAnnounce) srAnnounce.textContent = status;
     }
 
     updateWorkingDir(dir) {
@@ -2448,6 +2482,7 @@ class ClaudeCodeWebInterface {
     hideModal(overlayId) {
         const overlay = document.getElementById(overlayId);
         if (!overlay) return;
+        if (window.focusTrap) window.focusTrap.deactivate();
         const content = overlay.querySelector('.modal-content');
         if (content) {
             content.classList.add('closing');
@@ -2476,13 +2511,14 @@ class ClaudeCodeWebInterface {
     showSettings() {
         const modal = document.getElementById('settingsModal');
         modal.classList.add('active');
-        
+
         // Prevent body scroll on mobile when modal is open
         if (this.isMobile) {
             document.body.style.overflow = 'hidden';
         }
-        
+
         this._populateSettingsForm(this.loadSettings());
+        if (window.focusTrap) window.focusTrap.activate(modal);
     }
 
     _populateSettingsForm(settings) {
@@ -2807,14 +2843,15 @@ class ClaudeCodeWebInterface {
     async showFolderBrowser() {
         const modal = document.getElementById('folderBrowserModal');
         modal.classList.add('active');
-        
+
         // Prevent body scroll on mobile when modal is open
         if (this.isMobile) {
             document.body.style.overflow = 'hidden';
         }
-        
+
         // Load home directory by default
         await this.loadFolders();
+        if (window.focusTrap) window.focusTrap.activate(modal);
     }
 
     closeFolderBrowser() {
@@ -3101,14 +3138,16 @@ class ClaudeCodeWebInterface {
     }
     
     showMobileSessionsModal() {
-        document.getElementById('mobileSessionsModal').classList.add('active');
-        
+        const modal = document.getElementById('mobileSessionsModal');
+        modal.classList.add('active');
+
         // Prevent body scroll on mobile when modal is open
         if (this.isMobile) {
             document.body.style.overflow = 'hidden';
         }
-        
+
         this.loadMobileSessions();
+        if (window.focusTrap) window.focusTrap.activate(modal);
     }
     
     hideMobileSessionsModal() {
@@ -3149,9 +3188,9 @@ class ClaudeCodeWebInterface {
                 sessionItem.classList.add('active');
             }
             
-            const statusIcon = `<span class="dot ${session.active ? 'dot-on' : 'dot-idle'}"></span>`;
+            const statusIcon = `<span class="dot ${session.active ? 'dot-on' : 'dot-idle'}" aria-hidden="true"></span><span class="sr-only">${session.active ? 'Active' : 'Idle'}</span>`;
             const clientsText = session.connectedClients === 1 ? '1 client' : `${session.connectedClients} clients`;
-            
+
             sessionItem.innerHTML = `
                 <div class="session-info">
                     <span class="session-status">${statusIcon}</span>
@@ -3415,15 +3454,16 @@ class ClaudeCodeWebInterface {
     }
     
     showNewSessionModal() {
-        document.getElementById('newSessionModal').classList.add('active');
-        // Session dropdown removed - using tabs
-        
+        const modal = document.getElementById('newSessionModal');
+        modal.classList.add('active');
+
         // Prevent body scroll on mobile when modal is open
         if (this.isMobile) {
             document.body.style.overflow = 'hidden';
         }
-        
+
         document.getElementById('sessionName').focus();
+        if (window.focusTrap) window.focusTrap.activate(modal);
     }
     
     hideNewSessionModal() {
@@ -3460,7 +3500,7 @@ class ClaudeCodeWebInterface {
             
             // Hide the modal
             this.hideNewSessionModal();
-            
+
             // Add tab for the new session
             if (this.sessionTabManager) {
                 this.sessionTabManager.addTab(data.sessionId, name, 'idle', workingDir);
@@ -3470,6 +3510,9 @@ class ClaudeCodeWebInterface {
                 // No tab manager, join directly
                 await this.joinSession(data.sessionId);
             }
+
+            const srCreated = document.getElementById('srAnnounce');
+            if (srCreated) srCreated.textContent = `Session created: ${name}`;
             
             // Update sessions list
             this.loadSessions();
@@ -3524,7 +3567,8 @@ class ClaudeCodeWebInterface {
         
         content.innerHTML = formattedContent;
         modal.classList.add('active');
-        
+        if (window.focusTrap) window.focusTrap.activate(modal);
+
         // Play a subtle notification sound (optional)
         this.playNotificationSound();
     }
@@ -3895,6 +3939,64 @@ style.textContent = `
     }
 `;
 document.head.appendChild(style);
+
+// Focus trap utility for modal dialogs
+window.focusTrap = {
+    _active: null,
+    _previousFocus: null,
+    _handler: null,
+
+    activate(modalEl) {
+        this._previousFocus = document.activeElement;
+        this._active = modalEl;
+
+        const getFocusable = () => {
+            return Array.from(modalEl.querySelectorAll(
+                'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            )).filter(el => el.offsetParent !== null);
+        };
+
+        this._handler = (e) => {
+            if (e.key !== 'Tab') return;
+            const focusable = getFocusable();
+            if (!focusable.length) return;
+
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+
+            if (e.shiftKey) {
+                if (document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                }
+            } else {
+                if (document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
+        };
+        modalEl.addEventListener('keydown', this._handler);
+
+        // Focus the first focusable element (or close button)
+        requestAnimationFrame(() => {
+            const focusable = getFocusable();
+            if (focusable.length) focusable[0].focus();
+        });
+    },
+
+    deactivate() {
+        if (this._active && this._handler) {
+            this._active.removeEventListener('keydown', this._handler);
+        }
+        this._active = null;
+        this._handler = null;
+        if (this._previousFocus && typeof this._previousFocus.focus === 'function') {
+            this._previousFocus.focus();
+        }
+        this._previousFocus = null;
+    }
+};
 
 document.addEventListener('DOMContentLoaded', () => {
     const app = new ClaudeCodeWebInterface();

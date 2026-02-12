@@ -284,6 +284,30 @@
 }
 
 .tab-actions { display: flex; gap: 6px; align-items: center; }
+
+.connection-status {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-full);
+    background-color: var(--text-muted);
+    flex-shrink: 0;
+    transition: background-color var(--duration-normal) var(--ease-default);
+}
+
+.connection-status.connected {
+    background-color: var(--status-success);
+}
+
+.connection-status.disconnected {
+    background-color: var(--status-error);
+}
+
+.connection-status.reconnecting {
+    background-color: var(--status-warning);
+    animation: plan-indicator-pulse 1.5s infinite;
+}
+
 .tab-tile {
   width: 28px; height: 28px; display:flex; align-items:center; justify-content:center;
   background: transparent; border: 1px solid var(--border); border-radius: 4px;

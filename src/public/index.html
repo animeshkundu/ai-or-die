@@ -79,17 +79,17 @@
         <!-- Session Tabs Bar -->
         <div class="session-tabs-bar" id="sessionTabsBar" data-tid="session-tabs-bar">
             <div class="tabs-section">
-                <div class="tabs-container" id="tabsContainer" data-tid="tabs-container">
+                <div class="tabs-container" id="tabsContainer" role="tablist" aria-label="Session tabs" data-tid="tabs-container">
                     <!-- Tabs will be dynamically added here -->
                 </div>
                 <div class="tab-new-split">
-                    <button class="tab-new-main" id="tabNewBtn" title="Quick New Session (Ctrl+T)">
+                    <button class="tab-new-main" id="tabNewBtn" title="Quick New Session (Ctrl+T)" aria-label="New session">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="12" y1="5" x2="12" y2="19"/>
                             <line x1="5" y1="12" x2="19" y2="12"/>
                         </svg>
                     </button>
-                    <button class="tab-new-dropdown" id="tabNewDropdown" title="New Session Options...">
+                    <button class="tab-new-dropdown" id="tabNewDropdown" title="New Session Options..." aria-label="New session options">
                         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <polyline points="6 9 12 15 18 9"/>
                         </svg>
@@ -111,26 +111,27 @@
                 </div>
             </div>
             <div class="tab-actions">
-                <button class="tab-browse-files" id="browseFilesBtn" title="Browse Files (Ctrl+B)">
+                <span class="connection-status" id="connectionStatus" title="Connecting..." aria-label="Connecting to server" role="status"></span>
+                <button class="tab-browse-files" id="browseFilesBtn" title="Browse Files (Ctrl+B)" aria-label="Browse files">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                         <line x1="9" y1="14" x2="15" y2="14"/>
                     </svg>
                 </button>
-                <button class="tab-app-tunnel" id="appTunnelBtn" title="App Tunnel" style="display: none;">
+                <button class="tab-app-tunnel" id="appTunnelBtn" title="App Tunnel" aria-label="App tunnel" style="display: none;">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <circle cx="12" cy="12" r="10"/>
                         <line x1="2" y1="12" x2="22" y2="12"/>
                         <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
                     </svg>
                 </button>
-                <button class="tab-vscode-tunnel" id="vscodeTunnelBtn" title="VS Code Tunnel (Ctrl+Shift+V)">
+                <button class="tab-vscode-tunnel" id="vscodeTunnelBtn" title="VS Code Tunnel (Ctrl+Shift+V)" aria-label="VS Code tunnel">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <polyline points="16 18 22 12 16 6"/>
                         <polyline points="8 6 2 12 8 18"/>
                     </svg>
                 </button>
-                <button class="tab-attach-image" id="attachImageBtn" title="Attach Image">
+                <button class="tab-attach-image" id="attachImageBtn" title="Attach Image" aria-label="Attach image">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" stroke-width="2">
                         <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
@@ -147,7 +148,7 @@
                     </svg>
                     <span class="voice-timer" style="display: none;">0:00</span>
                 </button>
-                <button class="tab-settings" id="settingsBtn" title="Settings">
+                <button class="tab-settings" id="settingsBtn" title="Settings" aria-label="Settings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/>
                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1Z"/>
@@ -181,19 +182,19 @@
         </div>
 
         <main class="main">
-            <div class="terminal-container" id="terminalContainer" data-view="single">
-                <div class="terminal-search-bar" id="terminalSearchBar" style="display:none" data-tid="search-bar">
-                    <input type="text" id="termSearchInput" class="term-search-input" placeholder="Search terminal..." autocomplete="off" spellcheck="false">
-                    <span class="term-search-count" id="termSearchCount"></span>
-                    <button class="term-search-btn" id="termSearchPrev" title="Previous (Shift+Enter)">
+            <div class="terminal-container" id="terminalContainer" data-view="single" role="tabpanel" aria-label="Terminal output">
+                <div class="terminal-search-bar" id="terminalSearchBar" style="display:none" role="search" aria-label="Terminal search" data-tid="search-bar">
+                    <input type="text" id="termSearchInput" class="term-search-input" placeholder="Search terminal..." autocomplete="off" spellcheck="false" aria-label="Search terminal">
+                    <span class="term-search-count" id="termSearchCount" aria-live="polite"></span>
+                    <button class="term-search-btn" id="termSearchPrev" title="Previous (Shift+Enter)" aria-label="Previous match">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
                     </button>
-                    <button class="term-search-btn" id="termSearchNext" title="Next (Enter)">
+                    <button class="term-search-btn" id="termSearchNext" title="Next (Enter)" aria-label="Next match">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                     </button>
-                    <button class="term-search-btn term-search-toggle" id="termSearchCase" title="Match Case">Aa</button>
-                    <button class="term-search-btn term-search-toggle" id="termSearchRegex" title="Regex">.*</button>
-                    <button class="term-search-btn" id="termSearchClose" title="Close (Escape)">
+                    <button class="term-search-btn term-search-toggle" id="termSearchCase" title="Match Case" aria-label="Toggle case sensitivity" aria-pressed="false">Aa</button>
+                    <button class="term-search-btn term-search-toggle" id="termSearchRegex" title="Regex" aria-label="Toggle regex mode" aria-pressed="false">.*</button>
+                    <button class="term-search-btn" id="termSearchClose" title="Close (Escape)" aria-label="Close search">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                 </div>
@@ -261,10 +262,10 @@
             </div>
         </div>
 
-        <div class="settings-modal" id="settingsModal" role="dialog" aria-modal="true" aria-label="Settings">
+        <div class="settings-modal" id="settingsModal" role="dialog" aria-modal="true" aria-labelledby="settingsModalHeading">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Settings</h2>
+                    <h2 id="settingsModalHeading">Settings</h2>
                     <button class="close-btn" id="closeSettingsBtn" aria-label="Close settings">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -401,10 +402,10 @@
             </div>
         </div>
 
-        <div class="plan-modal" id="planModal" role="dialog" aria-modal="true" aria-label="Claude's Plan">
+        <div class="plan-modal" id="planModal" role="dialog" aria-modal="true" aria-labelledby="planModalHeading">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>
+                    <h2 id="planModalHeading">
                         <span class="icon" aria-hidden="true">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="4" y="3" width="16" height="18" rx="2"/>
@@ -446,10 +447,10 @@
             </div>
         </div>
 
-        <div class="shortcuts-modal" id="shortcutsModal" role="dialog" aria-modal="true" aria-label="Keyboard Shortcuts">
+        <div class="shortcuts-modal" id="shortcutsModal" role="dialog" aria-modal="true" aria-labelledby="shortcutsModalHeading">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Keyboard Shortcuts</h2>
+                    <h2 id="shortcutsModalHeading">Keyboard Shortcuts</h2>
                     <button class="close-btn" id="closeShortcutsBtn" aria-label="Close shortcuts">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -523,10 +524,10 @@
             </div>
         </div>
 
-        <div class="session-modal" id="newSessionModal" role="dialog" aria-modal="true" aria-label="Create New Session">
+        <div class="session-modal" id="newSessionModal" role="dialog" aria-modal="true" aria-labelledby="newSessionModalHeading">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Create New Session</h2>
+                    <h2 id="newSessionModalHeading">Create New Session</h2>
                     <button class="close-btn" id="closeNewSessionBtn" aria-label="Close new session dialog">&times;</button>
                 </div>
                 <div class="modal-body">
@@ -546,10 +547,10 @@
             </div>
         </div>
 
-        <div class="folder-browser-modal" id="folderBrowserModal" role="dialog" aria-modal="true" aria-label="Select Working Directory">
+        <div class="folder-browser-modal" id="folderBrowserModal" role="dialog" aria-modal="true" aria-labelledby="folderBrowserModalHeading">
             <div class="modal-content folder-browser-content">
                 <div class="modal-header">
-                    <h2>Select Working Directory</h2>
+                    <h2 id="folderBrowserModalHeading">Select Working Directory</h2>
                 </div>
                 <div class="folder-browser-body">
                     <div class="folder-path-bar">
@@ -598,10 +599,10 @@
     </div>
 
     <!-- Mobile Sessions Modal -->
-    <div class="session-modal" id="mobileSessionsModal" role="dialog" aria-modal="true" aria-label="Sessions">
+    <div class="session-modal" id="mobileSessionsModal" role="dialog" aria-modal="true" aria-labelledby="mobileSessionsModalHeading">
         <div class="modal-content">
             <div class="modal-header">
-                <h2>Sessions</h2>
+                <h2 id="mobileSessionsModalHeading">Sessions</h2>
                 <button class="modal-close" id="closeMobileSessionsModal" aria-label="Close sessions">&times;</button>
             </div>
             <div class="modal-body">

@@ -661,6 +661,8 @@ class SessionTabManager {
         
         const tab = document.createElement('div');
         tab.className = 'session-tab';
+        tab.setAttribute('role', 'tab');
+        tab.setAttribute('aria-selected', 'false');
         tab.dataset.sessionId = sessionId;
         tab.draggable = true;
         
@@ -685,13 +687,15 @@ class SessionTabManager {
             ? `<span class="tab-badge" style="background:${badge.color}" title="${toolType || ''}">${badge.label}</span>`
             : '';
 
+        const statusLabel = status === 'active' ? 'Active' : status === 'error' ? 'Error' : 'Idle';
         tab.innerHTML = `
-            <span class="tab-status-border ${status}"></span>
+            <span class="tab-status-border ${status}" aria-hidden="true"></span>
+            <span class="sr-only">${statusLabel}</span>
             <div class="tab-content">
                 ${badgeHtml}
                 <span class="tab-name" title="${workingDir || sessionName}">${displayName}</span>
             </div>
-            <span class="tab-close" title="Close tab">
+            <span class="tab-close" title="Close tab" aria-label="Close ${sessionName}">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="18" y1="6" x2="6" y2="18"/>
                     <line x1="6" y1="6" x2="18" y2="18"/>
@@ -770,12 +774,16 @@ class SessionTabManager {
         const { skipHistoryUpdate = false } = options;
 
         // Remove active class from all tabs
-        this.tabs.forEach(tab => tab.classList.remove('active'));
+        this.tabs.forEach(t => {
+            t.classList.remove('active');
+            t.setAttribute('aria-selected', 'false');
+        });
 
         // Add active class to selected tab
         const tab = this.tabs.get(sessionId);
         if (!tab) return;
         tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
         this.activeTabId = sessionId;
         this.ensureTabVisible(sessionId);
 
@@ -800,6 +808,12 @@ class SessionTabManager {
         // If tile view is enabled, tabs target the active pane (VS Code-style)
         await this.claudeInterface.joinSession(sessionId);
         this.updateHeaderInfo(sessionId);
+
+        const srSwitch = document.getElementById('srAnnounce');
+        const switchSession = this.activeSessions.get(sessionId);
+        if (srSwitch && switchSession) {
+            srSwitch.textContent = `Switched to session: ${switchSession.name}`;
+        }
 
         // Fit terminal to container and capture focus after tab switch
         requestAnimationFrame(() => {
@@ -866,10 +880,14 @@ class SessionTabManager {
 
         // Clear any pending notification timers before removing session data
         const session = this.activeSessions.get(sessionId);
+        const closedName = session ? session.name : 'Session';
         if (session) {
             clearTimeout(session.idleTimeout);
             clearTimeout(session.workCompleteTimeout);
         }
+
+        const srClose = document.getElementById('srAnnounce');
+        if (srClose) srClose.textContent = `Session closed: ${closedName}`;
 
         // Remove tab
         tab.remove();
@@ -1099,6 +1117,12 @@ class SessionTabManager {
     updateTabStatus(sessionId, status) {
         const tab = this.tabs.get(sessionId);
         if (tab) {
+            // Update sr-only text for screen readers
+            const srEl = tab.querySelector('.sr-only');
+            if (srEl) {
+                const label = status === 'active' ? 'Active' : status === 'error' ? 'Error' : 'Idle';
+                srEl.textContent = label;
+            }
             // Support both old .tab-status dot and new .tab-status-border
             const statusEl = tab.querySelector('.tab-status-border') || tab.querySelector('.tab-status');
             if (statusEl) {

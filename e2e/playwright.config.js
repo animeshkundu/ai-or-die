@@ -97,5 +97,15 @@ module.exports = defineConfig({
       },
       grep: /@voice-real/,
     },
+    // Power user flow tests — real CLI tools, real workflows
+    {
+      name: 'power-user-flows',
+      testMatch: /3[0-6]-.*\.spec\.js/,
+    },
+    // Mobile flow tests — device emulation with real terminal interaction
+    {
+      name: 'mobile-flows',
+      testMatch: /37-.*\.spec\.js/,
+    },
   ],
 });
