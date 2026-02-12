@@ -54,7 +54,7 @@ Three-tier architecture loaded before `style.css`:
 
 ## ClaudeCodeWebInterface
 
-Source: `src/public/app.js` (~2100 lines)
+Source: `src/public/app.js` (~2700 lines)
 
 The main application controller. Instantiated once on page load.
 
@@ -85,6 +85,9 @@ The main application controller. Instantiated once on page load.
 | `sessionTimer` | Object | Session timer data from server |
 | `sessionTimerInterval` | Interval | Client-side timer tick |
 | `splitContainer` | Object | Split/tile view controller |
+| `extraKeys` | ExtraKeys | Mobile extra key row instance (Tab/Ctrl/Esc/arrows) |
+| `voiceMode` | string \| null | Active voice method: `'local'`, `'cloud'`, or `null` |
+| `_inputBuffer` | string | Accumulated keystrokes awaiting flush |
 
 ### Initialization Flow
 
@@ -129,6 +132,17 @@ The main application controller. Instantiated once on page load.
 
 The terminal auto-resizes via `FitAddon` triggered by a `ResizeObserver` on the terminal container, debounced to prevent excessive resize messages.
 
+### Input Buffering
+
+Terminal input uses a breather-flush pattern to batch keystrokes per animation frame rather than sending each keystroke individually:
+
+1. Each `onData` event appends to `_inputBuffer` instead of sending immediately.
+2. A `requestAnimationFrame` callback calls `_flushInput()`, which sends the entire buffer as a single `input` message.
+3. If the buffer exceeds `_INPUT_BUFFER_MAX`, it flushes immediately without waiting for the next frame.
+4. The buffer is cleared on WebSocket reconnect to prevent ghost keystrokes.
+
+This reduces WebSocket message volume during fast typing and improves perceived responsiveness during heavy output.
+
 ### Font Loading Strategy
 
 Font declarations live in `src/public/fonts.css` with a three-tier source strategy per family:
@@ -167,6 +181,22 @@ document.fonts.addEventListener('loadingdone', () => {
 ```
 
 `clearTextureAtlas()` is required because `refresh()` alone reuses stale atlas bitmaps rasterized before the web font loaded. Both main terminal (`app.js`) and split pane terminals (`splits.js`) implement this pattern.
+
+### Settings Modal
+
+The settings modal is structured into 5 collapsible sections, each with a `setting-section-header` that toggles visibility:
+
+| Section | Settings |
+|---------|----------|
+| Terminal | Font family, font size, cursor style, terminal padding (range slider, default 8px) |
+| Voice Input | Recording mode (push-to-talk default, toggle), input method (auto/local/cloud), mic sounds (checkbox, default on) |
+| Notifications | Volume slider, desktop notification toggle |
+| Display | Theme selector |
+| Advanced | Scrollback lines, debug mode |
+
+Settings are persisted to `localStorage` under the `cc-web-settings` key. `loadSettings()` returns defaults merged with stored values. `applySettings()` applies all values to the terminal and UI, including the terminal padding via xterm's `options.padding`.
+
+Default settings include `voiceRecordingMode: 'push-to-talk'`, `voiceMethod: 'auto'`, `micSounds: true`, `terminalPadding: 8`.
 
 ### Folder Browser
 
@@ -568,7 +598,7 @@ Source: `src/public/vscode-tunnel.js` (UI), `src/vscode-tunnel.js` (server manag
 ### UI Elements
 
 - Toolbar button: `#vscodeTunnelBtn` with visual state classes (`.starting`, `.running`, `.error`)
-- Status banner: `#vscodeTunnelBanner` with `.visible` class toggle
+- Status banner: `#vscodeTunnelBanner` with `.visible` class toggle. Auto-collapses after 5 seconds when status is `running` via `_scheduleAutoCollapse()`. The timer is cancelled if the status changes before firing.
 
 ### WebSocket Message Routing
 
