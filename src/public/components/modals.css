@@ -432,10 +432,10 @@
     height: 10px;
     border-radius: 50%;
     background-color: var(--status-success);
-    animation: pulse 2s infinite;
+    animation: plan-indicator-pulse 2s infinite;
 }
 
-@keyframes pulse {
+@keyframes plan-indicator-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
 }

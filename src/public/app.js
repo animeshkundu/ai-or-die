@@ -59,6 +59,11 @@ class ClaudeCodeWebInterface {
         this._pendingWrites = [];
         this._rafPending = false;
 
+        // Input coalescing: batch keystrokes per animation frame, flush on breather
+        this._inputBuffer = '';
+        this._inputFlushScheduled = false;
+        this._INPUT_BUFFER_MAX = 64 * 1024; // 64KB safety cap
+
         // Deferred plan detection: accumulate binary data, decode after 100ms idle
         this._planDetectChunks = [];
         this._planDetectTimer = null;
@@ -535,7 +540,17 @@ class ClaudeCodeWebInterface {
                 // Filter out focus tracking sequences before sending
                 const filteredData = data.replace(/\x1b\[\[?[IO]/g, '');
                 if (filteredData) {
-                    this.send({ type: 'input', data: filteredData });
+                    // Accumulate keystrokes, flush per animation frame (breather-flush pattern)
+                    this._inputBuffer += filteredData;
+                    // Safety cap: flush immediately if buffer exceeds 64KB (e.g., large paste)
+                    if (this._inputBuffer.length > this._INPUT_BUFFER_MAX) {
+                        this._flushInput();
+                        return;
+                    }
+                    if (!this._inputFlushScheduled) {
+                        this._inputFlushScheduled = true;
+                        requestAnimationFrame(() => this._flushInput());
+                    }
                 }
             }
         });
@@ -1144,6 +1159,15 @@ class ClaudeCodeWebInterface {
     send(data) {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify(data));
+        }
+    }
+
+    // Flush accumulated input buffer to server as a single batched message
+    _flushInput() {
+        this._inputFlushScheduled = false;
+        if (this._inputBuffer.length > 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.send({ type: 'input', data: this._inputBuffer });
+            this._inputBuffer = '';
         }
     }
 

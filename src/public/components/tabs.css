@@ -51,8 +51,8 @@
     font-size: 12px;
     cursor: pointer;
     transition: all var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
-    min-width: 120px;
-    max-width: 220px;
+    min-width: 150px;
+    max-width: 240px;
     position: relative;
     user-select: none;
     height: 36px;

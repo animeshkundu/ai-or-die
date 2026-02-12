@@ -195,7 +195,11 @@ class ClaudeCodeWebServer {
     try {
       const resolvedTarget = path.resolve(targetPath);
       const resolvedBase = path.resolve(this.baseFolder);
-      return resolvedTarget.startsWith(resolvedBase);
+      // Use path.relative instead of startsWith to avoid prefix-matching false positives
+      // (e.g. /home/user-admin would match /home/user with startsWith)
+      const relative = path.relative(resolvedBase, resolvedTarget);
+      // Allow base folder itself (relative === '') and any descendant path
+      return !relative.startsWith('..') && !path.isAbsolute(relative);
     } catch (error) {
       return false;
     }
