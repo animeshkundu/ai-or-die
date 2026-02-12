@@ -62,7 +62,7 @@ module.exports = defineConfig({
     },
     {
       name: 'new-features',
-      testMatch: /1[0-7]-.*\.spec\.js/,
+      testMatch: /1[0-5]-.*\.spec\.js/,
     },
     {
       name: 'integrations',
@@ -96,6 +96,21 @@ module.exports = defineConfig({
         },
       },
       grep: /@voice-real/,
+    },
+    // Power user flow tests — real CLI tools, real workflows
+    {
+      name: 'power-user-flows',
+      testMatch: /3[0-6]-.*\.spec\.js/,
+    },
+    // Mobile flow tests — device emulation with real terminal interaction
+    {
+      name: 'mobile-flows',
+      testMatch: /3[7-9]-.*\.spec\.js/,
+    },
+    // UI feature tests — command palette styling, voice settings, mic chimes
+    {
+      name: 'ui-features',
+      testMatch: /4[0-9]-.*\.spec\.js/,
     },
   ],
 });

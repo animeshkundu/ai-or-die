@@ -1,4 +1,6 @@
-/* mobile.css — All mobile/responsive styles: media queries, hamburger menu, mobile menu */
+/* mobile.css — Safe area insets for notched devices and mobile-specific overrides.
+   Component-level responsive styles belong in their respective component CSS files.
+   This file contains ONLY cross-cutting mobile concerns that span multiple components. */
 
 /* Safe area insets for notched devices (iPhone X+, etc.) */
 @supports (padding: env(safe-area-inset-top)) {
@@ -15,7 +17,15 @@
     }
 }
 
-/* Mobile Menu Styles */
+/* Show mode switcher on mobile/touch devices */
+@media (max-width: 1024px) and (hover: none) and (pointer: coarse),
+       (max-width: 768px) {
+    .mode-switcher {
+        display: flex;
+    }
+}
+
+/* Mobile hamburger button (hidden on desktop) */
 .hamburger-btn {
     display: none;
     flex-direction: column;
@@ -31,13 +41,13 @@
     cursor: pointer;
     padding: 10px;
     margin: 0;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     -webkit-tap-highlight-color: transparent;
-    transition: background-color 0.2s ease;
+    transition: background-color var(--duration-normal) var(--ease-default);
 }
 
 .hamburger-btn:hover {
-    background-color: var(--bg-tertiary);
+    background-color: var(--surface-tertiary);
 }
 
 .hamburger-line {
@@ -46,7 +56,7 @@
     height: 2px;
     background-color: var(--text-primary);
     border-radius: 2px;
-    transition: all 0.3s ease;
+    transition: all var(--duration-slow) var(--ease-default);
 }
 
 .hamburger-btn.active .hamburger-line:nth-child(1) {
@@ -61,16 +71,17 @@
     transform: translateY(-6px) rotate(-45deg);
 }
 
+/* Mobile slide-out menu */
 .mobile-menu {
     position: fixed;
     top: 0;
     left: -300px;
     width: 280px;
     height: 100%;
-    background-color: var(--bg-secondary);
-    border-right: 1px solid var(--border);
-    z-index: 3000;
-    transition: left 0.3s ease;
+    background-color: var(--surface-secondary);
+    border-right: 1px solid var(--border-default);
+    z-index: var(--z-overlay);
+    transition: left var(--duration-slow) var(--ease-default);
     display: flex;
     flex-direction: column;
 }
@@ -84,13 +95,13 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 16px 20px;
-    border-bottom: 1px solid var(--border);
+    padding: var(--space-4) var(--space-5);
+    border-bottom: 1px solid var(--border-default);
 }
 
 .mobile-menu-header h2 {
-    font-size: 18px;
-    font-weight: 600;
+    font-size: var(--text-xl);
+    font-weight: var(--weight-semibold);
     margin: 0;
 }
 
@@ -101,38 +112,40 @@
     font-size: 28px;
     cursor: pointer;
     padding: 0;
-    width: 30px;
-    height: 30px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
 }
 
 .mobile-menu-content {
-    padding: 20px;
+    padding: var(--space-5);
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--space-3);
 }
 
 .mobile-menu-btn {
-    padding: 12px 16px;
-    background-color: var(--bg-tertiary);
+    padding: var(--space-3) var(--space-4);
+    background-color: var(--surface-tertiary);
     color: var(--text-primary);
-    border: 1px solid var(--border);
-    border-radius: 6px;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
     cursor: pointer;
     font-family: var(--font-mono);
-    font-size: 14px;
-    font-weight: 500;
-    transition: all 0.2s ease;
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+    transition: all var(--duration-normal) var(--ease-default);
     text-align: left;
 }
 
 .mobile-menu-btn:hover:not(:disabled) {
-    background-color: var(--accent);
+    background-color: var(--accent-default);
     color: white;
-    border-color: var(--accent);
+    border-color: var(--accent-default);
 }
 
 .mobile-menu-btn:disabled {
@@ -141,9 +154,9 @@
 }
 
 .mobile-menu-btn.btn-danger {
-    background-color: var(--error);
+    background-color: var(--status-error);
     color: white;
-    border-color: var(--error);
+    border-color: var(--status-error);
 }
 
 .mobile-menu-btn.btn-danger:hover:not(:disabled) {
@@ -155,9 +168,20 @@
     display: block;
 }
 
-/* Mobile Modal Fixes */
+/* ── Mobile Breakpoints ── */
+
+/* Tablets and below */
 @media (max-width: 768px) {
-    /* Base modal fixes */
+    .hamburger-btn {
+        display: flex;
+        flex-shrink: 0;
+    }
+
+    .desktop-only {
+        display: none !important;
+    }
+
+    /* Modal adjustments */
     .settings-modal,
     .session-modal,
     .folder-browser-modal {
@@ -187,7 +211,7 @@
         padding: 15px;
         position: sticky;
         top: 0;
-        background-color: var(--bg-secondary);
+        background-color: var(--surface-secondary);
         z-index: 10;
     }
 
@@ -199,18 +223,16 @@
         padding: 15px;
         position: sticky;
         bottom: 0;
-        background-color: var(--bg-secondary);
+        background-color: var(--surface-secondary);
         z-index: 10;
         gap: 10px;
     }
 
-    /* Ensure buttons in modals are touch-friendly */
     .modal-footer .btn {
         min-height: 44px;
         padding: 12px 20px;
     }
 
-    /* Fix folder browser specific issues */
     .folder-list-container {
         max-height: 40vh;
         overflow-y: auto;
@@ -222,7 +244,6 @@
         padding: 12px;
     }
 
-    /* Session modal fixes */
     .session-list {
         max-height: 50vh;
         overflow-y: auto;
@@ -234,72 +255,12 @@
         padding: 10px;
     }
 
-    /* Ensure close buttons are easily tappable */
     .close-btn,
     .modal-close {
         position: absolute;
         right: 10px;
         top: 50%;
         transform: translateY(-50%);
-    }
-}
-
-/* Mobile Responsive Styles */
-@media (max-width: 768px) {
-    .hamburger-btn {
-        display: flex;
-        flex-shrink: 0;
-    }
-
-    .desktop-only {
-        display: none !important;
-    }
-
-    .header {
-        padding: 8px 12px;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        justify-content: flex-start;
-        gap: 0;
-        flex-shrink: 0;
-        min-height: 44px;
-    }
-
-    .header-content {
-        flex: 1;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        justify-content: flex-end;
-        min-width: 0;
-    }
-
-    .header-info {
-        display: flex;
-        flex-direction: row;
-        gap: 8px;
-        align-items: center;
-        justify-content: flex-end;
-    }
-
-    .status {
-        font-size: 11px;
-        padding: 2px 6px;
-        white-space: nowrap;
-    }
-
-    .working-dir {
-        font-size: 11px;
-        padding: 2px 6px;
-        max-width: 150px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .header-controls {
-        display: none;
     }
 
     .main {
@@ -321,7 +282,6 @@
         box-sizing: border-box;
     }
 
-    /* Force xterm to respect mobile viewport */
     .xterm {
         width: 100% !important;
         height: 100% !important;
@@ -342,62 +302,33 @@
         max-width: 90%;
     }
 
-    /* Start prompt mobile overrides in components/cards.css */
+    /* Account for bottom nav height */
+    #app {
+        padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    }
 
-    /* Modal styles are handled in the Mobile Modal Fixes section above */
+    /* Move mode switcher above bottom nav */
+    .mode-switcher {
+        bottom: calc(62px + env(safe-area-inset-bottom, 0px));
+    }
 }
 
 /* Extra small devices (phones in portrait) */
 @media (max-width: 480px) {
-    .header {
-        padding: 6px 8px;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-    }
-
-    .hamburger-btn {
-        width: 40px;
-        height: 40px;
-        min-width: 40px;
-        min-height: 40px;
-        padding: 8px;
-    }
-
-    .header-info {
-        gap: 6px;
-    }
-
-    .status {
-        font-size: 10px;
-        padding: 1px 4px;
-    }
-
-    .working-dir {
-        font-size: 10px;
-        padding: 1px 4px;
-        max-width: 120px;
-    }
-
     .btn {
         padding: 8px 12px;
         font-size: 11px;
     }
 
-    /* Legacy start-buttons replaced by .tool-cards-list */
-
-    /* Extra terminal fixes for very small screens */
     #terminal {
         padding: 4px;
     }
 
-    /* Ensure modals don't overflow */
     .modal-content {
         max-height: 85vh;
         overflow-y: auto;
     }
 
-    /* Adjust main container */
     .main {
         padding: 0;
         margin: 0;
@@ -406,139 +337,4 @@
     body {
         overflow-x: hidden;
     }
-}
-
-/* Mode Switcher Styles */
-.mode-switcher {
-    position: fixed;
-    bottom: 80px; /* Increased from 20px to avoid covering text input */
-    right: 20px;
-    z-index: 1000;
-    display: none;
-    flex-direction: column;
-    gap: 10px;
-}
-
-/* Show mode switcher on mobile devices */
-@media (max-width: 1024px) and (hover: none) and (pointer: coarse),
-       (max-width: 768px) {
-    .mode-switcher {
-        display: flex;
-    }
-}
-
-.mode-switcher-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 12px;
-    background-color: var(--bg-secondary);
-    color: var(--text-primary);
-    border: 2px solid var(--border);
-    border-radius: 50%;
-    cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    transition: all 0.3s ease;
-    width: 56px;
-    height: 56px;
-}
-
-.mode-switcher-btn:hover {
-    background-color: var(--bg-tertiary);
-    border-color: var(--accent);
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
-}
-
-.mode-switcher-btn:active {
-    transform: translateY(0);
-}
-
-.mode-switcher-btn.switching {
-    animation: modeSwitchPulse 0.3s ease;
-}
-
-@keyframes modeSwitchPulse {
-    0% {
-        transform: scale(1);
-    }
-    50% {
-        transform: scale(0.95);
-        background-color: var(--accent);
-    }
-    100% {
-        transform: scale(1);
-    }
-}
-
-.mode-switcher-btn svg {
-    width: 24px;
-    height: 24px;
-    stroke: var(--accent);
-    flex-shrink: 0;
-}
-
-/* Add visual indicator for current mode */
-.mode-switcher-btn[data-mode="chat"] {
-    border-color: var(--success);
-}
-
-.mode-switcher-btn[data-mode="code"] {
-    border-color: var(--accent);
-}
-
-.mode-switcher-btn[data-mode="plan"] {
-    border-color: var(--warning);
-}
-
-/* Escape Button Styles */
-.escape-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 12px;
-    background-color: var(--bg-secondary);
-    color: var(--text-primary);
-    border: 2px solid var(--error);
-    border-radius: 50%;
-    cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-    transition: all 0.3s ease;
-    width: 56px;
-    height: 56px;
-}
-
-.escape-btn:hover {
-    background-color: var(--bg-tertiary);
-    border-color: #ff4444;
-    transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(255, 68, 68, 0.2);
-}
-
-.escape-btn:active {
-    transform: translateY(0);
-}
-
-.escape-btn.pressed {
-    animation: escapeBtnPress 0.2s ease;
-}
-
-@keyframes escapeBtnPress {
-    0% {
-        transform: scale(1);
-    }
-    50% {
-        transform: scale(0.9);
-        background-color: var(--error);
-    }
-    100% {
-        transform: scale(1);
-    }
-}
-
-.escape-btn svg {
-    width: 24px;
-    height: 24px;
-    stroke: var(--error);
-    flex-shrink: 0;
 }

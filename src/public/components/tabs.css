@@ -51,8 +51,8 @@
     font-size: 12px;
     cursor: pointer;
     transition: all var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
-    min-width: 120px;
-    max-width: 220px;
+    min-width: 150px;
+    max-width: 240px;
     position: relative;
     user-select: none;
     height: 36px;
@@ -134,7 +134,7 @@
     font-size: 10px;
     font-weight: 700;
     font-family: var(--font-mono);
-    color: #fff;
+    color: var(--text-inverse, #fff);
     flex-shrink: 0;
     line-height: 1;
 }
@@ -284,6 +284,30 @@
 }
 
 .tab-actions { display: flex; gap: 6px; align-items: center; }
+
+.connection-status {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-full);
+    background-color: var(--text-muted);
+    flex-shrink: 0;
+    transition: background-color var(--duration-normal) var(--ease-default);
+}
+
+.connection-status.connected {
+    background-color: var(--status-success);
+}
+
+.connection-status.disconnected {
+    background-color: var(--status-error);
+}
+
+.connection-status.reconnecting {
+    background-color: var(--status-warning);
+    animation: plan-indicator-pulse 1.5s infinite;
+}
+
 .tab-tile {
   width: 28px; height: 28px; display:flex; align-items:center; justify-content:center;
   background: transparent; border: 1px solid var(--border); border-radius: 4px;
@@ -420,7 +444,97 @@
     color: white;
 }
 
-/* Mobile-specific styles */
+/* Mobile: compact session pills instead of wide tabs */
 @media (max-width: 768px) {
-    /* Overflow wrapper visibility is controlled by JavaScript */
+    .session-tabs-bar {
+        min-height: 36px;
+        padding: 0 6px;
+    }
+
+    .tabs-container {
+        gap: 4px;
+        padding: 4px 0;
+    }
+
+    .session-tab {
+        min-width: 0;
+        max-width: 140px;
+        height: 28px;
+        padding: 0 8px 0 0;
+        border-radius: var(--radius-full);
+        font-size: 11px;
+        border: 1px solid var(--border-default);
+        background: var(--surface-tertiary);
+    }
+
+    .session-tab.active {
+        background: var(--surface-primary);
+        border-color: var(--accent-default);
+    }
+
+    /* Remove the accent bottom bar on mobile pills */
+    .session-tab.active::after {
+        display: none;
+    }
+
+    .tab-content {
+        gap: 4px;
+        padding: 0 0 0 6px;
+    }
+
+    .tab-status-border {
+        width: 2px;
+        border-radius: var(--radius-full) 0 0 var(--radius-full);
+    }
+
+    .tab-name {
+        font-size: 11px;
+    }
+
+    .tab-close {
+        width: 18px;
+        height: 18px;
+        opacity: 0.5;
+    }
+
+    /* Hide the badge on mobile pills to save space */
+    .tab-badge {
+        display: none;
+    }
+
+    /* Compact new tab button */
+    .tab-new-split {
+        height: 24px;
+        margin-left: 2px;
+    }
+
+    .tab-new-main {
+        width: 20px;
+    }
+
+    .tab-new-dropdown {
+        width: 14px;
+    }
+
+    /* Hide desktop-only action buttons - moved to bottom nav */
+    .tab-actions .tab-browse-files,
+    .tab-actions .tab-vscode-tunnel,
+    .tab-actions .tab-attach-image,
+    .tab-actions .tab-voice-input {
+        display: none;
+    }
+
+    /* Keep settings gear visible on desktop tab bar */
+    .tab-settings {
+        width: 24px;
+        height: 24px;
+    }
+}
+
+/* Extra small screens */
+@media (max-width: 480px) {
+    .session-tab {
+        max-width: 110px;
+        font-size: 10px;
+    }
 }

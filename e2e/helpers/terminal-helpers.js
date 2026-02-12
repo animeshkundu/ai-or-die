@@ -56,12 +56,22 @@ async function focusTerminal(page) {
 
 /**
  * Type text into the terminal with per-character delay for reliability.
+ * After typing, forces the input buffer to flush immediately so tests
+ * are not dependent on requestAnimationFrame timing (which is unreliable
+ * in headless Chromium on Windows CI runners without a GPU/vsync signal).
  * @param {import('@playwright/test').Page} page
  * @param {string} text
  */
 async function typeInTerminal(page, text) {
   await focusTerminal(page);
   await page.keyboard.type(text, { delay: 30 });
+  // Force-drain the rAF input buffer so the WebSocket send is not
+  // gated on a vsync tick that may never arrive in headless mode.
+  await page.evaluate(() => {
+    if (window.app && typeof window.app._flushInput === 'function') {
+      window.app._flushInput();
+    }
+  });
 }
 
 /**

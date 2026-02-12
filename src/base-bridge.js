@@ -286,7 +286,8 @@ class BaseBridge {
           receivedLifeSign = true;
           clearTimeout(spawnWatchdog);
         }
-        console.log(`${this.toolName} session ${sessionId} exited with code ${exitCode}, signal ${signal}`);
+        const codeStr = (exitCode && typeof exitCode === 'object') ? JSON.stringify(exitCode) : exitCode;
+        console.log(`${this.toolName} session ${sessionId} exited with code ${codeStr}, signal ${signal}`);
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
@@ -302,6 +303,11 @@ class BaseBridge {
         if (!receivedLifeSign) {
           receivedLifeSign = true;
           clearTimeout(spawnWatchdog);
+        }
+        // read EIO is normal on Linux when child process exits — PTY master fd
+        // becomes invalid. Suppress so it doesn't broadcast spurious error events.
+        if (error.message && error.message.includes('read EIO')) {
+          return;
         }
         console.error(`${this.toolName} session ${sessionId} error:`, error);
         if (session.killTimeout) {

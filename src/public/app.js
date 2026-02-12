@@ -59,6 +59,11 @@ class ClaudeCodeWebInterface {
         this._pendingWrites = [];
         this._rafPending = false;
 
+        // Input coalescing: batch keystrokes per animation frame, flush on breather
+        this._inputBuffer = '';
+        this._inputFlushScheduled = false;
+        this._INPUT_BUFFER_MAX = 64 * 1024; // 64KB safety cap
+
         // Deferred plan detection: accumulate binary data, decode after 100ms idle
         this._planDetectChunks = [];
         this._planDetectTimer = null;
@@ -102,6 +107,7 @@ class ClaudeCodeWebInterface {
         
         await this.loadConfig();
         this.setupTerminal();
+        this._setupExtraKeys();
         this.setupUI();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
@@ -137,9 +143,10 @@ class ClaudeCodeWebInterface {
             this.splitContainer.setupDropZones();
         }
         
-        // Show mode switcher on mobile
+        // Show mode switcher and bottom nav on mobile
         if (this.isMobile) {
             this.showModeSwitcher();
+            this._setupBottomNav();
         }
         
         // Check if there are existing sessions
@@ -348,7 +355,31 @@ class ClaudeCodeWebInterface {
             });
         }
     }
-    
+
+    _setupBottomNav() {
+        const navVoice = document.getElementById('navVoice');
+        const navFiles = document.getElementById('navFiles');
+        const navMore = document.getElementById('navMore');
+        const navSettings = document.getElementById('navSettings');
+
+        if (this.voiceController || document.getElementById('voiceInputBtn')?.style.display !== 'none') {
+            if (navVoice) navVoice.style.display = '';
+        }
+
+        if (navFiles) navFiles.addEventListener('click', () => {
+            document.getElementById('browseFilesBtn')?.click();
+        });
+        if (navMore) navMore.addEventListener('click', () => {
+            document.getElementById('mobileMenu')?.classList.add('active');
+        });
+        if (navSettings) navSettings.addEventListener('click', () => {
+            document.getElementById('settingsBtn')?.click();
+        });
+        if (navVoice) navVoice.addEventListener('click', () => {
+            document.getElementById('voiceInputBtn')?.click();
+        });
+    }
+
     sendEscape() {
         // Send ESC key to terminal
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -398,7 +429,7 @@ class ClaudeCodeWebInterface {
     setupTerminal() {
         // Adjust font size for mobile devices
         const isMobile = this.detectMobile();
-        const fontSize = isMobile ? 12 : 14;
+        const fontSize = isMobile ? 14 : 14;
         
         this.terminal = new Terminal({
             fontSize: fontSize,
@@ -531,11 +562,36 @@ class ClaudeCodeWebInterface {
         this.setupTerminalContextMenu();
 
         this.terminal.onData((data) => {
+            if (this._ctrlModifierPending) {
+                if (data.length === 1) {
+                    const charCode = data.charCodeAt(0);
+                    if (charCode >= 97 && charCode <= 122) {
+                        data = String.fromCharCode(charCode - 96);
+                    } else if (charCode >= 65 && charCode <= 90) {
+                        data = String.fromCharCode(charCode - 64);
+                    }
+                }
+                this._ctrlModifierPending = false;
+                if (this.extraKeys) {
+                    this.extraKeys.ctrlActive = false;
+                    this.extraKeys._updateCtrlVisual();
+                }
+            }
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                 // Filter out focus tracking sequences before sending
                 const filteredData = data.replace(/\x1b\[\[?[IO]/g, '');
                 if (filteredData) {
-                    this.send({ type: 'input', data: filteredData });
+                    // Accumulate keystrokes, flush per animation frame (breather-flush pattern)
+                    this._inputBuffer += filteredData;
+                    // Safety cap: flush immediately if buffer exceeds 64KB (e.g., large paste)
+                    if (this._inputBuffer.length > this._INPUT_BUFFER_MAX) {
+                        this._flushInput();
+                        return;
+                    }
+                    if (!this._inputFlushScheduled) {
+                        this._inputFlushScheduled = true;
+                        requestAnimationFrame(() => this._flushInput());
+                    }
                 }
             }
         });
@@ -557,6 +613,35 @@ class ClaudeCodeWebInterface {
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     }
 
+    _setupExtraKeys() {
+        if (!this.isMobile || !window.visualViewport || typeof ExtraKeys === 'undefined') return;
+
+        this.extraKeys = new ExtraKeys({ app: this });
+
+        let prevHeight = window.visualViewport.height;
+        window.visualViewport.addEventListener('resize', () => {
+            const currentHeight = window.visualViewport.height;
+            const heightDiff = window.innerHeight - currentHeight;
+
+            if (heightDiff > 150) {
+                this.extraKeys.show();
+                const termEl = document.getElementById('terminal');
+                if (termEl) {
+                    termEl.style.height = (currentHeight - 44) + 'px';
+                    if (this.fitAddon) this.fitAddon.fit();
+                }
+            } else {
+                this.extraKeys.hide();
+                const termEl = document.getElementById('terminal');
+                if (termEl) {
+                    termEl.style.height = '';
+                    if (this.fitAddon) this.fitAddon.fit();
+                }
+            }
+            prevHeight = currentHeight;
+        });
+    }
+
     showSessionSelectionModal() {
         // Create a simple modal to show existing sessions
         const modal = document.createElement('div');
@@ -571,16 +656,16 @@ class ClaudeCodeWebInterface {
                 <div class="modal-body">
                     <div class="session-list">
                         ${this.claudeSessions.map(session => {
-                            const statusIcon = `<span class=\"dot ${session.active ? 'dot-on' : 'dot-idle'}\"></span>`;
+                            const statusIcon = `<span class=\"dot ${session.active ? 'dot-on' : 'dot-idle'}\" aria-hidden=\"true\"></span><span class=\"sr-only\">${session.active ? 'Active' : 'Idle'}</span>`;
                             const clientsText = session.connectedClients === 1 ? '1 client' : `${session.connectedClients} clients`;
                             return `
-                                <div class="session-item" data-session-id="${session.id}" style="cursor: pointer; padding: 15px; border: 1px solid #333; border-radius: 5px; margin-bottom: 10px;">
+                                <div class="session-item" data-session-id="${session.id}">
                                     <div class="session-info">
                                         <span class="session-status">${statusIcon}</span>
                                         <div class="session-details">
-                                            <div class="session-name">${session.name}</div>
+                                            <div class="session-name">${this._escapeHtml(session.name)}</div>
                                             <div class="session-meta">${clientsText} • ${new Date(session.created).toLocaleString()}</div>
-                                            ${session.workingDir ? `<div class=\"session-folder\" title=\"${session.workingDir}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${session.workingDir}</div>` : ''}
+                                            ${session.workingDir ? `<div class=\"session-folder\" title=\"${this._escapeHtml(session.workingDir)}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${this._escapeHtml(session.workingDir)}</div>` : ''}
                                         </div>
                                     </div>
                                 </div>
@@ -747,6 +832,7 @@ class ClaudeCodeWebInterface {
         this.voiceController = new window.VoiceHandler.VoiceInputController({
             mode: this.voiceMode,
             onRecordingStart: function () {
+                self._playMicChime('on');
                 btn.classList.add('recording');
                 btn.classList.remove('processing');
                 btn.setAttribute('aria-pressed', 'true');
@@ -769,6 +855,7 @@ class ClaudeCodeWebInterface {
                 if (srEl) srEl.textContent = 'Recording. Speak now.';
             },
             onRecordingStop: function (result) {
+                self._playMicChime('off');
                 btn.classList.remove('recording');
                 btn.setAttribute('aria-pressed', 'false');
                 btn.title = 'Voice Input (Ctrl+Shift+M)';
@@ -993,16 +1080,27 @@ class ClaudeCodeWebInterface {
         const modal = document.getElementById('settingsModal');
         const closeBtn = document.getElementById('closeSettingsBtn');
         const saveBtn = document.getElementById('saveSettingsBtn');
+        const cancelBtn = document.getElementById('cancelSettingsBtn');
+        const resetBtn = document.getElementById('resetSettingsBtn');
         const fontSizeSlider = document.getElementById('fontSize');
         const fontSizeValue = document.getElementById('fontSizeValue');
-        const showTokenStatsCheckbox = document.getElementById('showTokenStats');
 
         closeBtn.addEventListener('click', () => this.hideSettings());
+        if (cancelBtn) cancelBtn.addEventListener('click', () => this.hideSettings());
         saveBtn.addEventListener('click', () => this.saveSettings());
-        
+        if (resetBtn) resetBtn.addEventListener('click', () => this.resetSettings());
+
         fontSizeSlider.addEventListener('input', (e) => {
             fontSizeValue.textContent = e.target.value + 'px';
         });
+
+        const terminalPaddingSlider = document.getElementById('terminalPadding');
+        const terminalPaddingValue = document.getElementById('terminalPaddingValue');
+        if (terminalPaddingSlider && terminalPaddingValue) {
+            terminalPaddingSlider.addEventListener('input', (e) => {
+                terminalPaddingValue.textContent = e.target.value + 'px';
+            });
+        }
 
         const notifVolumeSlider = document.getElementById('notifVolume');
         const notifVolumeValue = document.getElementById('notifVolumeValue');
@@ -1011,6 +1109,22 @@ class ClaudeCodeWebInterface {
                 notifVolumeValue.textContent = e.target.value + '%';
             });
         }
+
+        // Section collapse/expand (keyboard accessible)
+        modal.querySelectorAll('.setting-section-header').forEach((header) => {
+            const toggle = () => {
+                const section = header.parentElement;
+                const isCollapsed = section.classList.toggle('collapsed');
+                header.setAttribute('aria-expanded', String(!isCollapsed));
+            };
+            header.addEventListener('click', toggle);
+            header.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggle();
+                }
+            });
+        });
 
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
@@ -1091,13 +1205,12 @@ class ClaudeCodeWebInterface {
             };
             
             this.socket.onclose = (event) => {
-                this.updateStatus('Disconnected');
-                // Reconnect button removed with header
-                
                 if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
+                    this.updateStatus('Reconnecting...');
                     setTimeout(() => this.reconnect(), this.reconnectDelay * Math.pow(2, this.reconnectAttempts));
                     this.reconnectAttempts++;
                 } else {
+                    this.updateStatus('Disconnected');
                     this.showError(`Connection lost after ${this.maxReconnectAttempts} attempts.\n\nYour session data is preserved on the server.\n\u2022 Check your network connection\n\u2022 The server may have restarted \u2014 try refreshing the page`);
                 }
             };
@@ -1131,6 +1244,10 @@ class ClaudeCodeWebInterface {
         this._writtenBytes = 0;
         this._pendingWrites = [];
         this._rafPending = false;
+        // Clear stale input buffer to prevent ghost keystrokes after reconnect
+        this._inputBuffer = '';
+        this._inputFlushScheduled = false;
+        this._ctrlModifierPending = false;
         this._planDetectChunks = [];
         if (this._planDetectTimer) {
             clearTimeout(this._planDetectTimer);
@@ -1144,6 +1261,15 @@ class ClaudeCodeWebInterface {
     send(data) {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify(data));
+        }
+    }
+
+    // Flush accumulated input buffer to server as a single batched message
+    _flushInput() {
+        this._inputFlushScheduled = false;
+        if (this._inputBuffer.length > 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.send({ type: 'input', data: this._inputBuffer });
+            this._inputBuffer = '';
         }
     }
 
@@ -1356,15 +1482,16 @@ class ClaudeCodeWebInterface {
                 this.hideOverlay();
                 this.loadSessions();
                 this.requestUsageStats();
+                const startedTool = message.type.replace('_started', '');
                 if (this.sessionTabManager && this.currentClaudeSessionId) {
                     this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
-                    // Extract tool type from message type (e.g. 'claude_started' → 'claude')
-                    const toolType = message.type.replace('_started', '');
-                    this.sessionTabManager.setTabToolType(this.currentClaudeSessionId, toolType === 'agent' ? 'claude' : toolType);
+                    this.sessionTabManager.setTabToolType(this.currentClaudeSessionId, startedTool === 'agent' ? 'claude' : startedTool);
                 }
+                const srStarted = document.getElementById('srAnnounce');
+                if (srStarted) srStarted.textContent = `${this.getAlias(startedTool)} started`;
                 break;
             }
-                
+
             case 'claude_stopped':
             case 'codex_stopped':
             case 'agent_stopped':
@@ -1373,6 +1500,8 @@ class ClaudeCodeWebInterface {
             case 'terminal_stopped': {
                 const stoppedTool = message.type.replace('_stopped', '');
                 this.terminal.writeln(`\r\n\x1b[33m${this.getAlias(stoppedTool)} stopped\x1b[0m`);
+                const srStopped = document.getElementById('srAnnounce');
+                if (srStopped) srStopped.textContent = `${this.getAlias(stoppedTool)} stopped`;
                 // If terminal was opened for installation, refresh config to pick up newly installed tools
                 if (this._pendingInstallToolId) {
                     const pendingTool = this._pendingInstallToolId;
@@ -1986,6 +2115,11 @@ class ClaudeCodeWebInterface {
     }
 
     _loadGpuRenderer() {
+        if (this.isMobile) {
+            console.log('[Renderer] Mobile detected, using Canvas renderer for reliability');
+            this._loadCanvasAddon();
+            return;
+        }
         if (typeof WebglAddon !== 'undefined') {
             try {
                 this.webglAddon = new WebglAddon.WebglAddon();
@@ -2117,12 +2251,14 @@ class ClaudeCodeWebInterface {
         caseBtn.addEventListener('click', () => {
             caseSensitive = !caseSensitive;
             caseBtn.classList.toggle('active', caseSensitive);
+            caseBtn.setAttribute('aria-pressed', String(caseSensitive));
             doSearch('next');
         });
 
         regexBtn.addEventListener('click', () => {
             useRegex = !useRegex;
             regexBtn.classList.toggle('active', useRegex);
+            regexBtn.setAttribute('aria-pressed', String(useRegex));
             doSearch('next');
         });
     }
@@ -2350,13 +2486,24 @@ class ClaudeCodeWebInterface {
                     e.preventDefault();
                     items[(currentIndex - 1 + items.length) % items.length].focus();
                     break;
+                case 'Home':
+                    e.preventDefault();
+                    if (items.length) items[0].focus();
+                    break;
+                case 'End':
+                    e.preventDefault();
+                    if (items.length) items[items.length - 1].focus();
+                    break;
                 case 'Enter':
+                case ' ':
                     e.preventDefault();
                     if (document.activeElement.classList.contains('ctx-item')) {
                         document.activeElement.click();
                     }
                     break;
                 case 'Escape':
+                case 'Tab':
+                    e.preventDefault();
                     menu.style.display = 'none';
                     if (activeTerminal) activeTerminal.focus();
                     break;
@@ -2370,8 +2517,27 @@ class ClaudeCodeWebInterface {
     }
 
     updateStatus(status) {
-        // Status display removed with header - status now shown in tabs
         console.log('Status:', status);
+        const indicator = document.getElementById('connectionStatus');
+        if (indicator) {
+            const isConnected = status === 'Connected';
+            const isReconnecting = status === 'Connecting...' || status === 'Reconnecting...';
+            if (isConnected) {
+                indicator.className = 'connection-status connected';
+                indicator.title = 'Connected to server';
+                indicator.setAttribute('aria-label', 'Connected to server');
+            } else if (isReconnecting) {
+                indicator.className = 'connection-status reconnecting';
+                indicator.title = 'Reconnecting...';
+                indicator.setAttribute('aria-label', 'Reconnecting to server');
+            } else {
+                indicator.className = 'connection-status disconnected';
+                indicator.title = 'Disconnected';
+                indicator.setAttribute('aria-label', 'Disconnected from server');
+            }
+        }
+        const srAnnounce = document.getElementById('srAnnounce');
+        if (srAnnounce) srAnnounce.textContent = status;
     }
 
     updateWorkingDir(dir) {
@@ -2404,6 +2570,7 @@ class ClaudeCodeWebInterface {
     hideModal(overlayId) {
         const overlay = document.getElementById(overlayId);
         if (!overlay) return;
+        if (window.focusTrap) window.focusTrap.deactivate();
         const content = overlay.querySelector('.modal-content');
         if (content) {
             content.classList.add('closing');
@@ -2432,13 +2599,17 @@ class ClaudeCodeWebInterface {
     showSettings() {
         const modal = document.getElementById('settingsModal');
         modal.classList.add('active');
-        
+
         // Prevent body scroll on mobile when modal is open
         if (this.isMobile) {
             document.body.style.overflow = 'hidden';
         }
-        
-        const settings = this.loadSettings();
+
+        this._populateSettingsForm(this.loadSettings());
+        if (window.focusTrap) window.focusTrap.activate(modal);
+    }
+
+    _populateSettingsForm(settings) {
         document.getElementById('fontSize').value = settings.fontSize;
         document.getElementById('fontSizeValue').textContent = settings.fontSize + 'px';
         const themeSelect = document.getElementById('themeSelect');
@@ -2451,8 +2622,20 @@ class ClaudeCodeWebInterface {
         if (cursorBlink) cursorBlink.checked = settings.cursorBlink ?? true;
         const scrollback = document.getElementById('scrollback');
         if (scrollback) scrollback.value = String(settings.scrollback || 1000);
+        const terminalPadding = document.getElementById('terminalPadding');
+        if (terminalPadding) terminalPadding.value = String(settings.terminalPadding ?? 8);
+        const terminalPaddingValue = document.getElementById('terminalPaddingValue');
+        if (terminalPaddingValue) terminalPaddingValue.textContent = (settings.terminalPadding ?? 8) + 'px';
         document.getElementById('showTokenStats').checked = settings.showTokenStats;
         document.getElementById('dangerousMode').checked = settings.dangerousMode || false;
+
+        // Voice settings
+        const voiceRecordingMode = document.getElementById('voiceRecordingMode');
+        if (voiceRecordingMode) voiceRecordingMode.value = settings.voiceRecordingMode || 'push-to-talk';
+        const voiceMethod = document.getElementById('voiceMethod');
+        if (voiceMethod) voiceMethod.value = settings.voiceMethod || 'auto';
+        const micSounds = document.getElementById('micSounds');
+        if (micSounds) micSounds.checked = settings.micSounds ?? true;
 
         // Notification settings
         const notifSound = document.getElementById('notifSound');
@@ -2474,20 +2657,28 @@ class ClaudeCodeWebInterface {
         }
     }
 
-    loadSettings() {
-        const defaults = {
+    _getDefaultSettings() {
+        return {
             fontSize: 14,
             fontFamily: "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
             cursorStyle: 'block',
             cursorBlink: true,
             scrollback: 1000,
+            terminalPadding: 8,
             showTokenStats: true,
             theme: 'midnight',
             dangerousMode: false,
+            voiceRecordingMode: 'push-to-talk',
+            voiceMethod: 'auto',
+            micSounds: true,
             notifSound: true,
             notifVolume: 30,
             notifDesktop: true
         };
+    }
+
+    loadSettings() {
+        const defaults = this._getDefaultSettings();
 
         try {
             const saved = localStorage.getItem('cc-web-settings');
@@ -2514,21 +2705,46 @@ class ClaudeCodeWebInterface {
             cursorStyle: document.getElementById('cursorStyle')?.value || 'block',
             cursorBlink: document.getElementById('cursorBlink')?.checked ?? true,
             scrollback: parseInt(document.getElementById('scrollback')?.value || '1000'),
+            terminalPadding: parseInt(document.getElementById('terminalPadding')?.value || '8'),
             showTokenStats: document.getElementById('showTokenStats').checked,
             theme: (document.getElementById('themeSelect')?.value) || 'midnight',
             dangerousMode: document.getElementById('dangerousMode').checked,
+            voiceRecordingMode: document.getElementById('voiceRecordingMode')?.value || 'push-to-talk',
+            voiceMethod: document.getElementById('voiceMethod')?.value || 'auto',
+            micSounds: document.getElementById('micSounds')?.checked ?? true,
             notifSound: document.getElementById('notifSound')?.checked ?? true,
             notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
             notifDesktop: document.getElementById('notifDesktop')?.checked ?? true
         };
-        
+
         try {
             localStorage.setItem('cc-web-settings', JSON.stringify(settings));
             this.applySettings(settings);
-            this.hideSettings();
+
+            // Flash save button green briefly
+            const saveBtn = document.getElementById('saveSettingsBtn');
+            if (saveBtn) {
+                const origText = saveBtn.textContent;
+                saveBtn.classList.add('btn-save-success');
+                saveBtn.textContent = '\u2713 Saved';
+                setTimeout(() => {
+                    saveBtn.classList.remove('btn-save-success');
+                    saveBtn.textContent = origText;
+                    this.hideSettings();
+                }, 1500);
+            } else {
+                this.hideSettings();
+            }
         } catch (error) {
             console.error('Failed to save settings:', error);
         }
+    }
+
+    resetSettings() {
+        const defaults = this._getDefaultSettings();
+        localStorage.removeItem('cc-web-settings');
+        this._populateSettingsForm(defaults);
+        this.applySettings(defaults);
     }
 
     applySettings(settings) {
@@ -2545,6 +2761,32 @@ class ClaudeCodeWebInterface {
         if (settings.cursorStyle) this.terminal.options.cursorStyle = settings.cursorStyle;
         this.terminal.options.cursorBlink = settings.cursorBlink ?? true;
         if (settings.scrollback) this.terminal.options.scrollback = settings.scrollback;
+
+        // Apply terminal padding
+        const terminalEl = document.getElementById('terminal');
+        if (terminalEl) {
+            terminalEl.style.padding = (settings.terminalPadding ?? 8) + 'px';
+        }
+
+        // Apply voice recording mode
+        if (this.voiceController) {
+            if (settings.voiceRecordingMode) {
+                this.voiceController._forcedMode = settings.voiceRecordingMode;
+            }
+            // Apply voice method preference
+            if (settings.voiceMethod && settings.voiceMethod !== 'auto') {
+                const localReady = this.voiceInputConfig && this.voiceInputConfig.localStatus === 'ready';
+                const cloudAvailable = typeof window !== 'undefined' &&
+                    !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+                if (settings.voiceMethod === 'local' && localReady) {
+                    this.voiceMode = 'local';
+                    this.voiceController.setMode('local');
+                } else if (settings.voiceMethod === 'cloud' && cloudAvailable) {
+                    this.voiceMode = 'cloud';
+                    this.voiceController.setMode('cloud');
+                }
+            }
+        }
 
         this.syncTerminalTheme();
     }
@@ -2689,14 +2931,15 @@ class ClaudeCodeWebInterface {
     async showFolderBrowser() {
         const modal = document.getElementById('folderBrowserModal');
         modal.classList.add('active');
-        
+
         // Prevent body scroll on mobile when modal is open
         if (this.isMobile) {
             document.body.style.overflow = 'hidden';
         }
-        
+
         // Load home directory by default
         await this.loadFolders();
+        if (window.focusTrap) window.focusTrap.activate(modal);
     }
 
     closeFolderBrowser() {
@@ -2983,14 +3226,16 @@ class ClaudeCodeWebInterface {
     }
     
     showMobileSessionsModal() {
-        document.getElementById('mobileSessionsModal').classList.add('active');
-        
+        const modal = document.getElementById('mobileSessionsModal');
+        modal.classList.add('active');
+
         // Prevent body scroll on mobile when modal is open
         if (this.isMobile) {
             document.body.style.overflow = 'hidden';
         }
-        
+
         this.loadMobileSessions();
+        if (window.focusTrap) window.focusTrap.activate(modal);
     }
     
     hideMobileSessionsModal() {
@@ -3031,16 +3276,16 @@ class ClaudeCodeWebInterface {
                 sessionItem.classList.add('active');
             }
             
-            const statusIcon = `<span class="dot ${session.active ? 'dot-on' : 'dot-idle'}"></span>`;
+            const statusIcon = `<span class="dot ${session.active ? 'dot-on' : 'dot-idle'}" aria-hidden="true"></span><span class="sr-only">${session.active ? 'Active' : 'Idle'}</span>`;
             const clientsText = session.connectedClients === 1 ? '1 client' : `${session.connectedClients} clients`;
-            
+
             sessionItem.innerHTML = `
                 <div class="session-info">
                     <span class="session-status">${statusIcon}</span>
                     <div class="session-details">
-                        <div class="session-name">${session.name}</div>
+                        <div class="session-name">${this._escapeHtml(session.name)}</div>
                         <div class="session-meta">${clientsText} • ${new Date(session.created).toLocaleTimeString()}</div>
-                        ${session.workingDir ? `<div class=\"session-folder\" title=\"${session.workingDir}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${session.workingDir.split('/').pop() || '/'}</div>` : ''}
+                        ${session.workingDir ? `<div class=\"session-folder\" title=\"${this._escapeHtml(session.workingDir)}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${this._escapeHtml(session.workingDir.split('/').pop() || '/')}</div>` : ''}
                     </div>
                 </div>
                 <div class="session-actions">
@@ -3067,7 +3312,7 @@ class ClaudeCodeWebInterface {
                         this.leaveSession(session.id);
                         this.hideMobileSessionsModal();
                     } else if (action === 'delete') {
-                        if (confirm(`Delete session "${session.name}"?`)) {
+                        if (confirm(`Delete session "${(session.name || '').replace(/[<>"]/g, '')}"?`)) {
                             this.deleteSession(session.id);
                         }
                     }
@@ -3297,15 +3542,16 @@ class ClaudeCodeWebInterface {
     }
     
     showNewSessionModal() {
-        document.getElementById('newSessionModal').classList.add('active');
-        // Session dropdown removed - using tabs
-        
+        const modal = document.getElementById('newSessionModal');
+        modal.classList.add('active');
+
         // Prevent body scroll on mobile when modal is open
         if (this.isMobile) {
             document.body.style.overflow = 'hidden';
         }
-        
+
         document.getElementById('sessionName').focus();
+        if (window.focusTrap) window.focusTrap.activate(modal);
     }
     
     hideNewSessionModal() {
@@ -3342,7 +3588,7 @@ class ClaudeCodeWebInterface {
             
             // Hide the modal
             this.hideNewSessionModal();
-            
+
             // Add tab for the new session
             if (this.sessionTabManager) {
                 this.sessionTabManager.addTab(data.sessionId, name, 'idle', workingDir);
@@ -3352,6 +3598,9 @@ class ClaudeCodeWebInterface {
                 // No tab manager, join directly
                 await this.joinSession(data.sessionId);
             }
+
+            const srCreated = document.getElementById('srAnnounce');
+            if (srCreated) srCreated.textContent = `Session created: ${name}`;
             
             // Update sessions list
             this.loadSessions();
@@ -3406,7 +3655,8 @@ class ClaudeCodeWebInterface {
         
         content.innerHTML = formattedContent;
         modal.classList.add('active');
-        
+        if (window.focusTrap) window.focusTrap.activate(modal);
+
         // Play a subtle notification sound (optional)
         this.playNotificationSound();
     }
@@ -3707,6 +3957,49 @@ class ClaudeCodeWebInterface {
         }, 3000);
     }
     
+    _playMicChime(type) {
+        const settings = this.loadSettings();
+        if (!settings.micSounds) return;
+        const volume = typeof settings.notifVolume === 'number'
+            ? (settings.notifVolume / 100) * 0.3
+            : 0.3;
+        if (volume <= 0) return;
+
+        try {
+            if (!this._micAudioCtx) {
+                this._micAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            const ctx = this._micAudioCtx;
+            if (ctx.state === 'suspended') ctx.resume();
+            const t = ctx.currentTime;
+
+            const playTone = (startTime, freq, dur) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(volume, startTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, startTime + dur);
+                osc.start(startTime);
+                osc.stop(startTime + dur);
+            };
+
+            if (type === 'on') {
+                // Ascending: 440Hz -> 660Hz
+                playTone(t, 440, 0.075);
+                playTone(t + 0.075, 660, 0.075);
+            } else {
+                // Descending: 660Hz -> 440Hz
+                playTone(t, 660, 0.075);
+                playTone(t + 0.075, 440, 0.075);
+            }
+        } catch (e) {
+            // Audio not available
+        }
+    }
+
     playNotificationSound() {
         // Optional: Play a subtle sound when plan is detected
         // You can add an audio element to play a notification sound
@@ -3734,6 +4027,64 @@ style.textContent = `
     }
 `;
 document.head.appendChild(style);
+
+// Focus trap utility for modal dialogs
+window.focusTrap = {
+    _active: null,
+    _previousFocus: null,
+    _handler: null,
+
+    activate(modalEl) {
+        this._previousFocus = document.activeElement;
+        this._active = modalEl;
+
+        const getFocusable = () => {
+            return Array.from(modalEl.querySelectorAll(
+                'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            )).filter(el => el.offsetParent !== null);
+        };
+
+        this._handler = (e) => {
+            if (e.key !== 'Tab') return;
+            const focusable = getFocusable();
+            if (!focusable.length) return;
+
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+
+            if (e.shiftKey) {
+                if (document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                }
+            } else {
+                if (document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
+        };
+        modalEl.addEventListener('keydown', this._handler);
+
+        // Focus the first focusable element (or close button)
+        requestAnimationFrame(() => {
+            const focusable = getFocusable();
+            if (focusable.length) focusable[0].focus();
+        });
+    },
+
+    deactivate() {
+        if (this._active && this._handler) {
+            this._active.removeEventListener('keydown', this._handler);
+        }
+        this._active = null;
+        this._handler = null;
+        if (this._previousFocus && typeof this._previousFocus.focus === 'function') {
+            this._previousFocus.focus();
+        }
+        this._previousFocus = null;
+    }
+};
 
 document.addEventListener('DOMContentLoaded', () => {
     const app = new ClaudeCodeWebInterface();

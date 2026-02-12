@@ -84,7 +84,7 @@
     font-size: 13px;
     color: var(--text-primary);
     animation: voice-slide-down 0.2s ease-out;
-    z-index: 100;
+    z-index: var(--z-dropdown);
     flex-shrink: 0;
 }
 

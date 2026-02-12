@@ -79,6 +79,29 @@ pre, code {
     overflow-wrap: break-word;
 }
 
+/* ── PWA Window Controls Overlay ── */
+/* When installed as PWA with window-controls-overlay display mode,
+   the tab bar extends into the title bar for a native terminal feel. */
+@media (display-mode: window-controls-overlay) {
+    .session-tabs-bar {
+        padding-top: env(titlebar-area-y, 0);
+        padding-left: env(titlebar-area-x, 10px);
+        padding-right: calc(100% - env(titlebar-area-width, 100%) - env(titlebar-area-x, 0px) + 10px);
+        -webkit-app-region: drag;
+    }
+    .session-tabs-bar button,
+    .session-tabs-bar .session-tab {
+        -webkit-app-region: no-drag;
+    }
+}
+
+/* Fullscreen PWA: maximize terminal space */
+@media (display-mode: standalone), (display-mode: window-controls-overlay) {
+    body {
+        overscroll-behavior: none;
+    }
+}
+
 /* ── Accessibility ── */
 
 /* Focus-visible ring for keyboard navigation */
@@ -98,10 +121,10 @@ pre, code {
     top: -100%;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 100000;
+    z-index: var(--z-max);
     padding: 8px 16px;
     background-color: var(--accent-default);
-    color: #fff;
+    color: var(--text-inverse, #fff);
     border-radius: var(--radius-md);
     font-size: 14px;
     font-weight: 500;

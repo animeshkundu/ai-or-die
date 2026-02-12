@@ -166,7 +166,7 @@
     border: 2px dashed rgba(88, 166, 255, 0.5);
     border-radius: 8px;
     pointer-events: none;
-    z-index: 100;
+    z-index: var(--z-dropdown);
 }
 
 #terminal {

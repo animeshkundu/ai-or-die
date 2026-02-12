@@ -174,9 +174,9 @@ test.describe('Notification settings', () => {
     });
     await page.waitForTimeout(300);
 
-    const hasDivider = await page.evaluate(() => {
-      return !!document.querySelector('.setting-divider');
+    const hasSections = await page.evaluate(() => {
+      return document.querySelectorAll('.setting-section-header').length >= 2;
     });
-    expect(hasDivider).toBe(true);
+    expect(hasSections).toBe(true);
   });
 });

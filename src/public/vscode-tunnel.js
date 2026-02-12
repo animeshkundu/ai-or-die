@@ -18,6 +18,7 @@
       this.authUrl = null;
       this.deviceCode = null;
       this._bannerDismissed = false;
+      this._autoCollapseTimer = null;
     }
 
     /**
@@ -100,6 +101,11 @@
           this._setStatus('running');
           this._bannerDismissed = false;
           this._renderBanner();
+          // Auto-copy URL and schedule banner collapse
+          if (this.url) {
+            navigator.clipboard.writeText(this.url).catch(() => {});
+          }
+          this._scheduleAutoCollapse();
           break;
 
         case 'vscode_tunnel_status':
@@ -148,6 +154,21 @@
     _setStatus(status) {
       this.status = status;
       this._updateButton();
+      // Cancel auto-collapse if status changes away from running
+      if (status !== 'running' && this._autoCollapseTimer) {
+        clearTimeout(this._autoCollapseTimer);
+        this._autoCollapseTimer = null;
+      }
+    }
+
+    _scheduleAutoCollapse() {
+      if (this._autoCollapseTimer) clearTimeout(this._autoCollapseTimer);
+      this._autoCollapseTimer = setTimeout(() => {
+        this._autoCollapseTimer = null;
+        if (this.status === 'running') {
+          this.dismiss();
+        }
+      }, 5000);
     }
 
     _updateButton() {
@@ -234,8 +255,9 @@
           </svg>
         </span>
         <span class="vst-message">
-          VS Code:
+          Connected &mdash;
           <span class="vst-url" title="${this._escapeHtml(displayUrl)}">${this._escapeHtml(shortUrl)}</span>
+          <span style="color:var(--status-success);font-size:12px;margin-left:6px">URL copied</span>
         </span>
         <div class="vst-actions">
           <button class="vst-btn vst-copy-btn">Copy URL</button>

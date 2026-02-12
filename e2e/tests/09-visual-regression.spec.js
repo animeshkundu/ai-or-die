@@ -142,8 +142,8 @@ test.describe('Visual regression', () => {
     // (Inter renders at slightly different widths on different machines).
     const box = await activeTab.boundingBox();
     expect(box.height).toBe(36);             // Fixed by CSS
-    expect(box.width).toBeGreaterThan(100);   // min-width: 120px minus borders
-    expect(box.width).toBeLessThan(240);      // max-width: 220px plus borders
+    expect(box.width).toBeGreaterThanOrEqual(120);  // min-width: 150px (border-box)
+    expect(box.width).toBeLessThanOrEqual(250);    // max-width: 240px (border-box)
   });
 
   test('tool card available component', async ({ page }) => {

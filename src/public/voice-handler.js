@@ -542,6 +542,8 @@ function VoiceInputController(options) {
   this._keydownTime = null;
   this._isPushToTalk = false;
   this._pttTimer = null;
+  // When set to 'push-to-talk' or 'toggle', overrides auto-detection
+  this._forcedMode = null;
 
   this._boundKeyDown = this._onKeyDown.bind(this);
   this._boundKeyUp = this._onKeyUp.bind(this);
@@ -680,6 +682,28 @@ VoiceInputController.prototype._onKeyDown = function (e) {
     // Ignore key repeat events
     if (e.repeat) return;
 
+    // Forced toggle mode: second press stops recording
+    if (this._forcedMode === 'toggle') {
+      if (this._recorder && this._recorder.isRecording) {
+        this.stopRecording();
+      } else {
+        this._isPushToTalk = false;
+        this.startRecording();
+      }
+      this._keydownTime = null;
+      return;
+    }
+
+    // Forced push-to-talk mode: start on keydown, stop on keyup
+    if (this._forcedMode === 'push-to-talk') {
+      if (this._keydownTime) return;
+      this._keydownTime = Date.now();
+      this._isPushToTalk = true;
+      this.startRecording();
+      return;
+    }
+
+    // Auto-detection: original behavior
     // If already recording in toggle mode, stop on second press
     if (this._recorder && this._recorder.isRecording && !this._isPushToTalk) {
       this.stopRecording();
@@ -722,6 +746,23 @@ VoiceInputController.prototype._onKeyDown = function (e) {
  */
 VoiceInputController.prototype._onKeyUp = function (e) {
   if (e.key === 'm' || e.key === 'M') {
+    // Forced toggle mode: keyup is a no-op (start/stop handled in keydown)
+    if (this._forcedMode === 'toggle') {
+      this._keydownTime = null;
+      return;
+    }
+
+    // Forced push-to-talk mode: stop recording on keyup
+    if (this._forcedMode === 'push-to-talk') {
+      if (this._keydownTime && this._isPushToTalk && this._recorder && this._recorder.isRecording) {
+        this._isPushToTalk = false;
+        this.stopRecording();
+      }
+      this._keydownTime = null;
+      return;
+    }
+
+    // Auto-detection: original behavior
     if (!this._keydownTime) return;
 
     var elapsed = Date.now() - this._keydownTime;
