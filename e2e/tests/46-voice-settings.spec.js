@@ -113,7 +113,9 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     await waitForWebSocket(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    // Open settings again
+    // Open settings — wait for button to be actionable after overlay clears
+    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
+    await page.waitForTimeout(500);
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
 
@@ -232,7 +234,9 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     await waitForWebSocket(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    // Open settings again
+    // Open settings — wait for button to be actionable after overlay clears
+    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
+    await page.waitForTimeout(500);
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
 

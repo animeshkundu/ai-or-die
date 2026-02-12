@@ -94,28 +94,33 @@ test.describe('Connection Status Indicator', () => {
       return el && el.className.includes('connected');
     }, { timeout: 10000 });
 
-    // Force-close the WebSocket (leave reconnect enabled)
+    // Force a non-clean disconnect by destroying the socket internally
+    // (socket.close() produces a clean close that won't trigger reconnect)
     await page.evaluate(() => {
       if (window.app && window.app.socket) {
-        window.app.socket.close();
+        // Simulate network failure — terminate without clean close handshake
+        window.app.socket.onclose({ wasClean: false, code: 1006, reason: 'test' });
+        window.app.socket = null;
       }
     });
 
-    // Wait for reconnecting or disconnected state
+    // Wait for reconnecting state (non-clean close triggers reconnect)
     await page.waitForFunction(() => {
       const el = document.getElementById('connectionStatus');
       if (!el) return false;
       return el.className.includes('reconnecting') || el.className.includes('disconnected');
     }, { timeout: 10000 });
 
-    // Wait for auto-reconnect to succeed (back to connected)
-    // Use generous timeout — reconnect involves exponential backoff
+    // Wait for auto-reconnect to establish new WebSocket
+    await page.waitForFunction(() => {
+      return window.app && window.app.socket && window.app.socket.readyState === 1;
+    }, { timeout: 30000 });
+
+    // Verify status dot returned to connected
     await page.waitForFunction(() => {
       const el = document.getElementById('connectionStatus');
       return el && el.className.includes('connected') && !el.className.includes('disconnected');
-    }, { timeout: 45000 }).catch(() => {
-      // Reconnect may not succeed in CI — verify we at least detected disconnection
-    });
+    }, { timeout: 10000 });
 
     const finalClass = await page.evaluate(() => {
       const el = document.getElementById('connectionStatus');
