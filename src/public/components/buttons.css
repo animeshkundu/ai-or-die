@@ -218,9 +218,9 @@
 
 .escape-btn:hover {
     background-color: var(--bg-tertiary);
-    border-color: #ff4444;
+    border-color: var(--color-red-400);
     transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(255, 68, 68, 0.2);
+    box-shadow: 0 6px 16px rgba(248, 113, 113, 0.2);
 }
 
 .escape-btn:active {
@@ -242,5 +242,23 @@
     height: 24px;
     stroke: var(--error);
     flex-shrink: 0;
+}
+
+/* PWA Install Button */
+.install-btn {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 12px 20px;
+    background: var(--accent-default);
+    color: var(--text-inverse, #fff);
+    border: none;
+    border-radius: var(--radius-lg);
+    cursor: pointer;
+    font-family: var(--font-sans);
+    font-size: var(--text-md);
+    box-shadow: var(--shadow-md);
+    z-index: var(--z-overlay);
+    transition: all var(--duration-slow) var(--ease-default);
 }
 

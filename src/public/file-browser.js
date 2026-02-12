@@ -872,6 +872,10 @@
     this._fileInput.click();
   };
 
+  FileBrowserPanel.prototype.openFilePicker = function () {
+    this._openFilePicker();
+  };
+
   FileBrowserPanel.prototype._onFilesSelected = function (e) {
     var files = e.target.files;
     if (!files || !files.length) return;

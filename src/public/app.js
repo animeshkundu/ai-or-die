@@ -762,6 +762,7 @@ class ClaudeCodeWebInterface {
         this.voiceController = new window.VoiceHandler.VoiceInputController({
             mode: this.voiceMode,
             onRecordingStart: function () {
+                self._playMicChime('on');
                 btn.classList.add('recording');
                 btn.classList.remove('processing');
                 btn.setAttribute('aria-pressed', 'true');
@@ -784,6 +785,7 @@ class ClaudeCodeWebInterface {
                 if (srEl) srEl.textContent = 'Recording. Speak now.';
             },
             onRecordingStop: function (result) {
+                self._playMicChime('off');
                 btn.classList.remove('recording');
                 btn.setAttribute('aria-pressed', 'false');
                 btn.title = 'Voice Input (Ctrl+Shift+M)';
@@ -1008,16 +1010,27 @@ class ClaudeCodeWebInterface {
         const modal = document.getElementById('settingsModal');
         const closeBtn = document.getElementById('closeSettingsBtn');
         const saveBtn = document.getElementById('saveSettingsBtn');
+        const cancelBtn = document.getElementById('cancelSettingsBtn');
+        const resetBtn = document.getElementById('resetSettingsBtn');
         const fontSizeSlider = document.getElementById('fontSize');
         const fontSizeValue = document.getElementById('fontSizeValue');
-        const showTokenStatsCheckbox = document.getElementById('showTokenStats');
 
         closeBtn.addEventListener('click', () => this.hideSettings());
+        if (cancelBtn) cancelBtn.addEventListener('click', () => this.hideSettings());
         saveBtn.addEventListener('click', () => this.saveSettings());
-        
+        if (resetBtn) resetBtn.addEventListener('click', () => this.resetSettings());
+
         fontSizeSlider.addEventListener('input', (e) => {
             fontSizeValue.textContent = e.target.value + 'px';
         });
+
+        const terminalPaddingSlider = document.getElementById('terminalPadding');
+        const terminalPaddingValue = document.getElementById('terminalPaddingValue');
+        if (terminalPaddingSlider && terminalPaddingValue) {
+            terminalPaddingSlider.addEventListener('input', (e) => {
+                terminalPaddingValue.textContent = e.target.value + 'px';
+            });
+        }
 
         const notifVolumeSlider = document.getElementById('notifVolume');
         const notifVolumeValue = document.getElementById('notifVolumeValue');
@@ -1026,6 +1039,13 @@ class ClaudeCodeWebInterface {
                 notifVolumeValue.textContent = e.target.value + '%';
             });
         }
+
+        // Section collapse/expand
+        modal.querySelectorAll('.setting-section-header').forEach((header) => {
+            header.addEventListener('click', () => {
+                header.parentElement.classList.toggle('collapsed');
+            });
+        });
 
         modal.addEventListener('click', (e) => {
             if (e.target === modal) {
@@ -2462,7 +2482,10 @@ class ClaudeCodeWebInterface {
             document.body.style.overflow = 'hidden';
         }
         
-        const settings = this.loadSettings();
+        this._populateSettingsForm(this.loadSettings());
+    }
+
+    _populateSettingsForm(settings) {
         document.getElementById('fontSize').value = settings.fontSize;
         document.getElementById('fontSizeValue').textContent = settings.fontSize + 'px';
         const themeSelect = document.getElementById('themeSelect');
@@ -2475,8 +2498,20 @@ class ClaudeCodeWebInterface {
         if (cursorBlink) cursorBlink.checked = settings.cursorBlink ?? true;
         const scrollback = document.getElementById('scrollback');
         if (scrollback) scrollback.value = String(settings.scrollback || 1000);
+        const terminalPadding = document.getElementById('terminalPadding');
+        if (terminalPadding) terminalPadding.value = String(settings.terminalPadding ?? 8);
+        const terminalPaddingValue = document.getElementById('terminalPaddingValue');
+        if (terminalPaddingValue) terminalPaddingValue.textContent = (settings.terminalPadding ?? 8) + 'px';
         document.getElementById('showTokenStats').checked = settings.showTokenStats;
         document.getElementById('dangerousMode').checked = settings.dangerousMode || false;
+
+        // Voice settings
+        const voiceRecordingMode = document.getElementById('voiceRecordingMode');
+        if (voiceRecordingMode) voiceRecordingMode.value = settings.voiceRecordingMode || 'push-to-talk';
+        const voiceMethod = document.getElementById('voiceMethod');
+        if (voiceMethod) voiceMethod.value = settings.voiceMethod || 'auto';
+        const micSounds = document.getElementById('micSounds');
+        if (micSounds) micSounds.checked = settings.micSounds ?? true;
 
         // Notification settings
         const notifSound = document.getElementById('notifSound');
@@ -2498,20 +2533,28 @@ class ClaudeCodeWebInterface {
         }
     }
 
-    loadSettings() {
-        const defaults = {
+    _getDefaultSettings() {
+        return {
             fontSize: 14,
             fontFamily: "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
             cursorStyle: 'block',
             cursorBlink: true,
             scrollback: 1000,
+            terminalPadding: 8,
             showTokenStats: true,
             theme: 'midnight',
             dangerousMode: false,
+            voiceRecordingMode: 'push-to-talk',
+            voiceMethod: 'auto',
+            micSounds: true,
             notifSound: true,
             notifVolume: 30,
             notifDesktop: true
         };
+    }
+
+    loadSettings() {
+        const defaults = this._getDefaultSettings();
 
         try {
             const saved = localStorage.getItem('cc-web-settings');
@@ -2538,21 +2581,46 @@ class ClaudeCodeWebInterface {
             cursorStyle: document.getElementById('cursorStyle')?.value || 'block',
             cursorBlink: document.getElementById('cursorBlink')?.checked ?? true,
             scrollback: parseInt(document.getElementById('scrollback')?.value || '1000'),
+            terminalPadding: parseInt(document.getElementById('terminalPadding')?.value || '8'),
             showTokenStats: document.getElementById('showTokenStats').checked,
             theme: (document.getElementById('themeSelect')?.value) || 'midnight',
             dangerousMode: document.getElementById('dangerousMode').checked,
+            voiceRecordingMode: document.getElementById('voiceRecordingMode')?.value || 'push-to-talk',
+            voiceMethod: document.getElementById('voiceMethod')?.value || 'auto',
+            micSounds: document.getElementById('micSounds')?.checked ?? true,
             notifSound: document.getElementById('notifSound')?.checked ?? true,
             notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
             notifDesktop: document.getElementById('notifDesktop')?.checked ?? true
         };
-        
+
         try {
             localStorage.setItem('cc-web-settings', JSON.stringify(settings));
             this.applySettings(settings);
-            this.hideSettings();
+
+            // Flash save button green briefly
+            const saveBtn = document.getElementById('saveSettingsBtn');
+            if (saveBtn) {
+                const origText = saveBtn.textContent;
+                saveBtn.classList.add('btn-save-success');
+                saveBtn.textContent = '\u2713 Saved';
+                setTimeout(() => {
+                    saveBtn.classList.remove('btn-save-success');
+                    saveBtn.textContent = origText;
+                    this.hideSettings();
+                }, 1500);
+            } else {
+                this.hideSettings();
+            }
         } catch (error) {
             console.error('Failed to save settings:', error);
         }
+    }
+
+    resetSettings() {
+        const defaults = this._getDefaultSettings();
+        localStorage.removeItem('cc-web-settings');
+        this._populateSettingsForm(defaults);
+        this.applySettings(defaults);
     }
 
     applySettings(settings) {
@@ -2569,6 +2637,32 @@ class ClaudeCodeWebInterface {
         if (settings.cursorStyle) this.terminal.options.cursorStyle = settings.cursorStyle;
         this.terminal.options.cursorBlink = settings.cursorBlink ?? true;
         if (settings.scrollback) this.terminal.options.scrollback = settings.scrollback;
+
+        // Apply terminal padding
+        const terminalEl = document.getElementById('terminal');
+        if (terminalEl) {
+            terminalEl.style.padding = (settings.terminalPadding ?? 8) + 'px';
+        }
+
+        // Apply voice recording mode
+        if (this.voiceController) {
+            if (settings.voiceRecordingMode) {
+                this.voiceController._forcedMode = settings.voiceRecordingMode;
+            }
+            // Apply voice method preference
+            if (settings.voiceMethod && settings.voiceMethod !== 'auto') {
+                const localReady = this.voiceInputConfig && this.voiceInputConfig.localStatus === 'ready';
+                const cloudAvailable = typeof window !== 'undefined' &&
+                    !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+                if (settings.voiceMethod === 'local' && localReady) {
+                    this.voiceMode = 'local';
+                    this.voiceController.setMode('local');
+                } else if (settings.voiceMethod === 'cloud' && cloudAvailable) {
+                    this.voiceMode = 'cloud';
+                    this.voiceController.setMode('cloud');
+                }
+            }
+        }
 
         this.syncTerminalTheme();
     }
@@ -3731,6 +3825,49 @@ class ClaudeCodeWebInterface {
         }, 3000);
     }
     
+    _playMicChime(type) {
+        const settings = this.loadSettings();
+        if (!settings.micSounds) return;
+        const volume = typeof settings.notifVolume === 'number'
+            ? (settings.notifVolume / 100) * 0.3
+            : 0.3;
+        if (volume <= 0) return;
+
+        try {
+            if (!this._micAudioCtx) {
+                this._micAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            const ctx = this._micAudioCtx;
+            if (ctx.state === 'suspended') ctx.resume();
+            const t = ctx.currentTime;
+
+            const playTone = (startTime, freq, dur) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(volume, startTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, startTime + dur);
+                osc.start(startTime);
+                osc.stop(startTime + dur);
+            };
+
+            if (type === 'on') {
+                // Ascending: 440Hz -> 660Hz
+                playTone(t, 440, 0.075);
+                playTone(t + 0.075, 660, 0.075);
+            } else {
+                // Descending: 660Hz -> 440Hz
+                playTone(t, 660, 0.075);
+                playTone(t + 0.075, 440, 0.075);
+            }
+        } catch (e) {
+            // Audio not available
+        }
+    }
+
     playNotificationSound() {
         // Optional: Play a subtle sound when plan is detected
         // You can add an audio element to play a notification sound

@@ -43,8 +43,6 @@ self.addEventListener('install', event => {
         console.error('Failed to cache resources:', err);
       })
   );
-  // Force the waiting service worker to become the active service worker
-  self.skipWaiting();
 });
 
 // Activate event - clean up old caches

@@ -360,11 +360,60 @@
     margin-top: 8px;
 }
 
+.setting-section {
+    margin-bottom: 8px;
+}
+
+.setting-section-header {
+    padding: 8px 0;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border-default, var(--border));
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.setting-section-header::after {
+    content: '\25BE';
+    font-size: 10px;
+    transition: transform 0.2s;
+}
+
+.setting-section.collapsed .setting-section-header::after {
+    transform: rotate(-90deg);
+}
+
+.setting-section.collapsed .setting-section-content {
+    display: none;
+}
+
+.setting-group--warning {
+    border: 1px solid var(--status-warning, #f59e0b);
+    border-radius: 6px;
+    padding: 10px 12px;
+    background: rgba(245, 158, 11, 0.08);
+}
+
+.btn-save-success {
+    background-color: var(--status-success, #22c55e) !important;
+    border-color: var(--status-success, #22c55e) !important;
+    color: white !important;
+    transition: background-color 0.3s, border-color 0.3s;
+}
+
 .modal-footer {
     padding: 20px;
     border-top: 1px solid var(--border);
     display: flex;
     justify-content: flex-end;
+    gap: 8px;
 }
 
 /* Plan Modal Styles */

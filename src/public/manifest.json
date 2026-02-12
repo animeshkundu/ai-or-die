@@ -4,7 +4,7 @@
   "description": "Universal AI coding terminal",
   "start_url": "/",
   "display": "standalone",
-  "display_override": ["standalone", "minimal-ui", "browser"],
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
   "scope": "/",
   "background_color": "#161b22",
   "theme_color": "#161b22",

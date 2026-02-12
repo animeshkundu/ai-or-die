@@ -149,26 +149,10 @@ class SessionTabManager {
         // Show a toast-style notification at the top of the screen
         const toast = document.createElement('div');
         toast.className = 'mobile-notification';
-        toast.style.cssText = `
-            position: fixed;
-            top: 10px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #3b82f6;
-            color: white;
-            padding: 12px 20px;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-            z-index: 10001;
-            max-width: 90%;
-            text-align: center;
-            cursor: pointer;
-            animation: slideDown 0.3s ease-out;
-        `;
-        
+
         toast.innerHTML = `
-            <div style="font-weight: bold; margin-bottom: 4px;">${title}</div>
-            <div style="font-size: 14px; opacity: 0.9;">${body}</div>
+            <div class="mobile-notification-title">${title}</div>
+            <div class="mobile-notification-body">${body}</div>
         `;
         
         // Add CSS animation
@@ -364,44 +348,15 @@ class SessionTabManager {
         if ('Notification' in window && Notification.permission === 'default') {
             // Create a small prompt to enable notifications
             const promptDiv = document.createElement('div');
-            promptDiv.style.cssText = `
-                position: fixed;
-                top: 60px;
-                right: 20px;
-                background: #1e293b;
-                border: 1px solid #475569;
-                border-radius: 8px;
-                padding: 12px 16px;
-                color: #e2e8f0;
-                font-size: 14px;
-                z-index: 10000;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-                max-width: 300px;
-            `;
+            promptDiv.className = 'notif-permission-prompt';
             promptDiv.innerHTML = `
-                <div style="margin-bottom: 10px;">
+                <div class="prompt-body">
                     <strong>Enable Desktop Notifications?</strong><br>
                     Get notified when ${this.getAlias('claude')} completes tasks in background tabs.
                 </div>
-                <div style="display: flex; gap: 10px;">
-                    <button id="enableNotifications" style="
-                        background: #3b82f6;
-                        color: white;
-                        border: none;
-                        padding: 6px 12px;
-                        border-radius: 4px;
-                        cursor: pointer;
-                        font-size: 13px;
-                    ">Enable</button>
-                    <button id="dismissNotifications" style="
-                        background: #475569;
-                        color: white;
-                        border: none;
-                        padding: 6px 12px;
-                        border-radius: 4px;
-                        cursor: pointer;
-                        font-size: 13px;
-                    ">Not Now</button>
+                <div class="prompt-actions">
+                    <button id="enableNotifications" class="btn btn-primary btn-small">Enable</button>
+                    <button id="dismissNotifications" class="btn btn-secondary btn-small">Not Now</button>
                 </div>
             `;
             document.body.appendChild(promptDiv);

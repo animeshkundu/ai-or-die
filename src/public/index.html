@@ -261,97 +261,147 @@
             </div>
         </div>
 
-        <div class="settings-modal" id="settingsModal">
+        <div class="settings-modal" id="settingsModal" role="dialog" aria-modal="true" aria-label="Settings">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>Settings</h2>
                     <button class="close-btn" id="closeSettingsBtn" aria-label="Close settings">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <div class="setting-group">
-                        <label for="themeSelect">Theme:</label>
-                        <select id="themeSelect">
-                            <option value="midnight">Midnight</option>
-                            <option value="classic-dark">Classic Dark</option>
-                            <option value="classic-light">Classic Light</option>
-                            <option value="monokai">Monokai</option>
-                            <option value="nord">Nord</option>
-                            <option value="solarized-dark">Solarized Dark</option>
-                            <option value="solarized-light">Solarized Light</option>
-                        </select>
+                    <div class="setting-section" data-section="terminal">
+                        <div class="setting-section-header">Terminal</div>
+                        <div class="setting-section-content">
+                            <div class="setting-group">
+                                <label for="themeSelect">Theme:</label>
+                                <select id="themeSelect">
+                                    <option value="midnight">Midnight</option>
+                                    <option value="classic-dark">Classic Dark</option>
+                                    <option value="classic-light">Classic Light</option>
+                                    <option value="monokai">Monokai</option>
+                                    <option value="nord">Nord</option>
+                                    <option value="solarized-dark">Solarized Dark</option>
+                                    <option value="solarized-light">Solarized Light</option>
+                                </select>
+                            </div>
+                            <div class="setting-group">
+                                <label for="fontFamily">Font:</label>
+                                <select id="fontFamily">
+                                    <option value="'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace">Meslo Nerd Font</option>
+                                    <option value="'JetBrains Mono NF', 'MesloLGS Nerd Font', monospace">JetBrains Mono</option>
+                                    <option value="'Fira Code NF', 'MesloLGS Nerd Font', monospace">Fira Code</option>
+                                    <option value="'Cascadia Code NF', 'MesloLGS Nerd Font', monospace">Cascadia Code</option>
+                                    <option value="'Consolas', 'MesloLGS Nerd Font', monospace">Consolas</option>
+                                    <option value="'MesloLGS Nerd Font', monospace">System Monospace</option>
+                                </select>
+                            </div>
+                            <div class="setting-group">
+                                <label for="fontSize">Font Size:</label>
+                                <input type="range" id="fontSize" min="10" max="24" value="14">
+                                <span id="fontSizeValue">14px</span>
+                            </div>
+                            <div class="setting-group">
+                                <label for="cursorStyle">Cursor:</label>
+                                <select id="cursorStyle">
+                                    <option value="block">Block</option>
+                                    <option value="underline">Underline</option>
+                                    <option value="bar">Bar</option>
+                                </select>
+                            </div>
+                            <div class="setting-group">
+                                <label for="cursorBlink">Cursor Blink:</label>
+                                <input type="checkbox" id="cursorBlink" checked>
+                            </div>
+                            <div class="setting-group">
+                                <label for="scrollback">Scrollback:</label>
+                                <select id="scrollback">
+                                    <option value="1000">1,000 lines</option>
+                                    <option value="5000">5,000 lines</option>
+                                    <option value="10000">10,000 lines</option>
+                                    <option value="50000">50,000 lines</option>
+                                </select>
+                            </div>
+                            <div class="setting-group">
+                                <label for="terminalPadding">Padding:</label>
+                                <input type="range" id="terminalPadding" min="0" max="20" value="8">
+                                <span id="terminalPaddingValue">8px</span>
+                            </div>
+                        </div>
                     </div>
-                    <div class="setting-group">
-                        <label for="fontFamily">Font:</label>
-                        <select id="fontFamily">
-                            <option value="'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace">Meslo Nerd Font</option>
-                            <option value="'JetBrains Mono NF', 'MesloLGS Nerd Font', monospace">JetBrains Mono</option>
-                            <option value="'Fira Code NF', 'MesloLGS Nerd Font', monospace">Fira Code</option>
-                            <option value="'Cascadia Code NF', 'MesloLGS Nerd Font', monospace">Cascadia Code</option>
-                            <option value="'Consolas', 'MesloLGS Nerd Font', monospace">Consolas</option>
-                            <option value="'MesloLGS Nerd Font', monospace">System Monospace</option>
-                        </select>
+
+                    <div class="setting-section" data-section="voice">
+                        <div class="setting-section-header">Voice Input</div>
+                        <div class="setting-section-content">
+                            <div class="setting-group">
+                                <label for="voiceRecordingMode">Recording Mode:</label>
+                                <select id="voiceRecordingMode">
+                                    <option value="push-to-talk">Push-to-Talk</option>
+                                    <option value="toggle">Toggle</option>
+                                </select>
+                            </div>
+                            <div class="setting-group">
+                                <label for="voiceMethod">Input Method:</label>
+                                <select id="voiceMethod">
+                                    <option value="auto">Auto</option>
+                                    <option value="cloud">Cloud</option>
+                                    <option value="local">Local</option>
+                                </select>
+                            </div>
+                            <div class="setting-group">
+                                <label for="micSounds">Mic Sounds:</label>
+                                <input type="checkbox" id="micSounds" checked>
+                            </div>
+                        </div>
                     </div>
-                    <div class="setting-group">
-                        <label for="fontSize">Font Size:</label>
-                        <input type="range" id="fontSize" min="10" max="24" value="14">
-                        <span id="fontSizeValue">14px</span>
+
+                    <div class="setting-section" data-section="notifications">
+                        <div class="setting-section-header">Notifications</div>
+                        <div class="setting-section-content">
+                            <div class="setting-group">
+                                <label for="notifSound">Sound:</label>
+                                <input type="checkbox" id="notifSound" checked>
+                            </div>
+                            <div class="setting-group">
+                                <label for="notifVolume">Volume:</label>
+                                <input type="range" id="notifVolume" min="0" max="100" value="30">
+                                <span id="notifVolumeValue">30%</span>
+                            </div>
+                            <div class="setting-group">
+                                <label for="notifDesktop">Desktop Alerts:</label>
+                                <input type="checkbox" id="notifDesktop" checked>
+                            </div>
+                        </div>
                     </div>
-                    <div class="setting-group">
-                        <label for="cursorStyle">Cursor:</label>
-                        <select id="cursorStyle">
-                            <option value="block">Block</option>
-                            <option value="underline">Underline</option>
-                            <option value="bar">Bar</option>
-                        </select>
+
+                    <div class="setting-section" data-section="display">
+                        <div class="setting-section-header">Display</div>
+                        <div class="setting-section-content">
+                            <div class="setting-group">
+                                <label for="showTokenStats">Token Stats:</label>
+                                <input type="checkbox" id="showTokenStats" checked>
+                            </div>
+                        </div>
                     </div>
-                    <div class="setting-group">
-                        <label for="cursorBlink">Cursor Blink:</label>
-                        <input type="checkbox" id="cursorBlink" checked>
-                    </div>
-                    <div class="setting-group">
-                        <label for="scrollback">Scrollback:</label>
-                        <select id="scrollback">
-                            <option value="1000">1,000 lines</option>
-                            <option value="5000">5,000 lines</option>
-                            <option value="10000">10,000 lines</option>
-                            <option value="50000">50,000 lines</option>
-                        </select>
-                    </div>
-                    <div class="setting-group">
-                        <label for="showTokenStats">Token Stats:</label>
-                        <input type="checkbox" id="showTokenStats" checked>
-                    </div>
-                    <div class="setting-group" style="border: 1px solid var(--status-warning, #f59e0b); border-radius: 6px; padding: 10px 12px; background: rgba(245, 158, 11, 0.08);">
-                        <label for="dangerousMode" style="display: flex; align-items: center; gap: 6px;">
-                            <span style="font-size: 1.2em;">&#9888;</span> Autonomous:
-                        </label>
-                        <input type="checkbox" id="dangerousMode">
-                        <small class="setting-warning" style="font-size: 13px; color: var(--status-warning, #f59e0b);">Skips permission prompts. Use in trusted environments only.</small>
-                    </div>
-                    <div class="setting-group setting-divider">
-                        <label><strong>Notifications</strong></label>
-                    </div>
-                    <div class="setting-group">
-                        <label for="notifSound">Sound:</label>
-                        <input type="checkbox" id="notifSound" checked>
-                    </div>
-                    <div class="setting-group">
-                        <label for="notifVolume">Volume:</label>
-                        <input type="range" id="notifVolume" min="0" max="100" value="30">
-                        <span id="notifVolumeValue">30%</span>
-                    </div>
-                    <div class="setting-group">
-                        <label for="notifDesktop">Desktop Alerts:</label>
-                        <input type="checkbox" id="notifDesktop" checked>
+
+                    <div class="setting-section" data-section="advanced">
+                        <div class="setting-section-header">Advanced</div>
+                        <div class="setting-section-content">
+                            <div class="setting-group setting-group--warning">
+                                <label for="dangerousMode">Autonomous Mode:</label>
+                                <input type="checkbox" id="dangerousMode">
+                                <small class="setting-warning">Skips all permission prompts. Commands run without confirmation. Only use in fully trusted environments.</small>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
+                    <button class="btn btn-secondary" id="resetSettingsBtn">Reset to Defaults</button>
+                    <button class="btn btn-secondary" id="cancelSettingsBtn">Cancel</button>
                     <button class="btn btn-primary" id="saveSettingsBtn">Save Settings</button>
                 </div>
             </div>
         </div>
 
-        <div class="plan-modal" id="planModal">
+        <div class="plan-modal" id="planModal" role="dialog" aria-modal="true" aria-label="Claude's Plan">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>
@@ -396,7 +446,84 @@
             </div>
         </div>
 
-        <div class="session-modal" id="newSessionModal">
+        <div class="shortcuts-modal" id="shortcutsModal" role="dialog" aria-modal="true" aria-label="Keyboard Shortcuts">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Keyboard Shortcuts</h2>
+                    <button class="close-btn" id="closeShortcutsBtn" aria-label="Close shortcuts">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <table class="shortcuts-table">
+                        <thead>
+                            <tr>
+                                <th>Category</th>
+                                <th>Shortcut</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>General</td>
+                                <td><kbd>Ctrl</kbd> + <kbd>K</kbd></td>
+                                <td>Command Palette</td>
+                            </tr>
+                            <tr>
+                                <td>Sessions</td>
+                                <td><kbd>Ctrl</kbd> + <kbd>T</kbd></td>
+                                <td>New Session</td>
+                            </tr>
+                            <tr>
+                                <td>Navigation</td>
+                                <td><kbd>Ctrl</kbd> + <kbd>B</kbd></td>
+                                <td>Toggle File Browser</td>
+                            </tr>
+                            <tr>
+                                <td>Navigation</td>
+                                <td><kbd>Ctrl</kbd> + <kbd>F</kbd></td>
+                                <td>Search Terminal</td>
+                            </tr>
+                            <tr>
+                                <td>Navigation</td>
+                                <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>O</kbd></td>
+                                <td>Open File by Path</td>
+                            </tr>
+                            <tr>
+                                <td>Tools</td>
+                                <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>V</kbd></td>
+                                <td>VS Code Tunnel</td>
+                            </tr>
+                            <tr>
+                                <td>Tools</td>
+                                <td><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd></td>
+                                <td>Voice Input</td>
+                            </tr>
+                            <tr>
+                                <td>Terminal</td>
+                                <td><kbd>Ctrl</kbd> + <kbd>C</kbd></td>
+                                <td>Copy (with selection) / SIGINT</td>
+                            </tr>
+                            <tr>
+                                <td>Terminal</td>
+                                <td><kbd>Ctrl</kbd> + <kbd>V</kbd></td>
+                                <td>Paste</td>
+                            </tr>
+                            <tr>
+                                <td>Terminal</td>
+                                <td><kbd>Escape</kbd></td>
+                                <td>Cancel voice / Close search</td>
+                            </tr>
+                            <tr>
+                                <td>Help</td>
+                                <td><kbd>?</kbd></td>
+                                <td>Show this dialog</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="session-modal" id="newSessionModal" role="dialog" aria-modal="true" aria-label="Create New Session">
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>Create New Session</h2>
@@ -419,7 +546,7 @@
             </div>
         </div>
 
-        <div class="folder-browser-modal" id="folderBrowserModal">
+        <div class="folder-browser-modal" id="folderBrowserModal" role="dialog" aria-modal="true" aria-label="Select Working Directory">
             <div class="modal-content folder-browser-content">
                 <div class="modal-header">
                     <h2>Select Working Directory</h2>
@@ -471,7 +598,7 @@
     </div>
 
     <!-- Mobile Sessions Modal -->
-    <div class="session-modal" id="mobileSessionsModal">
+    <div class="session-modal" id="mobileSessionsModal" role="dialog" aria-modal="true" aria-label="Sessions">
         <div class="modal-content">
             <div class="modal-header">
                 <h2>Sessions</h2>
@@ -522,11 +649,23 @@
                             const newWorker = registration.installing;
                             newWorker.addEventListener('statechange', () => {
                                 if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                                    // New service worker available, prompt user to refresh
-                                    if (confirm('A new version of ai-or-die is available. Refresh to update?')) {
+                                    // Show non-blocking update banner
+                                    const banner = document.createElement('div');
+                                    banner.className = 'sw-update-banner';
+                                    banner.innerHTML = `
+                                        <span>A new version is available.</span>
+                                        <button class="btn btn-primary btn-small" id="swUpdateBtn">Refresh Now</button>
+                                        <button class="btn btn-secondary btn-small" id="swDismissBtn">Later</button>
+                                    `;
+                                    document.body.appendChild(banner);
+
+                                    document.getElementById('swUpdateBtn').addEventListener('click', () => {
                                         newWorker.postMessage({ type: 'SKIP_WAITING' });
                                         window.location.reload();
-                                    }
+                                    });
+                                    document.getElementById('swDismissBtn').addEventListener('click', () => {
+                                        banner.remove();
+                                    });
                                 }
                             });
                         });
@@ -551,22 +690,6 @@
                 installBtn.id = 'installBtn';
                 installBtn.className = 'install-btn';
                 installBtn.innerHTML = '<span class="icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg></span> Install App';
-                installBtn.style.cssText = `
-                    position: fixed;
-                    bottom: 20px;
-                    right: 20px;
-                    padding: 12px 20px;
-                    background: var(--accent);
-                    color: white;
-                    border: none;
-                    border-radius: 8px;
-                    cursor: pointer;
-                    font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, 'JetBrains Mono', monospace;
-                    font-size: 14px;
-                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-                    z-index: 1000;
-                    transition: all 0.3s ease;
-                `;
                 
                 installBtn.addEventListener('click', async () => {
                     if (deferredPrompt) {
