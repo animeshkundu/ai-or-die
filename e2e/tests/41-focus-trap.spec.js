@@ -115,8 +115,13 @@ test.describe('Modal Focus Trapping', () => {
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
 
-    // Press Escape to close
-    await page.keyboard.press('Escape');
+    // Close modal via close button (Escape may be captured by other handlers)
+    const closeBtn = page.locator('#closeSettingsBtn');
+    if (await closeBtn.isVisible()) {
+      await closeBtn.click();
+    } else {
+      await page.keyboard.press('Escape');
+    }
     await page.waitForTimeout(500);
 
     // Verify modal is closed

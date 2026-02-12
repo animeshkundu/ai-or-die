@@ -107,10 +107,11 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     await page.click('#closeSettingsBtn');
     await page.waitForTimeout(300);
 
-    // Reload page
+    // Reload page and rejoin session so overlay hides
     await page.reload();
     await waitForAppReady(page);
     await waitForWebSocket(page);
+    await joinSessionAndStartTerminal(page, sessionId);
 
     // Open settings again
     await page.click('#settingsBtn');
@@ -225,10 +226,11 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     await page.click('#closeSettingsBtn');
     await page.waitForTimeout(300);
 
-    // Reload
+    // Reload and rejoin session so overlay hides
     await page.reload();
     await waitForAppReady(page);
     await waitForWebSocket(page);
+    await joinSessionAndStartTerminal(page, sessionId);
 
     // Open settings again
     await page.click('#settingsBtn');
