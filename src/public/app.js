@@ -661,9 +661,9 @@ class ClaudeCodeWebInterface {
                                     <div class="session-info">
                                         <span class="session-status">${statusIcon}</span>
                                         <div class="session-details">
-                                            <div class="session-name">${session.name}</div>
+                                            <div class="session-name">${this._escapeHtml(session.name)}</div>
                                             <div class="session-meta">${clientsText} • ${new Date(session.created).toLocaleString()}</div>
-                                            ${session.workingDir ? `<div class=\"session-folder\" title=\"${session.workingDir}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${session.workingDir}</div>` : ''}
+                                            ${session.workingDir ? `<div class=\"session-folder\" title=\"${this._escapeHtml(session.workingDir)}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${this._escapeHtml(session.workingDir)}</div>` : ''}
                                         </div>
                                     </div>
                                 </div>
@@ -3281,9 +3281,9 @@ class ClaudeCodeWebInterface {
                 <div class="session-info">
                     <span class="session-status">${statusIcon}</span>
                     <div class="session-details">
-                        <div class="session-name">${session.name}</div>
+                        <div class="session-name">${this._escapeHtml(session.name)}</div>
                         <div class="session-meta">${clientsText} • ${new Date(session.created).toLocaleTimeString()}</div>
-                        ${session.workingDir ? `<div class=\"session-folder\" title=\"${session.workingDir}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${session.workingDir.split('/').pop() || '/'}</div>` : ''}
+                        ${session.workingDir ? `<div class=\"session-folder\" title=\"${this._escapeHtml(session.workingDir)}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${this._escapeHtml(session.workingDir.split('/').pop() || '/')}</div>` : ''}
                     </div>
                 </div>
                 <div class="session-actions">
@@ -3310,7 +3310,7 @@ class ClaudeCodeWebInterface {
                         this.leaveSession(session.id);
                         this.hideMobileSessionsModal();
                     } else if (action === 'delete') {
-                        if (confirm(`Delete session "${session.name}"?`)) {
+                        if (confirm(`Delete session "${(session.name || '').replace(/[<>"]/g, '')}"?`)) {
                             this.deleteSession(session.id);
                         }
                     }

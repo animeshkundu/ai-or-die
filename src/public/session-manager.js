@@ -1,3 +1,9 @@
+function _esc(str) {
+    const d = document.createElement('div');
+    d.textContent = str || '';
+    return d.innerHTML;
+}
+
 class SessionTabManager {
     constructor(claudeInterface) {
         this.claudeInterface = claudeInterface;
@@ -697,9 +703,9 @@ class SessionTabManager {
             <span class="sr-only">${statusLabel}</span>
             <div class="tab-content">
                 ${badgeHtml}
-                <span class="tab-name" title="${sessionName}">${displayName}</span>
+                <span class="tab-name" title="${_esc(sessionName)}">${_esc(displayName)}</span>
             </div>
-            <span class="tab-close" title="Close tab" aria-label="Close ${sessionName}">
+            <span class="tab-close" title="Close tab" aria-label="Close ${_esc(sessionName)}">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="18" y1="6" x2="6" y2="18"/>
                     <line x1="6" y1="6" x2="18" y2="18"/>

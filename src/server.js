@@ -1367,6 +1367,9 @@ class ClaudeCodeWebServer {
         break;
       
       case 'input':
+        if (data.data && data.data.length > 256 * 1024) {
+          data.data = data.data.slice(0, 256 * 1024);
+        }
         if (wsInfo.claudeSessionId) {
           // Verify the session exists and the WebSocket is part of it
           const session = this.claudeSessions.get(wsInfo.claudeSessionId);
