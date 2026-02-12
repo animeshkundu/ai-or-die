@@ -105,7 +105,7 @@ module.exports = defineConfig({
     // Mobile flow tests — device emulation with real terminal interaction
     {
       name: 'mobile-flows',
-      testMatch: /37-.*\.spec\.js/,
+      testMatch: /3[7-9]-.*\.spec\.js/,
     },
   ],
 });

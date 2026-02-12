@@ -55,22 +55,8 @@ test.describe('Power User: Multi-Session Workflow', () => {
     const tabs = await page.$$('.session-tab');
     expect(tabs.length).toBeGreaterThanOrEqual(3);
 
-    // Find and click session 2 tab
-    await page.evaluate((sid) => {
-      const tab = document.querySelector(`.session-tab[data-session-id="${sid}"]`);
-      if (tab) tab.click();
-    }, s2);
-    await page.waitForTimeout(1000);
-
-    // Start terminal in session 2
-    await page.evaluate(() => {
-      window.app.startToolSession('terminal');
-    });
-    await page.waitForFunction(() => {
-      const overlay = document.getElementById('overlay');
-      return !overlay || overlay.style.display === 'none';
-    }, { timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    // Join session 2 and start its terminal using the same reliable helper
+    await joinSessionAndStartTerminal(page, s2);
 
     // Type a unique marker in session 2
     const marker2 = `BETA_${Date.now()}`;
@@ -82,12 +68,13 @@ test.describe('Power User: Multi-Session Workflow', () => {
     const content2 = await readTerminalContent(page);
     expect(content2).not.toContain(marker1);
 
-    // Switch back to session 1
+    // Switch back to session 1 via tab click
     await page.evaluate((sid) => {
       const tab = document.querySelector(`.session-tab[data-session-id="${sid}"]`);
       if (tab) tab.click();
     }, s1);
-    await page.waitForTimeout(1000);
+    // Wait for session 1's terminal buffer to be loaded and contain our marker
+    await waitForTerminalText(page, marker1, 15000);
 
     // Verify session 1 still has its marker (persistence)
     const content1 = await readTerminalContent(page);

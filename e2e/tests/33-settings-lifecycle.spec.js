@@ -31,6 +31,8 @@ test.describe('Power User: Settings Lifecycle', () => {
     await page.goto(url);
     await waitForAppReady(page);
     await waitForWebSocket(page);
+    // Join session so the overlay hides and the settings button is clickable
+    await joinSessionAndStartTerminal(page, sessionId);
 
     // Open settings
     await page.click('#settingsBtn');
@@ -79,6 +81,7 @@ test.describe('Power User: Settings Lifecycle', () => {
 
   test('reset to defaults clears all settings', async ({ page }) => {
     setupPageCapture(page);
+    const sessionId = await createSessionViaApi(port, 'reset-defaults-test');
     await page.goto(url);
     await waitForAppReady(page);
     await waitForWebSocket(page);
@@ -90,6 +93,9 @@ test.describe('Power User: Settings Lifecycle', () => {
     });
     await page.reload();
     await waitForAppReady(page);
+    await waitForWebSocket(page);
+    // Join session so the overlay hides and the settings button is clickable
+    await joinSessionAndStartTerminal(page, sessionId);
 
     // Verify non-default theme is applied
     const preTheme = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
