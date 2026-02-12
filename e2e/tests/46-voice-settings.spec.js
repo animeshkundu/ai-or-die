@@ -107,17 +107,27 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     await page.click('#closeSettingsBtn');
     await page.waitForTimeout(300);
 
-    // Reload page and rejoin session so overlay hides
+    // Reload page — settings persist in localStorage, no need for terminal
     await page.reload();
     await waitForAppReady(page);
-    await waitForWebSocket(page);
-    await joinSessionAndStartTerminal(page, sessionId);
 
-    // Open settings — wait for button to be actionable after overlay clears
-    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
-    await page.waitForTimeout(500);
-    await page.click('#settingsBtn');
-    await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    // Verify directly from localStorage (most reliable)
+    const savedMode = await page.evaluate(() => {
+      const s = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+      return s.voiceRecordingMode;
+    });
+    expect(savedMode).toBe('toggle');
+
+    // Also verify via settings modal if button is accessible
+    const settingsBtn = page.locator('#settingsBtn');
+    if (await settingsBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await settingsBtn.click();
+      await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    } else {
+      // Open settings programmatically if button is behind overlay
+      await page.evaluate(() => { if (window.app) window.app.showSettings(); });
+      await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    }
 
     // Verify Toggle is still selected
     const mode = await page.evaluate(() => {
@@ -228,16 +238,19 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     await page.click('#closeSettingsBtn');
     await page.waitForTimeout(300);
 
-    // Reload and rejoin session so overlay hides
+    // Reload page — settings persist in localStorage
     await page.reload();
     await waitForAppReady(page);
-    await waitForWebSocket(page);
-    await joinSessionAndStartTerminal(page, sessionId);
 
-    // Open settings — wait for button to be actionable after overlay clears
-    await page.waitForSelector('#settingsBtn', { state: 'visible', timeout: 10000 });
-    await page.waitForTimeout(500);
-    await page.click('#settingsBtn');
+    // Verify directly from localStorage first
+    const savedMicSounds = await page.evaluate(() => {
+      const s = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+      return s.micSounds;
+    });
+    expect(savedMicSounds).toBe(false);
+
+    // Open settings programmatically
+    await page.evaluate(() => { if (window.app) window.app.showSettings(); });
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
 
     // Verify Mic Sounds remains unchecked
