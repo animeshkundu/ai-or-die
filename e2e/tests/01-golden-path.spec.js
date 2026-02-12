@@ -73,14 +73,27 @@ test.describe('Golden path: fresh user opens app and uses terminal', () => {
       return !overlay || overlay.style.display === 'none';
     }, { timeout: 30000 });
 
-    // 6. Wait for shell prompt (generous for Windows ConPTY)
-    await page.waitForTimeout(5000);
+    // 6. Wait for shell prompt — poll terminal buffer instead of a fixed sleep.
+    //    On Windows CI, PowerShell startup can take 5-10+ seconds depending on
+    //    runner load, so a fixed timeout races with prompt readiness.
+    await page.waitForFunction(() => {
+      const term = window.app && window.app.terminal;
+      if (!term) return false;
+      const buf = term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (line && line.translateToString(true).trim().length > 0) return true;
+      }
+      return false;
+    }, { timeout: 20000 });
+    // Brief settle time for any remaining shell initialization
+    await page.waitForTimeout(500);
 
     // 7. Type command and verify output
     const marker = `GOLDEN_${Date.now()}`;
     await typeInTerminal(page, `echo ${marker}`);
     await pressKey(page, 'Enter');
-    await waitForTerminalText(page, marker, 15000);
+    await waitForTerminalText(page, marker, 30000);
 
     // 8. Verify terminal dimensions
     const dims = await getTerminalDimensions(page);
