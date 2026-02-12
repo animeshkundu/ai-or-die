@@ -112,5 +112,17 @@ module.exports = defineConfig({
       name: 'ui-features',
       testMatch: /4[0-9]-.*\.spec\.js/,
     },
+    // Mobile input audit tests — comprehensive mobile UX testing (iPhone 14)
+    {
+      name: 'mobile-input-audit-iphone',
+      testMatch: '50-mobile-input-audit.spec.js',
+      use: { ...devices['iPhone 14'] },
+    },
+    // Mobile input audit tests — comprehensive mobile UX testing (Pixel 7)
+    {
+      name: 'mobile-input-audit-pixel',
+      testMatch: '50-mobile-input-audit.spec.js',
+      use: { ...devices['Pixel 7'] },
+    },
   ],
 });
