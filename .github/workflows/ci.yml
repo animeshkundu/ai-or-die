@@ -227,6 +227,62 @@ jobs:
             playwright-report/
           retention-days: 14
 
+  test-browser-power-user:
+    runs-on: ${{ matrix.os }}
+    needs: test
+    timeout-minutes: 9
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run power user flow tests
+        run: npx playwright test --config e2e/playwright.config.js --project power-user-flows
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-power-user-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  test-browser-mobile-flows:
+    runs-on: ${{ matrix.os }}
+    needs: test
+    timeout-minutes: 9
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run mobile flow tests
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-flows
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-mobile-flows-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
   build-binary:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 9

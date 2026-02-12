@@ -116,6 +116,7 @@ test.describe('Power User: Typing During Heavy Output', () => {
     // With coalescing, 20 keystrokes at 5ms delay should batch into fewer messages
     // than 20 (without coalescing, each keystroke = 1 message)
     // Allow some margin: should be less than 15 messages for 20 keystrokes
+    expect(inputMsgsSent).toBeGreaterThan(0);
     expect(inputMsgsSent).toBeLessThan(15);
 
     // Wait for stream to finish

@@ -52,14 +52,17 @@ test.describe('Power User: Command Palette Exhaustive', () => {
       'Toggle File Browser',
     ];
 
+    const input = palette.locator('input[type="text"]').first();
+    await expect(input).toBeVisible();
+
     for (const cmd of expectedCommands) {
-      // Clear search and type command name
-      const input = palette.locator('input[type="text"]').first();
-      if (await input.isVisible()) {
-        await input.fill('');
-        await input.fill(cmd.split(':')[0].trim());
-        await page.waitForTimeout(200);
-      }
+      await input.fill('');
+      await input.fill(cmd.split(':')[0].trim());
+      await page.waitForTimeout(300);
+      // Verify at least one matching result appears
+      const results = palette.locator('ninja-keys [class*="action"]');
+      const count = await results.count().catch(() => 0);
+      expect(count).toBeGreaterThan(0);
     }
 
     // Close palette with Escape
@@ -115,7 +118,7 @@ test.describe('Power User: Command Palette Exhaustive', () => {
     await joinSessionAndStartTerminal(page, sessionId);
 
     // Type some content
-    const { typeInTerminal, pressKey, waitForTerminalText } = require('../helpers/terminal-helpers');
+    const { typeInTerminal, pressKey, waitForTerminalText, readTerminalContent } = require('../helpers/terminal-helpers');
     const marker = `CLEAR_${Date.now()}`;
     await typeInTerminal(page, `echo ${marker}`);
     await pressKey(page, 'Enter');
@@ -126,15 +129,16 @@ test.describe('Power User: Command Palette Exhaustive', () => {
     await page.waitForTimeout(500);
     const palette = page.locator('ninja-keys');
     const input = palette.locator('input[type="text"]').first();
-    if (await input.isVisible()) {
-      await input.fill('Clear Terminal');
-      await page.waitForTimeout(300);
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(500);
-    }
+    await expect(input).toBeVisible();
+    await input.fill('Clear Terminal');
+    await page.waitForTimeout(300);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(500);
 
-    // Verify terminal was cleared (marker no longer in visible area)
+    // Verify terminal was actually cleared
     await focusTerminal(page);
+    const content = await readTerminalContent(page);
+    expect(content).not.toContain(marker);
   });
 
   test('keyboard navigation works in palette', async ({ page }) => {
@@ -143,20 +147,29 @@ test.describe('Power User: Command Palette Exhaustive', () => {
     await waitForAppReady(page);
     await waitForWebSocket(page);
 
-    // Open palette
+    // Open palette and verify visible
     await page.keyboard.press('Control+k');
     await page.waitForTimeout(500);
+    const palette = page.locator('ninja-keys');
+    await expect(palette).toBeAttached();
 
-    // Arrow down to navigate, Escape to close
+    // Arrow down to navigate — verify palette stays open
     await page.keyboard.press('ArrowDown');
     await page.waitForTimeout(100);
     await page.keyboard.press('ArrowDown');
     await page.waitForTimeout(100);
     await page.keyboard.press('ArrowUp');
     await page.waitForTimeout(100);
+    await expect(palette).toBeAttached();
 
-    // Escape closes
+    // Escape closes the palette
     await page.keyboard.press('Escape');
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(500);
+    // Verify palette is no longer open (ninja-keys hides its internal content)
+    const isOpen = await page.evaluate(() => {
+      const nk = document.querySelector('ninja-keys');
+      return nk && nk.opened;
+    });
+    expect(isOpen).toBeFalsy();
   });
 });

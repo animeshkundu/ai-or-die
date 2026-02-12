@@ -96,10 +96,9 @@ test.describe('Power User: Multi-Session Workflow', () => {
 
     // Close session 3 via tab close button
     const closeBtn = await page.$(`.session-tab[data-session-id="${s3}"] .tab-close`);
-    if (closeBtn) {
-      await closeBtn.click();
-      await page.waitForTimeout(500);
-    }
+    expect(closeBtn).not.toBeNull();
+    await closeBtn.click();
+    await page.waitForTimeout(500);
 
     // Verify session 3 tab is gone
     const remainingTabs = await page.$$('.session-tab');

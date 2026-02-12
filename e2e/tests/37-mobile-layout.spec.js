@@ -116,25 +116,24 @@ test.describe('Mobile: iPhone 14 Layout', () => {
     await waitForAppReady(page);
     await waitForWebSocket(page);
 
-    // Open hamburger menu
+    // Open hamburger menu — must be visible on mobile
     const hamburger = page.locator('.hamburger-btn');
-    if (await hamburger.isVisible()) {
-      await hamburger.click();
-      await page.waitForTimeout(300);
+    await expect(hamburger).toBeVisible();
+    await hamburger.click();
+    await page.waitForTimeout(300);
 
-      // Verify mobile menu is visible
-      const menu = page.locator('.mobile-menu.active');
-      await expect(menu).toBeVisible();
+    // Verify mobile menu is visible
+    const menu = page.locator('.mobile-menu.active');
+    await expect(menu).toBeVisible();
 
-      // Verify expected buttons exist
-      await expect(page.locator('#sessionsBtnMobile')).toBeVisible();
-      await expect(page.locator('#clearBtnMobile')).toBeVisible();
-      await expect(page.locator('#settingsBtnMobile')).toBeVisible();
+    // Verify expected buttons exist
+    await expect(page.locator('#sessionsBtnMobile')).toBeVisible();
+    await expect(page.locator('#clearBtnMobile')).toBeVisible();
+    await expect(page.locator('#settingsBtnMobile')).toBeVisible();
 
-      // Close menu
-      await page.locator('#closeMenuBtn').click();
-      await page.waitForTimeout(300);
-    }
+    // Close menu
+    await page.locator('#closeMenuBtn').click();
+    await page.waitForTimeout(300);
   });
 });
 
