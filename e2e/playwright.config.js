@@ -112,5 +112,13 @@ module.exports = defineConfig({
       name: 'ui-features',
       testMatch: /4[0-9]-.*\.spec\.js/,
     },
+    // PWA resilience tests — offline, reconnection, service worker
+    {
+      name: 'pwa-resilience',
+      testMatch: '50-pwa-resilience.spec.js',
+      use: {
+        serviceWorkers: 'allow',
+      },
+    },
   ],
 });
