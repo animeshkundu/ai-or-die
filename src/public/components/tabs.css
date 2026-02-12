@@ -203,6 +203,9 @@
 
 @media (pointer: coarse) {
     .tab-close { min-width: 44px; min-height: 44px; opacity: 0.7; }
+    .tab-new-main,
+    .tab-new-dropdown { min-width: 44px; min-height: 44px; }
+    .tab-new-split { min-height: 44px; }
 }
 
 .tab-name-input {

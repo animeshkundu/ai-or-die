@@ -1,5 +1,7 @@
 # CI-First Testing
 
+This document covers Tier 1 (True E2E Tests) of the project's testing hierarchy. E2E tests on CI are the source of truth for regression. For the full three-tier testing hierarchy — E2E, Copilot agent exploratory testing, and manual device testing — see `docs/agent-instructions/02-testing-and-validation.md`.
+
 ## E2E Tests Are the Source of Truth
 
 End-to-end tests are the only true way to validate that the system works. Unit tests verify isolated logic. E2E tests prove the whole system -- server, WebSocket, terminal, browser UI -- actually functions as a user would experience it.

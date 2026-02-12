@@ -262,3 +262,9 @@
     transition: all var(--duration-slow) var(--ease-default);
 }
 
+@media (max-width: 768px) {
+    .install-btn {
+        bottom: calc(52px + 20px + env(safe-area-inset-bottom, 0px));
+    }
+}
+

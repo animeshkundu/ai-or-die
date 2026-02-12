@@ -8,7 +8,7 @@ class ClaudeCodeWebInterface {
         this.currentClaudeSessionId = null;
         this.currentClaudeSessionName = null;
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
+        this.maxReconnectAttempts = 10;
         this.reconnectDelay = 1000;
         this.folderMode = true; // Always use folder mode
         this.currentFolderPath = null;
@@ -211,16 +211,30 @@ class ClaudeCodeWebInterface {
                         this.send({ type: 'set_priority', sessions });
                     }
                 }
-            } else if (this.currentClaudeSessionId) {
-                // Restore foreground for active session
-                this.sendSessionPriority(this.currentClaudeSessionId);
+            } else {
+                // Tab became visible — restore foreground for active session
+                if (this.currentClaudeSessionId) {
+                    this.sendSessionPriority(this.currentClaudeSessionId);
+                }
+                // Reconnect if the socket dropped while the tab was hidden
+                if (this.socket && this.socket.readyState === WebSocket.CLOSED) {
+                    this.reconnect();
+                }
             }
+        });
+
+        // Network change handlers
+        window.addEventListener('online', () => {
+            if (this.socket?.readyState !== WebSocket.OPEN) this.reconnect();
+        });
+        window.addEventListener('offline', () => {
+            this.updateStatus('Offline');
         });
 
         window.addEventListener('resize', () => {
             this.fitTerminal();
         });
-        
+
         window.addEventListener('beforeunload', () => {
             this.disconnect();
         });
@@ -617,29 +631,107 @@ class ClaudeCodeWebInterface {
         if (!this.isMobile || !window.visualViewport || typeof ExtraKeys === 'undefined') return;
 
         this.extraKeys = new ExtraKeys({ app: this });
+        this._keyboardOpen = false;
 
-        let prevHeight = window.visualViewport.height;
-        window.visualViewport.addEventListener('resize', () => {
+        // Thrashing detection: if >3 resize events in 500ms, fall back to fixed threshold
+        const resizeTimestamps = [];
+        let useFallbackThreshold = false;
+
+        // Debounce timer for body class toggle
+        let classDebounceTimer = null;
+
+        // Safari fallback: poll viewport height if no resize fires after focus
+        let safariFallbackStarted = false;
+        this._this._safariPollInterval = null;
+
+        const getThreshold = () => {
+            if (useFallbackThreshold) return 150;
+            return Math.max(window.screen.height * 0.25, 100);
+        };
+
+        const checkKeyboard = () => {
             const currentHeight = window.visualViewport.height;
             const heightDiff = window.innerHeight - currentHeight;
+            const threshold = getThreshold();
 
-            if (heightDiff > 150) {
-                this.extraKeys.show();
-                const termEl = document.getElementById('terminal');
-                if (termEl) {
-                    termEl.style.height = (currentHeight - 44) + 'px';
-                    if (this.fitAddon) this.fitAddon.fit();
-                }
-            } else {
-                this.extraKeys.hide();
-                const termEl = document.getElementById('terminal');
-                if (termEl) {
-                    termEl.style.height = '';
-                    if (this.fitAddon) this.fitAddon.fit();
-                }
+            if (heightDiff > threshold && !this._keyboardOpen) {
+                this._keyboardOpen = true;
+                this._adjustTerminalForKeyboard(currentHeight);
+                // Debounce body class to prevent flicker during keyboard animation
+                clearTimeout(classDebounceTimer);
+                classDebounceTimer = setTimeout(() => {
+                    document.body.classList.add('keyboard-open');
+                }, 300);
+            } else if (heightDiff <= threshold && this._keyboardOpen) {
+                this._keyboardOpen = false;
+                this._restoreTerminalFromKeyboard();
+                clearTimeout(classDebounceTimer);
+                classDebounceTimer = setTimeout(() => {
+                    document.body.classList.remove('keyboard-open');
+                }, 300);
             }
-            prevHeight = currentHeight;
+        };
+
+        window.visualViewport.addEventListener('resize', () => {
+            // Thrashing guard
+            const now = Date.now();
+            resizeTimestamps.push(now);
+            // Keep only events within the last 500ms
+            while (resizeTimestamps.length > 0 && now - resizeTimestamps[0] > 500) {
+                resizeTimestamps.shift();
+            }
+            if (resizeTimestamps.length > 3) {
+                useFallbackThreshold = true;
+            }
+
+            // Cancel any pending Safari fallback since resize is firing
+            if (this._safariPollInterval) {
+                clearInterval(this._safariPollInterval);
+                this._safariPollInterval = null;
+            }
+
+            checkKeyboard();
         });
+
+        // Safari fallback: if terminal receives focus but no visualViewport resize fires,
+        // start polling viewport height to detect soft keyboard
+        if (!safariFallbackStarted) {
+            const termEl = document.getElementById('terminal');
+            if (termEl) {
+                termEl.addEventListener('focusin', () => {
+                    if (safariFallbackStarted) return;
+                    const fallbackTimeout = setTimeout(() => {
+                        // No resize event fired within 1s of focus — start polling
+                        safariFallbackStarted = true;
+                        this._safariPollInterval = setInterval(checkKeyboard, 200);
+                    }, 1000);
+                    // If a resize fires, cancel the fallback
+                    const cancelFallback = () => {
+                        clearTimeout(fallbackTimeout);
+                        window.visualViewport.removeEventListener('resize', cancelFallback);
+                    };
+                    window.visualViewport.addEventListener('resize', cancelFallback);
+                }, { once: true });
+            }
+        }
+    }
+
+    _adjustTerminalForKeyboard(availableHeight) {
+        if (this.extraKeys) this.extraKeys.show();
+        const termEl = document.getElementById('terminal');
+        if (termEl) {
+            termEl.style.height = (availableHeight - 44) + 'px';
+            if (this.fitAddon) this.fitAddon.fit();
+        }
+    }
+
+    _restoreTerminalFromKeyboard() {
+        if (this.extraKeys) this.extraKeys.hide();
+        const termEl = document.getElementById('terminal');
+        if (termEl) {
+            termEl.style.height = '';
+            if (this.fitAddon) this.fitAddon.fit();
+        }
     }
 
     showSessionSelectionModal() {
@@ -841,6 +933,10 @@ class ClaudeCodeWebInterface {
                     timerEl.style.display = '';
                     timerEl.textContent = '0:00';
                 }
+                // Capture the active session at the moment recording starts
+                self._voiceRecordingSessionId = self.sessionTabManager
+                    ? self.sessionTabManager.activeTabId
+                    : null;
                 // Start timer
                 self._voiceTimerInterval = setInterval(function () {
                     if (self.voiceController && timerEl) {
@@ -907,21 +1003,7 @@ class ClaudeCodeWebInterface {
                     clearTimeout(self._voiceTranscriptionTimeout);
                     self._voiceTranscriptionTimeout = null;
                 }
-                if (text && self.socket && self.socket.readyState === WebSocket.OPEN) {
-                    // Inject transcribed text as terminal input
-                    var normalized = text;
-                    if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
-                        normalized = attachClipboardHandler.normalizeLineEndings(text);
-                    }
-                    if (self.terminal && self.terminal.modes && self.terminal.modes.bracketedPasteMode) {
-                        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
-                            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
-                        }
-                    }
-                    self.send({ type: 'input', data: normalized });
-                }
-                var srEl = document.getElementById('srAnnounce');
-                if (srEl) srEl.textContent = 'Transcription complete.';
+                self._deliverVoiceTranscription(text);
             },
             onError: function (err) {
                 btn.classList.remove('recording', 'processing');
@@ -998,21 +1080,7 @@ class ClaudeCodeWebInterface {
                     clearTimeout(this._voiceTranscriptionTimeout);
                     this._voiceTranscriptionTimeout = null;
                 }
-                var text = message.text || '';
-                if (text) {
-                    var normalized = text;
-                    if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
-                        normalized = attachClipboardHandler.normalizeLineEndings(text);
-                    }
-                    if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
-                        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
-                            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
-                        }
-                    }
-                    this.send({ type: 'input', data: normalized });
-                }
-                var srEl = document.getElementById('srAnnounce');
-                if (srEl) srEl.textContent = 'Transcription complete.';
+                this._deliverVoiceTranscription(message.text || '');
                 break;
             }
             case 'voice_transcription_error': {
@@ -1074,6 +1142,95 @@ class ClaudeCodeWebInterface {
                 break;
             }
         }
+    }
+
+    /**
+     * Deliver transcribed voice text to the terminal.
+     * Validates terminal/socket state, detects session switches since
+     * recording started, and provides visual feedback via toast + screen reader.
+     * Shared by both cloud-mode (onTranscription) and local-mode (_handleVoiceMessage).
+     *
+     * @param {string} text - The transcribed text to insert
+     */
+    _deliverVoiceTranscription(text) {
+        var srEl = document.getElementById('srAnnounce');
+
+        // Nothing to deliver
+        if (!text) {
+            if (srEl) srEl.textContent = 'Transcription complete (empty).';
+            return;
+        }
+
+        // Gate: WebSocket must be open
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            if (srEl) srEl.textContent = 'Voice text discarded: not connected.';
+            this._showVoiceToast('Voice text discarded — not connected');
+            return;
+        }
+
+        // Gate: terminal must exist and not be disposed
+        if (!this.terminal || (typeof this.terminal.element !== 'undefined' && !this.terminal.element)) {
+            if (srEl) srEl.textContent = 'Voice text discarded: terminal not ready.';
+            this._showVoiceToast('Voice text discarded — terminal not ready');
+            return;
+        }
+
+        // Detect session switch: compare active tab now vs when recording began
+        var currentSessionId = this.sessionTabManager
+            ? this.sessionTabManager.activeTabId
+            : null;
+        var recordingSessionId = this._voiceRecordingSessionId || null;
+        var sessionSwitched = recordingSessionId &&
+            currentSessionId &&
+            recordingSessionId !== currentSessionId;
+
+        if (sessionSwitched) {
+            // Warn the user via toast, but still deliver to the CURRENT session
+            // (the user is looking at it; routing to a background session would be
+            // more surprising than delivering to what is visible)
+            var sessionData = this.sessionTabManager
+                ? this.sessionTabManager.activeSessions.get(recordingSessionId)
+                : null;
+            var oldName = sessionData ? sessionData.name : 'another session';
+            this._showVoiceToast('Session changed since recording — inserting into current session (was: ' + oldName + ')');
+        }
+
+        // Normalize and wrap for bracketed paste if needed
+        var normalized = text;
+        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
+            normalized = attachClipboardHandler.normalizeLineEndings(text);
+        }
+        if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+            if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
+                normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+            }
+        }
+
+        // Send as terminal input
+        this.send({ type: 'input', data: normalized });
+
+        // Visual feedback: brief toast with text preview
+        var preview = text.length > 60 ? text.substring(0, 57) + '...' : text;
+        this._showVoiceToast('Voice: ' + preview);
+
+        // Screen reader announcement
+        if (srEl) srEl.textContent = 'Voice text inserted: ' + preview;
+
+        // Clear the recorded session id
+        this._voiceRecordingSessionId = null;
+    }
+
+    /**
+     * Show a brief toast message for voice input feedback.
+     * Uses the existing clipboard-toast pattern.
+     * @param {string} msg - The message to display
+     */
+    _showVoiceToast(msg) {
+        var toast = document.createElement('div');
+        toast.className = 'clipboard-toast';
+        toast.textContent = msg;
+        document.body.appendChild(toast);
+        setTimeout(function () { toast.remove(); }, 4000);
     }
 
     setupSettingsModal() {
@@ -1207,7 +1364,7 @@ class ClaudeCodeWebInterface {
             this.socket.onclose = (event) => {
                 if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
                     this.updateStatus('Reconnecting...');
-                    setTimeout(() => this.reconnect(), this.reconnectDelay * Math.pow(2, this.reconnectAttempts));
+                    setTimeout(() => this.reconnect(), Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000));
                     this.reconnectAttempts++;
                 } else {
                     this.updateStatus('Disconnected');
@@ -1234,9 +1391,15 @@ class ClaudeCodeWebInterface {
             this.socket.close();
             this.socket = null;
         }
+        if (this._safariPollInterval) {
+            clearInterval(this._safariPollInterval);
+            this._safariPollInterval = null;
+        }
     }
 
     reconnect() {
+        if (this._reconnecting) return;
+        this._reconnecting = true;
         this.disconnect();
         // Reset flow control state so stale pause signals aren't sent on new connection
         this._outputPaused = false;
@@ -1254,7 +1417,9 @@ class ClaudeCodeWebInterface {
             this._planDetectTimer = null;
         }
         setTimeout(() => {
-            this.connect().catch(err => console.error('Reconnection failed:', err));
+            this.connect()
+                .catch(err => console.error('Reconnection failed:', err))
+                .finally(() => { this._reconnecting = false; });
         }, 1000);
     }
 
@@ -2153,13 +2318,17 @@ class ClaudeCodeWebInterface {
     }
 
     fitTerminal() {
+        if (this._fitting) return;
         if (this.fitAddon) {
+            this._fitting = true;
             try {
                 this.fitAddon.fit();
 
-                // Subtract 2 rows for tab bar, 6 cols for scrollbar width
-                const adjustedRows = Math.max(1, this.terminal.rows - 2);
-                const adjustedCols = Math.max(1, this.terminal.cols - 6);
+                // Mobile needs fewer adjustments — no scrollbar, thinner tab bar
+                const rowAdjust = this.isMobile ? 1 : 2;
+                const colAdjust = this.isMobile ? 0 : 6;
+                const adjustedRows = Math.max(1, this.terminal.rows - rowAdjust);
+                const adjustedCols = Math.max(1, this.terminal.cols - colAdjust);
                 if (adjustedRows !== this.terminal.rows || adjustedCols !== this.terminal.cols) {
                     this.terminal.resize(adjustedCols, adjustedRows);
                 }
@@ -2170,7 +2339,7 @@ class ClaudeCodeWebInterface {
                     if (terminalElement) {
                         const viewportWidth = window.innerWidth;
                         const currentWidth = terminalElement.offsetWidth;
-                        
+
                         if (currentWidth > viewportWidth) {
                             // Reduce columns to fit viewport
                             const charWidth = currentWidth / this.terminal.cols;
@@ -2181,6 +2350,8 @@ class ClaudeCodeWebInterface {
                 }
             } catch (error) {
                 console.error('Error fitting terminal:', error);
+            } finally {
+                this._fitting = false;
             }
         }
     }
@@ -2337,12 +2508,18 @@ class ClaudeCodeWebInterface {
             activeSendFn = resolved.sendFn;
             activeSocket = resolved.socket;
 
-            // Position menu at cursor, constrained to viewport
-            const x = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8);
-            const y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8);
-            menu.style.left = x + 'px';
-            menu.style.top = y + 'px';
-            menu.style.display = 'block';
+            // Position menu: bottom sheet on mobile, cursor-anchored on desktop
+            if (this.isMobile) {
+                menu.style.left = '';
+                menu.style.top = '';
+                menu.style.display = 'block';
+            } else {
+                const x = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8);
+                const y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8);
+                menu.style.left = x + 'px';
+                menu.style.top = y + 'px';
+                menu.style.display = 'block';
+            }
 
             // Disable copy if no selection
             const copyItem = menu.querySelector('[data-action="copy"]');
