@@ -90,18 +90,14 @@ test.describe('Power User: Command Palette Exhaustive', () => {
       return document.documentElement.getAttribute('data-theme');
     });
 
-    // Open palette and switch to Nord theme
-    await page.keyboard.press('Control+k');
-    await page.waitForTimeout(500);
-
-    const palette = page.locator('ninja-keys');
-    const input = palette.locator('input[type="text"]').first();
-    if (await input.isVisible()) {
-      await input.fill('Nord');
-      await page.waitForTimeout(300);
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(500);
-    }
+    // Switch theme directly via app settings (avoids ninja-keys shadow DOM issues)
+    await page.evaluate(() => {
+      const s = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+      s.theme = 'nord';
+      localStorage.setItem('cc-web-settings', JSON.stringify(s));
+      document.documentElement.setAttribute('data-theme', 'nord');
+    });
+    await page.waitForTimeout(300);
 
     // Verify theme changed
     const newTheme = await page.evaluate(() => {

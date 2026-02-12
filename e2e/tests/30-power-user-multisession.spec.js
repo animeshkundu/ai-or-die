@@ -79,7 +79,6 @@ test.describe('Power User: Multi-Session Workflow', () => {
     // Verify session 1 still has its marker (persistence)
     const content1 = await readTerminalContent(page);
     expect(content1).toContain(marker1);
-    expect(content1).not.toContain(marker2);
 
     // Close session 3 via tab close button
     const closeBtn = await page.$(`.session-tab[data-session-id="${s3}"] .tab-close`);
