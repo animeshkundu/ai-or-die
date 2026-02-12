@@ -107,5 +107,10 @@ module.exports = defineConfig({
       name: 'mobile-flows',
       testMatch: /3[7-9]-.*\.spec\.js/,
     },
+    // UI feature tests — command palette styling, voice settings, mic chimes
+    {
+      name: 'ui-features',
+      testMatch: /4[0-9]-.*\.spec\.js/,
+    },
   ],
 });

@@ -74,6 +74,60 @@
     gap: 10px;
 }
 
+/* ---- Reusable loading patterns ---- */
+
+/* Inline spinner (next to buttons/actions) */
+.loading-inline {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--border-default);
+    border-top-color: var(--accent-default);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+}
+
+/* Overlay spinner (centered in container) */
+.loading-overlay {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px;
+    color: var(--text-secondary);
+    font-size: var(--text-base);
+    gap: 12px;
+}
+
+.loading-overlay::before {
+    content: '';
+    display: inline-block;
+    width: 24px;
+    height: 24px;
+    border: 3px solid var(--border-default);
+    border-top-color: var(--accent-default);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+/* Skeleton placeholder bars */
+.loading-skeleton {
+    background: linear-gradient(90deg, var(--surface-tertiary) 25%, var(--surface-elevated) 50%, var(--surface-tertiary) 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s ease-in-out infinite;
+    border-radius: var(--radius-sm);
+    height: 16px;
+    margin-bottom: 8px;
+}
+
+.loading-skeleton.loading-skeleton-lg { height: 44px; }
+.loading-skeleton.loading-skeleton-sm { height: 10px; width: 60%; }
+
+@keyframes skeleton-shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
 /* SW update banner */
 .sw-update-banner {
     position: fixed;

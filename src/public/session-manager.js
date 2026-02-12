@@ -1177,17 +1177,94 @@ class SessionTabManager {
         }
     }
     
+    /**
+     * Update tab title to reflect current activity based on output text patterns.
+     * Throttled to once per 2 seconds to avoid excessive DOM updates.
+     * @param {string} sessionId
+     * @param {string} outputText - the latest output chunk (raw, may contain ANSI)
+     */
+    updateTabActivity(sessionId, outputText) {
+        const session = this.activeSessions.get(sessionId);
+        if (!session) return;
+
+        // Throttle: skip if less than 2 seconds since last update for this session
+        const now = Date.now();
+        if (!this._tabActivityTimestamps) this._tabActivityTimestamps = new Map();
+        const lastUpdate = this._tabActivityTimestamps.get(sessionId) || 0;
+        if (now - lastUpdate < 2000) return;
+        this._tabActivityTimestamps.set(sessionId, now);
+
+        // Store the original session name on first call so it can be restored
+        if (!session._originalName) {
+            session._originalName = session.name;
+        }
+
+        // Strip ANSI escape codes for pattern matching
+        const clean = outputText.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+
+        const agentName = this.getAlias(session.toolType || 'claude');
+        let activityLabel = null;
+
+        if (/\bthinking\b/i.test(clean)) {
+            activityLabel = `${agentName}: Thinking...`;
+        } else if (/\breading\b|\bReading file\b/i.test(clean)) {
+            activityLabel = `${agentName}: Reading...`;
+        } else if (/\brunning\b|\$\s|>\s/i.test(clean)) {
+            activityLabel = `${agentName}: Running...`;
+        }
+
+        const tab = this.tabs.get(sessionId);
+        if (!tab) return;
+        const nameEl = tab.querySelector('.tab-name');
+        if (!nameEl) return;
+
+        if (activityLabel) {
+            nameEl.textContent = activityLabel;
+            nameEl.setAttribute('title', activityLabel);
+        } else {
+            // Restore original name when no activity pattern matches
+            const originalName = session._originalName || session.name;
+            nameEl.textContent = originalName;
+            nameEl.setAttribute('title', originalName);
+        }
+    }
+
+    /**
+     * Restore tab title to the original session name (e.g. when session goes idle).
+     * @param {string} sessionId
+     */
+    restoreTabTitle(sessionId) {
+        const session = this.activeSessions.get(sessionId);
+        if (!session) return;
+        const tab = this.tabs.get(sessionId);
+        if (!tab) return;
+        const nameEl = tab.querySelector('.tab-name');
+        if (!nameEl) return;
+        const originalName = session._originalName || session.name;
+        nameEl.textContent = originalName;
+        nameEl.setAttribute('title', originalName);
+        // Clear throttle timestamp so the next activity update is immediate
+        if (this._tabActivityTimestamps) {
+            this._tabActivityTimestamps.delete(sessionId);
+        }
+    }
+
     markSessionActivity(sessionId, hasOutput = false, outputData = '') {
         const session = this.activeSessions.get(sessionId);
         if (!session) return;
-        
+
         const previousActivity = session.lastActivity || 0;
         const wasActive = session.status === 'active';
         session.lastActivity = Date.now();
-        
+
         // Update status to active if there's output
         if (hasOutput) {
             this.updateTabStatus(sessionId, 'active');
+
+            // Update tab title with activity indicator
+            if (outputData) {
+                this.updateTabActivity(sessionId, outputData);
+            }
             
             // Don't mark as unread immediately - wait for completion
             // This prevents the blue indicator from showing while Claude is still working
@@ -1202,7 +1279,8 @@ class SessionTabManager {
                 if (currentSession && currentSession.status === 'active') {
                     // Claude has been idle for 90 seconds - likely finished working
                     this.updateTabStatus(sessionId, 'idle');
-                    
+                    this.restoreTabTitle(sessionId);
+
                     // Only notify and mark as unread if Claude was previously active
                     if (wasActive) {
                         const sessionName = currentSession.name || 'Session';
@@ -1372,4 +1450,9 @@ class SessionTabManager {
 }
 
 // Export for use in app.js
-window.SessionTabManager = SessionTabManager;
+if (typeof window !== 'undefined') {
+    window.SessionTabManager = SessionTabManager;
+}
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { SessionTabManager, _esc };
+}

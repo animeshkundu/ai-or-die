@@ -86,4 +86,85 @@ test.describe('Mobile: iPhone SE Layout', () => {
     const viewportWidth = page.viewportSize().width;
     expect(terminalWidth).toBeLessThanOrEqual(viewportWidth + 2); // +2 for rounding
   });
+
+  test('extra keys bar element exists in DOM', async ({ page }) => {
+    setupPageCapture(page);
+    const sessionId = await createSessionViaApi(port, 'mobile-extra-keys');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForWebSocket(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    // Verify the extra-keys-bar element is present in the DOM
+    const extraKeysExists = await page.evaluate(() => {
+      const bar = document.querySelector('.extra-keys-bar');
+      return !!bar;
+    });
+    expect(extraKeysExists).toBe(true);
+
+    // Verify extra keys have buttons inside (Tab, Ctrl, Esc, arrows, etc.)
+    const buttonCount = await page.evaluate(() => {
+      const bar = document.querySelector('.extra-keys-bar');
+      if (!bar) return 0;
+      return bar.querySelectorAll('.extra-key').length;
+    });
+    expect(buttonCount).toBeGreaterThan(5);
+  });
+
+  test('bottom nav element exists in DOM on mobile', async ({ page }) => {
+    setupPageCapture(page);
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForWebSocket(page);
+
+    // Verify the bottom-nav element exists in the DOM
+    const bottomNavExists = await page.evaluate(() => {
+      const nav = document.querySelector('.bottom-nav');
+      return !!nav;
+    });
+    expect(bottomNavExists).toBe(true);
+
+    // Verify it has expected navigation items
+    const navItems = await page.evaluate(() => {
+      const nav = document.querySelector('.bottom-nav');
+      if (!nav) return [];
+      return Array.from(nav.querySelectorAll('.bottom-nav-item')).map(item => item.id);
+    });
+    expect(navItems).toContain('navFiles');
+    expect(navItems).toContain('navMore');
+    expect(navItems).toContain('navSettings');
+  });
+
+  test('bottom nav settings button opens settings', async ({ page }) => {
+    setupPageCapture(page);
+    const sessionId = await createSessionViaApi(port, 'mobile-bottom-nav');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForWebSocket(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    // Check if bottom nav is visible (it is always in DOM but may be styled differently)
+    const navSettingsVisible = await page.evaluate(() => {
+      const btn = document.getElementById('navSettings');
+      if (!btn) return false;
+      const rect = btn.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+
+    if (navSettingsVisible) {
+      // Click the settings nav item
+      await page.evaluate(() => {
+        const btn = document.getElementById('navSettings');
+        if (btn) btn.click();
+      });
+      await page.waitForTimeout(500);
+
+      // Verify settings modal opened
+      const settingsOpen = await page.evaluate(() => {
+        const modal = document.getElementById('settingsModal');
+        return modal && modal.classList.contains('active');
+      });
+      expect(settingsOpen).toBe(true);
+    }
+  });
 });
