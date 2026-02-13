@@ -56,8 +56,8 @@ jobs:
             playwright-report/
           retention-days: 14
 
-  # Consolidated E2E: mobile-iphone + mobile-pixel + mobile-flows
-  e2e-mobile:
+  # E2E: mobile device viewports (iphone + pixel run 08-mobile-portrait twice)
+  e2e-mobile-devices:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 9
     strategy:
@@ -72,13 +72,41 @@ jobs:
       - run: npm ci
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-      - name: Run mobile E2E tests
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-iphone --project mobile-pixel --project mobile-flows
+      - name: Run mobile device E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-iphone --project mobile-pixel
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-mobile-${{ matrix.os }}
+          name: playwright-mobile-devices-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  # E2E: mobile flows + sprint1 fixes (37-39 + 48 test files)
+  e2e-mobile-flows:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run mobile flow E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-flows --project mobile-sprint1
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-mobile-flows-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/

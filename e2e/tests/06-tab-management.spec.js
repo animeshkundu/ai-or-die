@@ -40,6 +40,15 @@ test.describe('Tab management: close, quick-create, and dropdown behavior', () =
       { timeout: 20000 }
     );
 
+    // Remove any pre-existing tabs (the page auto-creates an initial session on
+    // load) so the tab bar contains only the two sessions this test controls.
+    await page.evaluate(() => {
+      const mgr = window.app.sessionTabManager;
+      for (const id of [...mgr.tabs.keys()]) {
+        mgr.closeSession(id, { skipServerRequest: true, skipConfirmation: true });
+      }
+    });
+
     // Add both sessions as tabs and join session A via the full joinSession path
     await page.evaluate(async ({ sidA, sidB }) => {
       const mgr = window.app.sessionTabManager;
