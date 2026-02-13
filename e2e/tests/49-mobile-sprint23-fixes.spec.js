@@ -835,33 +835,5 @@ test.describe('P2-9: Ctrl timeout', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Auto-start terminal: _hasAiToolsAvailable method
-// ---------------------------------------------------------------------------
-test.describe('Auto-start terminal', () => {
-  test('_hasAiToolsAvailable method exists on app', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const hasMethod = await page.evaluate(() =>
-      typeof window.app._hasAiToolsAvailable === 'function'
-    );
-    expect(hasMethod).toBe(true);
-  });
-
-  test('_hasAiToolsAvailable checks for non-terminal tools', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const src = await page.evaluate(() => {
-      const fn = window.app._hasAiToolsAvailable;
-      return fn ? fn.toString() : '';
-    });
-
-    // Method should filter out 'terminal' and check for other available tools
-    expect(src).toContain('terminal');
-    expect(src).toContain('available');
-  });
-});
+// Auto-start terminal feature was removed — overlay always shows with
+// Terminal as the first option. See docs/history/mobile-ux-overhaul-deferrals.md

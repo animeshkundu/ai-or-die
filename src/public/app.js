@@ -1686,26 +1686,14 @@ class ClaudeCodeWebInterface {
                     const isNewSession = !message.outputBuffer || message.outputBuffer.length === 0;
 
                     if (isNewSession) {
-                        if (!this._hasAiToolsAvailable()) {
-                            // No AI tools installed — skip overlay, go straight to terminal
-                            console.log('[session_joined] New session, no AI tools available — auto-starting terminal');
-                            this.startToolSession('terminal');
-                        } else {
-                            console.log('[session_joined] New session detected, showing start prompt');
-                            this.showOverlay('startPrompt');
-                        }
+                        console.log('[session_joined] New session detected, showing start prompt');
+                        this.showOverlay('startPrompt');
                     } else {
                         console.log('[session_joined] Existing session with stopped Claude, showing restart prompt');
                         // For existing sessions where Claude has stopped, show start prompt
                         // This allows the user to restart Claude in the same session
                         this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} has stopped in this session. Click "Start ${this.getAlias('claude')}" to restart.\x1b[0m`);
-                        if (!this._hasAiToolsAvailable()) {
-                            // No AI tools installed — skip overlay, go straight to terminal
-                            console.log('[session_joined] Session stopped, no AI tools available — auto-starting terminal');
-                            this.startToolSession('terminal');
-                        } else {
-                            this.showOverlay('startPrompt');
-                        }
+                        this.showOverlay('startPrompt');
                     }
                 }
                 break;
@@ -2312,19 +2300,6 @@ class ClaudeCodeWebInterface {
     _escapeHtml(str) {
         return (str || '').replace(/[&<>"']/g, c =>
             ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-    }
-
-    /**
-     * Check whether any AI tools (non-terminal) are available.
-     * Used to decide if the tool-selection overlay should be shown
-     * or if we should auto-start a plain terminal session.
-     */
-    _hasAiToolsAvailable() {
-        // If tools haven't loaded yet, assume they might be — show the overlay
-        if (!this.tools || Object.keys(this.tools).length === 0) return true;
-        return Object.entries(this.tools)
-            .filter(([id]) => id !== 'terminal')
-            .some(([, tool]) => tool.available);
     }
 
     startToolSession(toolId) {
