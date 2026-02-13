@@ -3,10 +3,16 @@ const { defineConfig, devices } = require('@playwright/test');
 
 module.exports = defineConfig({
   testDir: './tests',
-  fullyParallel: true,
+  // fullyParallel must be false: each test file creates its own server in
+  // beforeAll. With fullyParallel, multiple files run simultaneously on
+  // the same worker, causing port conflicts and PTY resource contention
+  // on 2-vCPU GitHub runners.
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 3 : 1,
+  // 2 workers matches the 2 vCPUs on GitHub-hosted runners. 3+ causes
+  // contention with PTY processes and slows everything down.
+  workers: process.env.CI ? 2 : 1,
   // Per-test timeout. 30s is sufficient: server startup is in beforeAll,
   // and individual assertions should complete well within this window.
   timeout: 30000,
