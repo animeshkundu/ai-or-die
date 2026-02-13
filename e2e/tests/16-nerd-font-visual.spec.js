@@ -226,8 +226,10 @@ test.describe('Nerd Font visual rendering', () => {
     await waitForTerminalCanvas(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    // Wait for all font requests to settle
-    await page.waitForTimeout(3000);
+    // Wait for all fonts to finish loading via the Fonts API
+    await page.evaluate(() => document.fonts.ready);
+    // Brief extra settle for any trailing network requests
+    await page.waitForTimeout(500);
 
     expect(failedFontRequests).toEqual([]);
   });

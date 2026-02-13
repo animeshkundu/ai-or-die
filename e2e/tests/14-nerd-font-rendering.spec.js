@@ -101,7 +101,11 @@ test.describe('Nerd Font rendering infrastructure', () => {
     await page.reload();
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
-    await page.waitForTimeout(1000);
+    // Wait for terminal to be initialized with font settings
+    await page.waitForFunction(() => {
+      const term = window.app && window.app.terminal;
+      return term && term.options.fontFamily && term.options.fontFamily.includes('JetBrains Mono NF');
+    }, { timeout: 5000 });
 
     const fontFamily = await page.evaluate(() => {
       return window.app && window.app.terminal
@@ -297,8 +301,10 @@ test.describe('Nerd Font rendering infrastructure', () => {
     await waitForTerminalCanvas(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    // Wait a bit for all font requests to settle
-    await page.waitForTimeout(3000);
+    // Wait for all fonts to finish loading via the Fonts API
+    await page.evaluate(() => document.fonts.ready);
+    // Brief extra settle for any trailing network requests
+    await page.waitForTimeout(500);
 
     expect(failedFontRequests).toEqual([]);
   });

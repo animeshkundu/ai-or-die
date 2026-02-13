@@ -45,8 +45,17 @@ test.describe('Performance: keystroke latency under heavy output', () => {
     await waitForTerminalCanvas(page);
     await joinSessionAndStartTerminal(page, sessionId);
 
-    // Wait for shell prompt to appear (PowerShell startup can be slow)
-    await page.waitForTimeout(4000);
+    // Wait for shell prompt to appear (PowerShell startup can take several seconds)
+    await page.waitForFunction(() => {
+      const term = window.app && window.app.terminal;
+      if (!term) return false;
+      const buf = term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (line && line.translateToString(true).trim().length > 0) return true;
+      }
+      return false;
+    }, { timeout: 10000 }).catch(() => {});
 
     // Verify terminal is alive by checking the shell printed something
     const termAlive = await page.evaluate(() => {

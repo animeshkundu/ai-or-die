@@ -29,7 +29,8 @@ test.describe('Golden path: fresh user opens app and uses terminal', () => {
       cliProcess.kill();
       await new Promise((resolve) => {
         cliProcess.on('exit', resolve);
-        setTimeout(resolve, 5000);
+        // Safety net: if CLI doesn't exit within 3s, continue anyway
+        setTimeout(resolve, 3000);
       });
     }
   });
@@ -58,24 +59,25 @@ test.describe('Golden path: fresh user opens app and uses terminal', () => {
     // 3. Wait for the app to auto-join the existing session
     await page.waitForFunction(
       () => window.app && window.app.currentClaudeSessionId != null,
-      { timeout: 20000 }
+      { timeout: 10000 }
     );
 
     // 4. Start terminal — find the Terminal tool card (always available, sorted first)
     //    Cards are clickable divs with data-tool attribute, no separate button.
     const terminalCard = page.locator('.tool-card:not(.disabled)').first();
-    await expect(terminalCard).toBeVisible({ timeout: 10000 });
+    await expect(terminalCard).toBeVisible({ timeout: 5000 });
     await terminalCard.click();
 
-    // 5. Wait for terminal to be active (overlay hides)
+    // 5. Wait for terminal to be active (overlay hides).
+    //    PTY spawn + shell init on Windows CI can take several seconds.
     await page.waitForFunction(() => {
       const overlay = document.querySelector('[data-tid="overlay"]') || document.getElementById('overlay');
       return !overlay || overlay.style.display === 'none';
-    }, { timeout: 30000 });
+    }, { timeout: 15000 });
 
     // 6. Wait for shell prompt — poll terminal buffer instead of a fixed sleep.
-    //    On Windows CI, PowerShell startup can take 5-10+ seconds depending on
-    //    runner load, so a fixed timeout races with prompt readiness.
+    //    On Windows CI, PowerShell startup can take several seconds depending on
+    //    runner load, so we poll for terminal content instead of a fixed sleep.
     await page.waitForFunction(() => {
       const term = window.app && window.app.terminal;
       if (!term) return false;
@@ -85,15 +87,13 @@ test.describe('Golden path: fresh user opens app and uses terminal', () => {
         if (line && line.translateToString(true).trim().length > 0) return true;
       }
       return false;
-    }, { timeout: 20000 });
-    // Brief settle time for any remaining shell initialization
-    await page.waitForTimeout(500);
+    }, { timeout: 10000 });
 
     // 7. Type command and verify output
     const marker = `GOLDEN_${Date.now()}`;
     await typeInTerminal(page, `echo ${marker}`);
     await pressKey(page, 'Enter');
-    await waitForTerminalText(page, marker, 30000);
+    await waitForTerminalText(page, marker, 10000);
 
     // 8. Verify terminal dimensions
     const dims = await getTerminalDimensions(page);

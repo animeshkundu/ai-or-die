@@ -140,8 +140,17 @@ test.describe('Power User: Typing During Heavy Output', () => {
       window.app.send({ type: 'input', data: text + '\r' });
     }, largeText);
 
-    // Verify it was received (terminal should echo it back)
-    await page.waitForTimeout(2000);
+    // Wait for terminal to echo back some of the pasted content
+    await page.waitForFunction(() => {
+      const term = window.app && window.app.terminal;
+      if (!term) return false;
+      const buf = term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (line && line.translateToString(true).includes('AAAA')) return true;
+      }
+      return false;
+    }, { timeout: 5000 });
     const content = await readTerminalContent(page);
     expect(content.length).toBeGreaterThan(100);
   });

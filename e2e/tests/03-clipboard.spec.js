@@ -58,7 +58,8 @@ test.describe('Clipboard: keyboard shortcuts for copy and paste', () => {
     // Press Ctrl+C (should copy selection, NOT send SIGINT)
     await focusTerminal(page);
     await page.keyboard.press('Control+c');
-    await page.waitForTimeout(500);
+    // Brief pause for clipboard write to complete
+    await page.waitForTimeout(200);
 
     // Read clipboard
     const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
@@ -71,7 +72,8 @@ test.describe('Clipboard: keyboard shortcuts for copy and paste', () => {
     // Press Ctrl+C without any selection (should send SIGINT)
     await focusTerminal(page);
     await page.keyboard.press('Control+c');
-    await page.waitForTimeout(1000);
+    // Brief pause for SIGINT to be processed
+    await page.waitForTimeout(300);
 
     // Shell should still be alive — type a new command
     const marker = `ALIVE_${Date.now()}`;
@@ -92,7 +94,8 @@ test.describe('Clipboard: keyboard shortcuts for copy and paste', () => {
     // Focus terminal and press Ctrl+V
     await focusTerminal(page);
     await page.keyboard.press('Control+v');
-    await page.waitForTimeout(1000);
+    // Brief pause for paste to be processed
+    await page.waitForTimeout(300);
 
     // Press Enter to execute
     await pressKey(page, 'Enter');

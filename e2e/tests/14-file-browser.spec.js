@@ -52,7 +52,7 @@ test.describe('File browser', () => {
     await page.waitForFunction(() => {
       const overlay = document.getElementById('overlay');
       return !overlay || overlay.style.display === 'none' || overlay.offsetParent === null;
-    }, { timeout: 30000 });
+    }, { timeout: 10000 });
   }
 
   /**

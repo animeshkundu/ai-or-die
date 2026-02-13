@@ -71,7 +71,7 @@ test.describe('Connection Status Indicator', () => {
     await page.waitForFunction(() => {
       const el = document.getElementById('connectionStatus');
       return el && el.className.includes('disconnected');
-    }, { timeout: 15000 });
+    }, { timeout: 10000 });
 
     const disconnectedClass = await page.evaluate(() => {
       const el = document.getElementById('connectionStatus');
@@ -111,10 +111,11 @@ test.describe('Connection Status Indicator', () => {
       return el.className.includes('reconnecting') || el.className.includes('disconnected');
     }, { timeout: 10000 });
 
-    // Wait for auto-reconnect to establish new WebSocket
+    // Wait for auto-reconnect to establish new WebSocket.
+    // Reconnect uses exponential backoff starting at 1s, so 15s covers ~4 attempts.
     await page.waitForFunction(() => {
       return window.app && window.app.socket && window.app.socket.readyState === 1;
-    }, { timeout: 30000 });
+    }, { timeout: 15000 });
 
     // Verify status dot returned to connected
     await page.waitForFunction(() => {

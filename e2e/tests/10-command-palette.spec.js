@@ -32,8 +32,8 @@ test.describe('Command palette (Ctrl+K)', () => {
     await waitForTerminalCanvas(page);
 
     // Wait for ninja-keys custom element to be defined
-    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 15000 });
-    await page.waitForTimeout(1000);
+    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 10000 });
+    await page.waitForTimeout(300);
 
     // Press Ctrl+K
     await page.keyboard.press('Control+k');
@@ -59,8 +59,8 @@ test.describe('Command palette (Ctrl+K)', () => {
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
 
-    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 15000 });
-    await page.waitForTimeout(1000);
+    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 10000 });
+    await page.waitForTimeout(300);
 
     // Open palette
     await page.keyboard.press('Control+k');

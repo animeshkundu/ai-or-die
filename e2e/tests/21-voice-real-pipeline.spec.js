@@ -84,7 +84,7 @@ test.describe('@voice-real Real STT Pipeline', () => {
 
   test('@voice-real full pipeline: mic button → record → transcribe → text in terminal', async ({ page }) => {
     test.skip(!modelAvailable, 'Model not downloaded');
-    test.setTimeout(90000); // Long timeout for model inference
+    test.setTimeout(120000); // Model inference on CI runners can take 60s+
     setupPageCapture(page);
 
     // Create a session and navigate

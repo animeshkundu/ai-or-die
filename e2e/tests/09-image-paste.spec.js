@@ -165,7 +165,16 @@ test.describe('Image paste: preview modal and upload', () => {
     expect(uploadComplete.filePath).toContain('.claude-images');
 
     // Wait for the file path to be injected into the terminal
-    await page.waitForTimeout(3000);
+    await page.waitForFunction(() => {
+      const term = window.app && window.app.terminal;
+      if (!term) return false;
+      const buf = term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (line && line.translateToString(true).includes('.claude-images/')) return true;
+      }
+      return false;
+    }, { timeout: 5000 });
 
     // Read the terminal buffer to find the injected path
     const terminalContent = await readTerminalContent(page);
@@ -274,7 +283,16 @@ test.describe('Image paste: preview modal and upload', () => {
     expect(stat.size).toBeGreaterThan(0);
 
     // Wait for the path to be injected into the terminal
-    await page.waitForTimeout(3000);
+    await page.waitForFunction(() => {
+      const term = window.app && window.app.terminal;
+      if (!term) return false;
+      const buf = term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (line && line.translateToString(true).includes('.claude-images/')) return true;
+      }
+      return false;
+    }, { timeout: 5000 });
 
     // Read terminal content to verify the path was injected
     const terminalContent = await readTerminalContent(page);

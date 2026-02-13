@@ -56,15 +56,31 @@ test.describe('Tab switching: multiple sessions with isolated content', () => {
       }
     }, sessionB);
 
-    await page.waitForTimeout(3000);
+    // Wait for session B to become the active session
+    await page.waitForFunction(
+      (sid) => window.app && window.app.currentClaudeSessionId === sid,
+      sessionB,
+      { timeout: 5000 }
+    );
 
     // Start terminal in session B
     await page.evaluate(() => window.app.startToolSession('terminal'));
+    // Wait for overlay to hide (PTY spawn + shell init)
     await page.waitForFunction(() => {
       const overlay = document.getElementById('overlay');
       return !overlay || overlay.style.display === 'none';
-    }, { timeout: 30000 });
-    await page.waitForTimeout(5000);
+    }, { timeout: 15000 });
+    // Wait for shell prompt to appear in session B
+    await page.waitForFunction(() => {
+      const term = window.app && window.app.terminal;
+      if (!term) return false;
+      const buf = term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (line && line.translateToString(true).trim().length > 0) return true;
+      }
+      return false;
+    }, { timeout: 10000 }).catch(() => {});
 
     // Type marker in session B
     const markerB = `TABB_${Date.now()}`;
@@ -77,7 +93,12 @@ test.describe('Tab switching: multiple sessions with isolated content', () => {
       await window.app.sessionTabManager.switchToTab(sid);
     }, sessionA);
 
-    await page.waitForTimeout(3000);
+    // Wait for session A to become active and its buffer to contain our marker
+    await page.waitForFunction(
+      (sid) => window.app && window.app.currentClaudeSessionId === sid,
+      sessionA,
+      { timeout: 5000 }
+    );
 
     // Read session A content — should contain markerA (from output buffer replay)
     const contentA = await readTerminalContent(page);

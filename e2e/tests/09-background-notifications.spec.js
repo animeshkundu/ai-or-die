@@ -139,7 +139,11 @@ test.describe('Background session notifications', () => {
     await page.evaluate(async (sid) => {
       await window.app.sessionTabManager.switchToTab(sid);
     }, sessionB);
-    await page.waitForTimeout(1000);
+    // Wait for the unread class to be cleared after switching
+    await page.waitForFunction((sid) => {
+      const tab = window.app.sessionTabManager.tabs.get(sid);
+      return tab && !tab.classList.contains('has-unread');
+    }, sessionB, { timeout: 3000 }).catch(() => {});
 
     // Verify unread class is cleared
     const hasUnreadAfter = await page.evaluate((sid) => {
@@ -231,8 +235,12 @@ test.describe('Background session notifications', () => {
       await pressKey(pageA, 'Enter');
       await waitForTerminalText(pageA, marker, 15000);
 
-      // Wait for session_activity to propagate and be processed
-      await pageB.waitForTimeout(3000);
+      // Wait for session_activity to propagate and update tab status on Client B
+      await pageB.waitForFunction((sid) => {
+        const stm = window.app.sessionTabManager;
+        const session = stm.activeSessions.get(sid);
+        return session && session.status === 'active';
+      }, session1, { timeout: 5000 });
 
       // Verify that Client B's background tab for session 1 now has active status
       const tabStatus = await pageB.evaluate((sid) => {
@@ -301,10 +309,12 @@ test.describe('Background session notifications', () => {
       await pressKey(pageA, 'Enter');
       await waitForTerminalText(pageA, `${marker}_2`, 15000);
 
-      // Wait for: session_activity propagation + idle timer (3s) + buffer
-      // The toast auto-dismisses after 5s, so poll for either the toast or
-      // the persistent unread indicator on the tab element.
-      await pageB.waitForTimeout(5000);
+      // Wait for idle timer (3s) to fire and mark the tab as unread.
+      // Poll for the persistent unread indicator instead of a blind wait.
+      await pageB.waitForFunction((sid) => {
+        const tab = window.app.sessionTabManager.tabs.get(sid);
+        return tab && tab.classList.contains('has-unread');
+      }, session1, { timeout: 8000 });
 
       // Assert: background tab has unread indicator (persists after toast dismisses)
       const hasUnread = await pageB.evaluate((sid) => {

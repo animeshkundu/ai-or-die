@@ -54,7 +54,12 @@ test.describe('Mobile: iPhone 14 Layout', () => {
       const tab = document.querySelector(`.session-tab[data-session-id="${sid}"]`);
       if (tab) tab.click();
     }, s2);
-    await page.waitForTimeout(1000);
+    // Wait for session switch to take effect
+    await page.waitForFunction(
+      (sid) => window.app && window.app.currentClaudeSessionId === sid,
+      s2,
+      { timeout: 5000 }
+    ).catch(() => {});
   });
 
   test('mobile menu opens and has correct options', async ({ page }) => {

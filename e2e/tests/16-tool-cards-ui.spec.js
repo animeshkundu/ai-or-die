@@ -33,7 +33,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'No Undefined');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     // Get all card name texts
     const cardNames = await page.locator('.tool-card-name').allTextContents();
@@ -48,7 +48,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'No Tunnel Card');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     // No card should have data-tool="vscodeTunnel"
     const tunnelCard = page.locator('.tool-card[data-tool="vscodeTunnel"]');
@@ -63,7 +63,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Terminal First');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     // The first card should be the terminal card
     const firstCard = page.locator('.tool-card').first();
@@ -74,7 +74,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Sort Order');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const cards = page.locator('.tool-card');
     const count = await cards.count();
@@ -96,7 +96,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'SVG Icons');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const icons = page.locator('.tool-card-icon');
     const count = await icons.count();
@@ -113,7 +113,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Gradient Icons');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const firstIcon = page.locator('.tool-card-icon').first();
     const bg = await firstIcon.evaluate(el => el.style.background);
@@ -124,7 +124,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Card Click');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     // No .tool-card-btn elements should exist
     const buttons = page.locator('.tool-card-btn');
@@ -140,7 +140,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Divider Test');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     // If there are both available and unavailable (disabled or installable) cards, a divider should exist
     const availableCount = await page.locator('.tool-card:not(.disabled):not(.installable)').count();
@@ -157,7 +157,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Unavailable Status');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     // Check both installable and disabled cards
     const unavailableCard = page.locator('.tool-card.installable, .tool-card.disabled').first();
@@ -171,7 +171,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Grayscale Icons');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     // Check both installable and disabled cards
     const unavailableIcon = page.locator('.tool-card.installable .tool-card-icon, .tool-card.disabled .tool-card-icon').first();
@@ -185,7 +185,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'A11y Test');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const availableCard = page.locator('.tool-card:not(.disabled):not(.installable)').first();
     // Should have tabindex for keyboard navigation
@@ -201,7 +201,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'A11y Installable');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCard = page.locator('.tool-card.installable').first();
     if (await installableCard.count() > 0) {
@@ -214,7 +214,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Group Role');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const container = page.locator('[data-tid="tool-cards"]');
     await expect(container).toHaveAttribute('role', 'group');
@@ -229,7 +229,7 @@ test.describe('Tool cards UI', () => {
     // Wait for WS and join session
     await page.waitForFunction(
       () => window.app && window.app.socket && window.app.socket.readyState === 1,
-      { timeout: 20000 }
+      { timeout: 10000 }
     );
     await page.evaluate((sid) => {
       window.app.send({ type: 'join_session', sessionId: sid });
@@ -245,18 +245,18 @@ test.describe('Tool cards UI', () => {
     const card = page.locator('.tool-card:not(.disabled):not(.installable)').first();
     await card.click();
 
-    // Overlay should hide after tool starts
+    // Overlay should hide after tool starts (PTY spawn + shell init)
     await page.waitForFunction(() => {
       const overlay = document.getElementById('overlay');
       return !overlay || overlay.style.display === 'none';
-    }, { timeout: 30000 });
+    }, { timeout: 15000 });
   });
 
   test('hover reveals arrow chevron on available cards', async ({ page }) => {
     await createSessionViaApi(port, 'Hover Arrow');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card:not(.disabled):not(.installable)', { timeout: 15000 });
+    await page.waitForSelector('.tool-card:not(.disabled):not(.installable)', { timeout: 10000 });
 
     const card = page.locator('.tool-card:not(.disabled):not(.installable)').first();
     const arrow = card.locator('.tool-card-arrow');
@@ -276,7 +276,7 @@ test.describe('Tool cards UI', () => {
     await createSessionViaApi(port, 'Descriptions');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const descriptions = await page.locator('.tool-card-desc').allTextContents();
 

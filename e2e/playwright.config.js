@@ -3,14 +3,26 @@ const { defineConfig, devices } = require('@playwright/test');
 
 module.exports = defineConfig({
   testDir: './tests',
+  // fullyParallel MUST be false: with true, Playwright distributes
+  // individual tests from one file across workers, causing beforeAll
+  // (which creates the server) to run once PER WORKER, not per file.
+  // 3 workers + fullyParallel = 3 redundant server instances per file,
+  // each spawning PTY processes — exhausting CI runner resources.
+  // With false, workers run different FILES in parallel (good) while
+  // tests within a file share one server (efficient).
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 2 : 1,
+  // 3 workers utilizes the 4 vCPUs on public GitHub-hosted runners,
+  // leaving headroom for the browser and OS processes.
+  workers: process.env.CI ? 3 : 1,
+  // Per-test timeout. 60s accounts for PTY shell startup on CI runners
+  // (10-15s on Windows). Tests that don't need PTY complete in <5s —
+  // the timeout is a ceiling, not a target.
   timeout: 60000,
   updateSnapshots: 'missing',
   expect: {
-    timeout: 15000,
+    timeout: 10000,
     toHaveScreenshot: {
       maxDiffPixelRatio: 0.01,
       threshold: 0.2,
@@ -44,11 +56,13 @@ module.exports = defineConfig({
       name: 'mobile-iphone',
       testMatch: '08-mobile-portrait.spec.js',
       use: { ...devices['iPhone 14'] },
+      timeout: 60000, // PTY shell startup on CI takes 10-15s
     },
     {
       name: 'mobile-pixel',
       testMatch: '08-mobile-portrait.spec.js',
       use: { ...devices['Pixel 7'] },
+      timeout: 60000, // PTY shell startup on CI takes 10-15s
     },
     {
       name: 'visual-regression',
@@ -85,6 +99,7 @@ module.exports = defineConfig({
     {
       name: 'voice-real-pipeline',
       testMatch: '21-voice-real-pipeline.spec.js',
+      timeout: 120000, // ML inference on CI runners is slow (model load + transcription)
       use: {
         permissions: ['clipboard-read', 'clipboard-write', 'microphone'],
         launchOptions: {
@@ -103,14 +118,28 @@ module.exports = defineConfig({
       testMatch: /3[0-6]-.*\.spec\.js/,
     },
     // Mobile flow tests — device emulation with real terminal interaction
+    // PTY shell startup on CI runners takes 10-15s; 60s timeout needed
     {
       name: 'mobile-flows',
       testMatch: /3[7-9]-.*\.spec\.js/,
+      timeout: 60000,
+    },
+    // Mobile Sprint 1 fix validation — device emulation, CSS checks
+    // Tests using joinSessionAndStartTerminal need extended timeout for PTY startup
+    {
+      name: 'mobile-sprint1',
+      testMatch: '48-mobile-sprint1-fixes.spec.js',
+      timeout: 60000,
+    },
+    // Mobile Sprint 2+3 fix validation — device emulation, CSS and JS checks
+    {
+      name: 'mobile-sprint23',
+      testMatch: '49-mobile-sprint23-fixes.spec.js',
     },
     // UI feature tests — command palette styling, voice settings, mic chimes
     {
       name: 'ui-features',
-      testMatch: /4[0-9]-.*\.spec\.js/,
+      testMatch: /4[0-7]-.*\.spec\.js/,
     },
   ],
 });
