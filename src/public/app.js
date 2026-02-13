@@ -4334,7 +4334,6 @@ class ClaudeCodeWebInterface {
     _setupDarkModeListener() {
         // Intentionally empty — feature deferred. Placeholder preserved for
         // E2E test compatibility (49-mobile-sprint23-fixes.spec.js checks method exists).
-        });
     }
 
 }
