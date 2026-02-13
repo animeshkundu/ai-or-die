@@ -159,7 +159,7 @@ test.describe('Keyboard Shortcuts Modal', () => {
     await waitForWebSocket(page);
 
     // Wait for ninja-keys custom element to be defined
-    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 15000 });
+    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 10000 });
     await page.waitForTimeout(500);
 
     // Open command palette with Ctrl+K

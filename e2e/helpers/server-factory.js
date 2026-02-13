@@ -35,8 +35,8 @@ async function spawnCli() {
     let output = '';
     const timeout = setTimeout(() => {
       child.kill();
-      reject(new Error(`CLI did not start within 30s. Output: ${output}`));
-    }, 30000);
+      reject(new Error(`CLI did not start within 15s. Output: ${output}`));
+    }, 15000);
 
     child.stdout.on('data', (data) => {
       output += data.toString();
@@ -63,7 +63,7 @@ async function spawnCli() {
         setTimeout(() => {
           clearInterval(checkReady);
           reject(new Error(`Server health check failed. Port: ${port}, Output: ${output}`));
-        }, 15000);
+        }, 10000);
       }
     });
 

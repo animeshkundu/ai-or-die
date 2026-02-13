@@ -50,39 +50,62 @@ test.describe('Vim/edit and session lifecycle', () => {
       // write a file and verify, which tests the same terminal I/O chain.
       await typeInTerminal(page, `"${marker}" | Out-File -FilePath ${filename}`);
       await pressKey(page, 'Enter');
-      await page.waitForTimeout(2000);
+      // Wait for the shell prompt to return (file write completes)
+      await waitForTerminalText(page, filename, 10000);
 
       // Read it back
       await typeInTerminal(page, `Get-Content ${filename}`);
       await pressKey(page, 'Enter');
-      await waitForTerminalText(page, marker, 15000);
+      await waitForTerminalText(page, marker, 10000);
 
       // Clean up
       await typeInTerminal(page, `Remove-Item ${filename}`);
       await pressKey(page, 'Enter');
-      await page.waitForTimeout(1000);
+      // Brief pause for cleanup to complete
+      await page.waitForTimeout(500);
     } else {
       // On Linux, vi is always available
       // Open vi with the test file
       await typeInTerminal(page, `vi ${filename}`);
       await pressKey(page, 'Enter');
-      await page.waitForTimeout(2000);
+      // Wait for vi to start (screen clears and shows ~ lines)
+      await page.waitForFunction(() => {
+        const term = window.app && window.app.terminal;
+        if (!term) return false;
+        const buf = term.buffer.active;
+        for (let i = 0; i < buf.length; i++) {
+          const line = buf.getLine(i);
+          if (line && line.translateToString(true).includes('~')) return true;
+        }
+        return false;
+      }, { timeout: 5000 }).catch(() => {});
 
       // Enter insert mode
       await focusTerminal(page);
       await page.keyboard.press('i');
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Type content
       await page.keyboard.type(marker, { delay: 30 });
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(200);
 
       // Exit insert mode and save: Esc, :wq, Enter
       await page.keyboard.press('Escape');
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(200);
       await page.keyboard.type(':wq', { delay: 50 });
       await page.keyboard.press('Enter');
-      await page.waitForTimeout(2000);
+      // Wait for vi to exit and shell prompt to return
+      await page.waitForFunction(() => {
+        const term = window.app && window.app.terminal;
+        if (!term) return false;
+        const buf = term.buffer.active;
+        for (let i = 0; i < buf.length; i++) {
+          const line = buf.getLine(i);
+          const text = line ? line.translateToString(true) : '';
+          if (text.includes('$') || text.includes('#') || text.includes('%')) return true;
+        }
+        return false;
+      }, { timeout: 5000 }).catch(() => {});
 
       // Verify the file was written by catting it
       await typeInTerminal(page, `cat ${filename}`);
@@ -92,7 +115,7 @@ test.describe('Vim/edit and session lifecycle', () => {
       // Clean up
       await typeInTerminal(page, `rm ${filename}`);
       await pressKey(page, 'Enter');
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(500);
     }
   });
 
@@ -117,8 +140,11 @@ test.describe('Vim/edit and session lifecycle', () => {
       window.app.send({ type: 'stop' });
     });
 
-    // Wait for the tool to stop
-    await page.waitForTimeout(3000);
+    // Wait for the overlay to reappear (indicates tool stopped)
+    await page.waitForFunction(() => {
+      const overlay = document.getElementById('overlay');
+      return overlay && overlay.style.display !== 'none';
+    }, { timeout: 5000 }).catch(() => {});
 
     // Delete the session via REST API
     const delRes = await page.request.delete(`${url}/api/sessions/${session1}`);
@@ -135,13 +161,29 @@ test.describe('Vim/edit and session lifecycle', () => {
       }
     }, session2);
 
-    await page.waitForTimeout(2000);
+    // Wait for session switch to complete
+    await page.waitForFunction(
+      (sid) => window.app && window.app.currentClaudeSessionId === sid,
+      session2,
+      { timeout: 5000 }
+    );
     await page.evaluate(() => window.app.startToolSession('terminal'));
+    // Wait for overlay to hide (PTY spawn + shell init)
     await page.waitForFunction(() => {
       const overlay = document.getElementById('overlay');
       return !overlay || overlay.style.display === 'none';
-    }, { timeout: 30000 });
-    await page.waitForTimeout(5000);
+    }, { timeout: 15000 });
+    // Wait for shell prompt to appear
+    await page.waitForFunction(() => {
+      const term = window.app && window.app.terminal;
+      if (!term) return false;
+      const buf = term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (line && line.translateToString(true).trim().length > 0) return true;
+      }
+      return false;
+    }, { timeout: 10000 }).catch(() => {});
 
     // Type a new marker
     const marker2 = `SESS2_${Date.now()}`;

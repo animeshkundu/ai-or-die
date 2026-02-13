@@ -2,9 +2,9 @@
  * Wait for the app to finish initialization.
  * Checks that window.app exists and the terminal is created.
  * @param {import('@playwright/test').Page} page
- * @param {number} [timeoutMs=30000]
+ * @param {number} [timeoutMs=10000]
  */
-async function waitForAppReady(page, timeoutMs = 30000) {
+async function waitForAppReady(page, timeoutMs = 10000) {
   await page.waitForFunction(
     () => window.app && window.app.terminal,
     { timeout: timeoutMs }
@@ -16,9 +16,9 @@ async function waitForAppReady(page, timeoutMs = 30000) {
  * Waits for the .xterm container (created by terminal.open()) rather than
  * the canvas, which may not render in headless Chrome on CI.
  * @param {import('@playwright/test').Page} page
- * @param {number} [timeoutMs=30000]
+ * @param {number} [timeoutMs=10000]
  */
-async function waitForTerminalCanvas(page, timeoutMs = 30000) {
+async function waitForTerminalCanvas(page, timeoutMs = 10000) {
   await page.waitForSelector('[data-tid="terminal"] .xterm, #terminal .xterm', {
     state: 'attached',
     timeout: timeoutMs
@@ -223,7 +223,7 @@ async function joinSessionAndStartTerminal(page, sessionId) {
   await page.waitForFunction(
     () => window.app && window.app.sessionTabManager
       && window.app.socket && window.app.socket.readyState === 1,
-    { timeout: 20000 }
+    { timeout: 10000 }
   );
 
   // Use the app's joinSession method (returns a promise that resolves
@@ -238,11 +238,12 @@ async function joinSessionAndStartTerminal(page, sessionId) {
     window.app.startToolSession('terminal');
   });
 
-  // Wait for the overlay to hide (terminal_started message hides it)
+  // Wait for the overlay to hide (terminal_started message hides it).
+  // PTY spawn + shell init on Windows CI can take several seconds.
   await page.waitForFunction(() => {
     const overlay = document.getElementById('overlay');
     return !overlay || overlay.style.display === 'none';
-  }, { timeout: 30000 });
+  }, { timeout: 15000 });
 
   // Wait for shell prompt to appear instead of a fixed 5s sleep
   await page.waitForFunction(() => {
@@ -255,8 +256,6 @@ async function joinSessionAndStartTerminal(page, sessionId) {
     }
     return false;
   }, { timeout: 10000 }).catch(() => {});
-  // Brief settle time for any remaining shell initialization
-  await page.waitForTimeout(500);
 }
 
 /**

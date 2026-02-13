@@ -33,7 +33,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Installable Class');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     // Check if there are any installable cards (tools not installed on CI)
     const installableCards = page.locator('.tool-card.installable');
@@ -57,7 +57,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Installable A11y');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCard = page.locator('.tool-card.installable').first();
     if (await installableCard.count() > 0) {
@@ -74,7 +74,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Installable Cursor');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCard = page.locator('.tool-card.installable').first();
     if (await installableCard.count() > 0) {
@@ -87,7 +87,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Expand Panel');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCard = page.locator('.tool-card.installable').first();
     if (await installableCard.count() === 0) {
@@ -113,7 +113,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Install Command');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCard = page.locator('.tool-card.installable').first();
     if (await installableCard.count() === 0) {
@@ -136,7 +136,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Copy Button');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCard = page.locator('.tool-card.installable').first();
     if (await installableCard.count() === 0) {
@@ -164,7 +164,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Auth Steps');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCard = page.locator('.tool-card.installable').first();
     if (await installableCard.count() === 0) {
@@ -187,7 +187,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Accordion');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCards = page.locator('.tool-card.installable');
     const count = await installableCards.count();
@@ -214,7 +214,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Open Terminal Btn');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCard = page.locator('.tool-card.installable').first();
     if (await installableCard.count() === 0) {
@@ -236,7 +236,7 @@ test.describe('Install panel UI', () => {
     await createSessionViaApi(port, 'Verify Btn');
     await page.goto(url);
     await waitForAppReady(page);
-    await page.waitForSelector('.tool-card', { timeout: 15000 });
+    await page.waitForSelector('.tool-card', { timeout: 10000 });
 
     const installableCard = page.locator('.tool-card.installable').first();
     if (await installableCard.count() === 0) {

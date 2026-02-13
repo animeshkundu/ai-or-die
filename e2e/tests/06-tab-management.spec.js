@@ -37,7 +37,7 @@ test.describe('Tab management: close, quick-create, and dropdown behavior', () =
     await page.waitForFunction(
       () => window.app && window.app.sessionTabManager
         && window.app.socket && window.app.socket.readyState === 1,
-      { timeout: 20000 }
+      { timeout: 10000 }
     );
 
     // Remove any pre-existing tabs (the page auto-creates an initial session on
@@ -77,8 +77,13 @@ test.describe('Tab management: close, quick-create, and dropdown behavior', () =
       window.app.sessionTabManager.closeSession(sid);
     }, sessionA);
 
-    // Wait for the server-side session_deleted message to arrive and be processed
-    await page.waitForTimeout(3000);
+    // Wait for session B to become the active tab after closing A
+    await page.waitForFunction(
+      (sid) => window.app && window.app.sessionTabManager &&
+        window.app.sessionTabManager.activeTabId === sid,
+      sessionB,
+      { timeout: 5000 }
+    );
 
     // Assert: the errorMessage div should NOT have been shown
     // We check if showError was called by looking at the errorMessage display.
@@ -121,7 +126,7 @@ test.describe('Tab management: close, quick-create, and dropdown behavior', () =
     await page.waitForFunction(
       () => window.app && window.app.sessionTabManager
         && window.app.socket && window.app.socket.readyState === 1,
-      { timeout: 20000 }
+      { timeout: 10000 }
     );
 
     // Add the session tab with its workingDir and switch to it
@@ -192,7 +197,7 @@ test.describe('Tab management: close, quick-create, and dropdown behavior', () =
     // Wait for session tab manager to be initialized
     await page.waitForFunction(
       () => window.app && window.app.sessionTabManager,
-      { timeout: 20000 }
+      { timeout: 10000 }
     );
 
     // Verify the dropdown button exists

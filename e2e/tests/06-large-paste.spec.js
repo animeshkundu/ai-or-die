@@ -71,7 +71,8 @@ test.describe('Large paste: data arrives intact through chunked write pipeline',
     // Focus terminal and paste
     await focusTerminal(page);
     await page.keyboard.press('Control+v');
-    await page.waitForTimeout(1000);
+    // Brief pause for paste to be processed by the terminal
+    await page.waitForTimeout(300);
     await pressKey(page, 'Enter');
 
     await waitForTerminalText(page, marker, 15000);

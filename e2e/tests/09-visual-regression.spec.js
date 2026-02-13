@@ -49,11 +49,12 @@ test.describe('Visual regression', () => {
     await waitForAppReady(page);
 
     // Wait for tool cards to render
-    await page.waitForSelector('[data-tid="tool-cards"]', { timeout: 15000 });
+    await page.waitForSelector('[data-tid="tool-cards"]', { timeout: 10000 });
     await page.waitForSelector('.tool-card', { timeout: 10000 });
 
-    // Small pause for fonts and animations to settle
-    await page.waitForTimeout(1000);
+    // Wait for fonts to settle before screenshot
+    await page.evaluate(() => document.fonts.ready);
+    await page.waitForTimeout(300);
 
     await expect(page).toHaveScreenshot('welcome-screen.png');
   });
@@ -132,7 +133,9 @@ test.describe('Visual regression', () => {
     await page.goto(url);
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
-    await page.waitForTimeout(1000);
+    // Wait for fonts to settle
+    await page.evaluate(() => document.fonts.ready);
+    await page.waitForTimeout(300);
 
     const activeTab = page.locator('.session-tab.active').first();
     await expect(activeTab).toBeVisible();

@@ -7,10 +7,12 @@ module.exports = defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 2 : 1,
-  timeout: 60000,
+  // Per-test timeout. 30s is sufficient: server startup is in beforeAll,
+  // and individual assertions should complete well within this window.
+  timeout: 30000,
   updateSnapshots: 'missing',
   expect: {
-    timeout: 15000,
+    timeout: 10000,
     toHaveScreenshot: {
       maxDiffPixelRatio: 0.01,
       threshold: 0.2,

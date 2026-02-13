@@ -33,7 +33,7 @@ test.describe('Command Palette Styling — ninja-keys theme integration', () => 
     await waitForTerminalCanvas(page);
 
     // Wait for ninja-keys custom element to be defined
-    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 15000 });
+    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 10000 });
     await page.waitForTimeout(500);
 
     // Open command palette with Ctrl+K
@@ -77,7 +77,7 @@ test.describe('Command Palette Styling — ninja-keys theme integration', () => 
     await waitForTerminalCanvas(page);
 
     // Wait for ninja-keys custom element
-    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 15000 });
+    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 10000 });
     await page.waitForTimeout(500);
 
     // Capture default theme accent color
@@ -98,7 +98,7 @@ test.describe('Command Palette Styling — ninja-keys theme integration', () => 
     await page.reload();
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
-    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 15000 });
+    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 10000 });
     await page.waitForTimeout(500);
 
     // Verify the data-theme is set
@@ -134,7 +134,7 @@ test.describe('Command Palette Styling — ninja-keys theme integration', () => 
     await page.goto(url);
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
-    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 15000 });
+    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 10000 });
     await page.waitForTimeout(500);
 
     // Switch to monokai (dark theme) via command palette manager
@@ -162,7 +162,7 @@ test.describe('Command Palette Styling — ninja-keys theme integration', () => 
     await page.goto(url);
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
-    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 15000 });
+    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 10000 });
     await page.waitForTimeout(500);
 
     // Switch to classic-light (light theme)
@@ -190,7 +190,7 @@ test.describe('Command Palette Styling — ninja-keys theme integration', () => 
     await page.goto(url);
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
-    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 15000 });
+    await page.waitForFunction(() => customElements.get('ninja-keys'), { timeout: 10000 });
     await page.waitForTimeout(500);
 
     // Check all expected ninja-keys CSS variables
