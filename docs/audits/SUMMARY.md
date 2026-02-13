@@ -102,6 +102,41 @@
 
 ---
 
+## Deliberate Deferrals
+
+The following items were flagged during adversarial review and deliberately deferred with documented rationale. These are not oversights — each was evaluated and set aside for specific reasons.
+
+### P2-2: Pinch-to-zoom for terminal font size
+
+**Status**: Deferred. Replaced by font slider recommendation (P3 enhancement).
+
+Pinch-to-zoom conflicts with the browser's native page zoom. On mobile, intercepting the pinch gesture via `touchstart`/`touchmove` with `e.preventDefault()` on two-finger touch breaks the browser's accessibility zoom (WCAG 1.4.4). Users with hand tremor may accidentally trigger font changes. Dynamic font sizing (P1-5) provides viewport-appropriate defaults, and a dedicated font slider in the settings modal would be a better UX than pinch — but that is a P3 enhancement, not a P2 fix.
+
+### fitTerminal ResizeObserver re-entry loop
+
+**Status**: Deferred. Monitored.
+
+The `_fitting` boolean guard prevents synchronous re-entry into `fitTerminal()`, but the ResizeObserver callback fires via a 50ms debounced `setTimeout`, at which point `_fitting` is already false. This creates a potential infinite loop: `fitTerminal()` → `fitAddon.fit()` → container resizes → ResizeObserver → 50ms → `fitTerminal()` again. In practice, `fitAddon.fit()` stabilizes within 1-2 cycles because the terminal dimensions converge. The loop only oscillates on sub-pixel boundary conditions (rare). A proper fix would extend the `_fitting` guard to cover the debounce period, but this risks suppressing legitimate resize events. If users report flickering or excessive CPU on certain viewport sizes, revisit.
+
+### P3 items (8 items) — Deferred by design
+
+These require deeper platform changes, upstream fixes, or build tooling that is out of scope for the mobile UX overhaul:
+
+| Item | Reason for deferral |
+|------|---------------------|
+| VirtualKeyboard API | Chrome Android only — progressive enhancement, not a baseline fix |
+| iOS text selection overlay | Complex transparent-div approach is fragile and breaks on xterm.js updates |
+| Android composition fix (GBoard) | Root cause is in xterm.js upstream — our workaround would be brittle |
+| Customizable extra keys | Requires settings UI complexity disproportionate to user demand |
+| Edge-swipe drawer | Low priority; bottom nav provides equivalent navigation |
+| Reduced scrollback on low-RAM | Requires Device Memory API (limited browser support) |
+| Screen reader terminal output | Major accessibility effort requiring aria-live region integration with xterm.js output stream |
+| Service worker dynamic versioning | Requires build tooling (bundler, cache-bust hashes) that the project does not currently use |
+
+Full rationale for each deferral: [`docs/history/mobile-ux-overhaul-deferrals.md`](../history/mobile-ux-overhaul-deferrals.md)
+
+---
+
 ## Audit Report Index
 
 | PR | Agent Focus | Report |
