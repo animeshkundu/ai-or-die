@@ -262,6 +262,15 @@ test.describe('overlay state after folder browser flow', () => {
     setupPageCapture(page);
     await page.goto(url);
     await waitForAppReady(page);
+    await waitForWebSocket(page);
+
+    // Wait for initial session_joined to complete (joinSession resets the flag)
+    await page.waitForFunction(
+      () => window.app.currentClaudeSessionId !== null,
+      { timeout: 5000 }
+    );
+    // Small buffer for any pending async handlers
+    await page.waitForTimeout(200);
 
     await page.evaluate(() => window.app.hideOverlay());
     const afterHide = await page.evaluate(() => window.app._overlayExplicitlyHidden);
