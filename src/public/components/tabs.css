@@ -447,8 +447,8 @@
     color: white;
 }
 
-/* Mobile: compact session pills instead of wide tabs */
-@media (max-width: 768px) {
+/* Mobile: compact session pills instead of wide tabs (820px catches iPad Mini portrait) */
+@media (max-width: 820px) {
     .session-tabs-bar {
         min-height: 36px;
         padding: 0 6px;
