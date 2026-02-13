@@ -777,6 +777,13 @@
     font-size: 14px;
 }
 
+/* ── Mobile settings: stacked layout ── */
+@media (max-width: 480px) {
+    .setting-group { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .setting-group label { width: auto; }
+    .setting-group select, .setting-group input[type="range"] { width: 100%; }
+}
+
 /* ── Keyboard-open: constrain modal to visual viewport ── */
 body.keyboard-open .modal-content {
     max-height: calc(var(--visual-viewport-height, 100dvh) - 20px);

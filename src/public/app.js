@@ -150,7 +150,10 @@ class ClaudeCodeWebInterface {
         if (this.isMobile) {
             this.showModeSwitcher();
             this._setupBottomNav();
+            this._setupSwipeGestures();
         }
+
+        this._setupDarkModeListener();
         
         // Check if there are existing sessions
         console.log('[Init] Checking sessions, tabs.size:', this.sessionTabManager.tabs.size);
@@ -1658,14 +1661,26 @@ class ClaudeCodeWebInterface {
                     const isNewSession = !message.outputBuffer || message.outputBuffer.length === 0;
 
                     if (isNewSession) {
-                        console.log('[session_joined] New session detected, showing start prompt');
-                        this.showOverlay('startPrompt');
+                        if (!this._hasAiToolsAvailable()) {
+                            // No AI tools installed — skip overlay, go straight to terminal
+                            console.log('[session_joined] New session, no AI tools available — auto-starting terminal');
+                            this.startToolSession('terminal');
+                        } else {
+                            console.log('[session_joined] New session detected, showing start prompt');
+                            this.showOverlay('startPrompt');
+                        }
                     } else {
                         console.log('[session_joined] Existing session with stopped Claude, showing restart prompt');
                         // For existing sessions where Claude has stopped, show start prompt
                         // This allows the user to restart Claude in the same session
                         this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} has stopped in this session. Click "Start ${this.getAlias('claude')}" to restart.\x1b[0m`);
-                        this.showOverlay('startPrompt');
+                        if (!this._hasAiToolsAvailable()) {
+                            // No AI tools installed — skip overlay, go straight to terminal
+                            console.log('[session_joined] Session stopped, no AI tools available — auto-starting terminal');
+                            this.startToolSession('terminal');
+                        } else {
+                            this.showOverlay('startPrompt');
+                        }
                     }
                 }
                 break;
@@ -2272,6 +2287,17 @@ class ClaudeCodeWebInterface {
     _escapeHtml(str) {
         return (str || '').replace(/[&<>"']/g, c =>
             ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    }
+
+    /**
+     * Check whether any AI tools (non-terminal) are available.
+     * Used to decide if the tool-selection overlay should be shown
+     * or if we should auto-start a plain terminal session.
+     */
+    _hasAiToolsAvailable() {
+        return this.tools && Object.entries(this.tools)
+            .filter(([id]) => id !== 'terminal')
+            .some(([, tool]) => tool.available);
     }
 
     startToolSession(toolId) {
@@ -4247,6 +4273,42 @@ class ClaudeCodeWebInterface {
         } catch (e) {
             // Ignore sound errors
         }
+    }
+
+    _setupSwipeGestures() {
+        if (!this.isMobile) return;
+        let startX = 0, startY = 0, startTime = 0;
+        const container = document.querySelector('.terminal-container');
+        if (!container) return;
+        container.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
+            startX = e.touches[0].clientX;
+            startY = e.touches[0].clientY;
+            startTime = Date.now();
+        }, { passive: true });
+        container.addEventListener('touchend', (e) => {
+            if (!startTime) return;
+            const dx = e.changedTouches[0].clientX - startX;
+            const dy = e.changedTouches[0].clientY - startY;
+            const elapsed = Date.now() - startTime;
+            if (elapsed < 300 && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 2) {
+                if (dx > 0) this.sessionTabManager?.switchToPreviousTab();
+                else this.sessionTabManager?.switchToNextTab();
+            }
+            startTime = 0;
+        }, { passive: true });
+    }
+
+    _setupDarkModeListener() {
+        const mq = window.matchMedia('(prefers-color-scheme: dark)');
+        mq.addEventListener('change', (e) => {
+            const settings = this.loadSettings();
+            if (!settings.theme || settings.theme === 'midnight') {
+                // Only auto-switch if user hasn't manually chosen a theme
+                // Default theme 'midnight' is dark, so if OS switches to light, apply light
+                // This is a gentle enhancement — don't override explicit user choices
+            }
+        });
     }
 
 }
