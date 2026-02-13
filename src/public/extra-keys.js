@@ -109,12 +109,27 @@ class ExtraKeys {
     if ('vibrate' in navigator) try { navigator.vibrate(10); } catch (_) {}
     let toSend = data;
 
+    // Apply Ctrl modifier
     if (this.ctrlActive) {
-      // Apply Ctrl modifier: convert single printable char to control code
       if (data.length === 1) {
+        // Single printable char → control code (Ctrl+C = \x03, etc.)
         const code = data.charCodeAt(0);
         if (code >= 97 && code <= 122) toSend = String.fromCharCode(code - 96); // a-z
         else if (code >= 65 && code <= 90) toSend = String.fromCharCode(code - 64); // A-Z
+      } else if (data.startsWith('\x1b[') && data.length >= 3) {
+        // CSI sequences (arrows, Home, End, PgUp, PgDn) → add Ctrl modifier parameter
+        // e.g., \x1b[D (Left) → \x1b[1;5D (Ctrl+Left)
+        const lastChar = data[data.length - 1];
+        if (/[A-D]/.test(lastChar)) {
+          // Arrow keys: \x1b[A-D → \x1b[1;5A-D
+          toSend = '\x1b[1;5' + lastChar;
+        } else if (data.endsWith('~')) {
+          // PgUp/PgDn: \x1b[5~ → \x1b[5;5~, \x1b[6~ → \x1b[6;5~
+          toSend = data.slice(0, -1) + ';5~';
+        } else {
+          // Home/End: \x1b[H → \x1b[1;5H, \x1b[F → \x1b[1;5F
+          toSend = '\x1b[1;5' + lastChar;
+        }
       }
       this.ctrlActive = false;
       if (this._ctrlTimeout) { clearTimeout(this._ctrlTimeout); this._ctrlTimeout = null; }
@@ -122,10 +137,12 @@ class ExtraKeys {
       if (this.app._ctrlModifierPending) this.app._ctrlModifierPending = false;
     }
 
+    // Apply Alt modifier
     if (this.altActive) {
-      // Apply Alt modifier: prepend ESC before the character
+      // Prepend ESC for Alt: Alt+x = \x1b x, Alt+Left = \x1b \x1b[D
       toSend = '\x1b' + toSend;
       this.altActive = false;
+      if (this._altTimeout) { clearTimeout(this._altTimeout); this._altTimeout = null; }
       this._updateModifierVisual('alt');
     }
 
@@ -149,6 +166,16 @@ class ExtraKeys {
     } else if (modifier === 'alt') {
       this.altActive = !this.altActive;
       this._updateModifierVisual('alt');
+      if (this.altActive) {
+        this._altTimeout = setTimeout(() => {
+          this.altActive = false;
+          this._updateModifierVisual('alt');
+          this._altTimeout = null;
+        }, 5000);
+      } else if (this._altTimeout) {
+        clearTimeout(this._altTimeout);
+        this._altTimeout = null;
+      }
     }
   }
 
