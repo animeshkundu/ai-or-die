@@ -224,8 +224,9 @@ async function joinSessionAndStartTerminal(page, sessionId) {
   // its join_session / startToolSession calls, causing duplicate starts
   // that the server rejects with "already running" errors.
   await page.waitForFunction(
-    () => window.app && window.app._initComplete,
-    { timeout: 15000 }
+    () => window.app && window.app.sessionTabManager
+      && window.app.socket && window.app.socket.readyState === 1,
+    { timeout: 30000 }
   );
 
   // After init(), check if the session is already joined and a tool is
