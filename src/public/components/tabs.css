@@ -203,6 +203,9 @@
 
 @media (pointer: coarse) {
     .tab-close { min-width: 44px; min-height: 44px; opacity: 0.7; }
+    .tab-new-main,
+    .tab-new-dropdown { min-width: 44px; min-height: 44px; }
+    .tab-new-split { min-height: 44px; }
 }
 
 .tab-name-input {
@@ -444,8 +447,8 @@
     color: white;
 }
 
-/* Mobile: compact session pills instead of wide tabs */
-@media (max-width: 768px) {
+/* Mobile: compact session pills instead of wide tabs (820px catches iPad Mini portrait) */
+@media (max-width: 820px) {
     .session-tabs-bar {
         min-height: 36px;
         padding: 0 6px;
@@ -492,8 +495,8 @@
     }
 
     .tab-close {
-        width: 18px;
-        height: 18px;
+        width: auto;
+        height: auto;
         opacity: 0.5;
     }
 
@@ -528,6 +531,15 @@
     .tab-settings {
         width: 24px;
         height: 24px;
+    }
+
+    /* Make overflow button more discoverable on mobile */
+    .tab-overflow-btn {
+        background: var(--surface-tertiary);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-full);
+        min-width: 44px;
+        min-height: 44px;
     }
 }
 

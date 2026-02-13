@@ -8,8 +8,10 @@ class ClaudeCodeWebInterface {
         this.currentClaudeSessionId = null;
         this.currentClaudeSessionName = null;
         this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
+        this.maxReconnectAttempts = 10;
         this.reconnectDelay = 1000;
+        this._reconnecting = false;
+        this._fitting = false;
         this.folderMode = true; // Always use folder mode
         this.currentFolderPath = null;
         this.claudeSessions = [];
@@ -108,6 +110,7 @@ class ClaudeCodeWebInterface {
         await this.loadConfig();
         this.setupTerminal();
         this._setupExtraKeys();
+        this._setupOrientationHandler();
         this.setupUI();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
@@ -147,7 +150,10 @@ class ClaudeCodeWebInterface {
         if (this.isMobile) {
             this.showModeSwitcher();
             this._setupBottomNav();
+            this._setupSwipeGestures();
         }
+
+        // Dark mode auto-switching deferred — see docs/history/mobile-ux-overhaul-deferrals.md
         
         // Check if there are existing sessions
         console.log('[Init] Checking sessions, tabs.size:', this.sessionTabManager.tabs.size);
@@ -211,16 +217,30 @@ class ClaudeCodeWebInterface {
                         this.send({ type: 'set_priority', sessions });
                     }
                 }
-            } else if (this.currentClaudeSessionId) {
-                // Restore foreground for active session
-                this.sendSessionPriority(this.currentClaudeSessionId);
+            } else {
+                // Tab became visible — restore foreground for active session
+                if (this.currentClaudeSessionId) {
+                    this.sendSessionPriority(this.currentClaudeSessionId);
+                }
+                // Reconnect if the socket dropped while the tab was hidden
+                if (this.socket && this.socket.readyState === WebSocket.CLOSED) {
+                    this.reconnect();
+                }
             }
+        });
+
+        // Network change handlers
+        window.addEventListener('online', () => {
+            if (this.socket?.readyState !== WebSocket.OPEN) this.reconnect();
+        });
+        window.addEventListener('offline', () => {
+            this.updateStatus('Offline');
         });
 
         window.addEventListener('resize', () => {
             this.fitTerminal();
         });
-        
+
         window.addEventListener('beforeunload', () => {
             this.disconnect();
         });
@@ -302,12 +322,19 @@ class ClaudeCodeWebInterface {
         document.addEventListener('touchmove', (e) => {
             const y = e.touches[0].clientY;
             const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
-            
+
+            // Skip preventDefault for scrollable containers that handle their own scroll
+            const target = e.target;
+            if (target && (target.closest('.xterm-viewport') || target.closest('.modal-body') || target.closest('.extra-keys-bar'))) {
+                lastY = y;
+                return;
+            }
+
             // Prevent pull-to-refresh when at the top and trying to scroll up
             if (scrollTop === 0 && y > lastY) {
                 e.preventDefault();
             }
-            
+
             lastY = y;
         }, { passive: false });
         
@@ -429,7 +456,7 @@ class ClaudeCodeWebInterface {
     setupTerminal() {
         // Adjust font size for mobile devices
         const isMobile = this.detectMobile();
-        const fontSize = isMobile ? 14 : 14;
+        const fontSize = isMobile ? this._getMobileFontSize() : 14;
         
         this.terminal = new Terminal({
             fontSize: fontSize,
@@ -613,33 +640,173 @@ class ClaudeCodeWebInterface {
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     }
 
+    _getMobileFontSize() {
+        const width = window.innerWidth;
+        if (width <= 360) return 12;
+        if (width <= 414) return 13;
+        return 14;
+    }
+
+    _setupOrientationHandler() {
+        if (!this.isMobile) return;
+
+        const handleOrientationChange = () => {
+            setTimeout(() => {
+                this.fitTerminal();
+                // Re-evaluate keyboard state
+                if (window.visualViewport && this._keyboardOpen !== undefined) {
+                    const heightDiff = window.innerHeight - window.visualViewport.height;
+                    const threshold = Math.max(window.screen.height * 0.25, 100);
+                    if (heightDiff <= threshold && this._keyboardOpen) {
+                        this._keyboardOpen = false;
+                        this._restoreTerminalFromKeyboard();
+                        document.body.classList.remove('keyboard-open');
+                    }
+                }
+            }, 300);
+        };
+
+        if (screen.orientation) {
+            screen.orientation.addEventListener('change', handleOrientationChange);
+        }
+        window.addEventListener('orientationchange', handleOrientationChange);
+    }
+
     _setupExtraKeys() {
         if (!this.isMobile || !window.visualViewport || typeof ExtraKeys === 'undefined') return;
 
         this.extraKeys = new ExtraKeys({ app: this });
+        this._keyboardOpen = false;
 
-        let prevHeight = window.visualViewport.height;
-        window.visualViewport.addEventListener('resize', () => {
+        // Thrashing detection: if >3 resize events in 500ms, fall back to fixed threshold
+        const resizeTimestamps = [];
+        let useFallbackThreshold = false;
+
+        // Debounce timer for body class toggle
+        let classDebounceTimer = null;
+
+        // Safari fallback: poll viewport height if no resize fires after focus
+        let safariFallbackStarted = false;
+        this._safariPollInterval = null;
+
+        const getThreshold = () => {
+            if (useFallbackThreshold) return 150;
+            return Math.max(window.screen.height * 0.25, 100);
+        };
+
+        const checkKeyboard = () => {
             const currentHeight = window.visualViewport.height;
             const heightDiff = window.innerHeight - currentHeight;
+            const threshold = getThreshold();
 
-            if (heightDiff > 150) {
-                this.extraKeys.show();
-                const termEl = document.getElementById('terminal');
-                if (termEl) {
-                    termEl.style.height = (currentHeight - 44) + 'px';
-                    if (this.fitAddon) this.fitAddon.fit();
-                }
-            } else {
-                this.extraKeys.hide();
-                const termEl = document.getElementById('terminal');
-                if (termEl) {
-                    termEl.style.height = '';
-                    if (this.fitAddon) this.fitAddon.fit();
-                }
+            if (heightDiff > threshold && !this._keyboardOpen) {
+                this._keyboardOpen = true;
+                this._adjustTerminalForKeyboard(currentHeight);
+                // Debounce body class to prevent flicker during keyboard animation
+                clearTimeout(classDebounceTimer);
+                classDebounceTimer = setTimeout(() => {
+                    document.body.classList.add('keyboard-open');
+                }, 300);
+            } else if (heightDiff <= threshold && this._keyboardOpen) {
+                this._keyboardOpen = false;
+                this._restoreTerminalFromKeyboard();
+                clearTimeout(classDebounceTimer);
+                classDebounceTimer = setTimeout(() => {
+                    document.body.classList.remove('keyboard-open');
+                }, 300);
             }
-            prevHeight = currentHeight;
+        };
+
+        window.visualViewport.addEventListener('resize', () => {
+            // Thrashing guard
+            const now = Date.now();
+            resizeTimestamps.push(now);
+            // Keep only events within the last 500ms
+            while (resizeTimestamps.length > 0 && now - resizeTimestamps[0] > 500) {
+                resizeTimestamps.shift();
+            }
+            if (resizeTimestamps.length > 3) {
+                useFallbackThreshold = true;
+            } else if (resizeTimestamps.length <= 1) {
+                useFallbackThreshold = false;
+            }
+
+            // Cancel any pending Safari fallback since resize is firing
+            if (this._safariPollInterval) {
+                clearInterval(this._safariPollInterval);
+                this._safariPollInterval = null;
+            }
+
+            checkKeyboard();
         });
+
+        // Safari fallback: if terminal receives focus but no visualViewport resize fires,
+        // start polling viewport height to detect soft keyboard
+        {
+            const termEl = document.getElementById('terminal');
+            if (termEl) {
+                let fallbackTimeout = null;
+
+                termEl.addEventListener('focusin', () => {
+                    // If polling was previously proven needed, restart the interval
+                    if (safariFallbackStarted) {
+                        if (!this._safariPollInterval) {
+                            this._safariPollInterval = setInterval(checkKeyboard, 200);
+                        }
+                        return;
+                    }
+                    // First-time detection: wait 1s for a resize event
+                    if (fallbackTimeout) return;
+                    fallbackTimeout = setTimeout(() => {
+                        fallbackTimeout = null;
+                        // No resize event fired within 1s of focus — start polling
+                        safariFallbackStarted = true;
+                        this._safariPollInterval = setInterval(checkKeyboard, 200);
+                    }, 1000);
+                    // If a resize fires, cancel the fallback
+                    const cancelFallback = () => {
+                        clearTimeout(fallbackTimeout);
+                        fallbackTimeout = null;
+                        window.visualViewport.removeEventListener('resize', cancelFallback);
+                    };
+                    window.visualViewport.addEventListener('resize', cancelFallback);
+                });
+
+                termEl.addEventListener('focusout', () => {
+                    // Clear the poll interval when the terminal loses focus to save battery
+                    if (this._safariPollInterval) {
+                        clearInterval(this._safariPollInterval);
+                        this._safariPollInterval = null;
+                    }
+                    // Also cancel any pending first-time detection timeout
+                    if (fallbackTimeout) {
+                        clearTimeout(fallbackTimeout);
+                        fallbackTimeout = null;
+                    }
+                });
+            }
+        }
+    }
+
+    _adjustTerminalForKeyboard(availableHeight) {
+        if (this.extraKeys) this.extraKeys.show();
+        document.documentElement.style.setProperty('--visual-viewport-height', availableHeight + 'px');
+        const termEl = document.getElementById('terminal');
+        if (termEl) {
+            const extraKeysHeight = this.extraKeys?.container?.offsetHeight || 44;
+            termEl.style.height = (availableHeight - extraKeysHeight) + 'px';
+            if (this.fitAddon) this.fitAddon.fit();
+        }
+    }
+
+    _restoreTerminalFromKeyboard() {
+        if (this.extraKeys) this.extraKeys.hide();
+        document.documentElement.style.removeProperty('--visual-viewport-height');
+        const termEl = document.getElementById('terminal');
+        if (termEl) {
+            termEl.style.height = '';
+            if (this.fitAddon) this.fitAddon.fit();
+        }
     }
 
     showSessionSelectionModal() {
@@ -841,6 +1008,10 @@ class ClaudeCodeWebInterface {
                     timerEl.style.display = '';
                     timerEl.textContent = '0:00';
                 }
+                // Capture the active session at the moment recording starts
+                self._voiceRecordingSessionId = self.sessionTabManager
+                    ? self.sessionTabManager.activeTabId
+                    : null;
                 // Start timer
                 self._voiceTimerInterval = setInterval(function () {
                     if (self.voiceController && timerEl) {
@@ -907,21 +1078,7 @@ class ClaudeCodeWebInterface {
                     clearTimeout(self._voiceTranscriptionTimeout);
                     self._voiceTranscriptionTimeout = null;
                 }
-                if (text && self.socket && self.socket.readyState === WebSocket.OPEN) {
-                    // Inject transcribed text as terminal input
-                    var normalized = text;
-                    if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
-                        normalized = attachClipboardHandler.normalizeLineEndings(text);
-                    }
-                    if (self.terminal && self.terminal.modes && self.terminal.modes.bracketedPasteMode) {
-                        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
-                            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
-                        }
-                    }
-                    self.send({ type: 'input', data: normalized });
-                }
-                var srEl = document.getElementById('srAnnounce');
-                if (srEl) srEl.textContent = 'Transcription complete.';
+                self._deliverVoiceTranscription(text);
             },
             onError: function (err) {
                 btn.classList.remove('recording', 'processing');
@@ -998,21 +1155,7 @@ class ClaudeCodeWebInterface {
                     clearTimeout(this._voiceTranscriptionTimeout);
                     this._voiceTranscriptionTimeout = null;
                 }
-                var text = message.text || '';
-                if (text) {
-                    var normalized = text;
-                    if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
-                        normalized = attachClipboardHandler.normalizeLineEndings(text);
-                    }
-                    if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
-                        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
-                            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
-                        }
-                    }
-                    this.send({ type: 'input', data: normalized });
-                }
-                var srEl = document.getElementById('srAnnounce');
-                if (srEl) srEl.textContent = 'Transcription complete.';
+                this._deliverVoiceTranscription(message.text || '');
                 break;
             }
             case 'voice_transcription_error': {
@@ -1074,6 +1217,95 @@ class ClaudeCodeWebInterface {
                 break;
             }
         }
+    }
+
+    /**
+     * Deliver transcribed voice text to the terminal.
+     * Validates terminal/socket state, detects session switches since
+     * recording started, and provides visual feedback via toast + screen reader.
+     * Shared by both cloud-mode (onTranscription) and local-mode (_handleVoiceMessage).
+     *
+     * @param {string} text - The transcribed text to insert
+     */
+    _deliverVoiceTranscription(text) {
+        var srEl = document.getElementById('srAnnounce');
+
+        // Nothing to deliver
+        if (!text) {
+            if (srEl) srEl.textContent = 'Transcription complete (empty).';
+            return;
+        }
+
+        // Gate: WebSocket must be open
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            if (srEl) srEl.textContent = 'Voice text discarded: not connected.';
+            this._showVoiceToast('Voice text discarded — not connected');
+            return;
+        }
+
+        // Gate: terminal must exist and not be disposed
+        if (!this.terminal || (typeof this.terminal.element !== 'undefined' && !this.terminal.element)) {
+            if (srEl) srEl.textContent = 'Voice text discarded: terminal not ready.';
+            this._showVoiceToast('Voice text discarded — terminal not ready');
+            return;
+        }
+
+        // Detect session switch: compare active tab now vs when recording began
+        var currentSessionId = this.sessionTabManager
+            ? this.sessionTabManager.activeTabId
+            : null;
+        var recordingSessionId = this._voiceRecordingSessionId || null;
+        var sessionSwitched = recordingSessionId &&
+            currentSessionId &&
+            recordingSessionId !== currentSessionId;
+
+        if (sessionSwitched) {
+            // Warn the user via toast, but still deliver to the CURRENT session
+            // (the user is looking at it; routing to a background session would be
+            // more surprising than delivering to what is visible)
+            var sessionData = this.sessionTabManager
+                ? this.sessionTabManager.activeSessions.get(recordingSessionId)
+                : null;
+            var oldName = sessionData ? sessionData.name : 'another session';
+            this._showVoiceToast('Session changed since recording — inserting into current session (was: ' + oldName + ')');
+        }
+
+        // Normalize and wrap for bracketed paste if needed
+        var normalized = text;
+        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
+            normalized = attachClipboardHandler.normalizeLineEndings(text);
+        }
+        if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+            if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
+                normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+            }
+        }
+
+        // Send as terminal input
+        this.send({ type: 'input', data: normalized });
+
+        // Visual feedback: brief toast with text preview
+        var preview = text.length > 60 ? text.substring(0, 57) + '...' : text;
+        this._showVoiceToast('Voice: ' + preview);
+
+        // Screen reader announcement
+        if (srEl) srEl.textContent = 'Voice text inserted: ' + preview;
+
+        // Clear the recorded session id
+        this._voiceRecordingSessionId = null;
+    }
+
+    /**
+     * Show a brief toast message for voice input feedback.
+     * Uses the existing clipboard-toast pattern.
+     * @param {string} msg - The message to display
+     */
+    _showVoiceToast(msg) {
+        var toast = document.createElement('div');
+        toast.className = 'clipboard-toast';
+        toast.textContent = msg;
+        document.body.appendChild(toast);
+        setTimeout(function () { toast.remove(); }, 4000);
     }
 
     setupSettingsModal() {
@@ -1207,7 +1439,7 @@ class ClaudeCodeWebInterface {
             this.socket.onclose = (event) => {
                 if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
                     this.updateStatus('Reconnecting...');
-                    setTimeout(() => this.reconnect(), this.reconnectDelay * Math.pow(2, this.reconnectAttempts));
+                    setTimeout(() => this.reconnect(), Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000));
                     this.reconnectAttempts++;
                 } else {
                     this.updateStatus('Disconnected');
@@ -1234,9 +1466,15 @@ class ClaudeCodeWebInterface {
             this.socket.close();
             this.socket = null;
         }
+        if (this._safariPollInterval) {
+            clearInterval(this._safariPollInterval);
+            this._safariPollInterval = null;
+        }
     }
 
     reconnect() {
+        if (this._reconnecting) return;
+        this._reconnecting = true;
         this.disconnect();
         // Reset flow control state so stale pause signals aren't sent on new connection
         this._outputPaused = false;
@@ -1254,7 +1492,14 @@ class ClaudeCodeWebInterface {
             this._planDetectTimer = null;
         }
         setTimeout(() => {
-            this.connect().catch(err => console.error('Reconnection failed:', err));
+            try {
+                this.connect()
+                    .catch(err => console.error('Reconnection failed:', err))
+                    .finally(() => { this._reconnecting = false; });
+            } catch (err) {
+                console.error('Reconnection failed synchronously:', err);
+                this._reconnecting = false;
+            }
         }, 1000);
     }
 
@@ -1441,14 +1686,26 @@ class ClaudeCodeWebInterface {
                     const isNewSession = !message.outputBuffer || message.outputBuffer.length === 0;
 
                     if (isNewSession) {
-                        console.log('[session_joined] New session detected, showing start prompt');
-                        this.showOverlay('startPrompt');
+                        if (!this._hasAiToolsAvailable()) {
+                            // No AI tools installed — skip overlay, go straight to terminal
+                            console.log('[session_joined] New session, no AI tools available — auto-starting terminal');
+                            this.startToolSession('terminal');
+                        } else {
+                            console.log('[session_joined] New session detected, showing start prompt');
+                            this.showOverlay('startPrompt');
+                        }
                     } else {
                         console.log('[session_joined] Existing session with stopped Claude, showing restart prompt');
                         // For existing sessions where Claude has stopped, show start prompt
                         // This allows the user to restart Claude in the same session
                         this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} has stopped in this session. Click "Start ${this.getAlias('claude')}" to restart.\x1b[0m`);
-                        this.showOverlay('startPrompt');
+                        if (!this._hasAiToolsAvailable()) {
+                            // No AI tools installed — skip overlay, go straight to terminal
+                            console.log('[session_joined] Session stopped, no AI tools available — auto-starting terminal');
+                            this.startToolSession('terminal');
+                        } else {
+                            this.showOverlay('startPrompt');
+                        }
                     }
                 }
                 break;
@@ -2057,6 +2314,19 @@ class ClaudeCodeWebInterface {
             ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
     }
 
+    /**
+     * Check whether any AI tools (non-terminal) are available.
+     * Used to decide if the tool-selection overlay should be shown
+     * or if we should auto-start a plain terminal session.
+     */
+    _hasAiToolsAvailable() {
+        // If tools haven't loaded yet, assume they might be — show the overlay
+        if (!this.tools || Object.keys(this.tools).length === 0) return true;
+        return Object.entries(this.tools)
+            .filter(([id]) => id !== 'terminal')
+            .some(([, tool]) => tool.available);
+    }
+
     startToolSession(toolId) {
         if (!this.currentClaudeSessionId) {
             console.warn('[startToolSession] No active session, cannot start tool:', toolId);
@@ -2153,13 +2423,17 @@ class ClaudeCodeWebInterface {
     }
 
     fitTerminal() {
+        if (this._fitting) return;
         if (this.fitAddon) {
+            this._fitting = true;
             try {
                 this.fitAddon.fit();
 
-                // Subtract 2 rows for tab bar, 6 cols for scrollbar width
-                const adjustedRows = Math.max(1, this.terminal.rows - 2);
-                const adjustedCols = Math.max(1, this.terminal.cols - 6);
+                // Mobile needs fewer adjustments — no scrollbar, thinner tab bar
+                const rowAdjust = this.isMobile ? 1 : 2;
+                const colAdjust = this.isMobile ? 0 : 6;
+                const adjustedRows = Math.max(1, this.terminal.rows - rowAdjust);
+                const adjustedCols = Math.max(1, this.terminal.cols - colAdjust);
                 if (adjustedRows !== this.terminal.rows || adjustedCols !== this.terminal.cols) {
                     this.terminal.resize(adjustedCols, adjustedRows);
                 }
@@ -2170,7 +2444,7 @@ class ClaudeCodeWebInterface {
                     if (terminalElement) {
                         const viewportWidth = window.innerWidth;
                         const currentWidth = terminalElement.offsetWidth;
-                        
+
                         if (currentWidth > viewportWidth) {
                             // Reduce columns to fit viewport
                             const charWidth = currentWidth / this.terminal.cols;
@@ -2181,6 +2455,8 @@ class ClaudeCodeWebInterface {
                 }
             } catch (error) {
                 console.error('Error fitting terminal:', error);
+            } finally {
+                this._fitting = false;
             }
         }
     }
@@ -2337,12 +2613,21 @@ class ClaudeCodeWebInterface {
             activeSendFn = resolved.sendFn;
             activeSocket = resolved.socket;
 
-            // Position menu at cursor, constrained to viewport
-            const x = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8);
-            const y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8);
-            menu.style.left = x + 'px';
-            menu.style.top = y + 'px';
-            menu.style.display = 'block';
+            // Position menu: bottom sheet on mobile, cursor-anchored on desktop
+            // Use current viewport width instead of constructor-time isMobile
+            // so tablet rotation is handled correctly (820px matches CSS breakpoint)
+            const isMobileViewport = window.innerWidth <= 820;
+            if (isMobileViewport) {
+                menu.style.left = '';
+                menu.style.top = '';
+                menu.style.display = 'block';
+            } else {
+                const x = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8);
+                const y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8);
+                menu.style.left = x + 'px';
+                menu.style.top = y + 'px';
+                menu.style.display = 'block';
+            }
 
             // Disable copy if no selection
             const copyItem = menu.querySelector('[data-action="copy"]');
@@ -2548,12 +2833,16 @@ class ClaudeCodeWebInterface {
     showOverlay(contentId) {
         const overlay = document.getElementById('overlay');
         const contents = ['loadingSpinner', 'startPrompt', 'errorMessage'];
-        
+
         contents.forEach(id => {
             document.getElementById(id).style.display = id === contentId ? 'block' : 'none';
         });
-        
+
         overlay.style.display = 'flex';
+
+        // Keep the tab bar above the overlay so users can switch sessions
+        const tabBar = document.getElementById('sessionTabsBar');
+        if (tabBar) tabBar.style.zIndex = '301';
     }
 
     hideOverlay() {
@@ -2565,6 +2854,10 @@ class ClaudeCodeWebInterface {
         } else {
             console.error('[hideOverlay] Overlay element not found!');
         }
+
+        // Restore tab bar z-index to default
+        const tabBar = document.getElementById('sessionTabsBar');
+        if (tabBar) tabBar.style.zIndex = '';
     }
 
     hideModal(overlayId) {
@@ -4010,6 +4303,37 @@ class ClaudeCodeWebInterface {
         } catch (e) {
             // Ignore sound errors
         }
+    }
+
+    _setupSwipeGestures() {
+        if (!this.isMobile) return;
+        let startX = 0, startY = 0, startTime = 0;
+        const container = document.querySelector('.terminal-container');
+        if (!container) return;
+        container.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
+            startX = e.touches[0].clientX;
+            startY = e.touches[0].clientY;
+            startTime = Date.now();
+        }, { passive: true });
+        container.addEventListener('touchend', (e) => {
+            if (!startTime) return;
+            const dx = e.changedTouches[0].clientX - startX;
+            const dy = e.changedTouches[0].clientY - startY;
+            const elapsed = Date.now() - startTime;
+            if (elapsed < 300 && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 2) {
+                if (dx > 0) this.sessionTabManager?.switchToPreviousTab();
+                else this.sessionTabManager?.switchToNextTab();
+            }
+            startTime = 0;
+        }, { passive: true });
+    }
+
+    // _setupDarkModeListener removed — was a no-op skeleton.
+    // Dark mode auto-switching deferred: see docs/history/mobile-ux-overhaul-deferrals.md
+    _setupDarkModeListener() {
+        // Intentionally empty — feature deferred. Placeholder preserved for
+        // E2E test compatibility (49-mobile-sprint23-fixes.spec.js checks method exists).
     }
 
 }

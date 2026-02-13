@@ -67,7 +67,19 @@
     margin: 4px 0;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 820px) {
+    .term-context-menu {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        top: auto;
+        border-radius: 12px 12px 0 0;
+        padding-bottom: env(safe-area-inset-bottom, 0);
+        min-width: 100%;
+        max-width: 100%;
+        z-index: var(--z-modal);
+    }
     .ctx-item {
         padding: 12px 16px;
     }

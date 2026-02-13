@@ -110,7 +110,17 @@ module.exports = defineConfig({
     // UI feature tests — command palette styling, voice settings, mic chimes
     {
       name: 'ui-features',
-      testMatch: /4[0-9]-.*\.spec\.js/,
+      testMatch: /4[0-7]-.*\.spec\.js/,
+    },
+    // Mobile Sprint 1 fix validation
+    {
+      name: 'mobile-sprint1',
+      testMatch: '48-mobile-sprint1-fixes.spec.js',
+    },
+    // Mobile Sprint 2+3 fix validation
+    {
+      name: 'mobile-sprint23',
+      testMatch: '49-mobile-sprint23-fixes.spec.js',
     },
   ],
 });

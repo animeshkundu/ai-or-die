@@ -7,14 +7,15 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-main-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         node-version: [22]
@@ -23,6 +24,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
+          cache: 'npm'
       - run: npm ci
       - run: npm test
       - run: npm audit --audit-level=moderate
@@ -30,8 +32,9 @@ jobs:
 
   test-browser-golden:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -39,7 +42,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run golden path test
@@ -56,8 +67,9 @@ jobs:
 
   test-browser-functional-core:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -65,7 +77,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run functional core tests
@@ -82,8 +102,9 @@ jobs:
 
   test-browser-functional-extended:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -91,7 +112,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run functional extended tests
@@ -108,8 +137,9 @@ jobs:
 
   test-browser-mobile:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -117,7 +147,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run mobile portrait tests (iPhone 14)
@@ -136,7 +174,7 @@ jobs:
 
   test-browser-visual:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -146,7 +184,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run visual regression tests
@@ -177,8 +223,9 @@ jobs:
 
   test-browser-new-features:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -186,7 +233,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run new feature tests
@@ -203,8 +258,9 @@ jobs:
 
   test-browser-integrations:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -212,7 +268,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run integration tests
@@ -230,7 +294,7 @@ jobs:
   test-browser-power-user:
     runs-on: ${{ matrix.os }}
     needs: test
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -240,7 +304,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run power user flow tests
@@ -258,7 +330,7 @@ jobs:
   test-browser-mobile-flows:
     runs-on: ${{ matrix.os }}
     needs: test
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -268,7 +340,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run mobile flow tests
@@ -286,7 +366,7 @@ jobs:
   test-browser-ui-features:
     runs-on: ${{ matrix.os }}
     needs: test
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -296,7 +376,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run UI feature tests
@@ -311,10 +399,83 @@ jobs:
             playwright-report/
           retention-days: 14
 
+  test-browser-mobile-sprint1:
+    runs-on: ${{ matrix.os }}
+    needs: test
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run mobile sprint1 tests
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-sprint1
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-mobile-sprint1-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  test-browser-mobile-sprint23:
+    runs-on: ${{ matrix.os }}
+    needs: test
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run mobile sprint23 tests
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-sprint23
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-mobile-sprint23-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
   build-binary:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -328,6 +489,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
       - run: npm ci
       - name: Build SEA binary
         run: node scripts/build-sea.js
