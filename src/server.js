@@ -1716,11 +1716,13 @@ class ClaudeCodeWebServer {
       return;
     }
 
+    const sessionId = wsInfo.claudeSessionId;
+
     if (session.active) {
       if (session.agent === toolName) {
-        // Idempotent: same tool already running — send success to requester
-        // AND broadcast to all session members. Handles the race where both
-        // client auto-start and test helper call startToolSession near-simultaneously.
+        // Idempotent: same tool already running — send success to requester.
+        // Handles the race where both client auto-start and test helper
+        // call startToolSession('terminal') near-simultaneously.
         console.log(`startToolSession(${toolName}): already running in session ${sessionId}, sending success`);
         this.sendToWebSocket(wsInfo.ws, {
           type: `${toolName}_started`,
@@ -1728,15 +1730,13 @@ class ClaudeCodeWebServer {
         });
         return;
       }
-      console.warn(`startToolSession(${toolName}): session ${wsInfo.claudeSessionId} already has agent '${session.agent}' running`);
+      console.warn(`startToolSession(${toolName}): session ${sessionId} already has agent '${session.agent}' running`);
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
         message: `Cannot start ${toolName}: '${session.agent}' is already running`
       });
       return;
     }
-
-    const sessionId = wsInfo.claudeSessionId;
 
     // Ensure async command discovery has finished before checking availability
     await bridge._commandReady;

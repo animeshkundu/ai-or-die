@@ -503,8 +503,7 @@ describe('E2E: Terminal tool session', function () {
     await closeWs(ws);
   });
 
-  it('should handle idempotent start of same tool in the same session', async function () {
-    this.timeout(15000);
+  it('should handle starting the same tool twice idempotently', async function () {
     const { ws } = await connectWs(port);
 
     wsSend(ws, { type: 'create_session', name: 'Double Start' });
@@ -513,9 +512,9 @@ describe('E2E: Terminal tool session', function () {
     wsSend(ws, { type: 'start_terminal' });
     await waitForMessage(ws, 'terminal_started', 10000);
 
-    // Starting the same tool again should succeed (idempotent)
+    // Starting the same tool again should succeed idempotently
     wsSend(ws, { type: 'start_terminal' });
-    const msg = await waitForMessage(ws, 'terminal_started', 5000);
+    const msg = await waitForMessage(ws, 'terminal_started', 10000);
     assert(msg.sessionId, 'Expected terminal_started with sessionId');
 
     // Cleanup

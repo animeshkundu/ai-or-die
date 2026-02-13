@@ -224,6 +224,7 @@ class ExtraKeys {
     this.ctrlActive = false;
     if (this._ctrlTimeout) { clearTimeout(this._ctrlTimeout); this._ctrlTimeout = null; }
     this.altActive = false;
+    if (this._altTimeout) { clearTimeout(this._altTimeout); this._altTimeout = null; }
     this._updateModifierVisual('ctrl');
     this._updateModifierVisual('alt');
   }
