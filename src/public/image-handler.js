@@ -381,11 +381,16 @@ function showImagePreview(blob, onConfirm) {
  * When a valid image is selected, the preview modal is shown.
  *
  * @param {function} onImageSelected - Passed through to showImagePreview's onConfirm
+ * @param {{ capture?: string }} [options] - Optional capture hint ('user'|'environment')
  */
-function triggerFilePicker(onImageSelected) {
+function triggerFilePicker(onImageSelected, options) {
+  options = options || {};
   var input = document.createElement('input');
   input.type = 'file';
   input.accept = 'image/png,image/jpeg,image/gif,image/webp';
+  if (options.capture) {
+    input.setAttribute('capture', options.capture);
+  }
   input.style.display = 'none';
 
   function cleanup() {

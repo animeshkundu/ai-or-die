@@ -258,7 +258,7 @@ class ClaudeCodeWebServer {
     }
 
     // PWA Icon routes - generate ai-or-die brain/terminal icon dynamically
-    const iconSizes = [16, 32, 144, 180, 192, 512];
+    const iconSizes = [16, 32, 120, 144, 152, 167, 180, 192, 512];
     iconSizes.forEach(size => {
       this.app.get(`/icon-${size}.png`, (req, res) => {
         const s = size;

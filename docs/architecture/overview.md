@@ -22,7 +22,7 @@ graph TB
 
     subgraph Server["Server Layer"]
         SRV["ClaudeCodeWebServer<br/>src/server.js"]
-        SS["SessionStore<br/>~/.claude-code-web/sessions.json"]
+        SS["SessionStore<br/>~/.ai-or-die/sessions.json"]
         UR["UsageReader<br/>~/.claude/projects/.../*.jsonl"]
         UA["UsageAnalytics<br/>Burn Rate & Predictions"]
     end
@@ -174,7 +174,7 @@ stateDiagram-v2
 | **CLI Entry** | Commander.js | Parse command-line arguments (`--port`, `--auth`, `--https`, etc.) |
 | **HTTP Server** | Express 4.x | REST API, static file serving, authentication middleware |
 | **WebSocket** | ws 8.x | Bidirectional real-time communication between browser and server |
-| **PTY** | node-pty 1.x | Spawn CLI tools in pseudo-terminals with full ANSI/256-color support |
+| **PTY** | @lydell/node-pty 1.x | Spawn CLI tools in pseudo-terminals with full ANSI/256-color support |
 | **Terminal UI** | xterm.js | Browser-based terminal emulator with fit addon and web links |
 | **Session IDs** | uuid v4 | Unique identifiers for sessions and WebSocket connections |
 | **Tunneling** | devtunnel CLI | Optional public tunnel for remote access |
@@ -189,7 +189,7 @@ Each supported CLI tool has its own bridge class that extends `BaseBridge` (`Cla
 
 ### 2. Session-Centric Model
 
-Sessions are the central organizing concept. A session represents a working directory plus an optional running CLI process. Multiple WebSocket connections can join the same session simultaneously, enabling multi-device access to the same terminal. Sessions persist to disk (`~/.claude-code-web/sessions.json`) and survive server restarts, though the CLI processes themselves do not persist.
+Sessions are the central organizing concept. A session represents a working directory plus an optional running CLI process. Multiple WebSocket connections can join the same session simultaneously, enabling multi-device access to the same terminal. Sessions persist to disk (`~/.ai-or-die/sessions.json`) and survive server restarts, though the CLI processes themselves do not persist.
 
 ### 3. Output Buffering for Reconnection
 

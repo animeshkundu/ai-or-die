@@ -257,8 +257,27 @@
     cursor: pointer;
     font-family: var(--font-sans);
     font-size: var(--text-md);
+    line-height: 1.2;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100vw - 32px);
     box-shadow: var(--shadow-md);
     z-index: var(--z-overlay);
     transition: all var(--duration-slow) var(--ease-default);
+}
+
+.install-btn:focus-visible {
+    outline: 2px solid var(--text-primary);
+    outline-offset: 2px;
+}
+
+@media (max-width: 767px) {
+    .install-btn {
+        right: 12px;
+        bottom: calc(64px + env(safe-area-inset-bottom, 0));
+        padding: 10px 14px;
+        font-size: var(--text-sm);
+    }
 }
 

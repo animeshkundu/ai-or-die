@@ -14,7 +14,13 @@ class ClaudeCodeWebInterface {
         this.currentFolderPath = null;
         this.claudeSessions = [];
         this.isCreatingNewSession = false;
+        this.isTablet = this.detectTablet();
+        const platformInfo = this.detectPlatform();
+        this.isIOS = platformInfo.isIOS;
+        this.isAndroid = platformInfo.isAndroid;
         this.isMobile = this.detectMobile();
+        this._androidBackGuardActive = false;
+        this._androidBackHandlerBound = false;
         this.currentMode = 'chat';
         this.planDetector = null;
         this.planModal = null;
@@ -43,6 +49,7 @@ class ClaudeCodeWebInterface {
         this.voiceMode = null;
         this._voiceTimerInterval = null;
         this._voiceTranscriptionTimeout = null;
+        this.commandClips = [];
 
         // Cached TextDecoder for lazy string decode on hot path
         this._textDecoder = new TextDecoder();
@@ -68,6 +75,18 @@ class ClaudeCodeWebInterface {
         this._planDetectChunks = [];
         this._planDetectTimer = null;
         this._planTextDecoder = new TextDecoder();
+        this._reconnectTimer = null;
+        this._reconnectInProgress = false;
+        this._intentionalSocketClose = false;
+        this._pendingReconnectSessionId = null;
+        this._receivedSessionJoinedAfterConnect = false;
+        this._replayJoinTimer = null;
+        this._socketConnectStartedAt = 0;
+        this._lastVisibleReconnectAt = 0;
+        this._visibilityReconnectCooldownMs = 3000;
+        this._fitRaf = null;
+        this._fitIncludeSplits = false;
+        this._sessionCacheKey = 'cc-web-sessions-cache-v1';
 
         this.init();
     }
@@ -96,7 +115,48 @@ class ClaudeCodeWebInterface {
         return response;
     }
 
+    _getCachedSessions() {
+        if (window.clientStorage && typeof window.clientStorage.getSessionCache === 'function') {
+            return window.clientStorage.getSessionCache();
+        }
+        try {
+            const raw = localStorage.getItem(this._sessionCacheKey);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+            console.warn('Failed to parse cached sessions:', error);
+            return [];
+        }
+    }
+
+    _cacheSessions(sessions) {
+        if (!Array.isArray(sessions)) return;
+        const minimal = sessions
+            .filter(session => session && session.id)
+            .map(session => ({
+                id: session.id,
+                name: session.name || 'Session',
+                active: !!session.active,
+                workingDir: session.workingDir || null,
+                created: session.created || null,
+                connectedClients: session.connectedClients || 0
+            }));
+        if (window.clientStorage && typeof window.clientStorage.setSessionCache === 'function') {
+            window.clientStorage.setSessionCache(minimal);
+            return;
+        }
+        try {
+            localStorage.setItem(this._sessionCacheKey, JSON.stringify(minimal));
+        } catch (error) {
+            console.warn('Failed to cache sessions:', error);
+        }
+    }
+
     async init() {
+        this.applyPlatformClasses();
+        this.setupAndroidBackButtonHandling();
+
         // Check authentication first
         const authenticated = await window.authManager.initialize();
         if (!authenticated) {
@@ -106,14 +166,20 @@ class ClaudeCodeWebInterface {
         }
         
         await this.loadConfig();
+        if (window.clientStorage && typeof window.clientStorage.init === 'function') {
+            await window.clientStorage.init();
+        }
         this.setupTerminal();
         this._setupExtraKeys();
         this.setupUI();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
         this.applySettings(this.loadSettings());
+        this.requestPersistentStorage();
         this.applyAliasesToUI();
         this.disablePullToRefresh();
+        this.applyDeviceLayoutClass();
+        this.setupDesktopPwaPolish();
 
         // Show loading while we initialize
         this.showOverlay('loadingSpinner');
@@ -122,7 +188,12 @@ class ClaudeCodeWebInterface {
         // (session creation, joining, tool start) depend on it being ready.
         // Without this, fresh machines with no sessions would leave the
         // socket null until the user completes the folder browser flow.
-        await this.connect();
+        try {
+            await this.connect();
+        } catch (error) {
+            console.warn('Initial connect failed, waiting for connection:', error);
+            this.showConnectionWaiting();
+        }
 
         // Initialize the session tab manager and wait for sessions to load
         this.sessionTabManager = new SessionTabManager(this);
@@ -198,27 +269,10 @@ class ClaudeCodeWebInterface {
         }
         
         // All sessions go background when tab is hidden, restore on visible
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                // Mark all sessions as background
-                if (this.sessionTabManager) {
-                    const sessions = [];
-                    const allTabs = this.sessionTabManager.tabs || new Map();
-                    allTabs.forEach((_, sid) => {
-                        sessions.push({ sessionId: sid, priority: 'background' });
-                    });
-                    if (sessions.length > 0) {
-                        this.send({ type: 'set_priority', sessions });
-                    }
-                }
-            } else if (this.currentClaudeSessionId) {
-                // Restore foreground for active session
-                this.sendSessionPriority(this.currentClaudeSessionId);
-            }
-        });
+        document.addEventListener('visibilitychange', () => this.handleVisibilityChange());
 
         window.addEventListener('resize', () => {
-            this.fitTerminal();
+            this.scheduleFitTerminal({ includeSplits: true });
         });
         
         window.addEventListener('beforeunload', () => {
@@ -277,18 +331,121 @@ class ClaudeCodeWebInterface {
         if (planTitle) planTitle.innerHTML = `<span class=\"icon\" aria-hidden=\"true\">${window.icons?.clipboard?.(18) || ''}</span> ${this.getAlias('claude')}'s Plan`;
     }
     
+    detectTablet() {
+        const hasTouchScreen = 'ontouchstart' in window ||
+            navigator.maxTouchPoints > 0 ||
+            navigator.msMaxTouchPoints > 0;
+        const coarsePointer = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+        const tabletViewport = window.matchMedia && window.matchMedia('(min-width: 768px)').matches;
+        const isPhoneUA = /iPhone|iPod|Android.+Mobile/i.test(navigator.userAgent || '');
+        return hasTouchScreen && coarsePointer && tabletViewport && !isPhoneUA;
+    }
+
     detectMobile() {
         // Check for touch capability and common mobile user agents
         const hasTouchScreen = 'ontouchstart' in window || 
                               navigator.maxTouchPoints > 0 || 
                               navigator.msMaxTouchPoints > 0;
         
-        const mobileUserAgent = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        const mobileUserAgent = /Android|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
         
-        // Also check viewport width for tablets
-        const smallViewport = window.innerWidth <= 1024;
+        // Keep tablet-class devices in the desktop-style layout bucket.
+        if (this.isTablet) return false;
+
+        const smallViewport = window.innerWidth < 768;
         
         return hasTouchScreen && (mobileUserAgent || smallViewport);
+    }
+
+    detectPlatform() {
+        const ua = navigator.userAgent || '';
+        const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const isAndroid = /Android/i.test(ua);
+        return { isIOS, isAndroid };
+    }
+
+    applyPlatformClasses() {
+        if (!document?.body) return;
+        document.body.classList.toggle('platform-ios', this.isIOS);
+        document.body.classList.toggle('platform-android', this.isAndroid);
+    }
+
+    setupAndroidBackButtonHandling() {
+        if (!this.isAndroid || this._androidBackHandlerBound) return;
+        this._androidBackHandlerBound = true;
+        window.addEventListener('popstate', () => {
+            const mobileMenu = document.getElementById('mobileMenu');
+            if (mobileMenu?.classList.contains('active')) {
+                this._androidBackGuardActive = false;
+                this.closeMobileMenu({ fromPopstate: true });
+            }
+        });
+    }
+
+    applyDeviceLayoutClass() {
+        document.body.classList.toggle('tablet-layout', this.isTablet);
+    }
+
+    setupDesktopPwaPolish() {
+        const wco = navigator.windowControlsOverlay;
+        if (!wco || typeof wco.getTitlebarAreaRect !== 'function') return;
+
+        const applyGeometry = () => {
+            const rect = wco.getTitlebarAreaRect();
+            const root = document.documentElement;
+            root.style.setProperty('--wco-titlebar-x', `${Math.max(0, Math.round(rect.x || 0))}px`);
+            root.style.setProperty('--wco-titlebar-y', `${Math.max(0, Math.round(rect.y || 0))}px`);
+            root.style.setProperty('--wco-titlebar-width', `${Math.max(0, Math.round(rect.width || window.innerWidth))}px`);
+            root.style.setProperty('--wco-titlebar-height', `${Math.max(40, Math.round(rect.height || 40))}px`);
+            document.body.classList.toggle('wco-active', !!wco.visible);
+            this.scheduleFitTerminal({ includeSplits: true });
+        };
+
+        if (typeof wco.addEventListener === 'function') {
+            wco.addEventListener('geometrychange', applyGeometry);
+        }
+        applyGeometry();
+    }
+
+    isIOSDevice() {
+        return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+
+    async requestPersistentStorage() {
+        const storage = typeof navigator !== 'undefined' ? navigator.storage : null;
+        if (!storage || typeof storage.persist !== 'function') return;
+
+        const persistKey = 'cc-web-storage-persist-requested';
+        const storageClient = window.clientStorage;
+        try {
+            const alreadyRequested = storageClient && typeof storageClient.getItem === 'function'
+                ? storageClient.getItem(persistKey)
+                : localStorage.getItem(persistKey);
+            if (alreadyRequested === '1') {
+                return;
+            }
+        } catch (_) { /* ignore */ }
+
+        try {
+            const alreadyPersisted = typeof storage.persisted === 'function'
+                ? await storage.persisted()
+                : false;
+            if (!alreadyPersisted) {
+                await storage.persist();
+            }
+        } catch (_) {
+            // Best-effort only.
+        }
+
+        try {
+            if (storageClient && typeof storageClient.setItem === 'function') {
+                storageClient.setItem(persistKey, '1');
+            } else {
+                localStorage.setItem(persistKey, '1');
+            }
+        } catch (_) { /* ignore */ }
     }
     
     disablePullToRefresh() {
@@ -358,16 +515,19 @@ class ClaudeCodeWebInterface {
 
     _setupBottomNav() {
         const navVoice = document.getElementById('navVoice');
+        const navClips = document.getElementById('navClips');
+        const navCamera = document.getElementById('navCamera');
         const navFiles = document.getElementById('navFiles');
         const navMore = document.getElementById('navMore');
         const navSettings = document.getElementById('navSettings');
 
-        if (this.voiceController || document.getElementById('voiceInputBtn')?.style.display !== 'none') {
-            if (navVoice) navVoice.style.display = '';
-        }
+        this._syncVoiceEntryVisibility();
 
         if (navFiles) navFiles.addEventListener('click', () => {
             document.getElementById('browseFilesBtn')?.click();
+        });
+        if (navClips) navClips.addEventListener('click', () => {
+            this.showClipsModal();
         });
         if (navMore) navMore.addEventListener('click', () => {
             document.getElementById('mobileMenu')?.classList.add('active');
@@ -378,6 +538,36 @@ class ClaudeCodeWebInterface {
         if (navVoice) navVoice.addEventListener('click', () => {
             document.getElementById('voiceInputBtn')?.click();
         });
+        if (navCamera) navCamera.addEventListener('click', () => {
+            this.openImagePicker({ capture: 'environment' });
+        });
+    }
+
+    _syncVoiceEntryVisibility(forceVisible) {
+        const voiceBtn = document.getElementById('voiceInputBtn');
+        const shouldShow = typeof forceVisible === 'boolean'
+            ? forceVisible
+            : !!(voiceBtn && voiceBtn.style.display !== 'none');
+        const navVoice = document.getElementById('navVoice');
+        const voiceBtnMobile = document.getElementById('voiceBtnMobile');
+        if (navVoice) navVoice.style.display = shouldShow ? '' : 'none';
+        if (voiceBtnMobile) voiceBtnMobile.style.display = shouldShow ? '' : 'none';
+    }
+
+    openImagePicker(options = {}) {
+        if (!window.imageHandler) return;
+        window.imageHandler.triggerFilePicker((imageData) => {
+            this._pendingImageCaption = imageData.caption;
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.send({
+                    type: 'image_upload',
+                    base64: imageData.base64,
+                    mimeType: imageData.mimeType,
+                    fileName: imageData.fileName || 'attached-image.png',
+                    caption: imageData.caption || ''
+                });
+            }
+        }, options);
     }
 
     sendEscape() {
@@ -428,8 +618,7 @@ class ClaudeCodeWebInterface {
 
     setupTerminal() {
         // Adjust font size for mobile devices
-        const isMobile = this.detectMobile();
-        const fontSize = isMobile ? 14 : 14;
+        const fontSize = this.isMobile ? 16 : 14;
         
         this.terminal = new Terminal({
             fontSize: fontSize,
@@ -522,10 +711,7 @@ class ClaudeCodeWebInterface {
             new ResizeObserver(() => {
                 clearTimeout(resizeTimeout);
                 resizeTimeout = setTimeout(() => {
-                    this.fitTerminal();
-                    if (this.splitContainer && this.splitContainer.splits) {
-                        this.splitContainer.splits.forEach(s => { try { s.fit(); } catch (_) {} });
-                    }
+                    this.scheduleFitTerminal({ includeSplits: true });
                 }, 50);
             }).observe(termContainerEl);
         }
@@ -617,29 +803,64 @@ class ClaudeCodeWebInterface {
         if (!this.isMobile || !window.visualViewport || typeof ExtraKeys === 'undefined') return;
 
         this.extraKeys = new ExtraKeys({ app: this });
+        const viewport = window.visualViewport;
+        let baselineHeight = Math.max(window.innerHeight, viewport.height);
+        let keyboardVisible = false;
+        let rafId = null;
 
-        let prevHeight = window.visualViewport.height;
-        window.visualViewport.addEventListener('resize', () => {
-            const currentHeight = window.visualViewport.height;
-            const heightDiff = window.innerHeight - currentHeight;
+        const updateForViewport = () => {
+            rafId = null;
+            const termEl = document.getElementById('terminal');
+            const viewportHeight = viewport.height;
+            const occludedBottom = Math.max(0, window.innerHeight - (viewport.height + viewport.offsetTop));
+            const threshold = Math.max(120, Math.round(baselineHeight * 0.18));
+            const heightDelta = Math.max(0, baselineHeight - viewportHeight);
+            const shouldShowKeys = heightDelta >= threshold;
 
-            if (heightDiff > 150) {
+            if (!shouldShowKeys && viewportHeight > baselineHeight) {
+                baselineHeight = viewportHeight;
+            }
+
+            if (this.extraKeys?.container) {
+                this.extraKeys.container.style.bottom = `${occludedBottom}px`;
+            }
+
+            if (shouldShowKeys) {
+                keyboardVisible = true;
                 this.extraKeys.show();
-                const termEl = document.getElementById('terminal');
                 if (termEl) {
-                    termEl.style.height = (currentHeight - 44) + 'px';
-                    if (this.fitAddon) this.fitAddon.fit();
+                    const keyBarHeight = this.extraKeys?.container?.offsetHeight || 44;
+                    termEl.style.height = `${Math.max(120, viewportHeight - keyBarHeight)}px`;
                 }
             } else {
+                keyboardVisible = false;
                 this.extraKeys.hide();
-                const termEl = document.getElementById('terminal');
                 if (termEl) {
                     termEl.style.height = '';
-                    if (this.fitAddon) this.fitAddon.fit();
                 }
             }
-            prevHeight = currentHeight;
+
+            if (!keyboardVisible) {
+                baselineHeight = Math.max(baselineHeight, viewportHeight);
+            }
+
+            this.fitTerminal();
+        };
+
+        const scheduleViewportUpdate = () => {
+            if (rafId !== null) {
+                cancelAnimationFrame(rafId);
+            }
+            rafId = requestAnimationFrame(updateForViewport);
+        };
+
+        viewport.addEventListener('resize', scheduleViewportUpdate);
+        viewport.addEventListener('scroll', scheduleViewportUpdate);
+        window.addEventListener('orientationchange', () => {
+            baselineHeight = Math.max(window.innerHeight, viewport.height);
+            scheduleViewportUpdate();
         });
+        scheduleViewportUpdate();
     }
 
     showSessionSelectionModal() {
@@ -719,6 +940,8 @@ class ClaudeCodeWebInterface {
         // Mobile menu buttons (keeping for mobile support)
         const closeMenuBtn = document.getElementById('closeMenuBtn');
         const settingsBtnMobile = document.getElementById('settingsBtnMobile');
+        const voiceBtnMobile = document.getElementById('voiceBtnMobile');
+        const clipsBtnMobile = document.getElementById('clipsBtnMobile');
 
         // Render dynamic tool cards from config
         this.renderToolCards();
@@ -730,18 +953,7 @@ class ClaudeCodeWebInterface {
         const attachBtn = document.getElementById('attachImageBtn');
         if (attachBtn && window.imageHandler) {
             attachBtn.addEventListener('click', () => {
-                window.imageHandler.triggerFilePicker((imageData) => {
-                    this._pendingImageCaption = imageData.caption;
-                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                        this.send({
-                            type: 'image_upload',
-                            base64: imageData.base64,
-                            mimeType: imageData.mimeType,
-                            fileName: imageData.fileName || 'attached-image.png',
-                            caption: imageData.caption || ''
-                        });
-                    }
-                });
+                this.openImagePicker();
             });
         }
         
@@ -788,6 +1000,18 @@ class ClaudeCodeWebInterface {
                 this.closeMobileMenu();
             });
         }
+        if (voiceBtnMobile) {
+            voiceBtnMobile.addEventListener('click', () => {
+                document.getElementById('voiceInputBtn')?.click();
+                this.closeMobileMenu();
+            });
+        }
+        if (clipsBtnMobile) {
+            clipsBtnMobile.addEventListener('click', () => {
+                this.showClipsModal();
+                this.closeMobileMenu();
+            });
+        }
         
         // Mobile sessions button
         const sessionsBtnMobile = document.getElementById('sessionsBtnMobile');
@@ -797,13 +1021,40 @@ class ClaudeCodeWebInterface {
                 this.closeMobileMenu();
             });
         }
+
+        const attachImageBtnMobile = document.getElementById('attachImageBtnMobile');
+        if (attachImageBtnMobile) {
+            attachImageBtnMobile.addEventListener('click', () => {
+                this.openImagePicker({ capture: 'environment' });
+                this.closeMobileMenu();
+            });
+        }
         
         this.setupSettingsModal();
         this.setupFolderBrowser();
         this.setupNewSessionModal();
         this.setupMobileSessionsModal();
+        this.setupClipsModal();
+        this.setupConnectivityHandlers();
 
         // Custom prompts dropdown removed
+    }
+
+    setupConnectivityHandlers() {
+        window.addEventListener('offline', () => {
+            this.updateStatus('Offline');
+            this.showConnectionWaiting('You are offline. We will reconnect automatically when your network is back.');
+        });
+
+        window.addEventListener('online', () => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.updateStatus('Connected');
+                this.hideOverlay();
+                return;
+            }
+            this.showConnectionWaiting('Back online. Reconnecting to server...');
+            this.reconnect('online', 0);
+        });
     }
 
     setupVoiceInput() {
@@ -825,9 +1076,11 @@ class ClaudeCodeWebInterface {
 
         this.voiceMode = localReady ? 'local' : 'cloud';
         btn.style.display = '';
+        this._syncVoiceEntryVisibility(true);
 
         const self = this;
         const timerEl = btn.querySelector('.voice-timer');
+        const navVoiceBtn = document.getElementById('navVoice');
 
         this.voiceController = new window.VoiceHandler.VoiceInputController({
             mode: this.voiceMode,
@@ -835,6 +1088,8 @@ class ClaudeCodeWebInterface {
                 self._playMicChime('on');
                 btn.classList.add('recording');
                 btn.classList.remove('processing');
+                if (navVoiceBtn) navVoiceBtn.classList.add('recording');
+                if (navVoiceBtn) navVoiceBtn.classList.remove('processing');
                 btn.setAttribute('aria-pressed', 'true');
                 btn.title = 'Stop Recording (Ctrl+Shift+M)';
                 if (timerEl) {
@@ -857,6 +1112,7 @@ class ClaudeCodeWebInterface {
             onRecordingStop: function (result) {
                 self._playMicChime('off');
                 btn.classList.remove('recording');
+                if (navVoiceBtn) navVoiceBtn.classList.remove('recording');
                 btn.setAttribute('aria-pressed', 'false');
                 btn.title = 'Voice Input (Ctrl+Shift+M)';
                 if (timerEl) timerEl.style.display = 'none';
@@ -867,6 +1123,7 @@ class ClaudeCodeWebInterface {
 
                 if (self.voiceMode === 'local' && result && result.samples) {
                     btn.classList.add('processing');
+                    if (navVoiceBtn) navVoiceBtn.classList.add('processing');
                     // Convert Int16 PCM to base64 efficiently (chunked to avoid call stack overflow)
                     var pcmBytes = new Uint8Array(result.samples.buffer);
                     var CHUNK_SIZE = 8192;
@@ -886,6 +1143,7 @@ class ClaudeCodeWebInterface {
                     self._voiceTranscriptionTimeout = setTimeout(function () {
                         self._voiceTranscriptionTimeout = null;
                         btn.classList.remove('processing');
+                        if (navVoiceBtn) navVoiceBtn.classList.remove('processing');
                         var errorMsg = 'Transcription timed out';
                         // Show error toast
                         var toast = document.createElement('div');
@@ -902,6 +1160,7 @@ class ClaudeCodeWebInterface {
             },
             onTranscription: function (text) {
                 btn.classList.remove('processing');
+                if (navVoiceBtn) navVoiceBtn.classList.remove('processing');
                 // Clear transcription timeout
                 if (self._voiceTranscriptionTimeout) {
                     clearTimeout(self._voiceTranscriptionTimeout);
@@ -925,6 +1184,7 @@ class ClaudeCodeWebInterface {
             },
             onError: function (err) {
                 btn.classList.remove('recording', 'processing');
+                if (navVoiceBtn) navVoiceBtn.classList.remove('recording', 'processing');
                 btn.setAttribute('aria-pressed', 'false');
                 btn.title = 'Voice Input (Ctrl+Shift+M)';
                 if (timerEl) timerEl.style.display = 'none';
@@ -955,6 +1215,7 @@ class ClaudeCodeWebInterface {
             },
             onCancel: function () {
                 btn.classList.remove('recording', 'processing');
+                if (navVoiceBtn) navVoiceBtn.classList.remove('recording', 'processing');
                 btn.setAttribute('aria-pressed', 'false');
                 btn.title = 'Voice Input (Ctrl+Shift+M)';
                 if (timerEl) timerEl.style.display = 'none';
@@ -990,9 +1251,11 @@ class ClaudeCodeWebInterface {
 
     _handleVoiceMessage(message) {
         var btn = document.getElementById('voiceInputBtn');
+        var navVoiceBtn = document.getElementById('navVoice');
         switch (message.type) {
             case 'voice_transcription': {
                 if (btn) btn.classList.remove('processing');
+                if (navVoiceBtn) navVoiceBtn.classList.remove('processing');
                 // Clear client-side transcription timeout
                 if (this._voiceTranscriptionTimeout) {
                     clearTimeout(this._voiceTranscriptionTimeout);
@@ -1017,6 +1280,7 @@ class ClaudeCodeWebInterface {
             }
             case 'voice_transcription_error': {
                 if (btn) btn.classList.remove('processing');
+                if (navVoiceBtn) navVoiceBtn.classList.remove('processing');
                 // Clear client-side transcription timeout
                 if (this._voiceTranscriptionTimeout) {
                     clearTimeout(this._voiceTranscriptionTimeout);
@@ -1069,8 +1333,11 @@ class ClaudeCodeWebInterface {
                         }
                     } else {
                         btn.style.display = 'none';
+                        btn.classList.remove('recording', 'processing');
+                        if (navVoiceBtn) navVoiceBtn.classList.remove('recording', 'processing');
                     }
                 }
+                this._syncVoiceEntryVisibility(localReady || cloudAvailable);
                 break;
             }
         }
@@ -1147,18 +1414,94 @@ class ClaudeCodeWebInterface {
 
     // closeCustomCommandModal removed
 
+    handleVisibilityChange() {
+        const ws = typeof WebSocket !== 'undefined'
+            ? WebSocket
+            : { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
+        if (document.hidden) {
+            // Mark all sessions as background
+            if (this.sessionTabManager) {
+                const sessions = [];
+                const allTabs = this.sessionTabManager.tabs || new Map();
+                allTabs.forEach((_, sid) => {
+                    sessions.push({ sessionId: sid, priority: 'background' });
+                });
+                if (sessions.length > 0) {
+                    this.send({ type: 'set_priority', sessions });
+                }
+            }
+            return;
+        }
+
+        if (this.currentClaudeSessionId) {
+            // Restore foreground for active session
+            this.sendSessionPriority(this.currentClaudeSessionId);
+        }
+
+        const now = Date.now();
+        if (now - this._lastVisibleReconnectAt < this._visibilityReconnectCooldownMs) {
+            return;
+        }
+
+        const socketState = this.socket ? this.socket.readyState : ws.CLOSED;
+        const isDisconnected = socketState === ws.CLOSED || socketState === ws.CLOSING;
+        const isStuckConnecting = socketState === ws.CONNECTING &&
+            this._socketConnectStartedAt > 0 &&
+            (now - this._socketConnectStartedAt) > 8000;
+        if (!this.socket || isDisconnected || isStuckConnecting) {
+            this._lastVisibleReconnectAt = now;
+            this.reconnect('visibility', 0);
+        }
+    }
+
+    getReconnectSessionId() {
+        if (this.sessionTabManager && this.sessionTabManager.activeTabId) {
+            return this.sessionTabManager.activeTabId;
+        }
+        return this.currentClaudeSessionId || null;
+    }
+
+    scheduleReplayJoin(sessionId, delayMs = 250) {
+        if (!sessionId) return;
+        const ws = typeof WebSocket !== 'undefined'
+            ? WebSocket
+            : { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
+        if (this._replayJoinTimer) {
+            clearTimeout(this._replayJoinTimer);
+            this._replayJoinTimer = null;
+        }
+        this._replayJoinTimer = setTimeout(() => {
+            this._replayJoinTimer = null;
+            if (this._receivedSessionJoinedAfterConnect) return;
+            if (!this.socket || this.socket.readyState !== ws.OPEN) return;
+            this.send({ type: 'join_session', sessionId });
+        }, delayMs);
+    }
+
     connect(sessionId = null) {
         return new Promise((resolve, reject) => {
+            if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+                this.updateStatus('Offline');
+                this.showConnectionWaiting('You are offline. We will reconnect automatically when your network is back.');
+                reject(new Error('Browser offline'));
+                return;
+            }
+            const reconnectSessionId = sessionId || this._pendingReconnectSessionId || null;
+            let connectSettled = false;
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
             let wsUrl = `${protocol}//${location.host}`;
-            if (sessionId) {
-                wsUrl += `?sessionId=${sessionId}`;
+            if (reconnectSessionId) {
+                wsUrl += `?sessionId=${reconnectSessionId}`;
             }
             
             // Add auth token if required
             wsUrl = window.authManager.getWebSocketUrl(wsUrl);
             
             this.updateStatus('Connecting...');
+            const spinnerText = document.querySelector('#loadingSpinner p');
+            if (spinnerText) {
+                spinnerText.textContent = 'Connecting to ai-or-die...';
+            }
             // Only show loading spinner if overlay is already visible
             // Don't force it to show if we're handling restored sessions
             if (document.getElementById('overlay').style.display !== 'none') {
@@ -1166,10 +1509,23 @@ class ClaudeCodeWebInterface {
             }
             
             try {
-                this.socket = new WebSocket(wsUrl);
-                this.socket.binaryType = 'arraybuffer';
+                this._receivedSessionJoinedAfterConnect = false;
+                this._socketConnectStartedAt = Date.now();
+                const socket = new WebSocket(wsUrl);
+                this.socket = socket;
+                socket.binaryType = 'arraybuffer';
 
-                this.socket.onopen = () => {
+                socket.onopen = () => {
+                    if (this.socket !== socket) return;
+                    connectSettled = true;
+                    this._lastSocketActivityAt = Date.now();
+                    this._socketConnectStartedAt = 0;
+                    this._reconnectInProgress = false;
+                    this._intentionalSocketClose = false;
+                    if (this._reconnectTimer) {
+                        clearTimeout(this._reconnectTimer);
+                        this._reconnectTimer = null;
+                    }
                     this.reconnectAttempts = 0;
                     this.updateStatus('Connected');
                     console.log('Connected to server');
@@ -1190,11 +1546,16 @@ class ClaudeCodeWebInterface {
 
                     // Request app tunnel status
                     this.send({ type: 'app_tunnel_status' });
+                    if (reconnectSessionId) {
+                        this.scheduleReplayJoin(reconnectSessionId);
+                    }
 
                     resolve();
                 };
             
-            this.socket.onmessage = (event) => {
+            socket.onmessage = (event) => {
+                if (this.socket !== socket) return;
+                this._lastSocketActivityAt = Date.now();
                 if (event.data instanceof ArrayBuffer) {
                     // Binary frame — pass raw ArrayBuffer to handleBinaryOutput
                     this.handleBinaryOutput(event.data);
@@ -1204,40 +1565,84 @@ class ClaudeCodeWebInterface {
                 }
             };
             
-            this.socket.onclose = (event) => {
+            socket.onclose = (event) => {
+                if (this.socket !== socket) return;
+                this._socketConnectStartedAt = 0;
+                if (this._intentionalSocketClose) {
+                    this._intentionalSocketClose = false;
+                    return;
+                }
+                if (!connectSettled) {
+                    connectSettled = true;
+                    reject(new Error('WebSocket closed before connection was established'));
+                    return;
+                }
                 if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
-                    this.updateStatus('Reconnecting...');
-                    setTimeout(() => this.reconnect(), this.reconnectDelay * Math.pow(2, this.reconnectAttempts));
+                    this._reconnectInProgress = false;
                     this.reconnectAttempts++;
+                    this.showConnectionWaiting('Connection lost. Reconnecting...');
+                    this.reconnect('auto', this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1));
                 } else {
+                    this._reconnectInProgress = false;
                     this.updateStatus('Disconnected');
-                    this.showError(`Connection lost after ${this.maxReconnectAttempts} attempts.\n\nYour session data is preserved on the server.\n\u2022 Check your network connection\n\u2022 The server may have restarted \u2014 try refreshing the page`);
+                    this.showConnectionWaiting('Still waiting for connection. Check your network, then tap Retry now.');
                 }
             };
             
-            this.socket.onerror = (error) => {
+            socket.onerror = (error) => {
+                if (this.socket !== socket) return;
+                if (!connectSettled) {
+                    connectSettled = true;
+                }
                 console.error('WebSocket error:', error);
-                this.showError('Failed to connect to the server.\n\n\u2022 Check that the server is running\n\u2022 Verify your network connection\n\u2022 Try refreshing the page');
+                this.showConnectionWaiting();
                 reject(error);
             };
             
         } catch (error) {
             console.error('Failed to create WebSocket:', error);
-            this.showError('Failed to create connection.\n\n\u2022 Check that the server URL is correct\n\u2022 Try refreshing the page');
+            this.showConnectionWaiting();
             reject(error);
         }
         });
     }
 
-    disconnect() {
+    disconnect(markIntentional = true) {
         if (this.socket) {
+            if (markIntentional && this.socket.readyState !== WebSocket.CLOSED) {
+                this._intentionalSocketClose = true;
+            }
             this.socket.close();
             this.socket = null;
         }
     }
 
-    reconnect() {
-        this.disconnect();
+    reconnect(_reason = 'manual', delayMs = 1000) {
+        if (this._reconnectInProgress) return;
+        this._reconnectInProgress = true;
+        if (_reason === 'online') {
+            this.showConnectionWaiting('Back online. Reconnecting to server...');
+        } else if (_reason === 'visibility') {
+            this.showConnectionWaiting('Reconnecting to your session...');
+        } else {
+            this.showConnectionWaiting('Reconnecting to server...');
+        }
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+            this._reconnectInProgress = false;
+            this.updateStatus('Offline');
+            return;
+        }
+        this.updateStatus('Reconnecting...');
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
+        if (this._replayJoinTimer) {
+            clearTimeout(this._replayJoinTimer);
+            this._replayJoinTimer = null;
+        }
+        this._pendingReconnectSessionId = this.getReconnectSessionId();
+        this.disconnect(true);
         // Reset flow control state so stale pause signals aren't sent on new connection
         this._outputPaused = false;
         this._pendingCallbacks = 0;
@@ -1253,9 +1658,13 @@ class ClaudeCodeWebInterface {
             clearTimeout(this._planDetectTimer);
             this._planDetectTimer = null;
         }
-        setTimeout(() => {
-            this.connect().catch(err => console.error('Reconnection failed:', err));
-        }, 1000);
+        this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            this.connect(this._pendingReconnectSessionId).catch(err => {
+                this._reconnectInProgress = false;
+                console.error('Reconnection failed:', err);
+            });
+        }, Math.max(0, delayMs));
     }
 
     send(data) {
@@ -1395,6 +1804,14 @@ class ClaudeCodeWebInterface {
                 
             case 'session_joined':
                 console.log('[session_joined] Message received, active:', message.active, 'tabs:', this.sessionTabManager?.tabs.size);
+                this._receivedSessionJoinedAfterConnect = true;
+                if (this._replayJoinTimer) {
+                    clearTimeout(this._replayJoinTimer);
+                    this._replayJoinTimer = null;
+                }
+                if (this._pendingReconnectSessionId && this._pendingReconnectSessionId === message.sessionId) {
+                    this._pendingReconnectSessionId = null;
+                }
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
                 this.updateWorkingDir(message.workingDir);
@@ -2063,7 +2480,9 @@ class ClaudeCodeWebInterface {
             return;
         }
         this._toolStartPending = true;
-        const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+        const settings = window.clientStorage && typeof window.clientStorage.getSettings === 'function'
+            ? window.clientStorage.getSettings()
+            : JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
         const dangerousMode = settings.dangerousMode || false;
         const options = {};
         if (dangerousMode && this.tools[toolId]?.hasDangerousMode) {
@@ -2103,15 +2522,30 @@ class ClaudeCodeWebInterface {
     toggleMobileMenu() {
         const mobileMenu = document.getElementById('mobileMenu');
         const hamburgerBtn = document.getElementById('hamburgerBtn');
-        mobileMenu.classList.toggle('active');
-        hamburgerBtn.classList.toggle('active');
+        if (!mobileMenu || !hamburgerBtn) return;
+        if (mobileMenu.classList.contains('active')) {
+            this.closeMobileMenu();
+            return;
+        }
+        mobileMenu.classList.add('active');
+        hamburgerBtn.classList.add('active');
+        if (this.isAndroid && !this._androidBackGuardActive) {
+            window.history.pushState({ mobileMenu: true }, '');
+            this._androidBackGuardActive = true;
+        }
     }
 
-    closeMobileMenu() {
+    closeMobileMenu({ fromPopstate = false } = {}) {
         const mobileMenu = document.getElementById('mobileMenu');
         const hamburgerBtn = document.getElementById('hamburgerBtn');
+        if (!mobileMenu || !hamburgerBtn) return;
+        const wasActive = mobileMenu.classList.contains('active');
         mobileMenu.classList.remove('active');
         hamburgerBtn.classList.remove('active');
+        if (this.isAndroid && wasActive && this._androidBackGuardActive && !fromPopstate) {
+            this._androidBackGuardActive = false;
+            window.history.back();
+        }
     }
 
     _loadGpuRenderer() {
@@ -2150,6 +2584,20 @@ class ClaudeCodeWebInterface {
         } else {
             console.log('[Renderer] Canvas unavailable, using DOM renderer (slower)');
         }
+    }
+
+    scheduleFitTerminal({ includeSplits = false } = {}) {
+        this._fitIncludeSplits = this._fitIncludeSplits || includeSplits;
+        if (this._fitRaf !== null) return;
+        this._fitRaf = requestAnimationFrame(() => {
+            this._fitRaf = null;
+            const fitSplits = this._fitIncludeSplits;
+            this._fitIncludeSplits = false;
+            this.fitTerminal();
+            if (fitSplits && this.splitContainer && this.splitContainer.splits) {
+                this.splitContainer.splits.forEach(s => { try { s.fit(); } catch (_) {} });
+            }
+        });
     }
 
     fitTerminal() {
@@ -2522,6 +2970,7 @@ class ClaudeCodeWebInterface {
         if (indicator) {
             const isConnected = status === 'Connected';
             const isReconnecting = status === 'Connecting...' || status === 'Reconnecting...';
+            const isOffline = status === 'Offline';
             if (isConnected) {
                 indicator.className = 'connection-status connected';
                 indicator.title = 'Connected to server';
@@ -2530,6 +2979,10 @@ class ClaudeCodeWebInterface {
                 indicator.className = 'connection-status reconnecting';
                 indicator.title = 'Reconnecting...';
                 indicator.setAttribute('aria-label', 'Reconnecting to server');
+            } else if (isOffline) {
+                indicator.className = 'connection-status disconnected';
+                indicator.title = 'Offline - waiting for network';
+                indicator.setAttribute('aria-label', 'Offline - waiting for network');
             } else {
                 indicator.className = 'connection-status disconnected';
                 indicator.title = 'Disconnected';
@@ -2596,6 +3049,17 @@ class ClaudeCodeWebInterface {
         this.showOverlay('errorMessage');
     }
 
+    showConnectionWaiting(message = null) {
+        const spinnerText = document.querySelector('#loadingSpinner p');
+        const defaultText = (typeof navigator !== 'undefined' && navigator.onLine === false)
+            ? 'You are offline. We will reconnect automatically when your network is back.'
+            : 'Reconnecting to server...';
+        if (spinnerText) {
+            spinnerText.textContent = message || defaultText;
+        }
+        this.showOverlay('loadingSpinner');
+    }
+
     showSettings() {
         const modal = document.getElementById('settingsModal');
         modal.classList.add('active');
@@ -2659,7 +3123,7 @@ class ClaudeCodeWebInterface {
 
     _getDefaultSettings() {
         return {
-            fontSize: 14,
+            fontSize: this.isMobile ? 16 : 14,
             fontFamily: "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
             cursorStyle: 'block',
             cursorBlink: true,
@@ -2681,9 +3145,10 @@ class ClaudeCodeWebInterface {
         const defaults = this._getDefaultSettings();
 
         try {
-            const saved = localStorage.getItem('cc-web-settings');
-            if (!saved) return defaults;
-            const settings = { ...defaults, ...JSON.parse(saved) };
+            const savedSettings = window.clientStorage && typeof window.clientStorage.getSettings === 'function'
+                ? window.clientStorage.getSettings()
+                : JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+            const settings = { ...defaults, ...savedSettings };
             // Migrate old fontFamily values that lack MesloLGS Nerd Font fallback
             if (settings.fontFamily && !settings.fontFamily.includes('MesloLGS Nerd Font')) {
                 settings.fontFamily = settings.fontFamily.replace(
@@ -2718,7 +3183,11 @@ class ClaudeCodeWebInterface {
         };
 
         try {
-            localStorage.setItem('cc-web-settings', JSON.stringify(settings));
+            if (window.clientStorage && typeof window.clientStorage.setSettings === 'function') {
+                window.clientStorage.setSettings(settings);
+            } else {
+                localStorage.setItem('cc-web-settings', JSON.stringify(settings));
+            }
             this.applySettings(settings);
 
             // Flash save button green briefly
@@ -2742,7 +3211,11 @@ class ClaudeCodeWebInterface {
 
     resetSettings() {
         const defaults = this._getDefaultSettings();
-        localStorage.removeItem('cc-web-settings');
+        if (window.clientStorage && typeof window.clientStorage.removeItem === 'function') {
+            window.clientStorage.removeItem('cc-web-settings');
+        } else {
+            localStorage.removeItem('cc-web-settings');
+        }
         this._populateSettingsForm(defaults);
         this.applySettings(defaults);
     }
@@ -3246,6 +3719,163 @@ class ClaudeCodeWebInterface {
             document.body.style.overflow = '';
         }
     }
+
+    loadCommandClips() {
+        try {
+            const parsed = window.clientStorage && typeof window.clientStorage.getCommandClips === 'function'
+                ? window.clientStorage.getCommandClips()
+                : JSON.parse(localStorage.getItem('cc-web-command-clips') || '[]');
+            if (!Array.isArray(parsed)) return [];
+            return parsed
+                .filter((clip) => clip && typeof clip.command === 'string')
+                .map((clip) => ({
+                    id: String(clip.id || Date.now() + Math.random()),
+                    label: String((clip.label || '').trim()).slice(0, 60),
+                    command: String(clip.command).trim()
+                }))
+                .filter((clip) => clip.command.length > 0);
+        } catch (error) {
+            console.error('Failed to load command clips:', error);
+            return [];
+        }
+    }
+
+    saveCommandClips() {
+        const clips = this.commandClips.slice(0, 50);
+        if (window.clientStorage && typeof window.clientStorage.setCommandClips === 'function') {
+            window.clientStorage.setCommandClips(clips);
+        } else {
+            localStorage.setItem('cc-web-command-clips', JSON.stringify(clips));
+        }
+    }
+
+    setupClipsModal() {
+        this.commandClips = this.loadCommandClips();
+        const modal = document.getElementById('clipsModal');
+        const closeBtn = document.getElementById('closeClipsModal');
+        const saveBtn = document.getElementById('saveClipBtn');
+        const labelInput = document.getElementById('clipLabelInput');
+        const commandInput = document.getElementById('clipCommandInput');
+        if (!modal) return;
+
+        if (closeBtn) {
+            closeBtn.addEventListener('click', () => this.hideClipsModal());
+        }
+        if (saveBtn) {
+            saveBtn.addEventListener('click', () => this.addCommandClip());
+        }
+        if (labelInput) {
+            labelInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    this.addCommandClip();
+                }
+            });
+        }
+        if (commandInput) {
+            commandInput.addEventListener('keydown', (e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    this.addCommandClip();
+                }
+            });
+        }
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) this.hideClipsModal();
+        });
+    }
+
+    showClipsModal() {
+        const modal = document.getElementById('clipsModal');
+        if (!modal) return;
+        this.commandClips = this.loadCommandClips();
+        this.renderCommandClips();
+        modal.classList.add('active');
+        if (this.isMobile) document.body.style.overflow = 'hidden';
+        if (window.focusTrap) window.focusTrap.activate(modal);
+    }
+
+    hideClipsModal() {
+        this.hideModal('clipsModal');
+        if (this.isMobile) document.body.style.overflow = '';
+    }
+
+    addCommandClip() {
+        const labelInput = document.getElementById('clipLabelInput');
+        const commandInput = document.getElementById('clipCommandInput');
+        if (!commandInput) return;
+        const command = commandInput.value.trim();
+        if (!command) return;
+        const label = (labelInput && labelInput.value.trim())
+            || command.split('\n')[0].trim().slice(0, 60)
+            || 'Command clip';
+        this.commandClips.unshift({
+            id: `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+            label: label.slice(0, 60),
+            command
+        });
+        this.saveCommandClips();
+        this.renderCommandClips();
+        if (labelInput) labelInput.value = '';
+        commandInput.value = '';
+    }
+
+    renderCommandClips() {
+        const list = document.getElementById('clipsList');
+        if (!list) return;
+        if (!this.commandClips.length) {
+            list.innerHTML = '<div class="no-sessions">No clips yet. Save commands you use often.</div>';
+            return;
+        }
+        list.innerHTML = this.commandClips.map((clip) => `
+            <div class="clip-item" data-clip-id="${this._escapeHtml(clip.id)}">
+                <div class="clip-item-header">
+                    <span class="clip-item-label">${this._escapeHtml(clip.label || 'Command clip')}</span>
+                </div>
+                <pre class="clip-item-command">${this._escapeHtml(clip.command)}</pre>
+                <div class="clip-item-actions">
+                    <button class="btn btn-primary btn-small" data-action="insert" data-clip-id="${this._escapeHtml(clip.id)}">Insert</button>
+                    <button class="btn btn-secondary btn-small" data-action="delete" data-clip-id="${this._escapeHtml(clip.id)}">Delete</button>
+                </div>
+            </div>
+        `).join('');
+        list.querySelectorAll('button[data-action]').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                const action = e.currentTarget.dataset.action;
+                const clipId = e.currentTarget.dataset.clipId;
+                if (action === 'insert') {
+                    this.insertCommandClip(clipId);
+                } else if (action === 'delete') {
+                    this.deleteCommandClip(clipId);
+                }
+            });
+        });
+    }
+
+    insertCommandClip(clipId) {
+        const clip = this.commandClips.find((item) => item.id === clipId);
+        if (!clip || !this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+        let payload = clip.command;
+        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
+            payload = attachClipboardHandler.normalizeLineEndings(payload);
+        }
+        if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+            if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
+                payload = attachClipboardHandler.wrapBracketedPaste(payload);
+            }
+        }
+        this.send({ type: 'input', data: payload });
+        if (this.terminal) this.terminal.focus();
+        const srEl = document.getElementById('srAnnounce');
+        if (srEl) srEl.textContent = `${clip.label || 'Command clip'} inserted.`;
+        if (this.isMobile) this.hideClipsModal();
+    }
+
+    deleteCommandClip(clipId) {
+        this.commandClips = this.commandClips.filter((item) => item.id !== clipId);
+        this.saveCommandClips();
+        this.renderCommandClips();
+    }
     
     async loadMobileSessions() {
         try {
@@ -3329,10 +3959,13 @@ class ClaudeCodeWebInterface {
             if (!response.ok) throw new Error('Failed to load sessions');
             
             const data = await response.json();
-            this.claudeSessions = data.sessions;
+            this.claudeSessions = Array.isArray(data.sessions) ? data.sessions : [];
+            this._cacheSessions(this.claudeSessions);
             this.renderSessionList();
         } catch (error) {
             console.error('Failed to load sessions:', error);
+            this.claudeSessions = this._getCachedSessions();
+            this.renderSessionList();
         }
     }
     
@@ -3364,11 +3997,13 @@ class ClaudeCodeWebInterface {
         }
         // Clear processing spinner and transcription timeout
         var btn = document.getElementById('voiceInputBtn');
+        var navVoiceBtn = document.getElementById('navVoice');
         if (btn) {
             btn.classList.remove('recording', 'processing');
             btn.setAttribute('aria-pressed', 'false');
             btn.title = 'Voice Input (Ctrl+Shift+M)';
         }
+        if (navVoiceBtn) navVoiceBtn.classList.remove('recording', 'processing');
         var timerEl = btn ? btn.querySelector('.voice-timer') : null;
         if (timerEl) timerEl.style.display = 'none';
         if (this._voiceTimerInterval) {
@@ -3405,7 +4040,13 @@ class ClaudeCodeWebInterface {
                 });
             } else {
                 // No socket or socket is closed, create new connection
-                await this.connect();
+                try {
+                    await this.connect();
+                } catch (error) {
+                    console.warn('joinSession connect failed, waiting for connection:', error);
+                    this.showConnectionWaiting();
+                    return;
+                }
                 // Wait a bit for connection to establish
                 await new Promise(resolve => setTimeout(resolve, 100));
             }
@@ -4091,3 +4732,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.app = app;
     app.startHeartbeat();
 });
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { ClaudeCodeWebInterface };
+}

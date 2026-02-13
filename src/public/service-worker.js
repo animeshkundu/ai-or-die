@@ -1,6 +1,6 @@
 // Bump this version when urlsToCache entries are added or removed.
 // Content changes to existing files are handled by the network-first fetch strategy.
-const CACHE_NAME = 'ai-or-die-v8';
+const CACHE_NAME = 'ai-or-die-v9';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -24,6 +24,7 @@ const urlsToCache = [
   '/mobile.css',
   '/style.css',
   '/app.js',
+  '/storage.js',
   '/command-palette.js',
   '/clipboard-handler.js',
   '/session-manager.js',
@@ -81,7 +82,7 @@ self.addEventListener('fetch', event => {
         .catch(() => {
           // Return a offline response for API calls
           return new Response(
-            JSON.stringify({ error: 'Offline - please check your connection' }), 
+            JSON.stringify({ error: 'You are offline. Reconnect, then retry this action.' }), 
             {
               status: 503,
               headers: { 'Content-Type': 'application/json' }

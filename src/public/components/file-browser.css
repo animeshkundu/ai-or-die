@@ -513,7 +513,7 @@
 /* ============================================================
    Responsive — Small Viewports (mobile full-width)
    ============================================================ */
-@media (max-width: 768px) {
+@media (max-width: 767px) {
   .file-browser-panel { width: 100%; z-index: var(--z-modal); }
 
   .file-browser-item {

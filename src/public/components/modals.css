@@ -776,3 +776,82 @@
     color: var(--text-secondary);
     font-size: 14px;
 }
+
+.clips-modal-body {
+    display: grid;
+    gap: 16px;
+}
+
+.clips-form {
+    display: grid;
+    gap: 8px;
+}
+
+.clips-form label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.clips-form input,
+.clips-form textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 13px;
+}
+
+.clips-form textarea {
+    resize: vertical;
+    min-height: 72px;
+}
+
+.clips-list {
+    display: grid;
+    gap: 10px;
+    max-height: 45vh;
+    overflow-y: auto;
+}
+
+.clip-item {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    background: var(--bg-tertiary);
+}
+
+.clip-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.clip-item-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.clip-item-command {
+    margin: 0 0 10px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    padding: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.clip-item-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}

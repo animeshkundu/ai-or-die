@@ -67,7 +67,7 @@
     margin: 4px 0;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
     .ctx-item {
         padding: 12px 16px;
     }

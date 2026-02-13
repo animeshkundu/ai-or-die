@@ -205,3 +205,112 @@
     from { opacity: 0; }
     to { opacity: 1; }
 }
+
+/* ── iOS install guidance sheet ── */
+.ios-install-sheet {
+    position: fixed;
+    left: max(var(--space-3), env(safe-area-inset-left));
+    right: max(var(--space-3), env(safe-area-inset-right));
+    bottom: max(var(--space-3), env(safe-area-inset-bottom));
+    z-index: var(--z-overlay);
+    pointer-events: none;
+}
+
+.ios-install-card {
+    pointer-events: auto;
+    max-width: 460px;
+    margin: 0 auto;
+    padding: var(--space-4);
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-xl);
+    background: var(--surface-elevated);
+    box-shadow: var(--shadow-lg);
+}
+
+.ios-install-title {
+    margin: 0 0 var(--space-2);
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    color: var(--text-primary);
+}
+
+.ios-install-eyebrow {
+    margin: 0 0 var(--space-1);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+}
+
+.ios-install-copy {
+    margin: 0 0 var(--space-2);
+    font-size: var(--text-md);
+    line-height: var(--leading-normal);
+    color: var(--text-secondary);
+}
+
+.ios-install-share-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    margin: 0 0 var(--space-2);
+    border-radius: var(--radius-full);
+    background: var(--accent-soft);
+    animation: ios-install-share-bounce 1.6s ease-in-out infinite;
+}
+
+.ios-install-share-icon-svg {
+    width: 1.2rem;
+    height: 1.2rem;
+    stroke: var(--accent-default);
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.ios-install-steps {
+    margin: 0 0 var(--space-3);
+    padding-left: 1.25rem;
+    color: var(--text-secondary);
+}
+
+.ios-install-steps li + li {
+    margin-top: var(--space-1);
+}
+
+.ios-install-dismiss {
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-md);
+    background: var(--surface-tertiary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+}
+
+.ios-install-dismiss:hover {
+    border-color: var(--border-hover);
+    background: var(--surface-secondary);
+}
+
+.ios-install-dismiss:focus-visible {
+    outline: 2px solid var(--accent-primary);
+    outline-offset: 2px;
+}
+
+@keyframes ios-install-share-bounce {
+    0%, 100% {
+        transform: translateY(0);
+    }
+    45% {
+        transform: translateY(-2px);
+    }
+    70% {
+        transform: translateY(1px);
+    }
+}

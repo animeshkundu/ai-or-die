@@ -15,6 +15,7 @@ class SessionTabManager {
         this.notificationsEnabled = false;
         this.idleTimeoutMs = 90000;
         this._deletingSessionIds = new Set();
+        this._sessionCacheKey = 'cc-web-sessions-cache-v1';
         this.requestNotificationPermission();
     }
 
@@ -74,7 +75,9 @@ class SessionTabManager {
         const fullTitle = hostname ? `[${hostname}] ${title}` : title;
 
         // Check user preference for desktop notifications
-        const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+        const settings = window.clientStorage && typeof window.clientStorage.getSettings === 'function'
+            ? window.clientStorage.getSettings()
+            : JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
         const desktopEnabled = settings.notifDesktop !== false;
 
         // Try desktop notifications when the page is not visible
@@ -220,7 +223,9 @@ class SessionTabManager {
      */
     playNotificationChime(type = 'idle') {
         // Respect user mute setting
-        const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+        const settings = window.clientStorage && typeof window.clientStorage.getSettings === 'function'
+            ? window.clientStorage.getSettings()
+            : JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
         if (settings.notifSound === false) return;
 
         const volume = typeof settings.notifVolume === 'number'
@@ -344,6 +349,7 @@ class SessionTabManager {
     async init() {
         this.setupTabBar();
         this.setupKeyboardShortcuts();
+        this.setupSwipeGestures();
         this.setupOverflowDropdown();
         await this.loadSessions();
         this.updateTabOverflow();
@@ -618,6 +624,86 @@ class SessionTabManager {
         });
     }
 
+    setupSwipeGestures() {
+        if (!this.claudeInterface?.isMobile) return;
+        if (typeof navigator === 'undefined') return;
+
+        const terminalContainer = document.getElementById('terminalContainer');
+        const sessionTabsBar = document.getElementById('sessionTabsBar');
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        const leftEdgeReservedPx = 24;
+        const minSwipeDistancePx = 56;
+        const maxVerticalDriftPx = 48;
+        let swipeState = null;
+
+        const beginSwipe = (e, { requireTwoFingers = false } = {}) => {
+            if (this.tabs.size < 2) return;
+            if (requireTwoFingers && e.touches.length < 2) return;
+            if (!requireTwoFingers && e.touches.length !== 1) return;
+
+            const touch = e.touches[0];
+            if (!touch) return;
+            if (isIOS && touch.clientX <= leftEdgeReservedPx) return;
+
+            swipeState = {
+                id: touch.identifier,
+                startX: touch.clientX,
+                startY: touch.clientY,
+                requireTwoFingers,
+                fired: false
+            };
+        };
+
+        const trackSwipe = (e) => {
+            if (!swipeState || swipeState.fired) return;
+            if (swipeState.requireTwoFingers && e.touches.length < 2) {
+                swipeState = null;
+                return;
+            }
+
+            const touch = Array.from(e.touches).find((t) => t.identifier === swipeState.id) || e.touches[0];
+            if (!touch) return;
+
+            const dx = touch.clientX - swipeState.startX;
+            const dy = touch.clientY - swipeState.startY;
+
+            if (Math.abs(dy) > maxVerticalDriftPx && Math.abs(dy) > Math.abs(dx)) {
+                swipeState = null;
+                return;
+            }
+
+            if (Math.abs(dx) < minSwipeDistancePx || Math.abs(dx) <= Math.abs(dy) * 1.25) {
+                return;
+            }
+
+            swipeState.fired = true;
+            if (dx < 0) {
+                this.switchToNextTab();
+            } else {
+                this.switchToPreviousTab();
+            }
+        };
+
+        const endSwipe = () => {
+            swipeState = null;
+        };
+
+        if (terminalContainer) {
+            terminalContainer.addEventListener('touchstart', (e) => beginSwipe(e, { requireTwoFingers: true }), { passive: true });
+            terminalContainer.addEventListener('touchmove', trackSwipe, { passive: true });
+            terminalContainer.addEventListener('touchend', endSwipe, { passive: true });
+            terminalContainer.addEventListener('touchcancel', endSwipe, { passive: true });
+        }
+
+        if (sessionTabsBar) {
+            sessionTabsBar.addEventListener('touchstart', beginSwipe, { passive: true });
+            sessionTabsBar.addEventListener('touchmove', trackSwipe, { passive: true });
+            sessionTabsBar.addEventListener('touchend', endSwipe, { passive: true });
+            sessionTabsBar.addEventListener('touchcancel', endSwipe, { passive: true });
+        }
+    }
+
     async loadSessions() {
         try {
             console.log('[SessionManager.loadSessions] Fetching sessions from server...');
@@ -631,20 +717,12 @@ class SessionTabManager {
             
             // Sort sessions by creation time (assuming older sessions should be less recent)
             // This provides a default order that will be updated as tabs are accessed
-            const sessions = data.sessions || [];
+            const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+            this.cacheSessions(sessions);
             
             console.log('[SessionManager.loadSessions] Processing', sessions.length, 'sessions');
             
-            sessions.forEach((session, index) => {
-                console.log('[SessionManager.loadSessions] Adding tab for:', session.id);
-                // Don't auto-switch when loading existing sessions
-                this.addTab(session.id, session.name, session.active ? 'active' : 'idle', session.workingDir, false);
-                // Set initial timestamps based on order (older sessions get older timestamps)
-                const sessionData = this.activeSessions.get(session.id);
-                if (sessionData) {
-                    sessionData.lastAccessed = Date.now() - (sessions.length - index) * 1000;
-                }
-            });
+            this.applySessionsToTabs(sessions);
             
             // Reorder tabs based on the initial timestamps (mobile only)
             if (window.innerWidth <= 768) {
@@ -656,7 +734,64 @@ class SessionTabManager {
             return sessions;
         } catch (error) {
             console.error('Failed to load sessions:', error);
+            const cachedSessions = this.getCachedSessions();
+            if (cachedSessions.length > 0) {
+                console.log('[SessionManager.loadSessions] Using cached sessions:', cachedSessions.length);
+                this.applySessionsToTabs(cachedSessions);
+                if (window.innerWidth <= 768) {
+                    this.reorderTabsByLastAccessed();
+                }
+            }
+            return cachedSessions;
+        }
+    }
+
+    applySessionsToTabs(sessions) {
+        sessions.forEach((session, index) => {
+            if (!session || !session.id) return;
+            console.log('[SessionManager.loadSessions] Adding tab for:', session.id);
+            const sessionName = session.name || 'Session';
+            this.addTab(session.id, sessionName, session.active ? 'active' : 'idle', session.workingDir, false);
+            const sessionData = this.activeSessions.get(session.id);
+            if (sessionData) {
+                sessionData.lastAccessed = Date.now() - (sessions.length - index) * 1000;
+            }
+        });
+    }
+
+    getCachedSessions() {
+        if (window.clientStorage && typeof window.clientStorage.getSessionCache === 'function') {
+            return window.clientStorage.getSessionCache();
+        }
+        try {
+            const raw = localStorage.getItem(this._sessionCacheKey);
+            if (!raw) return [];
+            const parsed = JSON.parse(raw);
+            return Array.isArray(parsed) ? parsed : [];
+        } catch (error) {
+            console.warn('Failed to parse cached sessions:', error);
             return [];
+        }
+    }
+
+    cacheSessions(sessions) {
+        if (!Array.isArray(sessions)) return;
+        const minimal = sessions
+            .filter(session => session && session.id)
+            .map(session => ({
+                id: session.id,
+                name: session.name || 'Session',
+                active: !!session.active,
+                workingDir: session.workingDir || null
+            }));
+        if (window.clientStorage && typeof window.clientStorage.setSessionCache === 'function') {
+            window.clientStorage.setSessionCache(minimal);
+            return;
+        }
+        try {
+            localStorage.setItem(this._sessionCacheKey, JSON.stringify(minimal));
+        } catch (error) {
+            console.warn('Failed to cache sessions:', error);
         }
     }
 
@@ -816,7 +951,15 @@ class SessionTabManager {
         this.updateOverflowMenu();
 
         // If tile view is enabled, tabs target the active pane (VS Code-style)
-        await this.claudeInterface.joinSession(sessionId);
+        try {
+            await this.claudeInterface.joinSession(sessionId);
+        } catch (error) {
+            console.warn('Failed to join session while disconnected:', error);
+            this.updateTabStatus(sessionId, 'disconnected');
+            if (this.claudeInterface && typeof this.claudeInterface.showConnectionWaiting === 'function') {
+                this.claudeInterface.showConnectionWaiting();
+            }
+        }
         this.updateHeaderInfo(sessionId);
 
         const srSwitch = document.getElementById('srAnnounce');
@@ -905,6 +1048,7 @@ class SessionTabManager {
         this.activeSessions.delete(sessionId);
         this.tabOrder = orderedIds.filter(id => id !== sessionId);
         this.removeFromHistory(sessionId);
+        this.syncAppBadge();
 
         // Update overflow on mobile
         this.updateTabOverflow();
@@ -1391,6 +1535,29 @@ class SessionTabManager {
         }
     }
 
+    syncAppBadge() {
+        if (typeof navigator === 'undefined') return;
+        const canSetBadge = typeof navigator.setAppBadge === 'function';
+        const canClearBadge = typeof navigator.clearAppBadge === 'function';
+        if (!canSetBadge && !canClearBadge) return;
+
+        const unreadCount = Array.from(this.activeSessions.values())
+            .reduce((count, session) => count + (session.unreadOutput ? 1 : 0), 0);
+
+        let op = null;
+        if (unreadCount > 0 && canSetBadge) {
+            op = navigator.setAppBadge(unreadCount);
+        } else if (canClearBadge) {
+            op = navigator.clearAppBadge();
+        } else if (canSetBadge) {
+            op = navigator.setAppBadge(0);
+        }
+
+        if (op && typeof op.catch === 'function') {
+            op.catch(() => {});
+        }
+    }
+
     updateUnreadIndicator(sessionId, hasUnread) {
         const tab = this.tabs.get(sessionId);
         if (tab) {
@@ -1412,6 +1579,7 @@ class SessionTabManager {
         if (session) {
             session.unreadOutput = hasUnread;
         }
+        this.syncAppBadge();
     }
     
     markSessionError(sessionId, hasError = true) {

@@ -36,12 +36,17 @@ class ExtraKeys {
       btn.setAttribute('aria-label', key.aria || key.label);
       if (key.modifier) {
         btn.classList.add('extra-key-modifier');
-        btn.addEventListener('click', () => this._toggleCtrl(btn));
+        btn.addEventListener('click', () => {
+          this._triggerHaptic();
+          this._toggleCtrl(btn);
+        });
       } else {
-        btn.addEventListener('click', () => this._sendKey(key.data));
+        btn.addEventListener('click', () => {
+          this._triggerHaptic();
+          this._sendKey(key.data);
+        });
       }
       btn.addEventListener('mousedown', e => e.preventDefault());
-      btn.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
       this.container.appendChild(btn);
     });
 
@@ -64,6 +69,15 @@ class ExtraKeys {
     }
     this.app.send({ type: 'input', data: toSend });
     if (this.app.terminal) this.app.terminal.focus();
+  }
+
+  _triggerHaptic() {
+    if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return;
+    try {
+      navigator.vibrate(10);
+    } catch (_) {
+      // ignore unsupported vibration environments
+    }
   }
 
   _toggleCtrl(btn) {

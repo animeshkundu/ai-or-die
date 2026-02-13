@@ -248,7 +248,7 @@
 }
 
 /* Mobile responsive */
-@media (max-width: 768px) {
+@media (max-width: 767px) {
     .vscode-tunnel-banner {
         flex-wrap: wrap;
         padding: 8px 12px;

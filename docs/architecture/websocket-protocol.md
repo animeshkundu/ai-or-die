@@ -124,13 +124,55 @@ Start the Codex CLI in the current session.
 
 ---
 
-### `start_agent`
+### `start_copilot`
 
-Start the Cursor Agent CLI in the current session.
+Start the Copilot CLI in the current session.
 
 ```json
 {
-  "type": "start_agent",
+  "type": "start_copilot",
+  "options": {
+    "cols": 120,
+    "rows": 40
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `options.cols` | number | No | Terminal width in columns. Default `80`. |
+| `options.rows` | number | No | Terminal height in rows. Default `24`. |
+
+---
+
+### `start_gemini`
+
+Start the Gemini CLI in the current session.
+
+```json
+{
+  "type": "start_gemini",
+  "options": {
+    "cols": 120,
+    "rows": 40
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `options.cols` | number | No | Terminal width in columns. Default `80`. |
+| `options.rows` | number | No | Terminal height in rows. Default `24`. |
+
+---
+
+### `start_terminal`
+
+Start a raw terminal (bash/PowerShell) in the current session.
+
+```json
+{
+  "type": "start_terminal",
   "options": {
     "cols": 120,
     "rows": 40
@@ -208,6 +250,25 @@ Keepalive ping. The server responds with `pong`.
   "type": "ping"
 }
 ```
+
+---
+
+### `image_upload`
+
+Upload an image (base64-encoded) to the running CLI process.
+
+```json
+{
+  "type": "image_upload",
+  "data": "data:image/png;base64,iVBOR...",
+  "filename": "screenshot.png"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `data` | string | Yes | Base64-encoded image data with MIME prefix. |
+| `filename` | string | No | Original filename. |
 
 ---
 
@@ -328,13 +389,39 @@ Broadcast to all clients in the session when the Codex CLI process starts.
 
 ---
 
-### `agent_started`
+### `copilot_started`
 
-Broadcast to all clients in the session when the Cursor Agent CLI process starts.
+Broadcast when the Copilot CLI process starts.
 
 ```json
 {
-  "type": "agent_started",
+  "type": "copilot_started",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+---
+
+### `gemini_started`
+
+Broadcast when the Gemini CLI process starts.
+
+```json
+{
+  "type": "gemini_started",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+---
+
+### `terminal_started`
+
+Broadcast when a raw terminal session starts.
+
+```json
+{
+  "type": "terminal_started",
   "sessionId": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
@@ -403,7 +490,7 @@ Common error scenarios:
 
 ---
 
-### `claude_stopped` / `codex_stopped` / `agent_stopped`
+### `claude_stopped` / `codex_stopped` / `copilot_stopped` / `gemini_stopped` / `terminal_stopped`
 
 Broadcast to all clients in the session when the corresponding CLI process is explicitly stopped via the `stop` message.
 
@@ -479,6 +566,33 @@ Response to `get_usage`. Contains comprehensive usage analytics.
   "overlappingSessions": 0,
   "plan": "max20",
   "limits": { "tokens": 220000, "cost": 140.00, "messages": 2000, "algorithm": "fixed" }
+}
+```
+
+---
+
+### `image_upload_complete`
+
+Broadcast when an image upload is successfully processed.
+
+```json
+{
+  "type": "image_upload_complete",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "filename": "screenshot.png"
+}
+```
+
+---
+
+### `image_upload_error`
+
+Sent when an image upload fails.
+
+```json
+{
+  "type": "image_upload_error",
+  "message": "Failed to process image"
 }
 ```
 
@@ -596,7 +710,7 @@ The server also exposes REST endpoints for operations that do not require real-t
 | `GET` | `/auth-status` | Check if authentication is required (no auth needed) |
 | `POST` | `/auth-verify` | Validate an authentication token |
 | `GET` | `/api/health` | Server health check with session/connection counts |
-| `GET` | `/api/config` | Server configuration (folder mode, aliases, base folder) |
+| `GET` | `/api/config` | Server configuration (folder mode, aliases, tool availability, base folder) |
 | `GET` | `/api/sessions/list` | List all sessions with metadata |
 | `GET` | `/api/sessions/persistence` | Session storage metadata |
 | `POST` | `/api/sessions/create` | Create a new session (REST alternative to WS) |
@@ -607,3 +721,11 @@ The server also exposes REST endpoints for operations that do not require real-t
 | `POST` | `/api/set-working-dir` | Set the server's default working directory |
 | `POST` | `/api/create-folder` | Create a new directory |
 | `POST` | `/api/close-session` | Clear the selected working directory |
+| `GET` | `/api/files/stat` | Get file metadata (size, type, modified time) |
+| `GET` | `/api/files/content` | Read file content (text files) |
+| `PUT` | `/api/files/content` | Write/update file content |
+| `GET` | `/api/files/download` | Download a file |
+| `POST` | `/api/files/upload` | Upload a file |
+| `GET` | `/api/tunnel/status` | Get Dev Tunnel connection status |
+| `POST` | `/api/tunnel/restart` | Restart the Dev Tunnel |
+| `POST` | `/api/tools/:toolId/recheck` | Re-check tool availability |

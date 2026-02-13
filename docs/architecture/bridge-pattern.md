@@ -4,13 +4,15 @@ The bridge pattern is the core extensible architecture that allows ai-or-die to 
 
 ## Bridge Class Structure
 
-Every bridge class follows the same structural pattern. The codebase currently has three implementations:
+Every bridge class extends `BaseBridge` (`src/base-bridge.js`), which provides command discovery, PTY spawning, chunked writes, and session lifecycle management. The codebase has five implementations:
 
 - **ClaudeBridge** (`src/claude-bridge.js`) -- wraps the `claude` CLI
 - **CodexBridge** (`src/codex-bridge.js`) -- wraps the `codex` CLI
-- **AgentBridge** (`src/agent-bridge.js`) -- wraps the `cursor-agent` CLI
+- **CopilotBridge** (`src/copilot-bridge.js`) -- wraps the `copilot` CLI
+- **GeminiBridge** (`src/gemini-bridge.js`) -- wraps the `gemini` CLI
+- **TerminalBridge** (`src/terminal-bridge.js`) -- wraps `bash` / `powershell`
 
-All three share an identical public interface:
+All five share an identical public interface inherited from BaseBridge:
 
 ```
 class Bridge {
@@ -43,252 +45,53 @@ Each bridge maintains a `Map<sessionId, session>` where a session object contain
 
 ## How to Add a New CLI Tool
 
-Adding a new CLI tool requires changes in four places. This section walks through adding a hypothetical "Gemini" CLI as an example.
+Adding a new CLI tool requires changes in three places. Since all bridges extend `BaseBridge`, the implementation is minimal. This section walks through adding a hypothetical "Aider" CLI as an example.
 
 ### Step 1: Create the Bridge
 
-Create `src/gemini-bridge.js` following the established pattern:
+Create `src/aider-bridge.js` extending `BaseBridge`:
 
 ```javascript
-const { spawn } = require('node-pty');
-const path = require('path');
-const fs = require('fs');
+const BaseBridge = require('./base-bridge');
 
-class GeminiBridge {
-    constructor() {
-        this.sessions = new Map();
-        this.geminiCommand = this.findGeminiCommand();
-    }
-
-    findGeminiCommand() {
-        const possibleCommands = [
-            path.join(process.env.HOME || '/', '.gemini', 'local', 'gemini'),
-            'gemini',
-            path.join(process.env.HOME || '/', '.local', 'bin', 'gemini'),
-            '/usr/local/bin/gemini',
-            '/usr/bin/gemini'
-        ];
-
-        for (const cmd of possibleCommands) {
-            try {
-                if (fs.existsSync(cmd) || this.commandExists(cmd)) {
-                    console.log(`Found Gemini command at: ${cmd}`);
-                    return cmd;
-                }
-            } catch (error) {
-                continue;
-            }
-        }
-
-        console.error('Gemini command not found, using default "gemini"');
-        return 'gemini';
-    }
-
-    commandExists(command) {
-        try {
-            require('child_process').execFileSync('which', [command], { stdio: 'ignore' });
-            return true;
-        } catch (error) {
-            return false;
-        }
-    }
-
-    async startSession(sessionId, options = {}) {
-        if (this.sessions.has(sessionId)) {
-            throw new Error(`Session ${sessionId} already exists`);
-        }
-
-        const {
-            workingDir = process.cwd(),
-            onOutput = () => {},
-            onExit = () => {},
-            onError = () => {},
-            cols = 80,
-            rows = 24
-        } = options;
-
-        const args = [];  // Add any CLI-specific flags here
-        const geminiProcess = spawn(this.geminiCommand, args, {
-            cwd: workingDir,
-            env: {
-                ...process.env,
-                TERM: 'xterm-256color',
-                FORCE_COLOR: '1',
-                COLORTERM: 'truecolor'
-            },
-            cols,
-            rows,
-            name: 'xterm-color'
-        });
-
-        const session = {
-            process: geminiProcess,
-            workingDir,
-            created: new Date(),
-            active: true,
-            killTimeout: null
-        };
-
-        this.sessions.set(sessionId, session);
-
-        let dataBuffer = '';
-
-        geminiProcess.onData((data) => {
-            dataBuffer += data;
-            if (dataBuffer.length > 10000) {
-                dataBuffer = dataBuffer.slice(-5000);
-            }
-            onOutput(data);
-        });
-
-        geminiProcess.onExit((exitCode, signal) => {
-            if (session.killTimeout) {
-                clearTimeout(session.killTimeout);
-                session.killTimeout = null;
-            }
-            session.active = false;
-            this.sessions.delete(sessionId);
-            onExit(exitCode, signal);
-        });
-
-        geminiProcess.on('error', (error) => {
-            if (session.killTimeout) {
-                clearTimeout(session.killTimeout);
-                session.killTimeout = null;
-            }
-            session.active = false;
-            this.sessions.delete(sessionId);
-            onError(error);
-        });
-
-        return session;
-    }
-
-    async sendInput(sessionId, data) {
-        const session = this.sessions.get(sessionId);
-        if (!session || !session.active) {
-            throw new Error(`Session ${sessionId} not found or not active`);
-        }
-        session.process.write(data);
-    }
-
-    async resize(sessionId, cols, rows) {
-        const session = this.sessions.get(sessionId);
-        if (!session || !session.active) {
-            throw new Error(`Session ${sessionId} not found or not active`);
-        }
-        try {
-            session.process.resize(cols, rows);
-        } catch (error) {
-            console.warn(`Failed to resize session ${sessionId}:`, error.message);
-        }
-    }
-
-    async stopSession(sessionId) {
-        const session = this.sessions.get(sessionId);
-        if (!session) return;
-
-        if (session.killTimeout) {
-            clearTimeout(session.killTimeout);
-            session.killTimeout = null;
-        }
-
-        if (session.active && session.process) {
-            session.process.kill('SIGTERM');
-            session.killTimeout = setTimeout(() => {
-                if (session.active && session.process) {
-                    session.process.kill('SIGKILL');
-                }
-            }, 5000);
-        }
-
-        session.active = false;
-        this.sessions.delete(sessionId);
-    }
-
-    getSession(sessionId) {
-        return this.sessions.get(sessionId);
-    }
-
-    getAllSessions() {
-        return Array.from(this.sessions.entries()).map(([id, session]) => ({
-            id,
-            workingDir: session.workingDir,
-            created: session.created,
-            active: session.active
-        }));
-    }
-
-    async cleanup() {
-        for (const sessionId of this.sessions.keys()) {
-            await this.stopSession(sessionId);
-        }
-    }
+class AiderBridge extends BaseBridge {
+  constructor() {
+    super('Aider', {
+      commandPaths: {
+        linux: [
+          '{HOME}/.local/bin/aider',
+          'aider',
+          '/usr/local/bin/aider',
+          '/usr/bin/aider'
+        ],
+        win32: [
+          '{HOME}\\AppData\\Local\\Programs\\aider\\aider',
+          'aider'
+        ]
+      },
+      defaultCommand: 'aider'
+    });
+  }
 }
 
-module.exports = GeminiBridge;
+module.exports = AiderBridge;
 ```
 
-### Step 2: Register the Bridge in the Server
+`BaseBridge` handles everything else: async command discovery (using `where` on Windows, `which` on Linux), PTY spawning with `@lydell/node-pty`, chunked writes (4KB with 10ms delay for ConPTY safety), session lifecycle, and graceful shutdown (SIGTERM → 5s → SIGKILL). For detailed implementation of error handling, buffer management, and process cleanup, see `src/base-bridge.js`.
 
-In `src/server.js`, import and instantiate the bridge in the `ClaudeCodeWebServer` constructor:
+### Step 2: Register in the Server
 
-```javascript
-const GeminiBridge = require('./gemini-bridge');
+In `src/server.js`:
 
-// Inside constructor:
-this.geminiBridge = new GeminiBridge();
-```
+1. Import and instantiate the bridge in the constructor
+2. Add it to `getBridgeForAgent()` so `'aider'` maps to `this.aiderBridge`
+3. Add a `case 'start_aider':` in `handleMessage()`
 
-### Step 3: Add WebSocket Message Handlers
+The server's generic `startTool()` method handles `input`, `resize`, `stop`, output broadcasting, and cleanup — no per-tool wiring needed.
 
-Add three things to the server's message handling:
+### Step 3: No UI Changes Needed
 
-**a) A new `start_gemini` case in `handleMessage()`:**
-
-```javascript
-case 'start_gemini':
-    await this.startGemini(wsId, data.options || {});
-    break;
-```
-
-**b) Route `input`, `resize`, and `stop` to the new bridge when `session.agent === 'gemini'`:**
-
-```javascript
-// In the 'input' handler:
-if (session.agent === 'gemini') {
-    await this.geminiBridge.sendInput(wsInfo.claudeSessionId, data.data);
-}
-
-// In the 'resize' handler:
-if (session.agent === 'gemini') {
-    await this.geminiBridge.resize(wsInfo.claudeSessionId, data.cols, data.rows);
-}
-
-// In the 'stop' handler:
-if (session?.agent === 'gemini') {
-    await this.stopGemini(wsInfo.claudeSessionId);
-}
-```
-
-**c) Implement `startGemini()` and `stopGemini()` methods** following the same pattern as `startClaude()`/`stopClaude()`. The key details:
-
-- Set `session.agent = 'gemini'` when starting
-- Broadcast `{ type: 'gemini_started', sessionId }` on success
-- Broadcast `{ type: 'gemini_stopped' }` on stop
-- Wire up `onOutput`, `onExit`, and `onError` callbacks
-
-**d) Handle cleanup in `close()`:**
-
-```javascript
-if (session.agent === 'gemini') {
-    this.geminiBridge.stopSession(sessionId);
-}
-```
-
-### Step 4: Add UI Card
-
-In the client-side JavaScript (`src/public/app.js`), add a launch card for the new tool. The client sends `{ type: 'start_gemini', options: {} }` over the WebSocket and listens for `gemini_started` and `gemini_stopped` messages.
+The UI auto-generates tool cards from the `/api/config` endpoint, which enumerates all registered bridges and their availability. No client code changes are required.
 
 ---
 
@@ -296,7 +99,7 @@ In the client-side JavaScript (`src/public/app.js`), add a launch card for the n
 
 ### Search Strategy
 
-Each bridge's `findCommand()` method tries multiple locations in order:
+`BaseBridge.findCommandAsync()` tries multiple locations in order:
 
 1. **Tool-specific home directory** -- e.g., `~/.claude/local/claude`, `~/.codex/local/codex`
 2. **Bare command name** -- relies on `PATH` resolution (e.g., `claude`, `codex`)
@@ -304,14 +107,17 @@ Each bridge's `findCommand()` method tries multiple locations in order:
 4. **User-local bin** -- `~/.local/bin/{command}`
 5. **System-wide locations** -- `/usr/local/bin/{command}`, `/usr/bin/{command}`
 
+Paths use `{HOME}` as a placeholder that `BaseBridge` resolves via `os.homedir()` at runtime (cross-platform safe).
+
 ### PATH Lookup
 
-The `commandExists()` method uses `which` to check if a command is available in the system PATH:
+`BaseBridge.commandExists()` is platform-aware — it uses `where` on Windows and `which` on Linux/macOS:
 
 ```javascript
 commandExists(command) {
     try {
-        require('child_process').execFileSync('which', [command], { stdio: 'ignore' });
+        const checker = this.isWindows ? 'where' : 'which';
+        require('child_process').execFileSync(checker, [command], { stdio: 'ignore' });
         return true;
     } catch (error) {
         return false;
@@ -319,17 +125,14 @@ commandExists(command) {
 }
 ```
 
-On Windows, this would need to use `where` instead of `which`. The current implementation targets Linux and macOS.
-
 ### Home Directory Resolution
 
-All bridges use `process.env.HOME` for home directory resolution, with a fallback to `/`:
+All bridges use `os.homedir()` for home directory resolution (cross-platform):
 
 ```javascript
-path.join(process.env.HOME || '/', '.claude', 'local', 'claude')
+// In BaseBridge, {HOME} placeholders are resolved:
+const resolved = cmdPath.replace('{HOME}', os.homedir());
 ```
-
-On Windows systems, `os.homedir()` would be the more reliable approach.
 
 ### Fallback Behavior
 
@@ -358,7 +161,7 @@ stateDiagram-v2
 
 ### Spawn (`startSession`)
 
-The bridge spawns the CLI process using `node-pty`:
+The bridge spawns the CLI process using `@lydell/node-pty`:
 
 ```javascript
 const process = spawn(this.command, args, {
@@ -389,13 +192,15 @@ Each bridge maintains a rolling `dataBuffer` (capped at 10,000 characters, trimm
 
 ### Input (`sendInput`)
 
-Input is written directly to the PTY process:
+Input is written to the PTY process via `BaseBridge.writeChunked()`, which splits large payloads into 4KB chunks with 10ms inter-chunk delays to prevent ConPTY buffer overflow on Windows:
 
 ```javascript
-session.process.write(data);
+// BaseBridge.writeChunked() — safe for both platforms
+for (let i = 0; i < data.length; i += PTY_WRITE_CHUNK_SIZE) {
+    session.process.write(data.slice(i, i + PTY_WRITE_CHUNK_SIZE));
+    if (i + PTY_WRITE_CHUNK_SIZE < data.length) await delay(PTY_WRITE_CHUNK_DELAY_MS);
+}
 ```
-
-This is a synchronous write to the pseudo-terminal's master side. The data flows to the CLI process's stdin.
 
 ### Resize
 
@@ -455,11 +260,12 @@ The PTY inherits the full server process environment (`...process.env`) with the
 
 ### Windows Support (ConPTY)
 
-The `node-pty` library uses ConPTY on Windows automatically. However, the current command discovery logic (`which`, `HOME`, Unix paths) is Linux/macOS-oriented. Windows support would require:
+`@lydell/node-pty` uses ConPTY on Windows automatically. `BaseBridge` handles all cross-platform concerns:
 
-- Using `where` instead of `which` in `commandExists()`
-- Using `os.homedir()` instead of `process.env.HOME`
-- Adding Windows-specific search paths (e.g., `%APPDATA%`, `%LOCALAPPDATA%`)
+- Uses `where` on Windows, `which` on Linux in `commandExists()`
+- Uses `os.homedir()` for home directory resolution
+- Each bridge provides separate `commandPaths.win32` and `commandPaths.linux` search paths
+- Chunked writes (4KB with 10ms inter-chunk delay) prevent ConPTY buffer overflow
 
 ---
 
