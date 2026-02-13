@@ -3705,6 +3705,11 @@ class ClaudeCodeWebInterface {
             this.pendingJoinResolve = resolve;
             this.pendingJoinSessionId = sessionId;
             
+            // Reset overlay flag before joining a new session so that
+            // session_joined can correctly show/hide the overlay based on
+            // the NEW session's state, not a stale flag from the previous tab.
+            this._overlayExplicitlyHidden = false;
+
             // Send the join request
             this.send({ type: 'join_session', sessionId });
 
