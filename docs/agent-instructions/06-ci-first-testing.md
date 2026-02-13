@@ -10,6 +10,18 @@ A feature is not done until its E2E tests pass on GitHub runners. If unit tests 
 
 Every new feature must have E2E test coverage. Every bug fix must have a regression E2E test. The E2E suite is the contract that tells the next agent "this is what working looks like."
 
+### Performance budget: 5-minute target, 7-minute max
+
+The entire CI pipeline must complete within 5 minutes wall-clock time. 7 minutes is the absolute maximum acceptable. The per-job timeout is set to 9 minutes as a safety net for runner queue delays, but any job consistently hitting 7+ minutes must be investigated and optimized.
+
+To hit this budget:
+- **Parallelize aggressively**: All independent Playwright projects run in separate parallel jobs. Never run projects sequentially within a single job unless they share expensive state.
+- **Minimize setup overhead**: Each CI job spends 2-3 minutes on checkout, npm ci, and Playwright install. Consolidate small test projects into fewer jobs to reduce redundant setup.
+- **No unnecessary dependencies**: Do not add `needs:` between jobs unless one job consumes artifacts from another. Unit tests and browser tests run in parallel from the start.
+- **Increase Playwright workers**: Use `--workers=2` or more within each job for parallel test execution.
+
+When adding new E2E tests, verify the pipeline still completes under 5 minutes. If it doesn't, split the slowest job or consolidate the smallest ones.
+
 ### Long E2E waits indicate bugs
 
 If an E2E test requires long waits or generous timeouts to pass, that is a signal of a bug in the product code, not a test timing issue. No real user is going to wait 30 seconds for a terminal to respond or 10 seconds for a WebSocket to connect. If the test needs that much patience, the code is too slow and must be fixed. Tightening test timeouts is a legitimate way to catch performance regressions -- the test should reflect realistic user expectations, not compensate for sluggish code.

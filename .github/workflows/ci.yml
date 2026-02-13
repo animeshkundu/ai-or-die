@@ -28,113 +28,8 @@ jobs:
       - run: npm audit --audit-level=moderate
         continue-on-error: true
 
-  test-browser-golden:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
-      - name: Run golden path test
-        run: npx playwright test --config e2e/playwright.config.js --project golden-path
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-golden-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-functional-core:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
-      - name: Run functional core tests
-        run: npx playwright test --config e2e/playwright.config.js --project functional-core
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-functional-core-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-functional-extended:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
-      - name: Run functional extended tests
-        run: npx playwright test --config e2e/playwright.config.js --project functional-extended
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-functional-extended-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-mobile:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
-      - name: Run mobile portrait tests (iPhone 14)
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-iphone
-      - name: Run mobile portrait tests (Pixel 7)
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-pixel
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-mobile-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-visual:
+  # Consolidated E2E: golden-path + functional-core + functional-extended
+  e2e-core:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 9
     strategy:
@@ -149,13 +44,69 @@ jobs:
       - run: npm ci
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-      - name: Run visual regression tests
-        run: npx playwright test --config e2e/playwright.config.js --project visual-regression
+      - name: Run core E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project golden-path --project functional-core --project functional-extended
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-visual-${{ matrix.os }}
+          name: playwright-core-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  # Consolidated E2E: mobile-iphone + mobile-pixel + mobile-flows
+  e2e-mobile:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run mobile E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-iphone --project mobile-pixel --project mobile-flows
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-mobile-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  # Consolidated E2E: visual-regression + new-features + integrations
+  e2e-visual-integrations:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 9
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run visual and integration E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project visual-regression --project new-features --project integrations
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-visual-integrations-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/
@@ -175,61 +126,9 @@ jobs:
           path: e2e/tests/**/*-diff.png
           retention-days: 14
 
-  test-browser-new-features:
+  # Consolidated E2E: power-user-flows + ui-features
+  e2e-power-ui:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
-      - name: Run new feature tests
-        run: npx playwright test --config e2e/playwright.config.js --project new-features
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-new-features-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-integrations:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
-      - name: Run integration tests
-        run: npx playwright test --config e2e/playwright.config.js --project integrations
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-integrations-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-power-user:
-    runs-on: ${{ matrix.os }}
-    needs: test
     timeout-minutes: 9
     strategy:
       fail-fast: false
@@ -243,69 +142,13 @@ jobs:
       - run: npm ci
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-      - name: Run power user flow tests
-        run: npx playwright test --config e2e/playwright.config.js --project power-user-flows
+      - name: Run power user and UI E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project power-user-flows --project ui-features
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-power-user-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-mobile-flows:
-    runs-on: ${{ matrix.os }}
-    needs: test
-    timeout-minutes: 9
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
-      - name: Run mobile flow tests
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-flows
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-mobile-flows-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-ui-features:
-    runs-on: ${{ matrix.os }}
-    needs: test
-    timeout-minutes: 9
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - run: npm ci
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
-      - name: Run UI feature tests
-        run: npx playwright test --config e2e/playwright.config.js --project ui-features
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-ui-features-${{ matrix.os }}
+          name: playwright-power-ui-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/
