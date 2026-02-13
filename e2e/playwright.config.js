@@ -122,5 +122,10 @@ module.exports = defineConfig({
       name: 'mobile-sprint23',
       testMatch: '49-mobile-sprint23-fixes.spec.js',
     },
+    // Mobile user journey tests — real behavior validation
+    {
+      name: 'mobile-journeys',
+      testMatch: '50-mobile-user-journeys.spec.js',
+    },
   ],
 });

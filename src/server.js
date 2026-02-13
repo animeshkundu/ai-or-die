@@ -1817,6 +1817,7 @@ class ClaudeCodeWebServer {
       // Roll back the early active flag set before spawn
       session.active = false;
       session.agent = null;
+      this.activityBroadcastTimestamps.delete(sessionId);
       if (this.dev) {
         console.error(`Error starting ${toolName} in session ${wsInfo.claudeSessionId}:`, error);
       }

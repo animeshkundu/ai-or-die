@@ -18,6 +18,7 @@ class ClaudeCodeWebInterface {
         this.isCreatingNewSession = false;
         this.isMobile = this.detectMobile();
         this.currentMode = 'chat';
+        this._overlayExplicitlyHidden = false;
         this.planDetector = null;
         this.planModal = null;
         // Aliases for assistants (populated from /api/config)
@@ -3216,7 +3217,11 @@ class ClaudeCodeWebInterface {
 
     closeFolderBrowser() {
         this.hideModal('folderBrowserModal');
-        
+
+        // Reset the explicit-hide flag so session_joined can show the overlay
+        // if needed (the folder browser flow set it via hideOverlay)
+        this._overlayExplicitlyHidden = false;
+
         // Restore body scroll
         if (this.isMobile) {
             document.body.style.overflow = '';
