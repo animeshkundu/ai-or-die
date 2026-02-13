@@ -75,7 +75,7 @@ describe('offline shell and storage hardening', function () {
 
     window.addEventListener = previousAddEventListener;
     assert.strictEqual(status, 'Offline');
-    assert.strictEqual(waitingMessage, 'You are offline. We will reconnect when your network is back.');
+    assert.strictEqual(waitingMessage, 'You are offline. We will reconnect automatically when your network is back.');
   });
 
   it('reconnects immediately on online event when socket is not open', function () {
