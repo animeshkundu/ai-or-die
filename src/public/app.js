@@ -742,12 +742,23 @@ class ClaudeCodeWebInterface {
 
         // Safari fallback: if terminal receives focus but no visualViewport resize fires,
         // start polling viewport height to detect soft keyboard
-        if (!safariFallbackStarted) {
+        {
             const termEl = document.getElementById('terminal');
             if (termEl) {
+                let fallbackTimeout = null;
+
                 termEl.addEventListener('focusin', () => {
-                    if (safariFallbackStarted) return;
-                    const fallbackTimeout = setTimeout(() => {
+                    // If polling was previously proven needed, restart the interval
+                    if (safariFallbackStarted) {
+                        if (!this._safariPollInterval) {
+                            this._safariPollInterval = setInterval(checkKeyboard, 200);
+                        }
+                        return;
+                    }
+                    // First-time detection: wait 1s for a resize event
+                    if (fallbackTimeout) return;
+                    fallbackTimeout = setTimeout(() => {
+                        fallbackTimeout = null;
                         // No resize event fired within 1s of focus — start polling
                         safariFallbackStarted = true;
                         this._safariPollInterval = setInterval(checkKeyboard, 200);
@@ -755,10 +766,24 @@ class ClaudeCodeWebInterface {
                     // If a resize fires, cancel the fallback
                     const cancelFallback = () => {
                         clearTimeout(fallbackTimeout);
+                        fallbackTimeout = null;
                         window.visualViewport.removeEventListener('resize', cancelFallback);
                     };
                     window.visualViewport.addEventListener('resize', cancelFallback);
-                }, { once: true });
+                });
+
+                termEl.addEventListener('focusout', () => {
+                    // Clear the poll interval when the terminal loses focus to save battery
+                    if (this._safariPollInterval) {
+                        clearInterval(this._safariPollInterval);
+                        this._safariPollInterval = null;
+                    }
+                    // Also cancel any pending first-time detection timeout
+                    if (fallbackTimeout) {
+                        clearTimeout(fallbackTimeout);
+                        fallbackTimeout = null;
+                    }
+                });
             }
         }
     }
@@ -2587,7 +2612,10 @@ class ClaudeCodeWebInterface {
             activeSocket = resolved.socket;
 
             // Position menu: bottom sheet on mobile, cursor-anchored on desktop
-            if (this.isMobile) {
+            // Use current viewport width instead of constructor-time isMobile
+            // so tablet rotation is handled correctly (820px matches CSS breakpoint)
+            const isMobileViewport = window.innerWidth <= 820;
+            if (isMobileViewport) {
                 menu.style.left = '';
                 menu.style.top = '';
                 menu.style.display = 'block';
