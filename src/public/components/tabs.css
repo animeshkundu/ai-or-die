@@ -495,8 +495,8 @@
     }
 
     .tab-close {
-        width: 18px;
-        height: 18px;
+        width: auto;
+        height: auto;
         opacity: 0.5;
     }
 
@@ -531,6 +531,15 @@
     .tab-settings {
         width: 24px;
         height: 24px;
+    }
+
+    /* Make overflow button more discoverable on mobile */
+    .tab-overflow-btn {
+        background: var(--surface-tertiary);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-full);
+        min-width: 44px;
+        min-height: 44px;
     }
 }
 
