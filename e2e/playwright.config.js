@@ -46,11 +46,13 @@ module.exports = defineConfig({
       name: 'mobile-iphone',
       testMatch: '08-mobile-portrait.spec.js',
       use: { ...devices['iPhone 14'] },
+      timeout: 60000, // PTY shell startup on CI takes 10-15s
     },
     {
       name: 'mobile-pixel',
       testMatch: '08-mobile-portrait.spec.js',
       use: { ...devices['Pixel 7'] },
+      timeout: 60000, // PTY shell startup on CI takes 10-15s
     },
     {
       name: 'visual-regression',
@@ -105,19 +107,28 @@ module.exports = defineConfig({
       testMatch: /3[0-6]-.*\.spec\.js/,
     },
     // Mobile flow tests — device emulation with real terminal interaction
+    // PTY shell startup on CI runners takes 10-15s; 60s timeout needed
     {
       name: 'mobile-flows',
       testMatch: /3[7-9]-.*\.spec\.js/,
+      timeout: 60000,
     },
     // Mobile Sprint 1 fix validation — device emulation, CSS checks
+    // Tests using joinSessionAndStartTerminal need extended timeout for PTY startup
     {
       name: 'mobile-sprint1',
       testMatch: '48-mobile-sprint1-fixes.spec.js',
+      timeout: 60000,
+    },
+    // Mobile Sprint 2+3 fix validation — device emulation, CSS and JS checks
+    {
+      name: 'mobile-sprint23',
+      testMatch: '49-mobile-sprint23-fixes.spec.js',
     },
     // UI feature tests — command palette styling, voice settings, mic chimes
     {
       name: 'ui-features',
-      testMatch: /4[0-7]-.*\.spec\.js|49-.*\.spec\.js/,
+      testMatch: /4[0-7]-.*\.spec\.js/,
     },
   ],
 });
