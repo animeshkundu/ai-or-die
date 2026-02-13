@@ -21,6 +21,9 @@
     <!-- Icons for various platforms -->
     <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png">
+    <link rel="apple-touch-icon" sizes="120x120" href="/icon-120.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="/icon-152.png">
+    <link rel="apple-touch-icon" sizes="167x167" href="/icon-167.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
     <meta name="msapplication-TileColor" content="#161b22">
     <meta name="msapplication-TileImage" content="/icon-144.png">
@@ -176,6 +179,9 @@
             </div>
             <div class="mobile-menu-content">
                 <button id="sessionsBtnMobile" class="mobile-menu-btn">Sessions</button>
+                <button id="voiceBtnMobile" class="mobile-menu-btn" style="display: none;">Voice Input</button>
+                <button id="attachImageBtnMobile" class="mobile-menu-btn">Camera / Photo</button>
+                <button id="clipsBtnMobile" class="mobile-menu-btn">Command Clips</button>
                 <button id="closeSessionBtnMobile" class="mobile-menu-btn btn-danger" style="display: none;">Close Session</button>
                 <button id="reconnectBtnMobile" class="mobile-menu-btn" disabled>Reconnect</button>
                 <button id="clearBtnMobile" class="mobile-menu-btn">Clear Terminal</button>
@@ -244,7 +250,7 @@
             <div class="overlay-content">
                 <div class="loading-spinner" id="loadingSpinner">
                     <div class="spinner"></div>
-                    <p>Connecting to Claude Code...</p>
+                    <p>Connecting to ai-or-die…</p>
                 </div>
                 <div class="start-prompt" id="startPrompt" style="display: none;" data-tid="start-prompt">
                     <h2 class="start-prompt-heading">Choose Your Assistant</h2>
@@ -254,10 +260,10 @@
                     </div>
                 </div>
                 <div class="error-message" id="errorMessage" style="display: none;">
-                    <h3>Connection Error</h3>
+                    <h3>Waiting for connection</h3>
                     <p id="errorText"></p>
                     <div style="display: flex; gap: 8px; justify-content: center; margin-top: 12px;">
-                        <button id="retryBtn" class="btn btn-primary">Retry Connection</button>
+                        <button id="retryBtn" class="btn btn-primary">Retry now</button>
                         <button class="btn btn-secondary" onclick="location.reload()">Refresh Page</button>
                     </div>
                 </div>
@@ -601,19 +607,33 @@
 
         <!-- Bottom Navigation for Mobile -->
         <nav class="bottom-nav" id="bottomNav" aria-label="Mobile navigation">
-            <button class="bottom-nav-item" id="navVoice" aria-label="Voice input" style="display:none">
+            <button class="bottom-nav-item nav-voice-primary" id="navVoice" aria-label="Voice input" style="display:none">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
                     <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
                     <line x1="12" y1="19" x2="12" y2="23"/>
                 </svg>
-                <span class="nav-label">Voice</span>
+                <span class="nav-label">Speak</span>
+            </button>
+            <button class="bottom-nav-item" id="navClips" aria-label="Command clips">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="9" y="9" width="13" height="13" rx="2"/>
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                </svg>
+                <span class="nav-label">Clips</span>
             </button>
             <button class="bottom-nav-item" id="navFiles" aria-label="Browse files">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                 </svg>
                 <span class="nav-label">Files</span>
+            </button>
+            <button class="bottom-nav-item" id="navCamera" aria-label="Camera and photo library">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+                    <circle cx="12" cy="13" r="4"/>
+                </svg>
+                <span class="nav-label">Camera</span>
             </button>
             <button class="bottom-nav-item" id="navMore" aria-label="More actions">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -647,11 +667,31 @@
         </div>
     </div>
 
+    <div class="session-modal" id="clipsModal" role="dialog" aria-modal="true" aria-labelledby="clipsModalHeading">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="clipsModalHeading">Command Clips</h2>
+                <button class="modal-close" id="closeClipsModal" aria-label="Close command clips">&times;</button>
+            </div>
+            <div class="modal-body clips-modal-body">
+                <div class="clips-form">
+                    <label for="clipLabelInput">Label</label>
+                    <input id="clipLabelInput" type="text" maxlength="60" placeholder="e.g., Git status" autocomplete="off">
+                    <label for="clipCommandInput">Command</label>
+                    <textarea id="clipCommandInput" rows="3" placeholder="Enter command snippet"></textarea>
+                    <button class="btn btn-primary" id="saveClipBtn">Save Clip</button>
+                </div>
+                <div id="clipsList" class="clips-list" aria-live="polite"></div>
+            </div>
+        </div>
+    </div>
+
 
     <script type="module" src="https://unpkg.com/ninja-keys?module"></script>
     <script src="clipboard-handler.js"></script>
     <script src="image-handler.js"></script>
     <script src="auth.js"></script>
+    <script src="storage.js"></script>
     <script src="plan-detector.js"></script>
     <script src="session-manager.js"></script>
     <script src="splits.js"></script>
@@ -711,11 +751,166 @@
             });
         }
         
+        function isPWA() {
+            const hasDisplayMode = window.matchMedia &&
+                (window.matchMedia('(display-mode: standalone)').matches ||
+                 window.matchMedia('(display-mode: window-controls-overlay)').matches);
+            return Boolean(hasDisplayMode || window.navigator.standalone === true);
+        }
+        window.isPWA = isPWA;
+        const IOS_INSTALL_DISMISS_KEY = 'ios-install-banner-dismissed-at';
+        const IOS_INSTALL_DISMISS_MS = 7 * 24 * 60 * 60 * 1000;
+        let iosInstallEscHandler = null;
+        let iosInstallPreviouslyFocused = null;
+
+        function isIOSDevice() {
+            return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+        }
+
+        function getIOSInstallInstructions() {
+            const ua = navigator.userAgent;
+            if (/EdgiOS/i.test(ua)) {
+                return {
+                    browser: 'Edge',
+                    shareStep: 'Tap the Share button in the bottom toolbar.',
+                    actionStep: 'Choose Add to Phone.',
+                };
+            }
+            if (/CriOS/i.test(ua)) {
+                return {
+                    browser: 'Chrome',
+                    shareStep: 'Tap the Share button from the top-right menu.',
+                    actionStep: 'Choose Add to Home Screen.',
+                };
+            }
+            return {
+                browser: 'Safari',
+                shareStep: 'Tap the Share button in the bottom toolbar.',
+                actionStep: 'Scroll and tap Add to Home Screen.',
+            };
+        }
+
+        function removeIOSInstallGuidance() {
+            const sheet = document.getElementById('iosInstallSheet');
+            if (sheet) {
+                sheet.remove();
+            }
+            if (iosInstallEscHandler) {
+                document.removeEventListener('keydown', iosInstallEscHandler);
+                iosInstallEscHandler = null;
+            }
+            if (iosInstallPreviouslyFocused &&
+                typeof iosInstallPreviouslyFocused.focus === 'function' &&
+                document.contains(iosInstallPreviouslyFocused)) {
+                iosInstallPreviouslyFocused.focus({ preventScroll: true });
+            }
+            iosInstallPreviouslyFocused = null;
+        }
+
+        function shouldShowIOSInstallGuidance() {
+            if (!isIOSDevice() || isPWA()) {
+                return false;
+            }
+            try {
+                const dismissedAt = Number.parseInt(localStorage.getItem(IOS_INSTALL_DISMISS_KEY), 10);
+                if (Number.isFinite(dismissedAt) && (Date.now() - dismissedAt) < IOS_INSTALL_DISMISS_MS) {
+                    return false;
+                }
+            } catch (_) {
+                // Ignore localStorage access issues and continue showing guidance.
+            }
+            return true;
+        }
+
+        function dismissIOSInstallGuidance() {
+            try {
+                localStorage.setItem(IOS_INSTALL_DISMISS_KEY, String(Date.now()));
+            } catch (_) {
+                // Ignore localStorage access issues.
+            }
+            removeIOSInstallGuidance();
+        }
+
+        function showIOSInstallGuidance() {
+            if (!shouldShowIOSInstallGuidance() || document.getElementById('iosInstallSheet')) {
+                return;
+            }
+            const instructions = getIOSInstallInstructions();
+            const sheet = document.createElement('section');
+            sheet.id = 'iosInstallSheet';
+            sheet.className = 'ios-install-sheet';
+            sheet.setAttribute('role', 'dialog');
+            sheet.setAttribute('aria-modal', 'false');
+            sheet.setAttribute('aria-labelledby', 'iosInstallTitle');
+            sheet.setAttribute('aria-describedby', 'iosInstallCopy iosInstallSteps');
+            sheet.setAttribute('aria-live', 'polite');
+            sheet.innerHTML = `
+                <div class="ios-install-card">
+                    <p class="ios-install-eyebrow">${instructions.browser} on iOS</p>
+                    <h2 id="iosInstallTitle" class="ios-install-title">Install ai-or-die</h2>
+                    <div class="ios-install-share-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" class="ios-install-share-icon-svg" focusable="false">
+                            <path d="M12 3v11"></path>
+                            <path d="M8 7l4-4 4 4"></path>
+                            <rect x="5" y="11" width="14" height="10" rx="2" ry="2"></rect>
+                        </svg>
+                    </div>
+                    <p id="iosInstallCopy" class="ios-install-copy">Add ai-or-die to your Home Screen for a full-screen app experience.</p>
+                    <ol id="iosInstallSteps" class="ios-install-steps">
+                        <li>${instructions.shareStep}</li>
+                        <li>${instructions.actionStep}</li>
+                    </ol>
+                    <button type="button" class="ios-install-dismiss" aria-label="Dismiss install guidance for 7 days">Dismiss for 7 days</button>
+                </div>
+            `;
+            const dismissBtn = sheet.querySelector('.ios-install-dismiss');
+            dismissBtn.addEventListener('click', dismissIOSInstallGuidance);
+            iosInstallEscHandler = (event) => {
+                if (event.key === 'Escape') {
+                    dismissIOSInstallGuidance();
+                }
+            };
+            document.addEventListener('keydown', iosInstallEscHandler);
+            iosInstallPreviouslyFocused = document.activeElement;
+            document.body.appendChild(sheet);
+            dismissBtn.focus({ preventScroll: true });
+        }
+
+        function syncPWAMode() {
+            const installed = isPWA();
+            document.documentElement.classList.toggle('is-pwa', installed);
+            document.body.classList.toggle('is-pwa', installed);
+            if (installed) {
+                const installBtn = document.getElementById('installBtn');
+                if (installBtn) installBtn.remove();
+                removeIOSInstallGuidance();
+            }
+        }
+        syncPWAMode();
+        if (window.matchMedia) {
+            const modeQueries = [
+                window.matchMedia('(display-mode: standalone)'),
+                window.matchMedia('(display-mode: window-controls-overlay)')
+            ];
+            modeQueries.forEach(modeQuery => {
+                if (typeof modeQuery.addEventListener === 'function') {
+                    modeQuery.addEventListener('change', syncPWAMode);
+                } else if (typeof modeQuery.addListener === 'function') {
+                    modeQuery.addListener(syncPWAMode);
+                }
+            });
+        }
+        showIOSInstallGuidance();
+
         // Handle app install prompt
         let deferredPrompt;
         window.addEventListener('beforeinstallprompt', (e) => {
             // Prevent Chrome 67 and earlier from automatically showing the prompt
             e.preventDefault();
+            if (isPWA()) {
+                return;
+            }
             // Stash the event so it can be triggered later
             deferredPrompt = e;
             
@@ -724,6 +919,8 @@
                 const installBtn = document.createElement('button');
                 installBtn.id = 'installBtn';
                 installBtn.className = 'install-btn';
+                installBtn.type = 'button';
+                installBtn.setAttribute('aria-label', 'Install app');
                 installBtn.innerHTML = '<span class="icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg></span> Install App';
                 
                 installBtn.addEventListener('click', async () => {
@@ -743,10 +940,12 @@
         // Handle successful installation
         window.addEventListener('appinstalled', () => {
             console.log('PWA was installed');
+            syncPWAMode();
             const installBtn = document.getElementById('installBtn');
             if (installBtn) {
                 installBtn.remove();
             }
+            removeIOSInstallGuidance();
         });
     </script>
 </body>

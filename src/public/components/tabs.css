@@ -445,7 +445,7 @@
 }
 
 /* Mobile: compact session pills instead of wide tabs */
-@media (max-width: 768px) {
+@media (max-width: 767px) {
     .session-tabs-bar {
         min-height: 36px;
         padding: 0 6px;

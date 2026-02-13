@@ -4,17 +4,18 @@
     bottom: 0;
     left: 0;
     right: 0;
-    height: 52px;
+    height: 56px;
     background: var(--surface-secondary);
     border-top: 1px solid var(--border-default);
-    padding: 0 8px;
+    box-shadow: var(--shadow-sm);
+    padding: 0 var(--space-2);
     padding-bottom: env(safe-area-inset-bottom, 0);
     z-index: var(--z-sticky);
     align-items: center;
-    justify-content: space-around;
+    justify-content: space-evenly;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767px) {
     .bottom-nav {
         display: flex;
     }
@@ -33,26 +34,37 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 2px;
-    padding: 6px 12px;
+    gap: var(--space-0-5);
+    padding: var(--space-1) var(--space-3);
     background: none;
     border: none;
     color: var(--text-secondary);
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-family: var(--font-sans);
     cursor: pointer;
     border-radius: var(--radius-md);
-    transition: color var(--duration-fast) var(--ease-default);
+    transition: color var(--duration-fast) var(--ease-default),
+                background-color var(--duration-fast) var(--ease-default),
+                transform var(--duration-fast) var(--ease-default);
     -webkit-tap-highlight-color: transparent;
-    min-width: 48px;
+    min-width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
 }
 
 .bottom-nav-item:active {
     background: var(--accent-soft);
+    transform: scale(0.97);
 }
 
 .bottom-nav-item.active {
     color: var(--accent-default);
+    background: var(--accent-soft);
+}
+
+.bottom-nav-item:focus-visible {
+    outline: 2px solid var(--border-focus);
+    outline-offset: 2px;
 }
 
 .bottom-nav-item svg {
@@ -63,4 +75,31 @@
 .bottom-nav-item .nav-label {
     font-size: 10px;
     line-height: 1;
+}
+
+.bottom-nav-item.nav-voice-primary {
+    color: white;
+    background: var(--accent-default);
+    box-shadow: 0 6px 20px rgba(255, 107, 0, 0.35);
+    transform: translateY(-6px);
+    font-weight: 600;
+}
+
+.bottom-nav-item.nav-voice-primary:active {
+    background: var(--accent-hover, var(--accent-default));
+    transform: translateY(-4px) scale(0.97);
+}
+
+.bottom-nav-item.nav-voice-primary.recording {
+    background: var(--status-error, #ef4444);
+    animation: mobile-voice-pulse 1.4s ease-in-out infinite;
+}
+
+.bottom-nav-item.nav-voice-primary.processing {
+    opacity: 0.85;
+}
+
+@keyframes mobile-voice-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45); }
+    50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
 }

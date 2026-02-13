@@ -110,6 +110,7 @@ The main application controller. Instantiated once on page load.
 - **Message handling:** Routes incoming messages by `type` field to appropriate handlers (output rendering, session state updates, usage updates, etc.).
 - **Output rendering:** Writes raw terminal data directly to xterm.js via `terminal.write(data)`. Also feeds data to `planDetector.processOutput(data)` and `sessionTabManager.markSessionActivity()`.
 - **Background session events:** Handles `session_activity`, `session_exit`, `session_error`, `session_started`, and `session_stopped` messages for sessions the client is not actively joined to. These update tab status indicators and feed the notification idle timer. These handlers never modify the terminal or show overlays — they only interact with `SessionTabManager`.
+- **Foreground restore hardening:** On `visibilitychange` to visible (notably iOS background/foreground), the client restores session priority, throttles reconnect attempts, immediately reconnects when socket state is closed/stuck (or stale-open on iOS), and safely sends a fallback `join_session` replay trigger if `session_joined` was not received after reconnect.
 
 ### Terminal Configuration
 
@@ -123,14 +124,14 @@ The main application controller. Instantiated once on page load.
     // Full 16-color ANSI palette configured
   },
   fontFamily: "reads from CSS --font-mono token; defaults to 'MesloLGS Nerd Font', 'JetBrains Mono NF', 'Fira Code NF', 'Cascadia Code NF', monospace",
-  fontSize: 14,          // 13 on mobile
+  fontSize: 14,          // 16 on phone-class touch devices
   lineHeight: 1.2,
   scrollback: 10000,
   allowProposedApi: true
 }
 ```
 
-The terminal auto-resizes via `FitAddon` triggered by a `ResizeObserver` on the terminal container, debounced to prevent excessive resize messages.
+The terminal auto-resizes via `FitAddon` triggered by a `ResizeObserver` on the terminal container, debounced and scheduled through `requestAnimationFrame` to prevent excessive resize messages.
 
 ### Input Buffering
 
@@ -290,6 +291,8 @@ On viewports <= 768px wide:
 - An overflow dropdown shows remaining tabs with a count badge.
 - Tabs are automatically reordered by `lastAccessed` timestamp so the most recently used tabs are always visible.
 
+Tablet-class touch devices (`pointer: coarse` + `min-width: 768px`) stay on the desktop-style top-tab layout and keep desktop affordances (full tab actions, file workflows, split panes, keyboard-first interactions).
+
 ### Status Indicators
 
 Each tab has a status dot with states:
@@ -318,6 +321,7 @@ When a session transitions from `active` to `idle` in a background tab (not the 
 - Notifications auto-close after 5 seconds.
 - Clicking a notification switches to the relevant tab and focuses the window.
 - Receives lightweight `session_activity` events from the server for sessions the client is not joined to, enabling idle detection and notifications for background tabs without requiring full terminal output.
+- Uses `navigator.setAppBadge()` / `clearAppBadge()` when available so installed desktop PWAs show unread-background-session count in the taskbar/dock badge.
 
 ### Keyboard Shortcuts
 
@@ -328,6 +332,7 @@ When a session transitions from `active` to `idle` in a background tab (not the 
 | Ctrl/Cmd + Tab | Next tab (uses MRU history first, falls back to visual order) |
 | Ctrl/Cmd + Shift + Tab | Previous tab (visual order) |
 | Alt + 1-9 | Switch to tab by index |
+| Ctrl/Cmd + ? | Open keyboard shortcuts overlay |
 
 ---
 
@@ -411,7 +416,7 @@ Provides installable PWA metadata. Icons are dynamically generated SVGs served b
 
 ### Dynamic Icon Generation
 
-The server generates SVG icons at sizes 16, 32, 144, 180, 192, and 512 pixels:
+The server generates SVG icons at sizes 16, 32, 120, 144, 152, 167, 180, 192, and 512 pixels:
 - Dark background (`#1a1a1a`) with rounded corners.
 - Monospace "CC" text in orange (`#ff6b00`).
 - Served as `image/svg+xml` with a 1-year `Cache-Control`.

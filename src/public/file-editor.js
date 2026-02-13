@@ -91,7 +91,8 @@
     this._buildEditorDOM();
     var draft = localStorage.getItem('fb-draft-' + filePath);
     var initial = (draft !== null) ? draft : content;
-    if (draft !== null && draft !== content) this._dirty = true;
+    this._restoredDraft = draft !== null && draft !== content;
+    if (this._restoredDraft) this._dirty = true;
     this._loadAce(initial);
   };
 
@@ -281,6 +282,10 @@
 
     this._updateStatus('Ready', mode);
     this._updateCursorPosition();
+    if (this._restoredDraft) {
+      this._updateStatus('Recovered local draft (unsaved)', mode);
+      this._announceToScreenReader('Recovered local draft loaded. Review and save when ready.');
+    }
     if (this._dirty) this._dirtyDot.classList.add('visible');
     editor.focus();
   };

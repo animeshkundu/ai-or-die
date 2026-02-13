@@ -17,9 +17,51 @@
     }
 }
 
+/* Platform polish cues */
+body.platform-ios {
+    overscroll-behavior-y: contain;
+}
+
+body.platform-ios #app {
+    min-height: -webkit-fill-available;
+}
+
+body.platform-ios .mobile-menu {
+    height: 100dvh;
+    transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+body.platform-ios .mobile-menu-content {
+    padding-bottom: max(var(--space-5), env(safe-area-inset-bottom, 0px));
+}
+
+body.platform-ios .terminal-container,
+body.platform-ios .xterm-viewport {
+    overscroll-behavior-y: contain;
+}
+
+body.platform-android .hamburger-btn,
+body.platform-android .mobile-menu-btn,
+body.platform-android .mode-switcher-btn,
+body.platform-android .escape-btn {
+    position: relative;
+    overflow: hidden;
+    background-image: radial-gradient(circle, rgba(255, 255, 255, 0.2) 10%, transparent 11%);
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 0 0;
+}
+
+body.platform-android .hamburger-btn:active,
+body.platform-android .mobile-menu-btn:active,
+body.platform-android .mode-switcher-btn:active,
+body.platform-android .escape-btn:active {
+    background-size: 220% 220%;
+}
+
 /* Show mode switcher on mobile/touch devices */
 @media (max-width: 1024px) and (hover: none) and (pointer: coarse),
-       (max-width: 768px) {
+       (max-width: 767px) {
     .mode-switcher {
         display: flex;
     }
@@ -140,6 +182,7 @@
     font-weight: var(--weight-medium);
     transition: all var(--duration-normal) var(--ease-default);
     text-align: left;
+    min-height: 44px;
 }
 
 .mobile-menu-btn:hover:not(:disabled) {
@@ -164,14 +207,44 @@
     border-color: var(--color-red-600);
 }
 
+#voiceBtnMobile {
+    background-color: var(--accent-default);
+    border-color: var(--accent-default);
+    color: white;
+    font-weight: var(--weight-semibold);
+}
+
 .desktop-only {
     display: block;
+}
+
+/* Tablet touch layout keeps desktop capabilities with larger hit targets */
+@media (min-width: 768px) and (pointer: coarse) {
+    body.tablet-layout .session-tabs-bar {
+        min-height: 44px;
+        padding: 0 12px;
+    }
+
+    body.tablet-layout .session-tab {
+        min-width: 180px;
+        height: 38px;
+        font-size: 13px;
+    }
+
+    body.tablet-layout .tab-close {
+        min-width: 36px;
+        min-height: 36px;
+    }
+
+    body.tablet-layout #terminal {
+        padding: 12px;
+    }
 }
 
 /* ── Mobile Breakpoints ── */
 
 /* Tablets and below */
-@media (max-width: 768px) {
+@media (max-width: 767px) {
     .hamburger-btn {
         display: flex;
         flex-shrink: 0;
@@ -304,12 +377,12 @@
 
     /* Account for bottom nav height */
     #app {
-        padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
     }
 
     /* Move mode switcher above bottom nav */
     .mode-switcher {
-        bottom: calc(62px + env(safe-area-inset-bottom, 0px));
+        bottom: calc(66px + env(safe-area-inset-bottom, 0px));
     }
 }
 

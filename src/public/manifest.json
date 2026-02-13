@@ -3,6 +3,9 @@
   "short_name": "ai-or-die",
   "description": "Universal AI coding terminal",
   "start_url": "/",
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  },
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
   "scope": "/",
@@ -39,7 +42,15 @@
       "src": "/screenshot-wide.png",
       "sizes": "1280x720",
       "type": "image/png",
-      "label": "ai-or-die Interface"
+      "label": "ai-or-die Interface",
+      "form_factor": "wide"
+    },
+    {
+      "src": "/screenshot-narrow.png",
+      "sizes": "390x844",
+      "type": "image/png",
+      "label": "ai-or-die on mobile",
+      "form_factor": "narrow"
     }
   ]
 }

@@ -41,6 +41,17 @@ class CommandPaletteManager {
       }
     }, true); // capture phase so it fires before xterm
 
+    // Ctrl+? / Cmd+? opens the keyboard shortcuts overlay
+    document.addEventListener('keydown', (e) => {
+      const isHelpShortcut = (e.ctrlKey || e.metaKey) && !e.altKey &&
+        (e.key === '?' || (e.shiftKey && e.key === '/'));
+      if (isHelpShortcut) {
+        e.preventDefault();
+        e.stopPropagation();
+        this._showShortcutsModal();
+      }
+    }, true);
+
     // '?' key opens keyboard shortcuts when terminal is NOT focused
     document.addEventListener('keydown', (e) => {
       if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
@@ -221,9 +232,15 @@ class CommandPaletteManager {
           }
           // Persist the choice
           try {
-            const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+            const settings = window.clientStorage && typeof window.clientStorage.getSettings === 'function'
+              ? window.clientStorage.getSettings()
+              : JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
             settings.theme = theme.value;
-            localStorage.setItem('cc-web-settings', JSON.stringify(settings));
+            if (window.clientStorage && typeof window.clientStorage.setSettings === 'function') {
+              window.clientStorage.setSettings(settings);
+            } else {
+              localStorage.setItem('cc-web-settings', JSON.stringify(settings));
+            }
             if (app.applySettings) app.applySettings(settings);
           } catch (_) { /* ignore */ }
 
@@ -374,6 +391,16 @@ class CommandPaletteManager {
       hotkey: 'ctrl+shift+m',
       handler: () => {
         if (app.voiceController) app.voiceController.toggleRecording();
+      }
+    });
+
+    actions.push({
+      id: 'command-clips',
+      title: 'Command Clips',
+      description: 'Open saved command clips/snippets',
+      section: 'Actions',
+      handler: () => {
+        if (app.showClipsModal) app.showClipsModal();
       }
     });
 

@@ -12,6 +12,10 @@
     --error: var(--status-error);
     --warning: var(--status-warning);
     --border: var(--border-default);
+    --wco-titlebar-x: 0px;
+    --wco-titlebar-y: 0px;
+    --wco-titlebar-width: 100%;
+    --wco-titlebar-height: 40px;
 }
 
 * {
@@ -84,13 +88,20 @@ pre, code {
    the tab bar extends into the title bar for a native terminal feel. */
 @media (display-mode: window-controls-overlay) {
     .session-tabs-bar {
-        padding-top: env(titlebar-area-y, 0);
-        padding-left: env(titlebar-area-x, 10px);
-        padding-right: calc(100% - env(titlebar-area-width, 100%) - env(titlebar-area-x, 0px) + 10px);
+        min-height: 40px;
+        min-height: max(40px, env(titlebar-area-height, var(--wco-titlebar-height, 40px)));
+        padding-top: 0;
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: env(titlebar-area-y, var(--wco-titlebar-y, 0px));
+        padding-left: env(titlebar-area-x, var(--wco-titlebar-x, 10px));
+        padding-right: max(10px, calc(100% - env(titlebar-area-width, var(--wco-titlebar-width, 100%)) - env(titlebar-area-x, var(--wco-titlebar-x, 0px)) + 10px));
         -webkit-app-region: drag;
     }
     .session-tabs-bar button,
-    .session-tabs-bar .session-tab {
+    .session-tabs-bar .session-tab,
+    .session-tabs-bar .tab-overflow-menu,
+    .session-tabs-bar .tab-overflow-menu * {
         -webkit-app-region: no-drag;
     }
 }
