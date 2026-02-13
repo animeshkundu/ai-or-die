@@ -10,6 +10,8 @@ class ClaudeCodeWebInterface {
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 10;
         this.reconnectDelay = 1000;
+        this._reconnecting = false;
+        this._fitting = false;
         this.folderMode = true; // Always use folder mode
         this.currentFolderPath = null;
         this.claudeSessions = [];
@@ -642,7 +644,7 @@ class ClaudeCodeWebInterface {
 
         // Safari fallback: poll viewport height if no resize fires after focus
         let safariFallbackStarted = false;
-        this._this._safariPollInterval = null;
+        this._safariPollInterval = null;
 
         const getThreshold = () => {
             if (useFallbackThreshold) return 150;
@@ -682,6 +684,8 @@ class ClaudeCodeWebInterface {
             }
             if (resizeTimestamps.length > 3) {
                 useFallbackThreshold = true;
+            } else if (resizeTimestamps.length <= 1) {
+                useFallbackThreshold = false;
             }
 
             // Cancel any pending Safari fallback since resize is firing
@@ -1417,9 +1421,14 @@ class ClaudeCodeWebInterface {
             this._planDetectTimer = null;
         }
         setTimeout(() => {
-            this.connect()
-                .catch(err => console.error('Reconnection failed:', err))
-                .finally(() => { this._reconnecting = false; });
+            try {
+                this.connect()
+                    .catch(err => console.error('Reconnection failed:', err))
+                    .finally(() => { this._reconnecting = false; });
+            } catch (err) {
+                console.error('Reconnection failed synchronously:', err);
+                this._reconnecting = false;
+            }
         }, 1000);
     }
 
