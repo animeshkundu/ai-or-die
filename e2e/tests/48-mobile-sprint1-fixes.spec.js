@@ -83,7 +83,7 @@ test.describe('P0-1: Install button vs bottom nav overlap', () => {
       document.body.appendChild(btn);
     });
 
-    // At mobile viewport (max-width: 768px) the install button CSS sets
+    // At mobile viewport (max-width: 820px) the install button CSS sets
     // bottom: calc(52px + 20px + env(safe-area-inset-bottom, 0px))
     // which means the resolved bottom value should be >= 72px (52 + 20)
     const installBottom = await page.evaluate(() => {
@@ -248,7 +248,7 @@ test.describe('P0-5: Context menu bottom sheet on mobile', () => {
         try {
           for (const rule of sheet.cssRules) {
             if (rule instanceof CSSMediaRule && rule.conditionText &&
-                rule.conditionText.includes('max-width: 768px')) {
+                rule.conditionText.includes('max-width: 820px')) {
               for (const innerRule of rule.cssRules) {
                 if (innerRule.selectorText &&
                     innerRule.selectorText.includes('.term-context-menu')) {
