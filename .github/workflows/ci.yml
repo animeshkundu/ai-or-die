@@ -101,7 +101,7 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
       - name: Run mobile flow E2E tests
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-flows --project mobile-sprint1
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-flows --project mobile-sprint1 --project mobile-sprint23
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}

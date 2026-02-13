@@ -784,7 +784,9 @@
     .setting-group select, .setting-group input[type="range"] { width: 100%; }
 }
 
-/* ── Keyboard-open: constrain modal to visual viewport ── */
-body.keyboard-open .modal-content {
-    max-height: calc(var(--visual-viewport-height, 100dvh) - 20px);
+/* ── Keyboard-open: constrain modal to visual viewport (mobile only) ── */
+@media (max-width: 820px) {
+    body.keyboard-open .modal-content {
+        max-height: calc(var(--visual-viewport-height, 100dvh) - 20px);
+    }
 }

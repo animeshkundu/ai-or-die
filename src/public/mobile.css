@@ -317,23 +317,26 @@
 }
 
 /* ── Keyboard-open: hide bottom nav, tab bar, mode switcher ── */
-body.keyboard-open .bottom-nav,
-body.keyboard-open .mode-switcher {
-    opacity: 0;
-    pointer-events: none;
-    height: 0;
-    overflow: hidden;
-    transition: opacity 0.2s ease, height 0.2s ease;
-}
-body.keyboard-open .session-tabs-bar {
-    height: 0;
-    overflow: hidden;
-    padding: 0;
-    border: none;
-    transition: height 0.2s ease;
-}
-body.keyboard-open #app {
-    padding-bottom: 0 !important;
+/* Scoped to mobile viewports to prevent accidental desktop breakage */
+@media (max-width: 820px) {
+    body.keyboard-open .bottom-nav,
+    body.keyboard-open .mode-switcher {
+        opacity: 0;
+        pointer-events: none;
+        height: 0;
+        overflow: hidden;
+        transition: opacity 0.2s ease, height 0.2s ease;
+    }
+    body.keyboard-open .session-tabs-bar {
+        height: 0;
+        overflow: hidden;
+        padding: 0;
+        border: none;
+        transition: height 0.2s ease;
+    }
+    body.keyboard-open #app {
+        padding-bottom: 0 !important;
+    }
 }
 
 /* Extra small devices (phones in portrait) */

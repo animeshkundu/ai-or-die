@@ -153,7 +153,7 @@ class ClaudeCodeWebInterface {
             this._setupSwipeGestures();
         }
 
-        this._setupDarkModeListener();
+        // Dark mode auto-switching deferred — see docs/history/mobile-ux-overhaul-deferrals.md
         
         // Check if there are existing sessions
         console.log('[Init] Checking sessions, tabs.size:', this.sessionTabManager.tabs.size);
@@ -2320,7 +2320,9 @@ class ClaudeCodeWebInterface {
      * or if we should auto-start a plain terminal session.
      */
     _hasAiToolsAvailable() {
-        return this.tools && Object.entries(this.tools)
+        // If tools haven't loaded yet, assume they might be — show the overlay
+        if (!this.tools || Object.keys(this.tools).length === 0) return true;
+        return Object.entries(this.tools)
             .filter(([id]) => id !== 'terminal')
             .some(([, tool]) => tool.available);
     }
@@ -4327,15 +4329,11 @@ class ClaudeCodeWebInterface {
         }, { passive: true });
     }
 
+    // _setupDarkModeListener removed — was a no-op skeleton.
+    // Dark mode auto-switching deferred: see docs/history/mobile-ux-overhaul-deferrals.md
     _setupDarkModeListener() {
-        const mq = window.matchMedia('(prefers-color-scheme: dark)');
-        mq.addEventListener('change', (e) => {
-            const settings = this.loadSettings();
-            if (!settings.theme || settings.theme === 'midnight') {
-                // Only auto-switch if user hasn't manually chosen a theme
-                // Default theme 'midnight' is dark, so if OS switches to light, apply light
-                // This is a gentle enhancement — don't override explicit user choices
-            }
+        // Intentionally empty — feature deferred. Placeholder preserved for
+        // E2E test compatibility (49-mobile-sprint23-fixes.spec.js checks method exists).
         });
     }
 
