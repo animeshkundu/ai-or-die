@@ -110,6 +110,7 @@ class ClaudeCodeWebInterface {
         await this.loadConfig();
         this.setupTerminal();
         this._setupExtraKeys();
+        this._setupOrientationHandler();
         this.setupUI();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
@@ -318,12 +319,19 @@ class ClaudeCodeWebInterface {
         document.addEventListener('touchmove', (e) => {
             const y = e.touches[0].clientY;
             const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
-            
+
+            // Skip preventDefault for scrollable containers that handle their own scroll
+            const target = e.target;
+            if (target && (target.closest('.xterm-viewport') || target.closest('.modal-body') || target.closest('.extra-keys-bar'))) {
+                lastY = y;
+                return;
+            }
+
             // Prevent pull-to-refresh when at the top and trying to scroll up
             if (scrollTop === 0 && y > lastY) {
                 e.preventDefault();
             }
-            
+
             lastY = y;
         }, { passive: false });
         
@@ -445,7 +453,7 @@ class ClaudeCodeWebInterface {
     setupTerminal() {
         // Adjust font size for mobile devices
         const isMobile = this.detectMobile();
-        const fontSize = isMobile ? 14 : 14;
+        const fontSize = isMobile ? this._getMobileFontSize() : 14;
         
         this.terminal = new Terminal({
             fontSize: fontSize,
@@ -629,6 +637,38 @@ class ClaudeCodeWebInterface {
         themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     }
 
+    _getMobileFontSize() {
+        const width = window.innerWidth;
+        if (width <= 360) return 12;
+        if (width <= 414) return 13;
+        return 14;
+    }
+
+    _setupOrientationHandler() {
+        if (!this.isMobile) return;
+
+        const handleOrientationChange = () => {
+            setTimeout(() => {
+                this.fitTerminal();
+                // Re-evaluate keyboard state
+                if (window.visualViewport && this._keyboardOpen !== undefined) {
+                    const heightDiff = window.innerHeight - window.visualViewport.height;
+                    const threshold = Math.max(window.screen.height * 0.25, 100);
+                    if (heightDiff <= threshold && this._keyboardOpen) {
+                        this._keyboardOpen = false;
+                        this._restoreTerminalFromKeyboard();
+                        document.body.classList.remove('keyboard-open');
+                    }
+                }
+            }, 300);
+        };
+
+        if (screen.orientation) {
+            screen.orientation.addEventListener('change', handleOrientationChange);
+        }
+        window.addEventListener('orientationchange', handleOrientationChange);
+    }
+
     _setupExtraKeys() {
         if (!this.isMobile || !window.visualViewport || typeof ExtraKeys === 'undefined') return;
 
@@ -722,6 +762,7 @@ class ClaudeCodeWebInterface {
 
     _adjustTerminalForKeyboard(availableHeight) {
         if (this.extraKeys) this.extraKeys.show();
+        document.documentElement.style.setProperty('--visual-viewport-height', availableHeight + 'px');
         const termEl = document.getElementById('terminal');
         if (termEl) {
             const extraKeysHeight = this.extraKeys?.container?.offsetHeight || 44;
@@ -732,6 +773,7 @@ class ClaudeCodeWebInterface {
 
     _restoreTerminalFromKeyboard() {
         if (this.extraKeys) this.extraKeys.hide();
+        document.documentElement.style.removeProperty('--visual-viewport-height');
         const termEl = document.getElementById('terminal');
         if (termEl) {
             termEl.style.height = '';
@@ -2735,12 +2777,16 @@ class ClaudeCodeWebInterface {
     showOverlay(contentId) {
         const overlay = document.getElementById('overlay');
         const contents = ['loadingSpinner', 'startPrompt', 'errorMessage'];
-        
+
         contents.forEach(id => {
             document.getElementById(id).style.display = id === contentId ? 'block' : 'none';
         });
-        
+
         overlay.style.display = 'flex';
+
+        // Keep the tab bar above the overlay so users can switch sessions
+        const tabBar = document.getElementById('sessionTabsBar');
+        if (tabBar) tabBar.style.zIndex = '301';
     }
 
     hideOverlay() {
@@ -2752,6 +2798,10 @@ class ClaudeCodeWebInterface {
         } else {
             console.error('[hideOverlay] Overlay element not found!');
         }
+
+        // Restore tab bar z-index to default
+        const tabBar = document.getElementById('sessionTabsBar');
+        if (tabBar) tabBar.style.zIndex = '';
     }
 
     hideModal(overlayId) {
