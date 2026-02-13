@@ -1754,6 +1754,7 @@ class ClaudeCodeWebServer {
     // session.active check above and spawn duplicate PTY processes.
     session.active = true;
     session.agent = toolName;
+    this.activityBroadcastTimestamps.set(sessionId, Date.now());
 
     try {
       console.log(`startToolSession(${toolName}): spawning in session ${sessionId}, workingDir=${session.workingDir}`);

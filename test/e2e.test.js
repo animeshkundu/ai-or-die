@@ -1190,8 +1190,8 @@ describe('E2E: Session activity broadcasting', function () {
     const { ws: wsC } = await connectWs(port);
 
     // Send input — new client C should receive activity
-    // Wait >1s to ensure throttle window has passed
-    await new Promise(r => setTimeout(r, 1100));
+    // Wait for shell prompts to settle and throttle window to pass
+    await new Promise(r => setTimeout(r, 2000));
     wsSend(wsA, { type: 'input', data: `echo RECONNECT\n` });
     const activity = await waitForMessage(wsC, 'session_activity', 5000);
     assert.strictEqual(activity.sessionId, created.sessionId);

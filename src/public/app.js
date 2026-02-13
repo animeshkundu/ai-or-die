@@ -1680,6 +1680,8 @@ class ClaudeCodeWebInterface {
                 } else if (message.active) {
                     console.log('[session_joined] Session is active, hiding overlay');
                     this.hideOverlay();
+                } else if (this._overlayExplicitlyHidden) {
+                    console.log('[session_joined] Overlay explicitly hidden, skipping show');
                 } else {
                     // Session exists but Claude is not running
                     // Check if this is a brand new session (empty output buffer indicates new)
@@ -2806,6 +2808,7 @@ class ClaudeCodeWebInterface {
     }
 
     showOverlay(contentId) {
+        this._overlayExplicitlyHidden = false;
         const overlay = document.getElementById('overlay');
         const contents = ['loadingSpinner', 'startPrompt', 'errorMessage'];
 
@@ -2821,6 +2824,7 @@ class ClaudeCodeWebInterface {
     }
 
     hideOverlay() {
+        this._overlayExplicitlyHidden = true;
         const overlay = document.getElementById('overlay');
         if (overlay) {
             console.log('[hideOverlay] Hiding overlay, current display:', overlay.style.display);

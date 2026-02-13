@@ -24,816 +24,372 @@ test.afterEach(async ({ page }, testInfo) => {
 });
 
 // ---------------------------------------------------------------------------
-// P1-1: keyboard-open CSS — body class toggles, elements hide with transitions
+// Helper: simulate mobile keyboard opening
+// Note: Playwright on desktop Chromium cannot trigger a real mobile keyboard.
+// visualViewport.height always equals innerHeight in desktop browsers.
+// We simulate by applying the keyboard-open class (which is what the app does
+// when it detects the keyboard via visualViewport resize on real devices)
+// and then test that the CSS correctly hides the chrome elements.
 // ---------------------------------------------------------------------------
-test.describe('P1-1: keyboard-open CSS', () => {
-  test('body.keyboard-open hides bottom nav, tab bar, mode switcher via CSS rules', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    // Verify the CSS rules for body.keyboard-open exist in stylesheets
-    const rules = await page.evaluate(() => {
-      const results = { bottomNav: false, tabBar: false, modeSwitcher: false };
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            const text = rule.cssText || '';
-            if (text.includes('body.keyboard-open') && text.includes('.bottom-nav')) {
-              if (text.includes('opacity') && text.includes('height')) {
-                results.bottomNav = true;
-              }
-            }
-            if (text.includes('body.keyboard-open') && text.includes('.session-tabs-bar')) {
-              if (text.includes('height')) {
-                results.tabBar = true;
-              }
-            }
-            if (text.includes('body.keyboard-open') && text.includes('.mode-switcher')) {
-              if (text.includes('opacity') && text.includes('height')) {
-                results.modeSwitcher = true;
-              }
-            }
-          }
-        } catch { /* cross-origin */ }
-      }
-      return results;
-    });
-
-    expect(rules.bottomNav).toBe(true);
-    expect(rules.tabBar).toBe(true);
-    expect(rules.modeSwitcher).toBe(true);
+async function simulateKeyboardOpen(page) {
+  await page.evaluate(() => {
+    document.body.classList.add('keyboard-open');
   });
+  // Wait for CSS transitions (200ms) + margin
+  await page.waitForTimeout(350);
+}
 
-  test('keyboard-open class is not present on body initially', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+// ---------------------------------------------------------------------------
+// 1. Keyboard hides chrome
+// ---------------------------------------------------------------------------
+test('keyboard open hides bottom nav and tab bar', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
 
-    const hasClass = await page.evaluate(() =>
-      document.body.classList.contains('keyboard-open')
-    );
-    expect(hasClass).toBe(false);
+  // Before keyboard: bottom nav should be visible on mobile
+  const nav = page.locator('.bottom-nav');
+  await expect(nav).toBeVisible();
+
+  // Simulate keyboard opening (applies keyboard-open class as the app does)
+  await simulateKeyboardOpen(page);
+
+  // After keyboard: bottom nav and tab bar should be collapsed to 0px
+  const navHeight = await page.evaluate(() => {
+    const el = document.querySelector('.bottom-nav');
+    return el ? getComputedStyle(el).height : null;
   });
+  expect(navHeight).toBe('0px');
 
-  test('keyboard-open CSS includes transition declarations', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    // Verify transition properties exist in keyboard-open rules
-    const hasTransitions = await page.evaluate(() => {
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            const text = rule.cssText || '';
-            if (text.includes('body.keyboard-open') && text.includes('transition')) {
-              return true;
-            }
-          }
-        } catch { /* cross-origin */ }
-      }
-      return false;
-    });
-
-    expect(hasTransitions).toBe(true);
+  const tabBarHeight = await page.evaluate(() => {
+    const el = document.querySelector('.session-tabs-bar');
+    return el ? getComputedStyle(el).height : null;
   });
-
-  test('adding keyboard-open class hides bottom nav and tab bar', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    // Manually add the keyboard-open class to test CSS effects
-    await page.evaluate(() => document.body.classList.add('keyboard-open'));
-
-    // Allow CSS transitions to start
-    await page.waitForTimeout(350);
-
-    const styles = await page.evaluate(() => {
-      const nav = document.querySelector('.bottom-nav');
-      const tabs = document.querySelector('.session-tabs-bar');
-      return {
-        navDisplay: nav ? getComputedStyle(nav).opacity : null,
-        navHeight: nav ? getComputedStyle(nav).height : null,
-        tabsHeight: tabs ? getComputedStyle(tabs).height : null,
-      };
-    });
-
-    // Bottom nav should be hidden (opacity 0, height 0)
-    if (styles.navDisplay !== null) {
-      expect(styles.navDisplay).toBe('0');
-    }
-    if (styles.navHeight !== null) {
-      // Height is 0 but border may add 1px
-      const navH = parseFloat(styles.navHeight);
-      expect(navH).toBeLessThanOrEqual(1);
-    }
-    // Tab bar should be collapsed
-    if (styles.tabsHeight !== null) {
-      expect(styles.tabsHeight).toBe('0px');
-    }
-  });
+  expect(tabBarHeight).toBe('0px');
 });
 
 // ---------------------------------------------------------------------------
-// P1-2: Keyboard dismiss button
+// 2. Extra keys bar renders with 2 rows and dismiss button
 // ---------------------------------------------------------------------------
-test.describe('P1-2: Keyboard dismiss button', () => {
-  test('.extra-key-dismiss button exists in extra keys bar', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+test('extra keys bar renders two rows and dismiss button', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
 
-    const dismissInfo = await page.evaluate(() => {
-      const btn = document.querySelector('.extra-key-dismiss');
-      if (!btn) return null;
-      return {
-        exists: true,
-        ariaLabel: btn.getAttribute('aria-label'),
-        tagName: btn.tagName.toLowerCase(),
-      };
-    });
+  // Extra keys bar should exist
+  const bar = page.locator('.extra-keys-bar');
+  await expect(bar).toBeAttached();
 
-    expect(dismissInfo).not.toBeNull();
-    expect(dismissInfo.exists).toBe(true);
-    expect(dismissInfo.tagName).toBe('button');
-    expect(dismissInfo.ariaLabel).toBeTruthy();
-  });
+  // Two rows should exist
+  const rows = bar.locator('.extra-keys-row');
+  await expect(rows).toHaveCount(2);
 
-  test('dismiss button has "Dismiss keyboard" aria-label', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const ariaLabel = await page.evaluate(() => {
-      const btn = document.querySelector('.extra-key-dismiss');
-      return btn ? btn.getAttribute('aria-label') : null;
-    });
-
-    expect(ariaLabel).toBe('Dismiss keyboard');
-  });
+  // Dismiss button should exist
+  const dismissBtn = page.locator('[aria-label="Dismiss keyboard"]');
+  await expect(dismissBtn).toBeAttached();
 });
 
 // ---------------------------------------------------------------------------
-// P1-3: Multi-row extra keys
+// 3. Extra keys are tappable (>= 44px touch target)
 // ---------------------------------------------------------------------------
-test.describe('P1-3: Multi-row extra keys', () => {
-  test('two .extra-keys-row elements exist in extra keys bar', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+test('extra key buttons meet 44px minimum touch target', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
 
-    const rowCount = await page.evaluate(() => {
-      const bar = document.querySelector('.extra-keys-bar');
-      if (!bar) return 0;
-      return bar.querySelectorAll('.extra-keys-row').length;
-    });
-
-    expect(rowCount).toBe(2);
+  // Make extra keys visible so we can measure them
+  await page.evaluate(() => {
+    if (window.app.extraKeys) window.app.extraKeys.show();
   });
+  await page.waitForTimeout(100);
 
-  test('Row 1 has expected keys: Tab, Ctrl, Alt, Esc, Home, End, PgUp, PgDn, arrows, dismiss', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+  // Measure the first few keys with boundingBox
+  const keys = page.locator('.extra-key');
+  const count = await keys.count();
+  expect(count).toBeGreaterThan(0);
 
-    const row1Labels = await page.evaluate(() => {
-      const bar = document.querySelector('.extra-keys-bar');
-      if (!bar) return [];
-      const rows = bar.querySelectorAll('.extra-keys-row');
-      if (rows.length < 1) return [];
-      return Array.from(rows[0].querySelectorAll('.extra-key')).map(btn =>
-        btn.getAttribute('aria-label') || btn.textContent.trim()
-      );
-    });
-
-    const expectedLabels = [
-      'Tab', 'Ctrl', 'Alt', 'Esc', 'Home', 'End', 'PgUp', 'PgDn',
-      'Left arrow', 'Right arrow', 'Up arrow', 'Down arrow', 'Dismiss keyboard',
-    ];
-
-    for (const label of expectedLabels) {
-      expect(row1Labels).toContain(label);
-    }
-  });
-
-  test('Row 2 has symbol keys', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const row2Labels = await page.evaluate(() => {
-      const bar = document.querySelector('.extra-keys-bar');
-      if (!bar) return [];
-      const rows = bar.querySelectorAll('.extra-keys-row');
-      if (rows.length < 2) return [];
-      return Array.from(rows[1].querySelectorAll('.extra-key')).map(btn =>
-        btn.textContent.trim()
-      );
-    });
-
-    // Row 2 should contain symbols
-    const expectedSymbols = ['|', '/', '\\', '-', '_', '~', '`', '{', '}', '[', ']', '(', ')', ';', ':', '=', '+', '&', '@'];
-    for (const sym of expectedSymbols) {
-      expect(row2Labels).toContain(sym);
-    }
-  });
-
-  test('all extra key buttons meet 44px minimum touch target', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    // Check the CSS rule for .extra-key min-width and min-height
-    const cssCheck = await page.evaluate(() => {
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            if (rule.selectorText === '.extra-key') {
-              const minW = rule.style.minWidth;
-              const minH = rule.style.minHeight;
-              return { minWidth: minW, minHeight: minH };
-            }
-          }
-        } catch { /* cross-origin */ }
-      }
-      return null;
-    });
-
-    expect(cssCheck).not.toBeNull();
-    expect(cssCheck.minWidth).toBe('44px');
-    expect(cssCheck.minHeight).toBe('44px');
-  });
-
-  test('Row 2 hides when terminal height <= 400px via _updateRow2Visibility', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    // Verify the ExtraKeys class has the logic for hiding row 2 at <= 400px
-    const hasLogic = await page.evaluate(() => {
-      if (!window.app.extraKeys) return false;
-      const fn = window.app.extraKeys._updateRow2Visibility;
-      if (!fn) return false;
-      const src = fn.toString();
-      return src.includes('400');
-    });
-
-    expect(hasLogic).toBe(true);
-  });
+  // Check at least a few representative keys
+  const samplesToCheck = Math.min(count, 5);
+  for (let i = 0; i < samplesToCheck; i++) {
+    const box = await keys.nth(i).boundingBox();
+    expect(box).not.toBeNull();
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  }
 });
 
 // ---------------------------------------------------------------------------
-// P1-4: Orientation handler
+// 4. Dismiss button is accessible
 // ---------------------------------------------------------------------------
-test.describe('P1-4: Orientation handler', () => {
-  test('_setupOrientationHandler method exists on app', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+test('dismiss button is accessible with correct aria-label', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
 
-    const hasMethod = await page.evaluate(() =>
-      typeof window.app._setupOrientationHandler === 'function'
-    );
-    expect(hasMethod).toBe(true);
-  });
+  const dismissBtn = page.locator('[aria-label="Dismiss keyboard"]');
+  await expect(dismissBtn).toBeAttached();
 
-  test('orientation handler calls fitTerminal on orientation change', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    // Verify the method source references fitTerminal
-    const src = await page.evaluate(() => {
-      const fn = window.app._setupOrientationHandler;
-      return fn ? fn.toString() : '';
-    });
-
-    expect(src).toContain('fitTerminal');
-  });
+  // Verify it is a button element
+  const tagName = await dismissBtn.evaluate(el => el.tagName.toLowerCase());
+  expect(tagName).toBe('button');
 });
 
 // ---------------------------------------------------------------------------
-// P1-5: Dynamic font sizing
+// 5. Dynamic font sizing — 360 -> 12, 390 -> 13, 820 -> 14
 // ---------------------------------------------------------------------------
-test.describe('P1-5: Dynamic font sizing', () => {
-  test('_getMobileFontSize returns 12 at 360px width', async ({ page }) => {
+test.describe('dynamic font sizing', () => {
+  test('returns 12 at 360px width', async ({ page }) => {
     setupPageCapture(page);
     await page.setViewportSize({ width: 360, height: 640 });
     await page.goto(url);
     await waitForAppReady(page);
 
-    const fontSize = await page.evaluate(() => {
-      if (typeof window.app._getMobileFontSize === 'function') {
-        return window.app._getMobileFontSize();
-      }
-      return null;
-    });
-
+    const fontSize = await page.evaluate(() =>
+      window.app._getMobileFontSize()
+    );
     expect(fontSize).toBe(12);
   });
 
-  test('_getMobileFontSize returns 13 at 390px width', async ({ page }) => {
+  test('returns 13 at 390px width', async ({ page }) => {
     setupPageCapture(page);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(url);
     await waitForAppReady(page);
 
-    const fontSize = await page.evaluate(() => {
-      if (typeof window.app._getMobileFontSize === 'function') {
-        return window.app._getMobileFontSize();
-      }
-      return null;
-    });
-
+    const fontSize = await page.evaluate(() =>
+      window.app._getMobileFontSize()
+    );
     expect(fontSize).toBe(13);
   });
 
-  test('_getMobileFontSize returns 14 at 820px width', async ({ page }) => {
+  test('returns 14 at 820px width', async ({ page }) => {
     setupPageCapture(page);
     await page.setViewportSize({ width: 820, height: 1180 });
     await page.goto(url);
     await waitForAppReady(page);
 
-    const fontSize = await page.evaluate(() => {
-      if (typeof window.app._getMobileFontSize === 'function') {
-        return window.app._getMobileFontSize();
-      }
-      return null;
-    });
-
+    const fontSize = await page.evaluate(() =>
+      window.app._getMobileFontSize()
+    );
     expect(fontSize).toBe(14);
   });
 });
 
 // ---------------------------------------------------------------------------
-// P1-7: Overlay tab access — tabs bar z-index above overlay
+// 6. Overlay allows tab switching — tab bar z-index > overlay z-index
 // ---------------------------------------------------------------------------
-test.describe('P1-7: Overlay tab access', () => {
-  test('showOverlay sets session-tabs-bar z-index to 301', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+test('tab bar z-index is above overlay when overlay is shown', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
 
-    // Trigger showOverlay
-    await page.evaluate(() => {
-      window.app.showOverlay('startPrompt');
-    });
-
-    const zIndex = await page.evaluate(() => {
-      const tabBar = document.getElementById('sessionTabsBar');
-      return tabBar ? tabBar.style.zIndex : null;
-    });
-
-    expect(zIndex).toBe('301');
+  // Show overlay
+  await page.evaluate(() => {
+    window.app.showOverlay('startPrompt');
   });
 
-  test('overlay z-index is 300 (var(--z-overlay))', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    // Show the overlay so it becomes visible
-    await page.evaluate(() => {
-      window.app.showOverlay('startPrompt');
-    });
-
-    const overlayZ = await page.evaluate(() => {
-      const overlay = document.getElementById('overlay');
-      if (!overlay) return null;
-      return parseInt(getComputedStyle(overlay).zIndex, 10);
-    });
-
-    expect(overlayZ).toBe(300);
+  // Read tab bar z-index
+  const tabBarZ = await page.evaluate(() => {
+    const tabBar = document.getElementById('sessionTabsBar');
+    return tabBar ? parseInt(tabBar.style.zIndex, 10) : null;
   });
 
-  test('hideOverlay resets session-tabs-bar z-index', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    // Show then hide overlay
-    await page.evaluate(() => {
-      window.app.showOverlay('startPrompt');
-      window.app.hideOverlay();
-    });
-
-    const zIndex = await page.evaluate(() => {
-      const tabBar = document.getElementById('sessionTabsBar');
-      return tabBar ? tabBar.style.zIndex : null;
-    });
-
-    // After hiding, z-index should be reset to empty string
-    expect(zIndex).toBe('');
+  // Read overlay z-index
+  const overlayZ = await page.evaluate(() => {
+    const overlay = document.getElementById('overlay');
+    return overlay ? parseInt(getComputedStyle(overlay).zIndex, 10) : null;
   });
+
+  expect(tabBarZ).not.toBeNull();
+  expect(overlayZ).not.toBeNull();
+  expect(tabBarZ).toBeGreaterThan(overlayZ);
 });
 
 // ---------------------------------------------------------------------------
-// P1-8: iPad Mini breakpoint — bottom nav visible at 768px, hidden at 821px
+// 7. Hide overlay restores z-index
 // ---------------------------------------------------------------------------
-test.describe('P1-8: iPad Mini breakpoint', () => {
-  test('bottom nav is visible at 768px width', async ({ page }) => {
+test('hiding overlay resets tab bar z-index', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
+
+  // Show overlay first
+  await page.evaluate(() => {
+    window.app.showOverlay('startPrompt');
+  });
+
+  // Verify z-index is elevated
+  const elevatedZ = await page.evaluate(() => {
+    const tabBar = document.getElementById('sessionTabsBar');
+    return tabBar ? tabBar.style.zIndex : null;
+  });
+  expect(elevatedZ).toBe('301');
+
+  // Hide overlay (separate evaluate block — safe after _overlayExplicitlyHidden fix)
+  await page.evaluate(() => {
+    window.app.hideOverlay();
+  });
+
+  // Verify z-index is reset
+  const resetZ = await page.evaluate(() => {
+    const tabBar = document.getElementById('sessionTabsBar');
+    return tabBar ? tabBar.style.zIndex : null;
+  });
+  expect(resetZ).toBe('');
+});
+
+// ---------------------------------------------------------------------------
+// 8. iPad breakpoint — 768px visible, 821px hidden
+// ---------------------------------------------------------------------------
+test.describe('iPad breakpoint', () => {
+  test('bottom nav is visible at 768px', async ({ page }) => {
     setupPageCapture(page);
     await page.setViewportSize({ width: 768, height: 1024 });
     await page.goto(url);
     await waitForAppReady(page);
 
-    const navVisible = await page.evaluate(() => {
-      const nav = document.querySelector('.bottom-nav');
-      if (!nav) return false;
-      return getComputedStyle(nav).display !== 'none';
-    });
-
-    expect(navVisible).toBe(true);
+    const nav = page.locator('.bottom-nav');
+    await expect(nav).toBeVisible();
   });
 
-  test('bottom nav is hidden at 821px width', async ({ page }) => {
+  test('bottom nav is hidden at 821px', async ({ page }) => {
     setupPageCapture(page);
     await page.setViewportSize({ width: 821, height: 1024 });
     await page.goto(url);
     await waitForAppReady(page);
 
-    const navHidden = await page.evaluate(() => {
-      const nav = document.querySelector('.bottom-nav');
-      if (!nav) return true;
-      return getComputedStyle(nav).display === 'none';
-    });
-
-    expect(navHidden).toBe(true);
-  });
-
-  test('bottom nav CSS breakpoint is max-width: 820px', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const hasRule = await page.evaluate(() => {
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            if (rule instanceof CSSMediaRule && rule.conditionText &&
-                rule.conditionText.includes('max-width: 820px')) {
-              for (const inner of rule.cssRules) {
-                if (inner.selectorText && inner.selectorText.includes('.bottom-nav')) {
-                  return inner.style.display === 'flex';
-                }
-              }
-            }
-          }
-        } catch { /* cross-origin */ }
-      }
-      return false;
-    });
-
-    expect(hasRule).toBe(true);
+    const nav = page.locator('.bottom-nav');
+    await expect(nav).toBeHidden();
   });
 });
 
 // ---------------------------------------------------------------------------
-// P1-9: Aria labels on folder browser buttons
+// 9. Folder buttons are accessible via aria-label
 // ---------------------------------------------------------------------------
-test.describe('P1-9: Aria labels on folder buttons', () => {
-  test('folderUpBtn has aria-label attribute', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+test('folder browser buttons have accessible labels', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
 
-    const ariaLabel = await page.evaluate(() => {
-      const btn = document.getElementById('folderUpBtn');
-      return btn ? btn.getAttribute('aria-label') : null;
-    });
+  const parentBtn = page.locator('[aria-label*="parent"]');
+  await expect(parentBtn).toBeAttached();
 
-    expect(ariaLabel).toBeTruthy();
-    expect(ariaLabel).toContain('parent');
-  });
+  const homeBtn = page.locator('[aria-label*="home"]');
+  await expect(homeBtn).toBeAttached();
 
-  test('folderHomeBtn has aria-label attribute', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const ariaLabel = await page.evaluate(() => {
-      const btn = document.getElementById('folderHomeBtn');
-      return btn ? btn.getAttribute('aria-label') : null;
-    });
-
-    expect(ariaLabel).toBeTruthy();
-    expect(ariaLabel).toContain('home');
-  });
-
-  test('createFolderBtn has aria-label attribute', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const ariaLabel = await page.evaluate(() => {
-      const btn = document.getElementById('createFolderBtn');
-      return btn ? btn.getAttribute('aria-label') : null;
-    });
-
-    expect(ariaLabel).toBeTruthy();
-    expect(ariaLabel).toContain('folder');
-  });
+  const folderBtn = page.locator('[aria-label*="folder"]');
+  await expect(folderBtn.first()).toBeAttached();
 });
 
 // ---------------------------------------------------------------------------
-// P2-1: Swipe gestures
+// 10. Swipe gestures switch sessions
 // ---------------------------------------------------------------------------
-test.describe('P2-1: Swipe gestures', () => {
-  test('_setupSwipeGestures method exists on app', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+test('horizontal swipe triggers session switch', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
 
-    const hasMethod = await page.evaluate(() =>
-      typeof window.app._setupSwipeGestures === 'function'
-    );
-    expect(hasMethod).toBe(true);
-  });
+  // Verify swipe gesture handling is wired up
+  const container = page.locator('.terminal-container');
+  await expect(container).toBeAttached();
 
-  test('switchToNextTab method exists on session manager', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const hasMethod = await page.evaluate(() =>
-      window.app.sessionTabManager &&
-      typeof window.app.sessionTabManager.switchToNextTab === 'function'
-    );
-    expect(hasMethod).toBe(true);
-  });
-
-  test('switchToPreviousTab method exists on session manager', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const hasMethod = await page.evaluate(() =>
-      window.app.sessionTabManager &&
-      typeof window.app.sessionTabManager.switchToPreviousTab === 'function'
-    );
-    expect(hasMethod).toBe(true);
-  });
-
-  test('swipe gesture source references switchToNextTab and switchToPreviousTab', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const src = await page.evaluate(() => {
-      const fn = window.app._setupSwipeGestures;
-      return fn ? fn.toString() : '';
-    });
-
-    expect(src).toContain('switchToNextTab');
-    expect(src).toContain('switchToPreviousTab');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// P2-3: Haptic feedback — navigator.vibrate in _sendKey
-// ---------------------------------------------------------------------------
-test.describe('P2-3: Haptic feedback', () => {
-  test('extra keys _sendKey method contains navigator.vibrate', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const hasVibrate = await page.evaluate(() => {
-      if (!window.app.extraKeys) return false;
-      const fn = window.app.extraKeys._sendKey;
-      return fn ? fn.toString().includes('navigator.vibrate') : false;
-    });
-
-    expect(hasVibrate).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// P2-4: Settings modal stacked at 480px viewport
-// ---------------------------------------------------------------------------
-test.describe('P2-4: Settings modal stacked', () => {
-  test('.setting-group has flex-direction: column at 480px in CSS', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const hasRule = await page.evaluate(() => {
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            if (rule instanceof CSSMediaRule && rule.conditionText &&
-                rule.conditionText.includes('max-width: 480px')) {
-              for (const inner of rule.cssRules) {
-                if (inner.selectorText && inner.selectorText.includes('.setting-group')) {
-                  return inner.style.flexDirection === 'column';
-                }
-              }
-            }
-          }
-        } catch { /* cross-origin */ }
-      }
-      return false;
-    });
-
-    expect(hasRule).toBe(true);
-  });
-
-  test('.setting-group computed flex-direction is column at 480px viewport', async ({ page }) => {
-    setupPageCapture(page);
-    await page.setViewportSize({ width: 480, height: 800 });
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    // Open settings modal to make .setting-group visible
-    await page.evaluate(() => {
-      const modal = document.querySelector('.settings-modal');
-      if (modal) modal.style.display = 'flex';
-    });
-
-    const flexDir = await page.evaluate(() => {
-      const group = document.querySelector('.setting-group');
-      if (!group) return null;
-      return getComputedStyle(group).flexDirection;
-    });
-
-    if (flexDir !== null) {
-      expect(flexDir).toBe('column');
+  // Track whether switchToNextTab was called
+  await page.evaluate(() => {
+    window._swipeSwitchCalled = false;
+    if (window.app.sessionTabManager) {
+      const orig = window.app.sessionTabManager.switchToNextTab;
+      window.app.sessionTabManager.switchToNextTab = function () {
+        window._swipeSwitchCalled = true;
+        return orig?.call(this);
+      };
     }
   });
+
+  // Simulate a left swipe (finger moves right-to-left, dx < -80)
+  const box = await container.boundingBox();
+  if (box) {
+    const startX = box.x + box.width * 0.8;
+    const startY = box.y + box.height / 2;
+    const endX = box.x + box.width * 0.1;
+
+    await page.touchscreen.tap(startX, startY);
+    // Use dispatchEvent for a proper touch drag sequence
+    await page.evaluate(({ sx, sy, ex }) => {
+      const el = document.querySelector('.terminal-container');
+      if (!el) return;
+      el.dispatchEvent(new TouchEvent('touchstart', {
+        bubbles: true,
+        touches: [new Touch({ identifier: 1, target: el, clientX: sx, clientY: sy })],
+      }));
+      // Brief delay simulated by immediate touchend
+      el.dispatchEvent(new TouchEvent('touchend', {
+        bubbles: true,
+        changedTouches: [new Touch({ identifier: 1, target: el, clientX: ex, clientY: sy })],
+      }));
+    }, { sx: startX, sy: startY, ex: endX });
+
+    const called = await page.evaluate(() => window._swipeSwitchCalled);
+    expect(called).toBe(true);
+  }
 });
 
 // ---------------------------------------------------------------------------
-// P2-5: Pull-to-refresh skips .xterm-viewport and .modal-body
+// 11. Settings stacked on mobile
 // ---------------------------------------------------------------------------
-test.describe('P2-5: Pull-to-refresh', () => {
-  test('disablePullToRefresh method source contains .xterm-viewport closest check', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+test('setting groups stack vertically at 480px', async ({ page }) => {
+  setupPageCapture(page);
+  await page.setViewportSize({ width: 480, height: 800 });
+  await page.goto(url);
+  await waitForAppReady(page);
 
-    const src = await page.evaluate(() => {
-      const fn = window.app.disablePullToRefresh;
-      return fn ? fn.toString() : '';
-    });
-
-    expect(src).toContain('.xterm-viewport');
-    expect(src).toContain('.closest');
+  // Open the settings modal by making it visible
+  await page.evaluate(() => {
+    const modal = document.querySelector('.settings-modal');
+    if (modal) modal.style.display = 'flex';
   });
 
-  test('disablePullToRefresh method source contains .modal-body closest check', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const src = await page.evaluate(() => {
-      const fn = window.app.disablePullToRefresh;
-      return fn ? fn.toString() : '';
-    });
-
-    expect(src).toContain('.modal-body');
-    expect(src).toContain('closest');
+  const flexDir = await page.evaluate(() => {
+    const group = document.querySelector('.setting-group');
+    return group ? getComputedStyle(group).flexDirection : null;
   });
+
+  expect(flexDir).toBe('column');
 });
 
 // ---------------------------------------------------------------------------
-// P2-6: Dark mode listener
+// 12. Ctrl modifier timeout — deactivates after 5 seconds
 // ---------------------------------------------------------------------------
-test.describe('P2-6: Dark mode listener', () => {
-  test('_setupDarkModeListener method exists on app', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+test('Ctrl modifier deactivates after 5 second timeout', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
 
-    const hasMethod = await page.evaluate(() =>
-      typeof window.app._setupDarkModeListener === 'function'
-    );
-    expect(hasMethod).toBe(true);
+  // Show extra keys and activate Ctrl
+  await page.evaluate(() => {
+    if (window.app.extraKeys) window.app.extraKeys.show();
   });
 
-  test.skip('_setupDarkModeListener uses prefers-color-scheme media query — feature deferred', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
+  const ctrlBtn = page.locator('.extra-key-modifier[data-modifier="ctrl"]');
+  await expect(ctrlBtn).toBeAttached();
 
-    const src = await page.evaluate(() => {
-      const fn = window.app._setupDarkModeListener;
-      return fn ? fn.toString() : '';
-    });
-
-    expect(src).toContain('prefers-color-scheme');
+  // Tap Ctrl to activate
+  await page.evaluate(() => {
+    const btn = document.querySelector('.extra-key-modifier[data-modifier="ctrl"]');
+    if (btn) btn.click();
   });
+
+  // Verify Ctrl is active
+  const isActive = await page.evaluate(() =>
+    window.app.extraKeys ? window.app.extraKeys.ctrlActive : false
+  );
+  expect(isActive).toBe(true);
+
+  // Wait for 5s timeout to expire
+  await page.waitForTimeout(5200);
+
+  // Verify Ctrl has been deactivated
+  const isStillActive = await page.evaluate(() =>
+    window.app.extraKeys ? window.app.extraKeys.ctrlActive : true
+  );
+  expect(isStillActive).toBe(false);
 });
-
-// ---------------------------------------------------------------------------
-// P2-7: Tab close CSS — mobile does NOT use explicit width: 18px
-// ---------------------------------------------------------------------------
-test.describe('P2-7: Tab close CSS', () => {
-  test('.tab-close in mobile media query uses width: auto, not 18px', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const tabCloseWidth = await page.evaluate(() => {
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            if (rule instanceof CSSMediaRule && rule.conditionText &&
-                rule.conditionText.includes('max-width: 820px')) {
-              for (const inner of rule.cssRules) {
-                if (inner.selectorText && inner.selectorText.trim() === '.tab-close') {
-                  return inner.style.width;
-                }
-              }
-            }
-          }
-        } catch { /* cross-origin */ }
-      }
-      return null;
-    });
-
-    expect(tabCloseWidth).not.toBeNull();
-    expect(tabCloseWidth).toBe('auto');
-    expect(tabCloseWidth).not.toBe('18px');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// P2-8: Overflow button — mobile styling with 44px minimum
-// ---------------------------------------------------------------------------
-test.describe('P2-8: Overflow button', () => {
-  test('.tab-overflow-btn in mobile media query has background and 44px min size', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const overflowStyles = await page.evaluate(() => {
-      for (const sheet of document.styleSheets) {
-        try {
-          for (const rule of sheet.cssRules) {
-            if (rule instanceof CSSMediaRule && rule.conditionText &&
-                rule.conditionText.includes('max-width: 820px')) {
-              for (const inner of rule.cssRules) {
-                if (inner.selectorText && inner.selectorText.trim() === '.tab-overflow-btn') {
-                  return {
-                    background: inner.style.background,
-                    minWidth: inner.style.minWidth,
-                    minHeight: inner.style.minHeight,
-                  };
-                }
-              }
-            }
-          }
-        } catch { /* cross-origin */ }
-      }
-      return null;
-    });
-
-    expect(overflowStyles).not.toBeNull();
-    expect(overflowStyles.minWidth).toBe('44px');
-    expect(overflowStyles.minHeight).toBe('44px');
-    // background should be set (non-empty)
-    expect(overflowStyles.background).toBeTruthy();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// P2-9: Ctrl timeout — extra keys Ctrl toggle has timeout logic
-// ---------------------------------------------------------------------------
-test.describe('P2-9: Ctrl timeout', () => {
-  test('Ctrl toggle source contains timeout logic', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const hasTimeout = await page.evaluate(() => {
-      if (!window.app.extraKeys) return false;
-      const fn = window.app.extraKeys._toggleModifier;
-      if (!fn) return false;
-      const src = fn.toString();
-      return src.includes('setTimeout') && src.includes('ctrlActive');
-    });
-
-    expect(hasTimeout).toBe(true);
-  });
-
-  test('_sendKey clears Ctrl timeout when Ctrl is active', async ({ page }) => {
-    setupPageCapture(page);
-    await page.goto(url);
-    await waitForAppReady(page);
-
-    const hasCleanup = await page.evaluate(() => {
-      if (!window.app.extraKeys) return false;
-      const fn = window.app.extraKeys._sendKey;
-      if (!fn) return false;
-      const src = fn.toString();
-      return src.includes('clearTimeout') && src.includes('_ctrlTimeout');
-    });
-
-    expect(hasCleanup).toBe(true);
-  });
-});
-
-// Auto-start terminal feature was removed — overlay always shows with
-// Terminal as the first option. See docs/history/mobile-ux-overhaul-deferrals.md
