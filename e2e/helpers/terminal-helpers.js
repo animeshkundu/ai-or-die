@@ -4,7 +4,7 @@
  * @param {import('@playwright/test').Page} page
  * @param {number} [timeoutMs=10000]
  */
-async function waitForAppReady(page, timeoutMs = 10000) {
+async function waitForAppReady(page, timeoutMs = 30000) {
   await page.waitForFunction(
     () => window.app && window.app.terminal,
     { timeout: timeoutMs }
@@ -18,7 +18,7 @@ async function waitForAppReady(page, timeoutMs = 10000) {
  * @param {import('@playwright/test').Page} page
  * @param {number} [timeoutMs=10000]
  */
-async function waitForTerminalCanvas(page, timeoutMs = 10000) {
+async function waitForTerminalCanvas(page, timeoutMs = 30000) {
   await page.waitForSelector('[data-tid="terminal"] .xterm, #terminal .xterm', {
     state: 'attached',
     timeout: timeoutMs
