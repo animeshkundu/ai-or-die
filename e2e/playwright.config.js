@@ -16,9 +16,10 @@ module.exports = defineConfig({
   // 3 workers utilizes the 4 vCPUs on public GitHub-hosted runners,
   // leaving headroom for the browser and OS processes.
   workers: process.env.CI ? 3 : 1,
-  // Per-test timeout. 30s is sufficient: server startup is in beforeAll,
-  // and individual assertions should complete well within this window.
-  timeout: 30000,
+  // Per-test timeout. 60s accounts for PTY shell startup on CI runners
+  // (10-15s on Windows). Tests that don't need PTY complete in <5s —
+  // the timeout is a ceiling, not a target.
+  timeout: 60000,
   updateSnapshots: 'missing',
   expect: {
     timeout: 10000,
