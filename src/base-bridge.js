@@ -33,18 +33,25 @@ class BaseBridge {
    * Called automatically from the constructor; await bridge._commandReady to ensure it's done.
    */
   async initCommand() {
-    const found = await this.findCommandAsync();
-    this.command = found;
-    // Pre-populate the availability cache so isAvailable() doesn't need
-    // a blocking execFileSync fallback. If findCommandAsync resolved to a
-    // real path, the tool is available. If it fell back to defaultCommand,
-    // run one last async check and cache the result.
-    if (found !== this.defaultCommand) {
-      this._availableCache = true;
-      this._availableCacheTime = Date.now();
-    } else {
-      const exists = await this.commandExistsAsync(this.defaultCommand);
-      this._availableCache = exists;
+    try {
+      const found = await this.findCommandAsync();
+      this.command = found;
+      // Pre-populate the availability cache so isAvailable() doesn't need
+      // a blocking execFileSync fallback. If findCommandAsync resolved to a
+      // real path, the tool is available. If it fell back to defaultCommand,
+      // run one last async check and cache the result.
+      if (found !== this.defaultCommand) {
+        this._availableCache = true;
+        this._availableCacheTime = Date.now();
+      } else {
+        const exists = await this.commandExistsAsync(this.defaultCommand);
+        this._availableCache = exists;
+        this._availableCacheTime = Date.now();
+      }
+    } catch (err) {
+      // Discovery failed — mark as unavailable so isAvailable() returns false
+      // without falling back to blocking execFileSync
+      this._availableCache = false;
       this._availableCacheTime = Date.now();
     }
   }

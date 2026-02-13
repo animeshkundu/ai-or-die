@@ -556,7 +556,8 @@ class ClaudeCodeWebServer {
       // calling isAvailable(). Without this, isAvailable() falls back to
       // synchronous execFileSync('where') which blocks the event loop for
       // up to 5s per unavailable tool (20s total on CI with no AI CLIs).
-      await Promise.all(
+      // Use allSettled to prevent one failing bridge from blocking all others.
+      await Promise.allSettled(
         Object.values(toolEntries).map(e => e.bridge._commandReady)
       );
 
