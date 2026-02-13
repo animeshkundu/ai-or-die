@@ -29,8 +29,8 @@ jobs:
       - run: npm audit --audit-level=moderate
         continue-on-error: true
 
-  # Consolidated E2E: golden-path + functional-core + functional-extended
-  e2e-core:
+  # E2E: golden-path + functional-core (15 tests)
+  e2e-functional-core:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -51,19 +51,54 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-      - name: Run core E2E tests
-        run: npx playwright test --config e2e/playwright.config.js --project golden-path --project functional-core --project functional-extended
+      - name: Run functional-core E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project golden-path --project functional-core
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-core-${{ matrix.os }}
+          name: playwright-functional-core-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/
           retention-days: 14
 
-  # E2E: mobile device viewports (iphone + pixel run 08-mobile-portrait twice)
+  # E2E: functional-extended (28 tests, sharded 2 ways — ~14 per shard)
+  e2e-functional-extended:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run functional-extended E2E tests (shard ${{ matrix.shard }}/2)
+        run: npx playwright test --config e2e/playwright.config.js --project functional-extended --shard=${{ matrix.shard }}/2
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-functional-extended-${{ matrix.os }}-shard${{ matrix.shard }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  # E2E: mobile device viewports — iphone + pixel (14 tests)
   e2e-mobile-devices:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -97,7 +132,7 @@ jobs:
             playwright-report/
           retention-days: 14
 
-  # E2E: mobile flows + sprint1 fixes (37-39 + 48 test files)
+  # E2E: mobile-flows + mobile-sprint1 (29 tests, sharded 2 ways — ~15 per shard)
   e2e-mobile-flows:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -105,6 +140,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -119,20 +155,55 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-      - name: Run mobile flow E2E tests
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-flows --project mobile-sprint1 --project mobile-sprint23
+      - name: Run mobile flow E2E tests (shard ${{ matrix.shard }}/2)
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-flows --project mobile-sprint1 --shard=${{ matrix.shard }}/2
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-mobile-flows-${{ matrix.os }}
+          name: playwright-mobile-flows-${{ matrix.os }}-shard${{ matrix.shard }}
           path: |
             e2e/test-results/
             playwright-report/
           retention-days: 14
 
-  # Consolidated E2E: visual-regression + new-features + integrations
-  e2e-visual-integrations:
+  # E2E: mobile-sprint23 (42 tests, sharded 3 ways — ~14 per shard)
+  e2e-mobile-sprint23:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run mobile-sprint23 E2E tests (shard ${{ matrix.shard }}/3)
+        run: npx playwright test --config e2e/playwright.config.js --project mobile-sprint23 --shard=${{ matrix.shard }}/3
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-mobile-sprint23-${{ matrix.os }}-shard${{ matrix.shard }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  # E2E: visual-regression (9 tests)
+  e2e-visual:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -153,13 +224,13 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-      - name: Run visual and integration E2E tests
-        run: npx playwright test --config e2e/playwright.config.js --project visual-regression --project new-features --project integrations
+      - name: Run visual regression E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project visual-regression
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-visual-integrations-${{ matrix.os }}
+          name: playwright-visual-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/
@@ -179,8 +250,78 @@ jobs:
           path: e2e/tests/**/*-diff.png
           retention-days: 14
 
-  # Consolidated E2E: power-user-flows + ui-features
-  e2e-power-ui:
+  # E2E: new-features (47 tests, sharded 3 ways — ~16 per shard)
+  e2e-new-features:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run new-features E2E tests (shard ${{ matrix.shard }}/3)
+        run: npx playwright test --config e2e/playwright.config.js --project new-features --shard=${{ matrix.shard }}/3
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-new-features-${{ matrix.os }}-shard${{ matrix.shard }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  # E2E: integrations (54 tests, sharded 4 ways — ~14 per shard)
+  e2e-integrations:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run integration E2E tests (shard ${{ matrix.shard }}/4)
+        run: npx playwright test --config e2e/playwright.config.js --project integrations --shard=${{ matrix.shard }}/4
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-integrations-${{ matrix.os }}-shard${{ matrix.shard }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  # E2E: power-user-flows (14 tests)
+  e2e-power-user:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
@@ -201,13 +342,48 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-      - name: Run power user and UI E2E tests
-        run: npx playwright test --config e2e/playwright.config.js --project power-user-flows --project ui-features
+      - name: Run power-user E2E tests
+        run: npx playwright test --config e2e/playwright.config.js --project power-user-flows
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-power-ui-${{ matrix.os }}
+          name: playwright-power-user-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  # E2E: ui-features (51 tests, sharded 4 ways — ~13 per shard)
+  e2e-ui-features:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run ui-features E2E tests (shard ${{ matrix.shard }}/4)
+        run: npx playwright test --config e2e/playwright.config.js --project ui-features --shard=${{ matrix.shard }}/4
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-ui-features-${{ matrix.os }}-shard${{ matrix.shard }}
           path: |
             e2e/test-results/
             playwright-report/
