@@ -15,3 +15,5 @@ node_modules/
 *~
 .claude/
 test-*.js
+test-results/
+playwright-report/
