@@ -503,7 +503,7 @@ describe('E2E: Terminal tool session', function () {
     await closeWs(ws);
   });
 
-  it('should error when starting a second tool in the same session', async function () {
+  it('should handle starting the same tool twice idempotently', async function () {
     const { ws } = await connectWs(port);
 
     wsSend(ws, { type: 'create_session', name: 'Double Start' });
@@ -512,10 +512,10 @@ describe('E2E: Terminal tool session', function () {
     wsSend(ws, { type: 'start_terminal' });
     await waitForMessage(ws, 'terminal_started', 10000);
 
-    // Try to start again
+    // Starting the same tool again should succeed idempotently
     wsSend(ws, { type: 'start_terminal' });
-    const errMsg = await waitForMessage(ws, 'error');
-    assert(errMsg.message.includes('already running'));
+    const msg = await waitForMessage(ws, 'terminal_started', 10000);
+    assert(msg.sessionId, 'Expected terminal_started with sessionId');
 
     // Cleanup
     wsSend(ws, { type: 'stop' });
@@ -1190,8 +1190,8 @@ describe('E2E: Session activity broadcasting', function () {
     const { ws: wsC } = await connectWs(port);
 
     // Send input — new client C should receive activity
-    // Wait >1s to ensure throttle window has passed
-    await new Promise(r => setTimeout(r, 1100));
+    // Wait for shell prompts to settle and throttle window to pass
+    await new Promise(r => setTimeout(r, 2000));
     wsSend(wsA, { type: 'input', data: `echo RECONNECT\n` });
     const activity = await waitForMessage(wsC, 'session_activity', 5000);
     assert.strictEqual(activity.sessionId, created.sessionId);

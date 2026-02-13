@@ -552,6 +552,15 @@ class ClaudeCodeWebServer {
         terminal: { bridge: this.terminalBridge, hasDangerousMode: false },
       };
 
+      // Wait for all bridges' async command discovery to finish before
+      // calling isAvailable(). Without this, isAvailable() falls back to
+      // synchronous execFileSync('where') which blocks the event loop for
+      // up to 5s per unavailable tool (20s total on CI with no AI CLIs).
+      // Use allSettled to prevent one failing bridge from blocking all others.
+      await Promise.allSettled(
+        Object.values(toolEntries).map(e => e.bridge._commandReady)
+      );
+
       const tools = {};
       for (const [id, entry] of Object.entries(toolEntries)) {
         const available = entry.bridge.isAvailable();
@@ -1707,17 +1716,30 @@ class ClaudeCodeWebServer {
       return;
     }
 
+    const sessionId = wsInfo.claudeSessionId;
+
     if (session.active) {
-      console.warn(`startToolSession(${toolName}): session ${wsInfo.claudeSessionId} already has agent '${session.agent}' running`);
+      if (session.agent === toolName) {
+        // Idempotent: same tool already running — send success to requester.
+        // Handles the race where both client auto-start and test helper
+        // call startToolSession('terminal') near-simultaneously.
+        console.log(`startToolSession(${toolName}): already running in session ${sessionId}, sending success`);
+        this.sendToWebSocket(wsInfo.ws, {
+          type: `${toolName}_started`,
+          sessionId: sessionId
+        });
+        return;
+      }
+      console.warn(`startToolSession(${toolName}): session ${sessionId} already has agent '${session.agent}' running`);
       this.sendToWebSocket(wsInfo.ws, {
         type: 'error',
-        message: 'An agent is already running in this session'
+        message: `Cannot start ${toolName}: '${session.agent}' is already running`
       });
       return;
     }
 
-    const sessionId = wsInfo.claudeSessionId;
-
+    // Ensure async command discovery has finished before checking availability
+    await bridge._commandReady;
     if (!bridge.isAvailable()) {
       console.warn(`startToolSession(${toolName}): bridge reports tool not available`);
       this.sendToWebSocket(wsInfo.ws, {
@@ -1726,6 +1748,13 @@ class ClaudeCodeWebServer {
       });
       return;
     }
+
+    // Mark active BEFORE the async spawn to prevent TOCTOU races —
+    // two concurrent start_terminal messages could both pass the
+    // session.active check above and spawn duplicate PTY processes.
+    session.active = true;
+    session.agent = toolName;
+    this.activityBroadcastTimestamps.set(sessionId, Date.now());
 
     try {
       console.log(`startToolSession(${toolName}): spawning in session ${sessionId}, workingDir=${session.workingDir}`);
@@ -1772,8 +1801,6 @@ class ClaudeCodeWebServer {
         ...options
       });
 
-      session.active = true;
-      session.agent = toolName;
       session.lastActivity = new Date();
       if (!session.sessionStartTime) {
         session.sessionStartTime = new Date();
@@ -1787,6 +1814,10 @@ class ClaudeCodeWebServer {
       this.broadcastSessionActivity(sessionId, 'session_started', { agent: toolName });
 
     } catch (error) {
+      // Roll back the early active flag set before spawn
+      session.active = false;
+      session.agent = null;
+      this.activityBroadcastTimestamps.delete(sessionId);
       if (this.dev) {
         console.error(`Error starting ${toolName} in session ${wsInfo.claudeSessionId}:`, error);
       }

@@ -30,6 +30,8 @@ body {
     font-family: var(--font-sans);
     background-color: var(--bg-primary);
     color: var(--text-primary);
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
     height: 100vh;
     height: 100dvh; /* Dynamic viewport height for mobile */
     overflow: hidden;

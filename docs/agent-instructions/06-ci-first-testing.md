@@ -1,5 +1,7 @@
 # CI-First Testing
 
+This document covers Tier 1 (True E2E Tests) of the project's testing hierarchy. E2E tests on CI are the source of truth for regression. For the full three-tier testing hierarchy — E2E, Copilot agent exploratory testing, and manual device testing — see `docs/agent-instructions/02-testing-and-validation.md`.
+
 ## E2E Tests Are the Source of Truth
 
 End-to-end tests are the only true way to validate that the system works. Unit tests verify isolated logic. E2E tests prove the whole system -- server, WebSocket, terminal, browser UI -- actually functions as a user would experience it.
@@ -7,6 +9,18 @@ End-to-end tests are the only true way to validate that the system works. Unit t
 A feature is not done until its E2E tests pass on GitHub runners. If unit tests pass but E2E fails, the feature is broken. Period. No exceptions. No "it works on my machine." The GitHub runner is the only machine that matters.
 
 Every new feature must have E2E test coverage. Every bug fix must have a regression E2E test. The E2E suite is the contract that tells the next agent "this is what working looks like."
+
+### Performance budget: 5-minute target, 7-minute max
+
+The entire CI pipeline must complete within 5 minutes wall-clock time. 7 minutes is the absolute maximum acceptable. The per-job timeout is set to 9 minutes as a safety net for runner queue delays, but any job consistently hitting 7+ minutes must be investigated and optimized.
+
+To hit this budget:
+- **Parallelize aggressively**: All independent Playwright projects run in separate parallel jobs. Never run projects sequentially within a single job unless they share expensive state.
+- **Minimize setup overhead**: Each CI job spends 2-3 minutes on checkout, npm ci, and Playwright install. Consolidate small test projects into fewer jobs to reduce redundant setup.
+- **No unnecessary dependencies**: Do not add `needs:` between jobs unless one job consumes artifacts from another. Unit tests and browser tests run in parallel from the start.
+- **Increase Playwright workers**: Use `--workers=2` or more within each job for parallel test execution.
+
+When adding new E2E tests, verify the pipeline still completes under 5 minutes. If it doesn't, split the slowest job or consolidate the smallest ones.
 
 ### Long E2E waits indicate bugs
 
