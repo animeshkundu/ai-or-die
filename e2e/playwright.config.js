@@ -107,10 +107,15 @@ module.exports = defineConfig({
       name: 'mobile-flows',
       testMatch: /3[7-9]-.*\.spec\.js/,
     },
+    // Mobile Sprint 1 fix validation — device emulation, CSS checks
+    {
+      name: 'mobile-sprint1',
+      testMatch: '48-mobile-sprint1-fixes.spec.js',
+    },
     // UI feature tests — command palette styling, voice settings, mic chimes
     {
       name: 'ui-features',
-      testMatch: /4[0-9]-.*\.spec\.js/,
+      testMatch: /4[0-7]-.*\.spec\.js|49-.*\.spec\.js/,
     },
   ],
 });
