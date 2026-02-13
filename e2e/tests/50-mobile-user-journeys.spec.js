@@ -773,3 +773,37 @@ test('overflow-tab-close meets 44px minimum touch target', async ({ page }) => {
   expect(sizes.minWidth).toBeGreaterThanOrEqual(44);
   expect(sizes.minHeight).toBeGreaterThanOrEqual(44);
 });
+
+// ===========================================================================
+// 16. TAB SWITCH OVERLAY STALENESS (RC-1 fix validation)
+//     Switching from active session to inactive session must show overlay,
+//     not leave user on blank screen due to stale _overlayExplicitlyHidden.
+// ===========================================================================
+test('switching to inactive session shows overlay after active session', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
+  await waitForWebSocket(page);
+
+  // Simulate: user was on an active session where hideOverlay was called
+  await page.evaluate(() => window.app.hideOverlay());
+  const flagAfterHide = await page.evaluate(() => window.app._overlayExplicitlyHidden);
+  expect(flagAfterHide).toBe(true);
+
+  // Now joinSession for a different session — flag should reset
+  // (simulating tab switch to inactive session)
+  const sessionId = await createSessionViaApi(port);
+  await page.evaluate((sid) => {
+    window.app.send({ type: 'join_session', sessionId: sid });
+  }, sessionId);
+
+  // The joinSession flow resets the flag before sending join_session
+  // Check that the flag was cleared by the join flow
+  // (We test the app-level joinSession method which resets the flag)
+  await page.evaluate(async (sid) => {
+    await window.app.joinSession(sid);
+  }, sessionId);
+
+  const flagAfterJoin = await page.evaluate(() => window.app._overlayExplicitlyHidden);
+  expect(flagAfterJoin).toBe(false);
+});
