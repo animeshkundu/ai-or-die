@@ -158,6 +158,7 @@ class ExtraKeys {
         this._interceptNextKey();
         this._ctrlTimeout = setTimeout(() => {
           this.ctrlActive = false;
+          this._ctrlTimeout = null;
           this._updateCtrlVisual();
         }, 5000);
       } else if (this._ctrlTimeout) {

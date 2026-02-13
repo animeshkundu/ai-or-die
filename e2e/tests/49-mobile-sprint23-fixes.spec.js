@@ -307,30 +307,30 @@ test('horizontal swipe triggers session switch', async ({ page }) => {
 
   // Simulate a left swipe (finger moves right-to-left, dx < -80)
   const box = await container.boundingBox();
-  if (box) {
-    const startX = box.x + box.width * 0.8;
-    const startY = box.y + box.height / 2;
-    const endX = box.x + box.width * 0.1;
+  expect(box).not.toBeNull();
 
-    await page.touchscreen.tap(startX, startY);
-    // Use dispatchEvent for a proper touch drag sequence
-    await page.evaluate(({ sx, sy, ex }) => {
-      const el = document.querySelector('.terminal-container');
-      if (!el) return;
-      el.dispatchEvent(new TouchEvent('touchstart', {
-        bubbles: true,
-        touches: [new Touch({ identifier: 1, target: el, clientX: sx, clientY: sy })],
-      }));
-      // Brief delay simulated by immediate touchend
-      el.dispatchEvent(new TouchEvent('touchend', {
-        bubbles: true,
-        changedTouches: [new Touch({ identifier: 1, target: el, clientX: ex, clientY: sy })],
-      }));
-    }, { sx: startX, sy: startY, ex: endX });
+  const startX = box.x + box.width * 0.8;
+  const startY = box.y + box.height / 2;
+  const endX = box.x + box.width * 0.1;
 
-    const called = await page.evaluate(() => window._swipeSwitchCalled);
-    expect(called).toBe(true);
-  }
+  await page.touchscreen.tap(startX, startY);
+  // Use dispatchEvent for a proper touch drag sequence
+  await page.evaluate(({ sx, sy, ex }) => {
+    const el = document.querySelector('.terminal-container');
+    if (!el) return;
+    el.dispatchEvent(new TouchEvent('touchstart', {
+      bubbles: true,
+      touches: [new Touch({ identifier: 1, target: el, clientX: sx, clientY: sy })],
+    }));
+    // Brief delay simulated by immediate touchend
+    el.dispatchEvent(new TouchEvent('touchend', {
+      bubbles: true,
+      changedTouches: [new Touch({ identifier: 1, target: el, clientX: ex, clientY: sy })],
+    }));
+  }, { sx: startX, sy: startY, ex: endX });
+
+  const called = await page.evaluate(() => window._swipeSwitchCalled);
+  expect(called).toBe(true);
 });
 
 // ---------------------------------------------------------------------------

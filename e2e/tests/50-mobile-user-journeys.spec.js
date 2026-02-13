@@ -487,22 +487,33 @@ test('started terminal session reports active via WebSocket', async ({ page }) =
   await waitForAppReady(page);
   await waitForWebSocket(page);
 
+  // Track session_joined in browser context before joining
+  await page.evaluate(() => {
+    window._sessionJoined = false;
+    const origOnMessage = window.app.socket.onmessage;
+    window.app.socket.onmessage = function (event) {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'session_joined') window._sessionJoined = true;
+      } catch (_) {}
+      return origOnMessage.call(this, event);
+    };
+  });
+
   // Join the session via WebSocket
   await page.evaluate((sid) => {
     window.app.send({ type: 'join_session', sessionId: sid });
   }, sessionId);
 
-  // Wait for session_joined message
-  await page.waitForFunction(() => {
-    return (page._wsMessages || []).some(m => m.type === 'session_joined');
-  }, { timeout: 5000 }).catch(() => {});
+  // Wait for session_joined message (now tracked in browser context)
+  await page.waitForFunction(() => window._sessionJoined === true, { timeout: 5000 });
 
   // Start terminal via the app method
   await page.evaluate(() => {
     window.app.startToolSession('terminal');
   });
 
-  // Wait for terminal_started message
+  // Wait for terminal output to appear
   await page.waitForFunction(() => {
     const term = window.app && window.app.terminal;
     if (!term) return false;
@@ -512,7 +523,7 @@ test('started terminal session reports active via WebSocket', async ({ page }) =
       if (line && line.translateToString(true).trim().length > 0) return true;
     }
     return false;
-  }, { timeout: 15000 }).catch(() => {});
+  }, { timeout: 15000 });
 
   // Verify WebSocket is still connected and session is running
   const state = await page.evaluate(() => ({

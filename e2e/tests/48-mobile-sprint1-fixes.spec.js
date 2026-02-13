@@ -37,16 +37,18 @@ test.describe('P0-1: Install button vs bottom nav overlap', () => {
     await waitForAppReady(page);
 
     // The install button is injected by the PWA beforeinstallprompt handler.
-    // In CI there is no real install prompt, so we inject one to validate layout.
+    // In CI there is no real install prompt, so we inject one matching the
+    // real creation (index.html:724) — same id, class, and no inline styles —
+    // so the CSS rules apply identically.
     await page.evaluate(() => {
       const btn = document.createElement('button');
+      btn.id = 'installBtn';
       btn.className = 'install-btn';
-      btn.textContent = 'Install';
-      btn.style.display = 'block';
+      btn.innerHTML = '<span class="icon" aria-hidden="true">Install</span> Install App';
       document.body.appendChild(btn);
     });
 
-    const installBtn = page.locator('.install-btn');
+    const installBtn = page.locator('#installBtn');
     const bottomNav = page.locator('.bottom-nav');
 
     await expect(installBtn).toBeVisible();
@@ -67,12 +69,12 @@ test.describe('P0-1: Install button vs bottom nav overlap', () => {
     await page.goto(url);
     await waitForAppReady(page);
 
-    // Inject a mock install button so CSS applies
+    // Inject matching the real PWA install button structure
     await page.evaluate(() => {
       const btn = document.createElement('button');
+      btn.id = 'installBtn';
       btn.className = 'install-btn';
-      btn.textContent = 'Install';
-      btn.style.display = 'block';
+      btn.innerHTML = '<span class="icon" aria-hidden="true">Install</span> Install App';
       document.body.appendChild(btn);
     });
 
@@ -80,7 +82,7 @@ test.describe('P0-1: Install button vs bottom nav overlap', () => {
     // bottom: calc(52px + 20px + env(safe-area-inset-bottom, 0px))
     // so the resolved bottom value should be >= 72px (52 + 20)
     const installBottom = await page.evaluate(() => {
-      const btn = document.querySelector('.install-btn');
+      const btn = document.getElementById('installBtn');
       if (!btn) return '';
       return getComputedStyle(btn).bottom;
     });
