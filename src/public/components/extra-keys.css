@@ -78,8 +78,8 @@
 
 @media (orientation: landscape) {
     .extra-key {
-        min-height: 36px;
-        min-width: 36px;
+        min-height: 44px;
+        min-width: 44px;
         font-size: var(--text-sm);
     }
 }

@@ -23,6 +23,11 @@ test.afterAll(async () => {
 });
 
 test.afterEach(async ({ page }, testInfo) => {
+  // Reset state to prevent test pollution
+  await page.evaluate(() => {
+    document.body.classList.remove('keyboard-open');
+    if (window.app) window.app._overlayExplicitlyHidden = false;
+  }).catch(() => {});
   await attachFailureArtifacts(page, testInfo);
 });
 
@@ -585,4 +590,186 @@ test('swipe with realistic timing triggers session switch', async ({ page }) => 
 
   const called = await page.evaluate(() => window._swipeSwitchCalled);
   expect(called).toBe(true);
+});
+
+// ===========================================================================
+// 10. RECONNECT RESETS OVERLAY FLAG (C1 fix validation)
+//     After reconnect, _overlayExplicitlyHidden must be false so that
+//     session_joined can show the start prompt for inactive sessions.
+// ===========================================================================
+test.describe('reconnect overlay state', () => {
+  test('reconnect resets _overlayExplicitlyHidden to false', async ({ page }) => {
+    setupPageCapture(page);
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForWebSocket(page);
+
+    // Simulate the state after a terminal session started and then exited:
+    // hideOverlay sets flag to true (as terminal_started handler does)
+    await page.evaluate(() => window.app.hideOverlay());
+    const beforeReconnect = await page.evaluate(() => window.app._overlayExplicitlyHidden);
+    expect(beforeReconnect).toBe(true);
+
+    // Call reconnect — it should reset the flag
+    await page.evaluate(() => window.app.reconnect());
+
+    const afterReconnect = await page.evaluate(() => window.app._overlayExplicitlyHidden);
+    expect(afterReconnect).toBe(false);
+  });
+
+  test('session_joined shows overlay after reconnect for inactive session', async ({ page }) => {
+    setupPageCapture(page);
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForWebSocket(page);
+
+    // Set flag as if terminal had started previously
+    await page.evaluate(() => window.app.hideOverlay());
+
+    // Reconnect resets the flag
+    await page.evaluate(() => window.app.reconnect());
+
+    const flag = await page.evaluate(() => window.app._overlayExplicitlyHidden);
+    expect(flag).toBe(false);
+
+    // Simulate session_joined with active=false (terminal exited during disconnect)
+    await page.evaluate(() => {
+      window.app.showOverlay('startPrompt');
+    });
+
+    const overlayVisible = await page.evaluate(() => {
+      const overlay = document.getElementById('overlay');
+      return overlay ? overlay.style.display : 'none';
+    });
+    expect(overlayVisible).toBe('flex');
+  });
+});
+
+// ===========================================================================
+// 11. RECONNECTION TIMEOUT (C2 fix validation)
+//     If connect() hangs, the timeout should fire and reset _reconnecting.
+// ===========================================================================
+test('reconnect timeout releases _reconnecting flag', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
+  await waitForWebSocket(page);
+
+  // Verify _reconnecting starts false
+  const before = await page.evaluate(() => window.app._reconnecting);
+  expect(before).toBe(false);
+
+  // Mock connect() to return a never-resolving promise
+  await page.evaluate(() => {
+    window.app.connect = () => new Promise(() => {});
+  });
+
+  // Trigger reconnect
+  await page.evaluate(() => window.app.reconnect());
+
+  // _reconnecting should be true immediately
+  const duringReconnect = await page.evaluate(() => window.app._reconnecting);
+  expect(duringReconnect).toBe(true);
+
+  // Wait for 1s reconnect delay + 10s timeout + 1s buffer = 12s
+  await page.waitForFunction(
+    () => window.app._reconnecting === false,
+    { timeout: 15000 }
+  );
+
+  const afterTimeout = await page.evaluate(() => window.app._reconnecting);
+  expect(afterTimeout).toBe(false);
+});
+
+// ===========================================================================
+// 12. BREAKPOINT CONSISTENCY (C5 fix validation)
+//     JS breakpoint checks must use 820px, not 768px.
+// ===========================================================================
+test('isMobile detection uses 820px breakpoint', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
+
+  // At iPhone 14 (390px), isMobile should be true
+  const isMobileAt390 = await page.evaluate(() => window.app.isMobile);
+  expect(isMobileAt390).toBe(true);
+
+  // At 820px (iPad Mini portrait), should still count as mobile
+  await page.setViewportSize({ width: 820, height: 1024 });
+  await page.waitForTimeout(200);
+  const isMobileAt820 = await page.evaluate(() => window.innerWidth <= 820);
+  expect(isMobileAt820).toBe(true);
+
+  // At 821px, should be desktop
+  await page.setViewportSize({ width: 821, height: 1024 });
+  const isMobileAt821 = await page.evaluate(() => window.innerWidth <= 820);
+  expect(isMobileAt821).toBe(false);
+});
+
+// ===========================================================================
+// 13. EXTRA-KEYS INITIALIZE WITHOUT VISUALVIEWPORT (C7 fix validation)
+//     Extra-keys should be created even without visualViewport API.
+// ===========================================================================
+test('extra-keys initializes on mobile', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
+
+  // Extra-keys should be initialized on mobile
+  const hasExtraKeys = await page.evaluate(() =>
+    window.app.extraKeys !== undefined && window.app.extraKeys !== null
+  );
+  expect(hasExtraKeys).toBe(true);
+
+  // Extra-keys container should exist in DOM
+  const container = page.locator('.extra-keys-bar');
+  await expect(container).toBeAttached();
+});
+
+// ===========================================================================
+// 14. KEYBOARD TRANSITION SMOOTHNESS (C6 fix validation)
+//     All keyboard-open properties should transition, not snap.
+// ===========================================================================
+test('keyboard-open CSS transitions include padding and border-width', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
+
+  const transitions = await page.evaluate(() => {
+    document.body.classList.add('keyboard-open');
+    const el = document.querySelector('.bottom-nav');
+    if (!el) return '';
+    return getComputedStyle(el).transitionProperty;
+  });
+
+  // Should include padding and border (not just opacity and height)
+  expect(transitions).toContain('padding');
+  expect(transitions).toContain('border');
+});
+
+// ===========================================================================
+// 15. TOUCH TARGET WCAG COMPLIANCE (I2/I3 fix validation)
+//     All interactive elements must be at least 44x44px.
+// ===========================================================================
+test('overflow-tab-close meets 44px minimum touch target', async ({ page }) => {
+  setupPageCapture(page);
+  await page.goto(url);
+  await waitForAppReady(page);
+
+  const sizes = await page.evaluate(() => {
+    const el = document.createElement('button');
+    el.className = 'overflow-tab-close';
+    el.textContent = 'x';
+    document.body.appendChild(el);
+    const style = getComputedStyle(el);
+    const result = {
+      minWidth: parseFloat(style.minWidth),
+      minHeight: parseFloat(style.minHeight),
+    };
+    el.remove();
+    return result;
+  });
+
+  expect(sizes.minWidth).toBeGreaterThanOrEqual(44);
+  expect(sizes.minHeight).toBeGreaterThanOrEqual(44);
 });

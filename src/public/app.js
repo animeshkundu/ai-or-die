@@ -674,10 +674,15 @@ class ClaudeCodeWebInterface {
     }
 
     _setupExtraKeys() {
-        if (!this.isMobile || !window.visualViewport || typeof ExtraKeys === 'undefined') return;
+        if (!this.isMobile || typeof ExtraKeys === 'undefined') return;
 
         this.extraKeys = new ExtraKeys({ app: this });
         this._keyboardOpen = false;
+
+        // Browsers without visualViewport (Firefox Android, Samsung Internet):
+        // Initialize extra-keys but skip viewport-based keyboard detection.
+        // The extra-keys bar is still usable via manual show/hide.
+        if (!window.visualViewport) return;
 
         // Thrashing detection: if >3 resize events in 500ms, fall back to fixed threshold
         const resizeTimestamps = [];
@@ -1477,6 +1482,9 @@ class ClaudeCodeWebInterface {
         if (this._reconnecting) return;
         this._reconnecting = true;
         this.disconnect();
+        // Reset overlay flag so session_joined can show start prompt if terminal
+        // exited during the disconnect (fixes stuck blank screen after reconnect)
+        this._overlayExplicitlyHidden = false;
         // Reset flow control state so stale pause signals aren't sent on new connection
         this._outputPaused = false;
         this._pendingCallbacks = 0;
@@ -1494,7 +1502,10 @@ class ClaudeCodeWebInterface {
         }
         setTimeout(() => {
             try {
-                this.connect()
+                const connectTimeout = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Connection timeout')), 10000)
+                );
+                Promise.race([this.connect(), connectTimeout])
                     .catch(err => console.error('Reconnection failed:', err))
                     .finally(() => { this._reconnecting = false; });
             } catch (err) {
@@ -4012,7 +4023,7 @@ class ClaudeCodeWebInterface {
         // Container is already visible by default
         
         // Check if mobile screen
-        const isMobile = window.innerWidth <= 768;
+        const isMobile = window.innerWidth <= 820;
         const isSmallMobile = window.innerWidth <= 480;
         
         // Format tokens (K/M notation)
@@ -4152,7 +4163,7 @@ class ClaudeCodeWebInterface {
                 if (totalTokens > 0) {
                     const opusPercent = (opusTokens / totalTokens) * 100;
                     const sonnetPercent = (sonnetTokens / totalTokens) * 100;
-                    const isMobile = window.innerWidth <= 768;
+                    const isMobile = window.innerWidth <= 820;
                     
                     // Use short names on mobile, full names on desktop
                     const opusName = isMobile ? 'O' : 'Opus';
@@ -4175,7 +4186,7 @@ class ClaudeCodeWebInterface {
             }
         } else {
             // No active session or expired session - show zeros
-            const isMobile = window.innerWidth <= 768;
+            const isMobile = window.innerWidth <= 820;
             
             document.getElementById('usageTitle').textContent = '0h 0m';
             document.getElementById('usageTokens').textContent = isMobile ? '0%' : '0';
