@@ -7,13 +7,13 @@ on:
     branches: [main]
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-main-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
   test:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -31,7 +31,7 @@ jobs:
   # Consolidated E2E: golden-path + functional-core + functional-extended
   e2e-core:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -59,7 +59,7 @@ jobs:
   # E2E: mobile device viewports (iphone + pixel run 08-mobile-portrait twice)
   e2e-mobile-devices:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -87,7 +87,7 @@ jobs:
   # E2E: mobile flows + sprint1 fixes (37-39 + 48 test files)
   e2e-mobile-flows:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -115,7 +115,7 @@ jobs:
   # Consolidated E2E: visual-regression + new-features + integrations
   e2e-visual-integrations:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -157,7 +157,7 @@ jobs:
   # Consolidated E2E: power-user-flows + ui-features
   e2e-power-ui:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
@@ -184,7 +184,7 @@ jobs:
 
   build-binary:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       matrix:
         include:

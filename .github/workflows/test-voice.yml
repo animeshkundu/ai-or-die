@@ -13,7 +13,7 @@ concurrency:
 jobs:
   voice-unit:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -27,7 +27,7 @@ jobs:
 
   voice-e2e:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 9
+    timeout-minutes: 12
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]

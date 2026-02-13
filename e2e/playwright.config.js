@@ -3,10 +3,10 @@ const { defineConfig, devices } = require('@playwright/test');
 
 module.exports = defineConfig({
   testDir: './tests',
-  fullyParallel: false,
+  fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 2 : 1,
+  workers: process.env.CI ? 3 : 1,
   // Per-test timeout. 30s is sufficient: server startup is in beforeAll,
   // and individual assertions should complete well within this window.
   timeout: 30000,
@@ -89,6 +89,7 @@ module.exports = defineConfig({
     {
       name: 'voice-real-pipeline',
       testMatch: '21-voice-real-pipeline.spec.js',
+      timeout: 120000, // ML inference on CI runners is slow (model load + transcription)
       use: {
         permissions: ['clipboard-read', 'clipboard-write', 'microphone'],
         launchOptions: {
