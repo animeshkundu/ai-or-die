@@ -78,6 +78,7 @@
         padding-bottom: env(safe-area-inset-bottom, 0);
         min-width: 100%;
         max-width: 100%;
+        z-index: var(--z-modal);
     }
     .ctx-item {
         padding: 12px 16px;

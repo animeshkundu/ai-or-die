@@ -724,7 +724,8 @@ class ClaudeCodeWebInterface {
         if (this.extraKeys) this.extraKeys.show();
         const termEl = document.getElementById('terminal');
         if (termEl) {
-            termEl.style.height = (availableHeight - 44) + 'px';
+            const extraKeysHeight = this.extraKeys?.container?.offsetHeight || 44;
+            termEl.style.height = (availableHeight - extraKeysHeight) + 'px';
             if (this.fitAddon) this.fitAddon.fit();
         }
     }
