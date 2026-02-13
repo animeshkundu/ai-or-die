@@ -404,11 +404,98 @@ For a full audit, create 8 issues with these focus areas:
 
 Label all issues with `copilot`. Assign all to the Copilot agent. They run in parallel and complete in ~50 minutes.
 
+## PR Lifecycle and Cleanup
+
+As of February 2026, Copilot coding agents always create a PR when assigned an issue. There is no audit-only, dry-run, or comment-only mode ([GitHub Docs](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent)). For audit tasks, the agent creates a branch and PR containing its report (and sometimes suggested code fixes). Plan for this — the cleanup step is mandatory.
+
+### What agents produce
+
+Each agent creates:
+- A **branch** (e.g., `copilot/qa-test-mobile-ux`)
+- A **PR** marked `[WIP]` with a task checklist in the body
+- **Files**: report markdown in `docs/audits/`, sometimes Playwright test files, sometimes screenshots
+
+### Extracting findings
+
+Read the agent's report from the PR diff. Do not merge audit PRs — extract the findings and synthesize them separately.
+
+```bash
+# Read a specific audit report from a Copilot PR
+gh pr diff 43 | head -500
+
+# List all files an agent created
+gh pr diff 43 --stat
+```
+
+### Cleanup after audit run
+
+After extracting findings, close all audit PRs and issues in batch:
+
+```bash
+# Close all Copilot PRs with branch cleanup
+for pr in 43 44 45 46 47 48 49 50; do
+    gh pr close $pr --comment "Audit complete. Findings in PR #59." --delete-branch
+done
+
+# Close all Copilot issues
+for issue in 35 36 37 38 39 40 41 42; do
+    gh issue close $issue --comment "Audit complete. Findings in docs/audits/SUMMARY.md."
+done
+```
+
+### Assigning via CLI (GraphQL)
+
+The GitHub CLI cannot assign issues to Copilot directly (`--assignee copilot` fails). Use GraphQL:
+
+```bash
+# Step 1: Get Copilot's actor ID (one-time lookup)
+gh api graphql -f query='
+query {
+  repository(owner: "OWNER", name: "REPO") {
+    suggestedActors(loginNames: "copilot", capabilities: [CAN_BE_ASSIGNED], first: 10) {
+      nodes { login ... on Bot { id databaseId } }
+    }
+  }
+}'
+# Returns: BOT_kgDOC9w8XQ (actor ID for copilot-swe-agent)
+
+# Step 2: Get issue node IDs
+gh api graphql -f query='
+query {
+  repository(owner: "OWNER", name: "REPO") {
+    issue(number: 35) { id }
+  }
+}'
+
+# Step 3: Assign
+gh api graphql -f query='
+mutation {
+  replaceActorsForAssignable(input: {
+    assignableId: "ISSUE_NODE_ID",
+    actorIds: ["BOT_kgDOC9w8XQ"]
+  }) { assignable { ... on Issue { assignees(first:1) { nodes { login } } } } }
+}'
+```
+
+Batch all assignments into a single GraphQL mutation for efficiency (up to 8 aliases per query).
+
+### Model selection
+
+Model selection is only available through the GitHub web UI when assigning — not via CLI or API. For programmatic assignment via GraphQL, the agent uses the default (Auto) model. To use a specific model (e.g., GPT-5.3-Codex), assign manually through the web UI.
+
+### Preventing code changes
+
+Add this to the issue body to request audit-only behavior:
+
+> **Important: This is an audit task. Do not modify any source code files. Only produce the report at the specified path.**
+
+Agents usually respect this, but sometimes create branches with suggested fixes alongside reports. Always review PRs before extracting reports.
+
 ## Synthesizing Results
 
 After all agents complete:
 
-1. Collect all reports from `docs/audits/`
+1. Extract reports from PR diffs (do not merge audit PRs)
 2. Run the expert + adversarial validation layer (see above)
 3. Remove false positives with documented rationale
 4. Cross-reference: findings reported by 3+ agents are high-confidence
@@ -419,6 +506,7 @@ After all agents complete:
    - Corrections to original plans based on new discoveries
 6. Create implementation tasks from the P0 and P1 findings
 7. Write E2E regression tests for each fix
+8. **Clean up**: Close all audit PRs (with `--delete-branch`) and issues in batch
 
 The summary becomes the source of truth. Individual agent reports are raw data -- useful for traceability but not for decision-making.
 
