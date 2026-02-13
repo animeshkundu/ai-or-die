@@ -99,7 +99,7 @@ test.describe('Mobile: Pixel 7 Layout', () => {
     expect(after.height).toBeLessThan(beforeHeight);
     expect(after.bottom).toBeLessThanOrEqual(after.innerHeight + 2);
 
-    const marker = `MOBILE_KB_PIXEL7_${Date.now()}`;
+    const marker = `MKP7${Date.now()}`;
     await typeInTerminal(page, `node -e "console.log('${marker}')"`);
     await pressKey(page, 'Enter');
     await waitForTerminalText(page, marker, 15000);

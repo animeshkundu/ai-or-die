@@ -98,7 +98,7 @@ test.describe('Mobile: iPhone 14 Layout', () => {
     expect(after.height).toBeLessThan(beforeHeight);
     expect(after.bottom).toBeLessThanOrEqual(after.innerHeight + 2);
 
-    const marker = `MOBILE_KB_IP14_${Date.now()}`;
+    const marker = `MK14${Date.now()}`;
     await typeInTerminal(page, `echo ${marker}`);
     await pressKey(page, 'Enter');
     await waitForTerminalText(page, marker, 15000);

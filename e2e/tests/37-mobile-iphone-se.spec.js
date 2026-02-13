@@ -100,7 +100,7 @@ test.describe('Mobile: iPhone SE Layout', () => {
     expect(after.height).toBeLessThan(before.height);
     expect(after.bottom).toBeLessThanOrEqual(after.innerHeight + 2);
 
-    const marker = `MOBILE_KEYBOARD_${Date.now()}`;
+    const marker = `MK${Date.now()}`;
     await typeInTerminal(page, `echo ${marker}`);
     await pressKey(page, 'Enter');
     await waitForTerminalText(page, marker, 15000);
