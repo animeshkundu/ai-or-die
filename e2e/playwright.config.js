@@ -3,10 +3,14 @@ const { defineConfig, devices } = require('@playwright/test');
 
 module.exports = defineConfig({
   testDir: './tests',
-  // fullyParallel is safe: each test file creates its own server in
-  // beforeAll, and CI jobs use sharding to distribute files across
-  // separate runners, avoiding port conflicts.
-  fullyParallel: true,
+  // fullyParallel MUST be false: with true, Playwright distributes
+  // individual tests from one file across workers, causing beforeAll
+  // (which creates the server) to run once PER WORKER, not per file.
+  // 3 workers + fullyParallel = 3 redundant server instances per file,
+  // each spawning PTY processes — exhausting CI runner resources.
+  // With false, workers run different FILES in parallel (good) while
+  // tests within a file share one server (efficient).
+  fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   // 3 workers utilizes the 4 vCPUs on public GitHub-hosted runners,
