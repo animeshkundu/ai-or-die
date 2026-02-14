@@ -328,7 +328,7 @@
         padding: 0;
         border-width: 0;
         overflow: hidden;
-        transition: opacity 0.2s ease, height 0.2s ease;
+        transition: opacity 0.2s ease, height 0.2s ease, padding 0.2s ease, border-width 0.2s ease;
     }
     body.keyboard-open .session-tabs-bar {
         height: 0;
@@ -336,7 +336,8 @@
         overflow: hidden;
         padding: 0;
         border-width: 0;
-        transition: height 0.2s ease;
+        opacity: 0;
+        transition: opacity 0.2s ease, height 0.2s ease, padding 0.2s ease, border-width 0.2s ease;
     }
     body.keyboard-open #app {
         padding-bottom: 0 !important;

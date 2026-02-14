@@ -479,7 +479,7 @@ class SessionTabManager {
     }
     
     updateTabOverflow() {
-        const isMobile = window.innerWidth <= 768;
+        const isMobile = window.innerWidth <= 820;
         const overflowWrapper = document.getElementById('tabOverflowWrapper');
         const overflowCount = document.querySelector('.tab-overflow-count');
         
@@ -647,7 +647,7 @@ class SessionTabManager {
             });
             
             // Reorder tabs based on the initial timestamps (mobile only)
-            if (window.innerWidth <= 768) {
+            if (window.innerWidth <= 820) {
                 this.reorderTabsByLastAccessed();
             }
             
@@ -808,7 +808,7 @@ class SessionTabManager {
             this.updateTabHistory(sessionId);
         }
 
-        if (window.innerWidth <= 768) {
+        if (window.innerWidth <= 820) {
             const tabIndex = this.getOrderedTabIds().indexOf(sessionId);
             if (tabIndex >= 2) this.reorderTabsByLastAccessed();
         }

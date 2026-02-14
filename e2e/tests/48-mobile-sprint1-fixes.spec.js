@@ -24,6 +24,10 @@ test.afterAll(async () => {
 });
 
 test.afterEach(async ({ page }, testInfo) => {
+  await page.evaluate(() => {
+    document.body.classList.remove('keyboard-open');
+    if (window.app) window.app._overlayExplicitlyHidden = false;
+  }).catch(() => {});
   await attachFailureArtifacts(page, testInfo);
 });
 

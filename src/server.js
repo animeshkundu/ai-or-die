@@ -126,6 +126,7 @@ class ClaudeCodeWebServer {
       for (const [id, session] of this.claudeSessions) {
         if (!session.active && session.connections.size === 0 && new Date(session.lastActivity || session.created).getTime() < sevenDaysAgo) {
           this.claudeSessions.delete(id);
+          this.activityBroadcastTimestamps.delete(id);
           this.sessionStore.markDirty();
         }
       }
@@ -1795,6 +1796,7 @@ class ClaudeCodeWebServer {
             currentSession.agent = null;
             this.sessionStore.markDirty();
           }
+          this.activityBroadcastTimestamps.delete(sessionId);
           this.broadcastToSession(sessionId, { type: 'error', message: error.message });
           this.broadcastSessionActivity(sessionId, 'session_error');
         },
