@@ -121,6 +121,15 @@ class RestartManager {
       console.error('[restart] Failed to save sessions (continuing with last auto-save):', err.message);
     }
 
+    // Stop VS Code tunnels (prevents orphaned child processes)
+    if (this.server.vscodeTunnel) {
+      try {
+        await this.server.vscodeTunnel.stopAll();
+      } catch (err) {
+        console.warn('[restart] VS Code tunnel cleanup error:', err.message);
+      }
+    }
+
     // Stop all PTY processes in parallel — errors don't abort restart
     const bridges = [
       this.server.claudeBridge,

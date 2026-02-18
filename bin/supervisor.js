@@ -67,12 +67,9 @@ function startServer() {
   });
 
   child.on('error', (err) => {
+    // Spawn errors (ENOENT, EACCES) — the child process failed to launch.
+    // Port-in-use (EADDRINUSE) errors surface as child exit codes, not here.
     console.error('[supervisor] Failed to spawn server:', err.message);
-    if (err.code === 'EADDRINUSE') {
-      // Port in use — retry without counting as crash
-      console.log('[supervisor] Port in use, retrying in 2s...');
-      setTimeout(startServer, 2000);
-    }
   });
 }
 

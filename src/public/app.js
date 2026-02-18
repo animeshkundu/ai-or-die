@@ -1458,6 +1458,7 @@ class ClaudeCodeWebInterface {
                     // Clear server restart state if we were reconnecting after a restart
                     if (this._serverRestarting) {
                         this._serverRestarting = false;
+                        this._restartReconnectAttempts = 0;
                         if (this._restartTimeout) {
                             clearTimeout(this._restartTimeout);
                             this._restartTimeout = null;
@@ -1498,9 +1499,12 @@ class ClaudeCodeWebInterface {
             
             this.socket.onclose = (event) => {
                 // During server restart, don't count failures against reconnect budget
+                // but still use backoff to avoid thundering herd
                 if (this._serverRestarting) {
                     this.updateStatus('Server restarting...');
-                    setTimeout(() => this.reconnect(), 2000);
+                    const restartBackoff = Math.min(2000 * Math.pow(1.5, this._restartReconnectAttempts || 0), 15000);
+                    this._restartReconnectAttempts = (this._restartReconnectAttempts || 0) + 1;
+                    setTimeout(() => this.reconnect(), restartBackoff);
                 } else if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
                     this.updateStatus('Reconnecting...');
                     setTimeout(() => this.reconnect(), Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000));
