@@ -21,6 +21,7 @@ const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
 const SttEngine = require('./stt-engine');
 const CircularBuffer = require('./utils/circular-buffer');
+const RestartManager = require('./restart-manager');
 
 /** Foreground/background session priority constants */
 const COALESCE_MS_FG = 16;       // 60 flushes/sec for active session
@@ -77,6 +78,9 @@ class ClaudeCodeWebServer {
     this.activityBroadcastTimestamps = new Map(); // sessionId -> last broadcast timestamp
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
+    this.supervised = typeof process.send === 'function'; // Running under supervisor with IPC
+    this.restartManager = new RestartManager(this);
+    this.restartManager.startMemoryMonitoring();
     // Commands dropdown removed
     // Assistant aliases (for UI display only)
     this.aliases = {
@@ -90,6 +94,7 @@ class ClaudeCodeWebServer {
     this.setupExpress();
     this._sessionsLoaded = this.loadPersistedSessions();
     this.setupAutoSave();
+    this.setupIpcListener();
   }
   
   async loadPersistedSessions() {
@@ -153,6 +158,22 @@ class ClaudeCodeWebServer {
     process.on('unhandledRejection', (reason) => {
       console.error('Unhandled rejection:', reason);
       // Don't swallow — let it propagate to uncaughtException on Node 15+
+    });
+  }
+
+  setupIpcListener() {
+    if (!this.supervised) return;
+    // When running under the supervisor, listen for graceful shutdown via IPC
+    process.on('message', (msg) => {
+      if (msg && msg.type === 'shutdown') {
+        console.log('Received shutdown request via IPC');
+        this.handleShutdown();
+      }
+    });
+    // If the supervisor crashes, continue running standalone
+    process.on('disconnect', () => {
+      console.warn('IPC channel disconnected (supervisor may have crashed). Continuing standalone.');
+      this.supervised = false;
     });
   }
   
@@ -1483,6 +1504,12 @@ class ClaudeCodeWebServer {
         this.sendToWebSocket(wsInfo.ws, { type: 'pong' });
         break;
 
+      case 'restart_server':
+        if (this.restartManager) {
+          this.restartManager.initiateRestart('user_requested');
+        }
+        break;
+
       case 'get_usage':
         this.handleGetUsage(wsInfo);
         break;
@@ -1650,6 +1677,8 @@ class ClaudeCodeWebServer {
       sessionName: session.name,
       workingDir: session.workingDir,
       active: session.active,
+      wasActive: session.wasActive || false,
+      agent: session.agent || null,
       outputBuffer: session.outputBuffer.slice(-200) // Send last 200 lines
     });
 
@@ -1871,6 +1900,14 @@ class ClaudeCodeWebServer {
         this.sendToWebSocket(wsInfo.ws, data);
       }
     });
+  }
+
+  broadcastToAll(data) {
+    for (const [, wsInfo] of this.webSocketConnections) {
+      if (wsInfo.ws.readyState === WebSocket.OPEN) {
+        this.sendToWebSocket(wsInfo.ws, data);
+      }
+    }
   }
 
   // Sends a lightweight event to all WebSocket connections that are NOT joined

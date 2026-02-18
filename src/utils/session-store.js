@@ -40,8 +40,10 @@ class SessionStore {
                 lastActivity: session.lastActivity || new Date(),
                 workingDir: session.workingDir || process.cwd(),
                 active: false, // Always set to false when saving (processes won't persist)
+                wasActive: session.active || false, // Preserve active state for restart awareness
+                agent: session.agent || null, // Which tool was running (claude, codex, etc.)
                 outputBuffer: (session.outputBuffer && typeof session.outputBuffer.slice === 'function')
-                    ? session.outputBuffer.slice(-100) : [], // Keep last 100 lines
+                    ? session.outputBuffer.slice(-1000) : [], // Keep last 1000 lines for restart
                 connections: [], // Clear connections (they won't persist)
                 lastAccessed: session.lastAccessed || Date.now(),
                 // Session-specific usage tracking
@@ -137,8 +139,8 @@ class SessionStore {
                     connections: new Set(),
                     outputBuffer: CircularBuffer.fromArray(session.outputBuffer || [], 1000),
                     maxBufferSize: 1000,
-                    // Restore usage data if available
-                    usageData: session.usageData || null
+                    // Restore usage data if available (saved under sessionUsage key)
+                    sessionUsage: session.sessionUsage || null
                 });
             }
 

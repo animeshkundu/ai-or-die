@@ -8,8 +8,10 @@
     "aiordie": "./bin/ai-or-die.js"
   },
   "scripts": {
-    "start": "node bin/ai-or-die.js",
-    "dev": "node bin/ai-or-die.js --dev",
+    "start": "node bin/supervisor.js",
+    "start:direct": "node bin/ai-or-die.js",
+    "dev": "node bin/supervisor.js --dev",
+    "dev:direct": "node bin/ai-or-die.js --dev",
     "test": "mocha --exit test/*.test.js",
     "test:browser": "npx playwright test --config e2e/playwright.config.js",
     "build:bundle": "node scripts/build-sea.js bundle",
