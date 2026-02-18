@@ -88,17 +88,31 @@ describe('Supervisor Integration', function () {
 
   afterEach(async function () {
     if (supervisorProcess && !supervisorProcess.killed) {
+      // Kill the entire process tree — on CI, SIGTERM may not reach
+      // the grandchild server process, leaving orphans that prevent exit.
+      const pid = supervisorProcess.pid;
       await new Promise((resolve) => {
         const killTimer = setTimeout(() => {
-          try { supervisorProcess.kill('SIGKILL'); } catch (_) { /* ignore */ }
+          // Force-kill the process tree
+          try {
+            if (process.platform === 'win32') {
+              require('child_process').execSync(`taskkill /pid ${pid} /T /F`, { stdio: 'ignore' });
+            } else {
+              // Kill the entire process group
+              try { process.kill(-pid, 'SIGKILL'); } catch (_) { /* ignore */ }
+              try { supervisorProcess.kill('SIGKILL'); } catch (_) { /* ignore */ }
+            }
+          } catch (_) { /* ignore */ }
           resolve();
-        }, 5000);
+        }, 3000);
         supervisorProcess.on('exit', () => {
           clearTimeout(killTimer);
           resolve();
         });
         supervisorProcess.kill('SIGTERM');
       });
+      // Brief pause to let OS clean up sockets
+      await new Promise(r => setTimeout(r, 500));
     }
   });
 
@@ -109,6 +123,7 @@ describe('Supervisor Integration', function () {
       '--disable-auth', '--no-open', '--port', String(port)
     ], {
       stdio: ['pipe', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32', // Process group for tree-kill on Linux
       env: { ...process.env, NODE_ENV: 'test' }
     });
 
