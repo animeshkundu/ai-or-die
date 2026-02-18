@@ -86,17 +86,19 @@ describe('Supervisor Integration', function () {
   let supervisorProcess;
   const port = 49152 + Math.floor(Math.random() * 16383);
 
-  afterEach(function (done) {
+  afterEach(async function () {
     if (supervisorProcess && !supervisorProcess.killed) {
-      supervisorProcess.on('exit', () => done());
-      supervisorProcess.kill('SIGTERM');
-      // Hard kill fallback
-      setTimeout(() => {
-        try { supervisorProcess.kill('SIGKILL'); } catch (_) { /* ignore */ }
-        done();
-      }, 5000);
-    } else {
-      done();
+      await new Promise((resolve) => {
+        const killTimer = setTimeout(() => {
+          try { supervisorProcess.kill('SIGKILL'); } catch (_) { /* ignore */ }
+          resolve();
+        }, 5000);
+        supervisorProcess.on('exit', () => {
+          clearTimeout(killTimer);
+          resolve();
+        });
+        supervisorProcess.kill('SIGTERM');
+      });
     }
   });
 
