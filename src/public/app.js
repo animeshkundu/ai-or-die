@@ -2044,6 +2044,7 @@ class ClaudeCodeWebInterface {
             case 'server_restarting':
                 console.log('[server_restarting] Server restart imminent');
                 this._serverRestarting = true;
+                this._restartReconnectAttempts = 0; // Reset backoff so each restart starts fresh
                 this.reconnectAttempts = 0;
                 this.updateStatus('Server restarting...');
                 // Start a 60-second timeout — if server doesn't come back, show error

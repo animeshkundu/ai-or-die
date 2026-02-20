@@ -18,7 +18,7 @@ describe('RestartManager', function () {
       copilotBridge: { cleanup: async () => {} },
       geminiBridge: { cleanup: async () => {} },
       terminalBridge: { cleanup: async () => {} },
-      wss: { close: () => {} },
+      wss: { clients: [], close: () => {} },
       server: { close: (cb) => cb && cb() },
       webSocketConnections: new Map(),
       broadcastToAll: () => {},
@@ -214,6 +214,22 @@ describe('RestartManager', function () {
       process.exit = () => {};
       await rm.initiateRestart();
       assert.deepStrictEqual(flushedSessions.sort(), ['s1', 's2']);
+    });
+
+    it('should terminate existing WebSocket clients before closing server', async function () {
+      const terminated = [];
+      const mockClient = (id) => ({ terminate: () => terminated.push(id) });
+      const server = createMockServer({
+        wss: {
+          clients: [mockClient('c1'), mockClient('c2')],
+          close: () => {}
+        }
+      });
+      const rm = new RestartManager(server);
+      this._origExit = process.exit;
+      process.exit = () => {};
+      await rm.initiateRestart();
+      assert.deepStrictEqual(terminated.sort(), ['c1', 'c2'], 'both clients should be terminated');
     });
   });
 });

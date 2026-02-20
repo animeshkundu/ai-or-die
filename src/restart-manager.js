@@ -157,7 +157,14 @@ class RestartManager {
     hardTimeout.unref();
 
     try {
-      if (this.server.wss) this.server.wss.close();
+      if (this.server.wss) {
+        // Terminate existing clients so server.close() callback fires immediately
+        // (wss.close() alone only stops new connections, existing ones keep HTTP alive)
+        for (const client of this.server.wss.clients) {
+          try { client.terminate(); } catch (_) { /* ignore */ }
+        }
+        this.server.wss.close();
+      }
       if (this.server.server) {
         this.server.server.close(() => {
           clearTimeout(hardTimeout);
