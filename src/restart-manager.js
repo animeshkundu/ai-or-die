@@ -104,11 +104,17 @@ class RestartManager {
 
     console.log(`[restart] Initiating restart (reason: ${reason})`);
 
-    // Broadcast restart notification to all clients before shutdown begins
-    this.server.broadcastToAll({
-      type: 'server_restarting',
-      reason
-    });
+    // Broadcast restart notification to all clients before shutdown begins.
+    // Wrapped in try/catch: a throw here (e.g., half-closed socket) must not
+    // abort the restart — the broadcast is best-effort, the shutdown is mandatory.
+    try {
+      this.server.broadcastToAll({
+        type: 'server_restarting',
+        reason
+      });
+    } catch (e) {
+      console.warn('[restart] Failed to broadcast restart notification:', e.message);
+    }
 
     // Brief wait for WebSocket frames to be delivered
     await new Promise(r => setTimeout(r, RESTART_BROADCAST_DELAY_MS));

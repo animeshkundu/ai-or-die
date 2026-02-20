@@ -149,7 +149,7 @@ class ClaudeCodeWebServer {
           ? this.sessionStore.serializeForSave(this.claudeSessions)
           : JSON.stringify([...this.claudeSessions.entries()]);
         const fs = require('fs');
-        fs.writeFileSync(this.sessionStore.sessionsFile + '.crash', data);
+        fs.writeFileSync(this.sessionStore.sessionsFile + '.crash', data, { mode: 0o600 });
       } catch (saveErr) {
         console.error('Failed to save sessions on crash:', saveErr);
       }

@@ -19,8 +19,10 @@ const forwardedArgs = process.argv.slice(2);
 let child = null;
 let shuttingDown = false;
 let crashTimestamps = [];
+let pendingRestartTimer = null;
 
 function startServer() {
+  pendingRestartTimer = null;
   const nodeArgs = ['--expose-gc', serverScript, ...forwardedArgs];
 
   child = spawn(process.execPath, nodeArgs, {
@@ -46,7 +48,7 @@ function startServer() {
     if (code === RESTART_EXIT_CODE) {
       // Restart requested — quick restart, don't count as crash
       console.log(`[supervisor] Restart requested, respawning in ${RESTART_DELAY_MS}ms...`);
-      setTimeout(startServer, RESTART_DELAY_MS);
+      pendingRestartTimer = setTimeout(startServer, RESTART_DELAY_MS);
       return;
     }
 
@@ -64,7 +66,7 @@ function startServer() {
 
     const exitInfo = signal ? `signal ${signal}` : `code ${code}`;
     console.warn(`[supervisor] Server exited unexpectedly (${exitInfo}), restarting in ${CRASH_RESTART_DELAY_MS}ms... (crash ${crashTimestamps.length}/${CIRCUIT_BREAKER_MAX_CRASHES})`);
-    setTimeout(startServer, CRASH_RESTART_DELAY_MS);
+    pendingRestartTimer = setTimeout(startServer, CRASH_RESTART_DELAY_MS);
   });
 
   child.on('error', (err) => {
@@ -77,6 +79,12 @@ function startServer() {
 function shutdownGracefully() {
   if (shuttingDown) return;
   shuttingDown = true;
+
+  // Cancel any pending restart timer to prevent spawning a new child during shutdown
+  if (pendingRestartTimer) {
+    clearTimeout(pendingRestartTimer);
+    pendingRestartTimer = null;
+  }
 
   if (!child) {
     process.exit(0);
