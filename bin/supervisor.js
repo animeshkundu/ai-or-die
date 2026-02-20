@@ -4,8 +4,8 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
+const { RESTART_EXIT_CODE } = require('../src/restart-manager');
 
-const RESTART_EXIT_CODE = 75;
 const RESTART_DELAY_MS = 1000;
 const CRASH_RESTART_DELAY_MS = 3000;
 const CIRCUIT_BREAKER_WINDOW_MS = 30000;

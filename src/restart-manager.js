@@ -4,6 +4,7 @@ const RESTART_EXIT_CODE = 75;
 const MEMORY_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const NOTIFICATION_THROTTLE_MS = 30 * 60 * 1000; // 30 minutes
 const RESTART_BROADCAST_DELAY_MS = 500;
+const MIN_RESTART_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between restarts
 
 /**
  * Memory monitoring and restart trigger.
@@ -21,6 +22,7 @@ class RestartManager {
     this.gcThresholdBytes = (parseInt(process.env.MEMORY_GC_THRESHOLD_MB, 10) || 1024) * 1024 * 1024;
     this.warnThresholdBytes = (parseInt(process.env.MEMORY_WARN_THRESHOLD_MB, 10) || 2048) * 1024 * 1024;
     this._lastWarningTime = 0;
+    this._lastRestartTime = 0;
     this._monitorInterval = null;
   }
 
@@ -84,8 +86,17 @@ class RestartManager {
     // Guard: reuse the server's existing shutdown guard
     if (this.server.isShuttingDown) {
       console.log('[restart] Already shutting down, ignoring restart request');
-      return;
+      return 'already_shutting_down';
     }
+
+    // Rate limit: prevent restart-loop DoS
+    const now = Date.now();
+    if (now - this._lastRestartTime < MIN_RESTART_INTERVAL_MS) {
+      const waitSec = Math.ceil((MIN_RESTART_INTERVAL_MS - (now - this._lastRestartTime)) / 1000);
+      console.log(`[restart] Rate limited, ${waitSec}s remaining before next restart allowed`);
+      return 'rate_limited';
+    }
+    this._lastRestartTime = now;
 
     console.log(`[restart] Initiating restart (reason: ${reason})`);
 
@@ -100,6 +111,7 @@ class RestartManager {
 
     // Delegate to the server's single shutdown path with restart exit code
     await this.server.handleShutdown(RESTART_EXIT_CODE);
+    return 'restarting';
   }
 }
 
@@ -107,3 +119,4 @@ module.exports = RestartManager;
 module.exports.RESTART_EXIT_CODE = RESTART_EXIT_CODE;
 module.exports.MEMORY_CHECK_INTERVAL_MS = MEMORY_CHECK_INTERVAL_MS;
 module.exports.NOTIFICATION_THROTTLE_MS = NOTIFICATION_THROTTLE_MS;
+module.exports.MIN_RESTART_INTERVAL_MS = MIN_RESTART_INTERVAL_MS;

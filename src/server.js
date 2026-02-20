@@ -195,21 +195,16 @@ class ClaudeCodeWebServer {
     }
     this.isShuttingDown = true;
 
+    // Hard timeout: if close() hangs, force exit (protects unsupervised mode)
+    const forceExitTimer = setTimeout(() => {
+      console.error(`Shutdown timed out after 15s, forcing exit (code ${exitCode})`);
+      process.exit(exitCode);
+    }, 15000);
+    forceExitTimer.unref();
+
     console.log(`\nGracefully shutting down (exit code: ${exitCode})...`);
-    await this.saveSessionsToDisk(true);
-    if (this.autoSaveInterval) {
-      clearInterval(this.autoSaveInterval);
-    }
-    if (this.sessionEvictionInterval) {
-      clearInterval(this.sessionEvictionInterval);
-    }
-    // Stop all VS Code tunnels
-    await this.vscodeTunnel.stopAll();
-    // Clean up temp images for all sessions
-    for (const [, session] of this.claudeSessions) {
-      this.cleanupSessionImages(session);
-    }
     await this.close();
+    clearTimeout(forceExitTimer);
     process.exit(exitCode);
   }
 
@@ -1505,8 +1500,19 @@ class ClaudeCodeWebServer {
         break;
 
       case 'restart_server':
-        if (this.restartManager) {
-          this.restartManager.initiateRestart('user_requested');
+        if (!this.supervised) {
+          this.sendToWebSocket(wsInfo.ws, {
+            type: 'error',
+            message: 'Server is not running in supervised mode. Restart manually.'
+          });
+        } else if (this.restartManager) {
+          const result = await this.restartManager.initiateRestart('user_requested');
+          if (result === 'rate_limited') {
+            this.sendToWebSocket(wsInfo.ws, {
+              type: 'error',
+              message: 'Restart was requested too recently. Please wait a few minutes.'
+            });
+          }
         }
         break;
 
@@ -2103,7 +2109,7 @@ class ClaudeCodeWebServer {
     // Save sessions before closing
     await this.saveSessionsToDisk(true);
 
-    // Clear auto-save interval
+    // Clear all intervals
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
     }
@@ -2119,14 +2125,22 @@ class ClaudeCodeWebServer {
       this.restartManager.stopMemoryMonitoring();
     }
 
+    // Stop all VS Code tunnels
+    try { await this.vscodeTunnel.stopAll(); } catch (_) { /* ignore */ }
+
+    // Clean up temp images for all sessions
+    for (const [, session] of this.claudeSessions) {
+      this.cleanupSessionImages(session);
+    }
+
     if (this.wss) {
       this.wss.close();
     }
     if (this.server) {
       this.server.close();
     }
-    
-    // Flush pending output and stop all sessions, awaiting clean shutdown
+
+    // Flush pending output and stop all sessions with a 5-second timeout
     const stopPromises = [];
     for (const [sessionId, session] of this.claudeSessions.entries()) {
       this._flushAndClearOutputTimer(session, sessionId);
@@ -2137,7 +2151,8 @@ class ClaudeCodeWebServer {
         }
       }
     }
-    await Promise.allSettled(stopPromises);
+    const timeout = new Promise(resolve => setTimeout(resolve, 5000));
+    await Promise.race([Promise.allSettled(stopPromises), timeout]);
 
     // Clear all data
     this.claudeSessions.clear();

@@ -136,5 +136,30 @@ describe('RestartManager', function () {
       assert.strictEqual(broadcastedData.type, 'server_restarting');
       assert.strictEqual(broadcastedData.reason, 'user_requested');
     });
+
+    it('should rate-limit restarts to once per 5 minutes', async function () {
+      const server = createMockServer({
+        handleShutdown: async () => {}
+      });
+      const rm = new RestartManager(server);
+
+      // First restart should succeed
+      const result1 = await rm.initiateRestart();
+      assert.strictEqual(result1, 'restarting');
+
+      // Reset isShuttingDown to simulate supervisor having respawned
+      server.isShuttingDown = false;
+
+      // Second restart within 5 minutes should be rate-limited
+      const result2 = await rm.initiateRestart();
+      assert.strictEqual(result2, 'rate_limited');
+    });
+
+    it('should return already_shutting_down when server is shutting down', async function () {
+      const server = createMockServer({ isShuttingDown: true });
+      const rm = new RestartManager(server);
+      const result = await rm.initiateRestart();
+      assert.strictEqual(result, 'already_shutting_down');
+    });
   });
 });

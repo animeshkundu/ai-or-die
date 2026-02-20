@@ -237,5 +237,32 @@ describe('SessionStore', function() {
       assert.strictEqual(session.wasActive, false);
       assert.strictEqual(session.agent, null);
     });
+
+    it('should cap output buffer at 512KB per session', async function() {
+      const buf = new CircularBuffer(1000);
+      // Each line is ~10KB (well over typical terminal width)
+      const bigLine = 'X'.repeat(10 * 1024);
+      for (let i = 0; i < 200; i++) {
+        buf.push(bigLine); // 200 x 10KB = 2MB total
+      }
+
+      const testSessions = new Map([
+        ['s1', {
+          id: 's1',
+          name: 'Big Buffer',
+          created: new Date(),
+          outputBuffer: buf
+        }]
+      ]);
+
+      sessionStore.markDirty();
+      await sessionStore.saveSessions(testSessions);
+
+      const loaded = await sessionStore.loadSessions();
+      const session = loaded.get('s1');
+      // Should be capped: 512KB / 10KB per line = ~51 lines max
+      assert.ok(session.outputBuffer.length <= 55, `expected <=55 lines but got ${session.outputBuffer.length}`);
+      assert.ok(session.outputBuffer.length > 0, 'should have some lines');
+    });
   });
 });
