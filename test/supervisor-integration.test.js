@@ -87,12 +87,13 @@ describe('Supervisor Integration', function () {
 
   afterEach(async function () {
     if (supervisorProcess && !supervisorProcess.killed) {
-      // Try graceful IPC shutdown — check channel is open first (Windows throws async ERR_IPC_CHANNEL_CLOSED)
+      // Try graceful IPC shutdown. Use callback form so Windows async ERR_IPC_CHANNEL_CLOSED
+      // is routed to the callback rather than thrown from a setImmediate callback (uncatchable).
       try {
         if (supervisorProcess.connected) {
-          supervisorProcess.send({ type: 'shutdown' });
+          supervisorProcess.send({ type: 'shutdown' }, () => { /* swallow IPC errors */ });
         }
-      } catch (_) { /* ignore */ }
+      } catch (_) { /* ignore synchronous errors (e.g. channel already closed) */ }
       await new Promise((resolve) => {
         const timer = setTimeout(() => {
           // Kill the entire process tree — not just the supervisor
