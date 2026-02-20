@@ -48,12 +48,34 @@ async function simulateKeyboardClose(page) {
   await page.waitForTimeout(350);
 }
 
-// Helper: hide overlay so extra keys are clickable by Playwright
+// Helper: hide overlay so extra keys are clickable by Playwright.
+// Must wait for init() to fully complete first, otherwise the async
+// session_joined handler will re-show the overlay after we hide it.
 async function hideOverlayForTest(page) {
+  // Wait for init() to finish: WebSocket open AND a session has been joined.
+  // Without this, joinSession's flag reset and session_joined's showOverlay
+  // race with our hideOverlay call.
+  await page.waitForFunction(
+    () => window.app
+      && window.app.socket
+      && window.app.socket.readyState === 1
+      && window.app.currentClaudeSessionId !== null,
+    { timeout: 15000 }
+  );
+  // Brief settle for any pending session_joined async handlers
+  await page.waitForTimeout(300);
+
   await page.evaluate(() => {
     window.app.hideOverlay();
   });
-  await page.waitForTimeout(100);
+  // Verify the overlay actually stayed hidden (guards against late async re-show)
+  await page.waitForFunction(
+    () => {
+      const overlay = document.getElementById('overlay');
+      return overlay && overlay.style.display === 'none';
+    },
+    { timeout: 5000 }
+  );
 }
 
 // ===========================================================================
@@ -253,6 +275,13 @@ test.describe('overlay state after folder browser flow', () => {
     setupPageCapture(page);
     await page.goto(url);
     await waitForAppReady(page);
+    await waitForWebSocket(page);
+
+    // Wait for init() to complete — joinSession resets the flag during init
+    await page.waitForFunction(
+      () => window.app.currentClaudeSessionId !== null,
+      { timeout: 5000 }
+    );
 
     const flag = await page.evaluate(() => window.app._overlayExplicitlyHidden);
     expect(flag).toBe(false);
@@ -285,6 +314,14 @@ test.describe('overlay state after folder browser flow', () => {
     setupPageCapture(page);
     await page.goto(url);
     await waitForAppReady(page);
+    await waitForWebSocket(page);
+
+    // Wait for init() to fully complete — joinSession resets the flag
+    await page.waitForFunction(
+      () => window.app.currentClaudeSessionId !== null,
+      { timeout: 5000 }
+    );
+    await page.waitForTimeout(200);
 
     // 1. hideOverlay sets flag to true
     await page.evaluate(() => window.app.hideOverlay());
@@ -307,6 +344,13 @@ test.describe('overlay state after folder browser flow', () => {
     await page.goto(url);
     await waitForAppReady(page);
     await waitForWebSocket(page);
+
+    // Wait for init() to fully complete
+    await page.waitForFunction(
+      () => window.app.currentClaudeSessionId !== null,
+      { timeout: 5000 }
+    );
+    await page.waitForTimeout(200);
 
     // Full I2 bug scenario
     await page.evaluate(() => window.app.hideOverlay());
@@ -556,6 +600,11 @@ test('swipe with realistic timing triggers session switch', async ({ page }) => 
   setupPageCapture(page);
   await page.goto(url);
   await waitForAppReady(page);
+  // Wait for sessionTabManager to exist (created during init before WebSocket connects)
+  await page.waitForFunction(
+    () => window.app && window.app.sessionTabManager,
+    { timeout: 10000 }
+  );
 
   const container = page.locator('.terminal-container');
   await expect(container).toBeAttached();
@@ -613,6 +662,13 @@ test.describe('reconnect overlay state', () => {
     await waitForAppReady(page);
     await waitForWebSocket(page);
 
+    // Wait for init() to fully complete before testing flag behavior
+    await page.waitForFunction(
+      () => window.app.currentClaudeSessionId !== null,
+      { timeout: 5000 }
+    );
+    await page.waitForTimeout(200);
+
     // Simulate the state after a terminal session started and then exited:
     // hideOverlay sets flag to true (as terminal_started handler does)
     await page.evaluate(() => window.app.hideOverlay());
@@ -631,6 +687,13 @@ test.describe('reconnect overlay state', () => {
     await page.goto(url);
     await waitForAppReady(page);
     await waitForWebSocket(page);
+
+    // Wait for init() to fully complete
+    await page.waitForFunction(
+      () => window.app.currentClaudeSessionId !== null,
+      { timeout: 5000 }
+    );
+    await page.waitForTimeout(200);
 
     // Set flag as if terminal had started previously
     await page.evaluate(() => window.app.hideOverlay());
@@ -681,9 +744,10 @@ test('reconnect timeout releases _reconnecting flag', async ({ page }) => {
   expect(duringReconnect).toBe(true);
 
   // Wait for 1s reconnect delay + 10s timeout + 1s buffer = 12s
+  // Use generous timeout (20s) to accommodate slow CI runners where timers drift
   await page.waitForFunction(
     () => window.app._reconnecting === false,
-    { timeout: 15000 }
+    { timeout: 20000 }
   );
 
   const afterTimeout = await page.evaluate(() => window.app._reconnecting);
@@ -793,6 +857,13 @@ test('switching to inactive session shows overlay after active session', async (
   await page.goto(url);
   await waitForAppReady(page);
   await waitForWebSocket(page);
+
+  // Wait for init() to fully complete
+  await page.waitForFunction(
+    () => window.app.currentClaudeSessionId !== null,
+    { timeout: 5000 }
+  );
+  await page.waitForTimeout(200);
 
   // Simulate: user was on an active session where hideOverlay was called
   await page.evaluate(() => window.app.hideOverlay());
