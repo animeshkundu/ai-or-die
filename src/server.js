@@ -21,6 +21,7 @@ const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
 const SttEngine = require('./stt-engine');
 const CircularBuffer = require('./utils/circular-buffer');
+const RestartManager = require('./restart-manager');
 
 /** Foreground/background session priority constants */
 const COALESCE_MS_FG = 16;       // 60 flushes/sec for active session
@@ -77,6 +78,9 @@ class ClaudeCodeWebServer {
     this.activityBroadcastTimestamps = new Map(); // sessionId -> last broadcast timestamp
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
+    this.supervised = typeof process.send === 'function'; // Running under supervisor with IPC
+    this.restartManager = new RestartManager(this);
+    this.restartManager.startMemoryMonitoring();
     // Commands dropdown removed
     // Assistant aliases (for UI display only)
     this.aliases = {
@@ -90,6 +94,7 @@ class ClaudeCodeWebServer {
     this.setupExpress();
     this._sessionsLoaded = this.loadPersistedSessions();
     this.setupAutoSave();
+    this.setupIpcListener();
   }
   
   async loadPersistedSessions() {
@@ -144,7 +149,7 @@ class ClaudeCodeWebServer {
           ? this.sessionStore.serializeForSave(this.claudeSessions)
           : JSON.stringify([...this.claudeSessions.entries()]);
         const fs = require('fs');
-        fs.writeFileSync(this.sessionStore.sessionsFile + '.crash', data);
+        fs.writeFileSync(this.sessionStore.sessionsFile + '.crash', data, { mode: 0o600 });
       } catch (saveErr) {
         console.error('Failed to save sessions on crash:', saveErr);
       }
@@ -153,6 +158,22 @@ class ClaudeCodeWebServer {
     process.on('unhandledRejection', (reason) => {
       console.error('Unhandled rejection:', reason);
       // Don't swallow — let it propagate to uncaughtException on Node 15+
+    });
+  }
+
+  setupIpcListener() {
+    if (!this.supervised) return;
+    // When running under the supervisor, listen for graceful shutdown via IPC
+    process.on('message', (msg) => {
+      if (msg && msg.type === 'shutdown') {
+        console.log('Received shutdown request via IPC');
+        this.handleShutdown();
+      }
+    });
+    // If the supervisor crashes, continue running standalone
+    process.on('disconnect', () => {
+      console.warn('IPC channel disconnected (supervisor may have crashed). Continuing standalone.');
+      this.supervised = false;
     });
   }
   
@@ -167,29 +188,24 @@ class ClaudeCodeWebServer {
     await this.sessionStore.saveSessions(this.claudeSessions);
   }
 
-  async handleShutdown() {
+  async handleShutdown(exitCode = 0) {
     // Prevent multiple shutdown attempts
     if (this.isShuttingDown) {
       return;
     }
     this.isShuttingDown = true;
 
-    console.log('\nGracefully shutting down...');
-    await this.saveSessionsToDisk(true);
-    if (this.autoSaveInterval) {
-      clearInterval(this.autoSaveInterval);
-    }
-    if (this.sessionEvictionInterval) {
-      clearInterval(this.sessionEvictionInterval);
-    }
-    // Stop all VS Code tunnels
-    await this.vscodeTunnel.stopAll();
-    // Clean up temp images for all sessions
-    for (const [, session] of this.claudeSessions) {
-      this.cleanupSessionImages(session);
-    }
+    // Hard timeout: if close() hangs, force exit (protects unsupervised mode)
+    const forceExitTimer = setTimeout(() => {
+      console.error(`Shutdown timed out after 15s, forcing exit (code ${exitCode})`);
+      process.exit(exitCode);
+    }, 15000);
+    forceExitTimer.unref();
+
+    console.log(`\nGracefully shutting down (exit code: ${exitCode})...`);
     await this.close();
-    process.exit(0);
+    clearTimeout(forceExitTimer);
+    process.exit(exitCode);
   }
 
   isPathWithinBase(targetPath) {
@@ -1483,6 +1499,23 @@ class ClaudeCodeWebServer {
         this.sendToWebSocket(wsInfo.ws, { type: 'pong' });
         break;
 
+      case 'restart_server':
+        if (!this.supervised) {
+          this.sendToWebSocket(wsInfo.ws, {
+            type: 'error',
+            message: 'Server is not running in supervised mode. Restart manually.'
+          });
+        } else if (this.restartManager) {
+          const result = await this.restartManager.initiateRestart('user_requested');
+          if (result === 'rate_limited') {
+            this.sendToWebSocket(wsInfo.ws, {
+              type: 'error',
+              message: 'Restart was requested too recently. Please wait a few minutes.'
+            });
+          }
+        }
+        break;
+
       case 'get_usage':
         this.handleGetUsage(wsInfo);
         break;
@@ -1650,6 +1683,8 @@ class ClaudeCodeWebServer {
       sessionName: session.name,
       workingDir: session.workingDir,
       active: session.active,
+      wasActive: session.wasActive || false,
+      agent: session.agent || null,
       outputBuffer: session.outputBuffer.slice(-200) // Send last 200 lines
     });
 
@@ -1873,6 +1908,14 @@ class ClaudeCodeWebServer {
     });
   }
 
+  broadcastToAll(data) {
+    for (const [, wsInfo] of this.webSocketConnections) {
+      if (wsInfo.ws.readyState === WebSocket.OPEN) {
+        this.sendToWebSocket(wsInfo.ws, data);
+      }
+    }
+  }
+
   // Sends a lightweight event to all WebSocket connections that are NOT joined
   // to the specified session. This enables clients to track activity in background
   // sessions for notification purposes without receiving full terminal output.
@@ -2066,7 +2109,7 @@ class ClaudeCodeWebServer {
     // Save sessions before closing
     await this.saveSessionsToDisk(true);
 
-    // Clear auto-save interval
+    // Clear all intervals
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
     }
@@ -2077,14 +2120,32 @@ class ClaudeCodeWebServer {
       clearInterval(this.sessionEvictionInterval);
     }
 
+    // Stop memory monitoring to release the interval timer
+    if (this.restartManager) {
+      this.restartManager.stopMemoryMonitoring();
+    }
+
+    // Stop all VS Code tunnels
+    try { await this.vscodeTunnel.stopAll(); } catch (_) { /* ignore */ }
+
+    // Clean up temp images for all sessions
+    for (const [, session] of this.claudeSessions) {
+      this.cleanupSessionImages(session);
+    }
+
     if (this.wss) {
+      // Terminate existing WebSocket clients so server.close() callback fires promptly
+      // (wss.close() alone only stops new connections; open clients keep the HTTP server alive)
+      for (const client of this.wss.clients) {
+        try { client.terminate(); } catch (_) { /* ignore */ }
+      }
       this.wss.close();
     }
     if (this.server) {
       this.server.close();
     }
-    
-    // Flush pending output and stop all sessions, awaiting clean shutdown
+
+    // Flush pending output and stop all sessions with a 5-second timeout
     const stopPromises = [];
     for (const [sessionId, session] of this.claudeSessions.entries()) {
       this._flushAndClearOutputTimer(session, sessionId);
@@ -2095,7 +2156,8 @@ class ClaudeCodeWebServer {
         }
       }
     }
-    await Promise.allSettled(stopPromises);
+    const timeout = new Promise(resolve => setTimeout(resolve, 5000));
+    await Promise.race([Promise.allSettled(stopPromises), timeout]);
 
     // Clear all data
     this.claudeSessions.clear();

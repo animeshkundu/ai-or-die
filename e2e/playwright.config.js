@@ -127,5 +127,11 @@ module.exports = defineConfig({
       name: 'mobile-journeys',
       testMatch: '50-mobile-user-journeys.spec.js',
     },
+    // Server restart feature tests
+    {
+      name: 'restart',
+      testMatch: '20-server-restart.spec.js',
+      timeout: 120000,
+    },
   ],
 });

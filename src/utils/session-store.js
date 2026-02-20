@@ -3,6 +3,8 @@ const path = require('path');
 const os = require('os');
 const CircularBuffer = require('./circular-buffer');
 
+const MAX_BUFFER_BYTES_PER_SESSION = 512 * 1024; // 512KB per-session byte cap
+
 class SessionStore {
     constructor() {
         // Store sessions in user's home directory
@@ -14,6 +16,23 @@ class SessionStore {
 
     markDirty() {
         this._dirty = true;
+    }
+
+    /**
+     * Trim an array of output lines to fit within MAX_BUFFER_BYTES_PER_SESSION.
+     * Keeps the most recent lines (end of array) and drops the oldest.
+     */
+    _capBufferByBytes(lines) {
+        let totalBytes = 0;
+        // Walk backwards from the end (newest lines) summing byte lengths
+        let startIndex = lines.length;
+        for (let i = lines.length - 1; i >= 0; i--) {
+            const lineBytes = Buffer.byteLength(lines[i] || '', 'utf8');
+            if (totalBytes + lineBytes > MAX_BUFFER_BYTES_PER_SESSION) break;
+            totalBytes += lineBytes;
+            startIndex = i;
+        }
+        return startIndex === 0 ? lines : lines.slice(startIndex);
     }
 
     async initializeStorage() {
@@ -40,8 +59,10 @@ class SessionStore {
                 lastActivity: session.lastActivity || new Date(),
                 workingDir: session.workingDir || process.cwd(),
                 active: false, // Always set to false when saving (processes won't persist)
+                wasActive: session.active || false, // Preserve active state for restart awareness
+                agent: session.agent || null, // Which tool was running (claude, codex, etc.)
                 outputBuffer: (session.outputBuffer && typeof session.outputBuffer.slice === 'function')
-                    ? session.outputBuffer.slice(-100) : [], // Keep last 100 lines
+                    ? this._capBufferByBytes(session.outputBuffer.slice(-1000)) : [], // Keep last 1000 lines, capped at 512KB
                 connections: [], // Clear connections (they won't persist)
                 lastAccessed: session.lastAccessed || Date.now(),
                 // Session-specific usage tracking
@@ -64,8 +85,14 @@ class SessionStore {
             };
 
             // Write to a temporary file first, then rename (atomic operation)
+            // Use restrictive permissions (owner-only) since output may contain secrets.
+            // Note: mode 0o600 is silently ignored on Windows (which uses ACLs instead
+            // of Unix permissions). The file inherits the user's default ACL, which is
+            // acceptable but not explicitly enforced.
             const tempFile = `${this.sessionsFile}.tmp`;
-            await fs.writeFile(tempFile, JSON.stringify(data));
+            // JSON.stringify is CPU-bound; yield to pending I/O before serializing
+            const jsonStr = await new Promise(resolve => setImmediate(() => resolve(JSON.stringify(data))));
+            await fs.writeFile(tempFile, jsonStr, { mode: 0o600 });
             // Ensure directory still exists before rename (handles race conditions)
             await fs.mkdir(this.storageDir, { recursive: true });
             await fs.rename(tempFile, this.sessionsFile);
@@ -137,8 +164,8 @@ class SessionStore {
                     connections: new Set(),
                     outputBuffer: CircularBuffer.fromArray(session.outputBuffer || [], 1000),
                     maxBufferSize: 1000,
-                    // Restore usage data if available
-                    usageData: session.usageData || null
+                    // Restore usage data if available (saved under sessionUsage key)
+                    sessionUsage: session.sessionUsage || null
                 });
             }
 
