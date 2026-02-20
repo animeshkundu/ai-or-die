@@ -9,33 +9,12 @@ describe('RestartManager', function () {
     return {
       isShuttingDown: false,
       supervised: false,
-      autoSaveInterval: setInterval(() => {}, 999999),
-      sessionEvictionInterval: setInterval(() => {}, 999999),
-      imageSweepInterval: setInterval(() => {}, 999999),
-      claudeSessions: new Map(),
-      claudeBridge: { cleanup: async () => {} },
-      codexBridge: { cleanup: async () => {} },
-      copilotBridge: { cleanup: async () => {} },
-      geminiBridge: { cleanup: async () => {} },
-      terminalBridge: { cleanup: async () => {} },
-      wss: { close: () => {} },
-      server: { close: (cb) => cb && cb() },
       webSocketConnections: new Map(),
       broadcastToAll: () => {},
-      sendToWebSocket: () => {},
-      saveSessionsToDisk: async () => {},
-      _flushAndClearOutputTimer: () => {},
+      handleShutdown: async () => {},
       ...overrides
     };
   }
-
-  afterEach(function () {
-    // Restore process.exit if stubbed
-    if (this._origExit) {
-      process.exit = this._origExit;
-      delete this._origExit;
-    }
-  });
 
   describe('constructor', function () {
     it('should use default thresholds when env vars not set', function () {
@@ -111,109 +90,51 @@ describe('RestartManager', function () {
 
   describe('initiateRestart', function () {
     it('should skip if already shutting down', async function () {
-      let saveCalled = false;
+      let shutdownCalled = false;
       const server = createMockServer({
         isShuttingDown: true,
-        saveSessionsToDisk: async () => { saveCalled = true; }
+        handleShutdown: async () => { shutdownCalled = true; }
       });
       const rm = new RestartManager(server);
       await rm.initiateRestart();
-      assert.strictEqual(saveCalled, false, 'should not save when already shutting down');
+      assert.strictEqual(shutdownCalled, false, 'should not call handleShutdown when already shutting down');
     });
 
-    it('should set isShuttingDown to true', async function () {
-      const server = createMockServer();
+    it('should broadcast server_restarting before delegating to handleShutdown', async function () {
+      const callOrder = [];
+      const server = createMockServer({
+        broadcastToAll: (data) => {
+          if (data.type === 'server_restarting') callOrder.push('broadcast');
+        },
+        handleShutdown: async () => { callOrder.push('shutdown'); }
+      });
       const rm = new RestartManager(server);
-      // Stub process.exit to prevent actual exit
-      this._origExit = process.exit;
-      process.exit = () => {};
-      await rm.initiateRestart();
-      assert.strictEqual(server.isShuttingDown, true);
+      await rm.initiateRestart('user_requested');
+      assert.strictEqual(callOrder[0], 'broadcast', 'should broadcast before shutdown');
+      assert.strictEqual(callOrder[1], 'shutdown', 'should call handleShutdown after broadcast');
     });
 
-    it('should clear all intervals', async function () {
-      const server = createMockServer();
+    it('should pass exit code 75 to handleShutdown', async function () {
+      let receivedExitCode = null;
+      const server = createMockServer({
+        handleShutdown: async (code) => { receivedExitCode = code; }
+      });
       const rm = new RestartManager(server);
-      this._origExit = process.exit;
-      process.exit = () => {};
       await rm.initiateRestart();
-      assert.strictEqual(server.autoSaveInterval, null);
-      assert.strictEqual(server.sessionEvictionInterval, null);
-      assert.strictEqual(server.imageSweepInterval, null);
+      assert.strictEqual(receivedExitCode, 75);
     });
 
-    it('should broadcast server_restarting', async function () {
+    it('should include reason in server_restarting broadcast', async function () {
       let broadcastedData = null;
       const server = createMockServer({
-        broadcastToAll: (data) => { broadcastedData = data; }
+        broadcastToAll: (data) => { broadcastedData = data; },
+        handleShutdown: async () => {}
       });
       const rm = new RestartManager(server);
-      this._origExit = process.exit;
-      process.exit = () => {};
       await rm.initiateRestart('user_requested');
       assert.ok(broadcastedData);
       assert.strictEqual(broadcastedData.type, 'server_restarting');
       assert.strictEqual(broadcastedData.reason, 'user_requested');
-    });
-
-    it('should call saveSessionsToDisk', async function () {
-      let saveCalled = false;
-      const server = createMockServer({
-        saveSessionsToDisk: async () => { saveCalled = true; }
-      });
-      const rm = new RestartManager(server);
-      this._origExit = process.exit;
-      process.exit = () => {};
-      await rm.initiateRestart();
-      assert.strictEqual(saveCalled, true);
-    });
-
-    it('should continue if save fails', async function () {
-      let cleanupCalled = false;
-      const server = createMockServer({
-        saveSessionsToDisk: async () => { throw new Error('disk full'); },
-        claudeBridge: { cleanup: async () => { cleanupCalled = true; } }
-      });
-      const rm = new RestartManager(server);
-      this._origExit = process.exit;
-      process.exit = () => {};
-      await rm.initiateRestart();
-      assert.strictEqual(cleanupCalled, true, 'should continue to bridge cleanup even after save failure');
-    });
-
-    it('should use Promise.allSettled for bridge cleanup', async function () {
-      let cleanupCount = 0;
-      const makeBridge = (shouldThrow) => ({
-        cleanup: async () => {
-          cleanupCount++;
-          if (shouldThrow) throw new Error('bridge error');
-        }
-      });
-      const server = createMockServer({
-        claudeBridge: makeBridge(true),  // This one throws
-        codexBridge: makeBridge(false),
-        copilotBridge: makeBridge(false),
-        geminiBridge: makeBridge(false),
-        terminalBridge: makeBridge(false)
-      });
-      const rm = new RestartManager(server);
-      this._origExit = process.exit;
-      process.exit = () => {};
-      await rm.initiateRestart();
-      assert.strictEqual(cleanupCount, 5, 'all 5 bridges should attempt cleanup even if one throws');
-    });
-
-    it('should flush output timers before saving', async function () {
-      const flushedSessions = [];
-      const server = createMockServer({
-        claudeSessions: new Map([['s1', { id: 's1' }], ['s2', { id: 's2' }]]),
-        _flushAndClearOutputTimer: (session, id) => { flushedSessions.push(id); }
-      });
-      const rm = new RestartManager(server);
-      this._origExit = process.exit;
-      process.exit = () => {};
-      await rm.initiateRestart();
-      assert.deepStrictEqual(flushedSessions.sort(), ['s1', 's2']);
     });
   });
 });

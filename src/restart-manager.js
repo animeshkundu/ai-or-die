@@ -1,13 +1,20 @@
 'use strict';
 
-const os = require('os');
-
 const RESTART_EXIT_CODE = 75;
 const MEMORY_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const NOTIFICATION_THROTTLE_MS = 30 * 60 * 1000; // 30 minutes
 const RESTART_BROADCAST_DELAY_MS = 500;
-const SERVER_CLOSE_TIMEOUT_MS = 5000;
 
+/**
+ * Memory monitoring and restart trigger.
+ *
+ * This is NOT a supervisor — process lifecycle is managed by bin/supervisor.js.
+ * This module only:
+ *   1. Monitors memory and triggers GC when RSS exceeds a threshold
+ *   2. Notifies clients when memory is critically high
+ *   3. Initiates a restart by broadcasting to clients, then delegating to
+ *      the server's existing handleShutdown() with exit code 75
+ */
 class RestartManager {
   constructor(server) {
     this.server = server;
@@ -74,104 +81,25 @@ class RestartManager {
   }
 
   async initiateRestart(reason = 'manual') {
-    // Guard: prevent double execution
+    // Guard: reuse the server's existing shutdown guard
     if (this.server.isShuttingDown) {
       console.log('[restart] Already shutting down, ignoring restart request');
       return;
     }
-    this.server.isShuttingDown = true;
+
     console.log(`[restart] Initiating restart (reason: ${reason})`);
 
-    // Clear all intervals to prevent races
-    if (this.server.autoSaveInterval) {
-      clearInterval(this.server.autoSaveInterval);
-      this.server.autoSaveInterval = null;
-    }
-    if (this.server.sessionEvictionInterval) {
-      clearInterval(this.server.sessionEvictionInterval);
-      this.server.sessionEvictionInterval = null;
-    }
-    if (this.server.imageSweepInterval) {
-      clearInterval(this.server.imageSweepInterval);
-      this.server.imageSweepInterval = null;
-    }
-    this.stopMemoryMonitoring();
-
-    // Broadcast restart notification to all clients
+    // Broadcast restart notification to all clients before shutdown begins
     this.server.broadcastToAll({
       type: 'server_restarting',
       reason
     });
 
-    // Wait for message delivery
+    // Brief wait for WebSocket frames to be delivered
     await new Promise(r => setTimeout(r, RESTART_BROADCAST_DELAY_MS));
 
-    // Flush pending output timers for all sessions
-    for (const [sessionId, session] of this.server.claudeSessions) {
-      if (this.server._flushAndClearOutputTimer) {
-        this.server._flushAndClearOutputTimer(session, sessionId);
-      }
-    }
-
-    // Save sessions to disk
-    try {
-      await this.server.saveSessionsToDisk(true);
-      console.log('[restart] Sessions saved to disk');
-    } catch (err) {
-      console.error('[restart] Failed to save sessions (continuing with last auto-save):', err.message);
-    }
-
-    // Stop VS Code tunnels (prevents orphaned child processes)
-    if (this.server.vscodeTunnel) {
-      try {
-        await this.server.vscodeTunnel.stopAll();
-      } catch (err) {
-        console.warn('[restart] VS Code tunnel cleanup error:', err.message);
-      }
-    }
-
-    // Stop all PTY processes in parallel — errors don't abort restart
-    const bridges = [
-      this.server.claudeBridge,
-      this.server.codexBridge,
-      this.server.copilotBridge,
-      this.server.geminiBridge,
-      this.server.terminalBridge
-    ].filter(Boolean);
-
-    await Promise.allSettled(bridges.map(bridge => {
-      return bridge.cleanup().catch(err => {
-        console.warn(`[restart] Bridge cleanup error:`, err.message);
-      });
-    }));
-    console.log('[restart] All bridges cleaned up');
-
-    // Close servers with hard timeout
-    const exitWithCode = () => {
-      console.log(`[restart] Exiting with code ${RESTART_EXIT_CODE}`);
-      process.exit(RESTART_EXIT_CODE);
-    };
-
-    // Hard timeout: if server.close() hangs, force exit
-    const hardTimeout = setTimeout(exitWithCode, SERVER_CLOSE_TIMEOUT_MS);
-    hardTimeout.unref();
-
-    try {
-      if (this.server.wss) this.server.wss.close();
-      if (this.server.server) {
-        this.server.server.close(() => {
-          clearTimeout(hardTimeout);
-          exitWithCode();
-        });
-      } else {
-        clearTimeout(hardTimeout);
-        exitWithCode();
-      }
-    } catch (err) {
-      console.error('[restart] Error during server close:', err.message);
-      clearTimeout(hardTimeout);
-      exitWithCode();
-    }
+    // Delegate to the server's single shutdown path with restart exit code
+    await this.server.handleShutdown(RESTART_EXIT_CODE);
   }
 }
 

@@ -188,14 +188,14 @@ class ClaudeCodeWebServer {
     await this.sessionStore.saveSessions(this.claudeSessions);
   }
 
-  async handleShutdown() {
+  async handleShutdown(exitCode = 0) {
     // Prevent multiple shutdown attempts
     if (this.isShuttingDown) {
       return;
     }
     this.isShuttingDown = true;
 
-    console.log('\nGracefully shutting down...');
+    console.log(`\nGracefully shutting down (exit code: ${exitCode})...`);
     await this.saveSessionsToDisk(true);
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
@@ -210,7 +210,7 @@ class ClaudeCodeWebServer {
       this.cleanupSessionImages(session);
     }
     await this.close();
-    process.exit(0);
+    process.exit(exitCode);
   }
 
   isPathWithinBase(targetPath) {
