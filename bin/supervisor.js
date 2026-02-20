@@ -12,7 +12,8 @@ const CIRCUIT_BREAKER_WINDOW_MS = 30000;
 const CIRCUIT_BREAKER_MAX_CRASHES = 3;
 const SHUTDOWN_TIMEOUT_MS = 10000;
 
-const serverScript = path.join(__dirname, 'ai-or-die.js');
+const serverScript = process.env.SUPERVISOR_CHILD_SCRIPT
+  || path.join(__dirname, 'ai-or-die.js');
 const forwardedArgs = process.argv.slice(2);
 
 let child = null;
@@ -100,5 +101,9 @@ function shutdownGracefully() {
 
 process.on('SIGINT', shutdownGracefully);
 process.on('SIGTERM', shutdownGracefully);
+// Allow test harness to trigger shutdown via IPC
+process.on('message', (msg) => {
+  if (msg && msg.type === 'shutdown') shutdownGracefully();
+});
 
 startServer();

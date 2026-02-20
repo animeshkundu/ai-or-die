@@ -1,33 +1,41 @@
 'use strict';
 
 /**
- * Integration test: actual supervisor restart round-trip.
+ * Integration test: supervisor restart round-trip using a mock child server.
  *
- * Starts bin/supervisor.js as a real child process, connects a WebSocket client,
- * triggers restart_server, and verifies the supervisor respawns the server and the
- * client can reconnect with sessions preserved.
+ * Uses SUPERVISOR_CHILD_SCRIPT env to point the real supervisor at a lightweight
+ * mock server (~50 lines, no PTY/bridges/timers) that shuts down in <100ms.
+ * Sessions persist across restarts via a temp JSON file.
+ *
+ * Cleanup uses IPC (supervisor.send({ type: 'shutdown' })) which works on both
+ * Linux and Windows without SIGTERM propagation issues.
+ *
+ * Expected duration: ~3-5 seconds.
  */
 
 const assert = require('assert');
 const { spawn } = require('child_process');
 const path = require('path');
+const os = require('os');
+const fs = require('fs');
+const http = require('http');
 const WebSocket = require('ws');
 
 const supervisorScript = path.join(__dirname, '..', 'bin', 'supervisor.js');
+const mockServerScript = path.join(__dirname, 'fixtures', 'mock-supervised-server.js');
 
-function waitForServerReady(port, timeoutMs = 30000) {
+function waitForServerReady(port, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const check = () => {
       if (Date.now() - start > timeoutMs) {
         return reject(new Error(`Server not ready on port ${port} within ${timeoutMs}ms`));
       }
-      const http = require('http');
       const req = http.get(`http://127.0.0.1:${port}/api/health`, (res) => {
         if (res.statusCode === 200) resolve();
-        else setTimeout(check, 300);
+        else setTimeout(check, 200);
       });
-      req.on('error', () => setTimeout(check, 300));
+      req.on('error', () => setTimeout(check, 200));
       req.end();
     };
     check();
@@ -37,108 +45,87 @@ function waitForServerReady(port, timeoutMs = 30000) {
 function connectWs(port) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${port}`);
-    const timeout = setTimeout(() => {
-      ws.close();
-      reject(new Error('WebSocket connection timeout'));
-    }, 10000);
-    ws.on('open', () => {
-      clearTimeout(timeout);
-    });
+    const timeout = setTimeout(() => { ws.close(); reject(new Error('WS connect timeout')); }, 5000);
     ws.on('message', (data) => {
       const msg = JSON.parse(data.toString());
       if (msg.type === 'connected') {
+        clearTimeout(timeout);
         resolve({ ws, connectionId: msg.connectionId });
       }
     });
-    ws.on('error', (err) => {
-      clearTimeout(timeout);
-      reject(err);
-    });
+    ws.on('error', (err) => { clearTimeout(timeout); reject(err); });
   });
 }
 
-function wsSend(ws, data) {
-  ws.send(JSON.stringify(data));
-}
+function wsSend(ws, data) { ws.send(JSON.stringify(data)); }
 
-function waitForMessage(ws, type, timeoutMs = 10000) {
+function waitForMessage(ws, type, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`Timeout waiting for message type: ${type}`));
-    }, timeoutMs);
+    const timeout = setTimeout(() => reject(new Error(`Timeout waiting for ${type}`)), timeoutMs);
     const handler = (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        if (msg.type === type) {
-          clearTimeout(timeout);
-          ws.removeListener('message', handler);
-          resolve(msg);
-        }
-      } catch (_) { /* ignore non-JSON */ }
+      const msg = JSON.parse(data.toString());
+      if (msg.type === type) {
+        clearTimeout(timeout);
+        ws.removeListener('message', handler);
+        resolve(msg);
+      }
     };
     ws.on('message', handler);
   });
 }
 
 describe('Supervisor Integration', function () {
-  this.timeout(60000);
+  this.timeout(20000);
 
   let supervisorProcess;
   const port = 49152 + Math.floor(Math.random() * 16383);
+  let sessionFile;
+
+  beforeEach(function () {
+    sessionFile = path.join(os.tmpdir(), `mock-sessions-${Date.now()}.json`);
+  });
 
   afterEach(async function () {
+    // IPC-based shutdown — works on both Linux and Windows
     if (supervisorProcess && !supervisorProcess.killed) {
-      // Kill the entire process tree — on CI, SIGTERM may not reach
-      // the grandchild server process, leaving orphans that prevent exit.
-      const pid = supervisorProcess.pid;
+      try { supervisorProcess.send({ type: 'shutdown' }); } catch (_) { /* ignore */ }
       await new Promise((resolve) => {
-        const killTimer = setTimeout(() => {
-          // Force-kill the process tree
-          try {
-            if (process.platform === 'win32') {
-              require('child_process').execSync(`taskkill /pid ${pid} /T /F`, { stdio: 'ignore' });
-            } else {
-              // Kill the entire process group
-              try { process.kill(-pid, 'SIGKILL'); } catch (_) { /* ignore */ }
-              try { supervisorProcess.kill('SIGKILL'); } catch (_) { /* ignore */ }
-            }
-          } catch (_) { /* ignore */ }
+        const timer = setTimeout(() => {
+          try { supervisorProcess.kill('SIGKILL'); } catch (_) { /* ignore */ }
           resolve();
         }, 3000);
-        supervisorProcess.on('exit', () => {
-          clearTimeout(killTimer);
-          resolve();
-        });
-        supervisorProcess.kill('SIGTERM');
+        supervisorProcess.on('exit', () => { clearTimeout(timer); resolve(); });
       });
-      // Brief pause to let OS clean up sockets
-      await new Promise(r => setTimeout(r, 500));
     }
+    try { fs.unlinkSync(sessionFile); } catch (_) { /* ignore */ }
   });
 
   it('should start supervisor, accept connections, restart on exit code 75, and preserve sessions', async function () {
-    // 1. Start the supervisor
+    // 1. Start the supervisor with the mock child server
     supervisorProcess = spawn(process.execPath, [
-      supervisorScript,
-      '--disable-auth', '--no-open', '--port', String(port)
+      supervisorScript, '--port', String(port)
     ], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      detached: process.platform !== 'win32', // Process group for tree-kill on Linux
-      env: { ...process.env, NODE_ENV: 'test' }
+      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      env: {
+        ...process.env,
+        NODE_ENV: 'test',
+        SUPERVISOR_CHILD_SCRIPT: mockServerScript,
+        MOCK_SESSION_FILE: sessionFile
+      }
     });
 
     let output = '';
     supervisorProcess.stdout.on('data', (d) => { output += d.toString(); });
     supervisorProcess.stderr.on('data', (d) => { output += d.toString(); });
 
-    // 2. Wait for server to be ready
+    // 2. Wait for mock server to be ready
     await waitForServerReady(port);
 
-    // 3. Connect WebSocket client
+    // 3. Connect WebSocket
     const { ws } = await connectWs(port);
 
     // 4. Create a session
-    wsSend(ws, { type: 'create_session', name: 'Integration Test', workingDir: process.cwd() });
+    wsSend(ws, { type: 'create_session', name: 'Integration Test', workingDir: '/tmp' });
     const created = await waitForMessage(ws, 'session_created');
     assert.ok(created.sessionId, 'session should have an ID');
     const sessionId = created.sessionId;
@@ -148,35 +135,34 @@ describe('Supervisor Integration', function () {
     const joined = await waitForMessage(ws, 'session_joined');
     assert.strictEqual(joined.sessionId, sessionId);
 
-    // 6. Wait for server_restarting message, then send restart_server
-    const restartPromise = waitForMessage(ws, 'server_restarting', 10000);
+    // 6. Trigger restart — expect server_restarting message
+    const restartPromise = waitForMessage(ws, 'server_restarting');
     wsSend(ws, { type: 'restart_server' });
-
-    // 7. Verify we receive server_restarting
     const restartMsg = await restartPromise;
     assert.strictEqual(restartMsg.type, 'server_restarting');
     assert.strictEqual(restartMsg.reason, 'user_requested');
 
-    // 8. WebSocket will close — wait for it
+    // 7. Wait for WebSocket to close (mock server exits with 75)
     await new Promise((resolve) => {
       ws.on('close', resolve);
-      // Fallback if close doesn't fire
-      setTimeout(resolve, 5000);
+      setTimeout(resolve, 3000);
     });
 
-    // 9. Wait for supervisor to respawn the server
-    await waitForServerReady(port, 20000);
+    // 8. Wait for supervisor to respawn the mock server
+    await waitForServerReady(port, 10000);
 
-    // 10. Reconnect with a new WebSocket
+    // 9. Reconnect with a new WebSocket
     const { ws: ws2 } = await connectWs(port);
 
-    // 11. Rejoin the same session
+    // 10. Rejoin the same session — should be preserved via MOCK_SESSION_FILE
     wsSend(ws2, { type: 'join_session', sessionId });
     const rejoined = await waitForMessage(ws2, 'session_joined');
     assert.strictEqual(rejoined.sessionId, sessionId, 'should rejoin same session after restart');
     assert.strictEqual(rejoined.sessionName, 'Integration Test', 'session name should be preserved');
 
-    // 12. Clean up
+    // 11. Verify supervisor logged the restart
+    assert.ok(output.includes('Restart requested'), 'supervisor should log restart');
+
     ws2.close();
   });
 });
