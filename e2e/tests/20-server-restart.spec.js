@@ -153,18 +153,24 @@ test.describe('Server Restart', () => {
     await page.goto(url);
     await waitForAppReady(page);
     await waitForWebSocket(page);
-    await joinSessionAndStartTerminal(page, sessionId);
 
-    // Wait for terminal to be ready
-    await page.waitForTimeout(2000);
+    // Join the session (without starting a terminal) to establish the session context
+    await page.evaluate((sid) => {
+      window.app.send({ type: 'join_session', sessionId: sid });
+    }, sessionId);
 
-    // Simulate a session_joined message with wasActive=true (as if after restart)
+    // Wait for session_joined response to complete
+    await page.waitForFunction(() => window.app.currentClaudeSessionId, { timeout: 5000 });
+    await page.waitForTimeout(500);
+
+    // Now simulate a post-restart session_joined with wasActive=true
+    // This mimics what the server sends after a restart — session was active, now stopped
     await page.evaluate((sid) => {
       window.app.handleMessage({
         type: 'session_joined',
         sessionId: sid,
         sessionName: 'restart-test',
-        workingDir: process.cwd ? process.cwd() : '/',
+        workingDir: '/',
         active: false,
         wasActive: true,
         agent: 'claude',
