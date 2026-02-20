@@ -1157,10 +1157,21 @@ class ClaudeCodeWebInterface {
 
         const banner = document.createElement('div');
         banner.id = 'memoryWarningBanner';
-        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:10000;background:#92400e;color:#fef3c7;padding:8px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;font-family:Inter,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+        // role="alert" causes screen readers to announce immediately (assertive live region)
+        banner.setAttribute('role', 'alert');
+        banner.setAttribute('aria-atomic', 'true');
+        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:10000;background:#92400e;color:#fef3c7;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;font-family:Inter,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
 
         const text = document.createElement('span');
-        text.textContent = `Server memory usage is high (${message.rss}). Save your work and restart to free memory.`;
+        const icon = document.createElement('span');
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = '\u26a0\ufe0f ';
+        text.appendChild(icon);
+        if (message.supervised) {
+            text.appendChild(document.createTextNode(`Memory usage is high (${message.rss}). Save your work — you can restart now to keep things running smoothly.`));
+        } else {
+            text.appendChild(document.createTextNode(`Memory usage is high (${message.rss}). Save your work, then stop the server (Ctrl+C) and run \u201cnpm start\u201d again to free memory.`));
+        }
         banner.appendChild(text);
 
         const btnGroup = document.createElement('div');
@@ -1168,33 +1179,35 @@ class ClaudeCodeWebInterface {
 
         if (message.supervised) {
             const restartBtn = document.createElement('button');
-            restartBtn.textContent = 'Restart Server';
-            restartBtn.style.cssText = 'background:#dc2626;color:#fff;border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:500;';
+            restartBtn.textContent = 'Restart Now';
+            restartBtn.setAttribute('aria-label', 'Restart the server now to free memory');
+            restartBtn.style.cssText = 'background:#b91c1c;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;min-height:32px;';
             restartBtn.addEventListener('click', () => {
                 this.send({ type: 'restart_server' });
                 banner.remove();
             });
             btnGroup.appendChild(restartBtn);
-        } else {
-            const manualText = document.createElement('span');
-            manualText.textContent = 'Restart the server manually to free memory.';
-            manualText.style.cssText = 'font-style:italic;opacity:0.8;';
-            banner.insertBefore(manualText, text.nextSibling);
         }
 
         const dismissBtn = document.createElement('button');
         dismissBtn.textContent = 'Dismiss';
-        dismissBtn.style.cssText = 'background:transparent;color:#fef3c7;border:1px solid #fef3c7;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px;';
+        dismissBtn.setAttribute('aria-label', 'Dismiss memory warning');
+        dismissBtn.style.cssText = 'background:transparent;color:#fef3c7;border:1px solid #fef3c7;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px;min-height:32px;';
         dismissBtn.addEventListener('click', () => banner.remove());
         btnGroup.appendChild(dismissBtn);
 
         banner.appendChild(btnGroup);
         document.body.appendChild(banner);
 
-        // Auto-dismiss after 30 seconds
+        // Only move focus to dismiss button if the user isn't actively typing in an input/textarea
+        const active = document.activeElement;
+        const isTyping = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
+        if (!isTyping) dismissBtn.focus();
+
+        // Auto-dismiss after 90 seconds to account for users who stepped away briefly
         setTimeout(() => {
             if (banner.parentNode) banner.remove();
-        }, 30000);
+        }, 90000);
     }
 
     _handleVoiceMessage(message) {
@@ -1501,7 +1514,7 @@ class ClaudeCodeWebInterface {
                 // During server restart, don't count failures against reconnect budget
                 // but still use backoff to avoid thundering herd
                 if (this._serverRestarting) {
-                    this.updateStatus('Server restarting...');
+                    this.updateStatus('Restarting — reconnecting…');
                     const restartBackoff = Math.min(2000 * Math.pow(1.5, this._restartReconnectAttempts || 0), 15000);
                     this._restartReconnectAttempts = (this._restartReconnectAttempts || 0) + 1;
                     setTimeout(() => this.reconnect(), restartBackoff);
@@ -1767,7 +1780,7 @@ class ClaudeCodeWebInterface {
                     } else if (message.wasActive && message.agent) {
                         console.log('[session_joined] Session was active before server restart, agent:', message.agent);
                         const toolAlias = this.getAlias(message.agent) || message.agent;
-                        this.terminal.writeln(`\r\n\x1b[33mServer was restarted. ${toolAlias} was stopped. Click "Start ${toolAlias}" to resume.\x1b[0m`);
+                        this.terminal.writeln(`\r\n\x1b[33mThe server was restarted and ${toolAlias} was stopped. Your session history is preserved — click \u201cStart ${toolAlias}\u201d below to pick up where you left off.\x1b[0m`);
                         this.showOverlay('startPrompt');
                     } else {
                         console.log('[session_joined] Existing session with stopped tool, showing restart prompt');
@@ -2045,14 +2058,14 @@ class ClaudeCodeWebInterface {
                 console.log('[server_restarting] Server restart imminent');
                 this._serverRestarting = true;
                 this.reconnectAttempts = 0;
-                this.updateStatus('Server restarting...');
+                this.updateStatus('Restarting — please wait…');
                 // Start a 60-second timeout — if server doesn't come back, show error
                 if (this._restartTimeout) clearTimeout(this._restartTimeout);
                 this._restartTimeout = setTimeout(() => {
                     if (this._serverRestarting) {
                         this._serverRestarting = false;
                         this.updateStatus('Disconnected');
-                        this.showError('Server did not restart. Please check the server and refresh.');
+                        this.showError('The server did not come back after restarting.\n\n\u2022 Refresh this page to try reconnecting\n\u2022 If the problem persists, restart the server manually with \u201cnpm start\u201d');
                     }
                 }, 60000);
                 break;
