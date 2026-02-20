@@ -86,14 +86,23 @@ describe('Supervisor Integration', function () {
   });
 
   afterEach(async function () {
-    // IPC-based shutdown — works on both Linux and Windows
     if (supervisorProcess && !supervisorProcess.killed) {
+      // Try graceful IPC shutdown first
       try { supervisorProcess.send({ type: 'shutdown' }); } catch (_) { /* ignore */ }
       await new Promise((resolve) => {
         const timer = setTimeout(() => {
-          try { supervisorProcess.kill('SIGKILL'); } catch (_) { /* ignore */ }
+          // Kill the entire process tree — not just the supervisor
+          try {
+            if (process.platform === 'win32') {
+              require('child_process').execSync(
+                `taskkill /pid ${supervisorProcess.pid} /T /F`, { stdio: 'ignore' }
+              );
+            } else {
+              process.kill(-supervisorProcess.pid, 'SIGKILL');
+            }
+          } catch (_) { /* already dead */ }
           resolve();
-        }, 3000);
+        }, 2000);
         supervisorProcess.on('exit', () => { clearTimeout(timer); resolve(); });
       });
     }
@@ -106,6 +115,7 @@ describe('Supervisor Integration', function () {
       supervisorScript, '--port', String(port)
     ], {
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      detached: process.platform !== 'win32',
       env: {
         ...process.env,
         NODE_ENV: 'test',

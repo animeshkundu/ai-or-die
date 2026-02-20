@@ -2114,6 +2114,11 @@ class ClaudeCodeWebServer {
       clearInterval(this.sessionEvictionInterval);
     }
 
+    // Stop memory monitoring to release the interval timer
+    if (this.restartManager) {
+      this.restartManager.stopMemoryMonitoring();
+    }
+
     if (this.wss) {
       this.wss.close();
     }

@@ -12,7 +12,7 @@
     "start:direct": "node bin/ai-or-die.js",
     "dev": "node bin/supervisor.js --dev",
     "dev:direct": "node bin/ai-or-die.js --dev",
-    "test": "mocha --exit --ignore test/supervisor-integration.test.js test/*.test.js",
+    "test": "mocha --exit test/*.test.js",
     "test:integration": "mocha --exit --timeout 20000 test/supervisor-integration.test.js",
     "test:browser": "npx playwright test --config e2e/playwright.config.js",
     "build:bundle": "node scripts/build-sea.js bundle",
