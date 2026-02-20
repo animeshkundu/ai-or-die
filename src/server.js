@@ -2134,6 +2134,11 @@ class ClaudeCodeWebServer {
     }
 
     if (this.wss) {
+      // Terminate existing WebSocket clients so server.close() callback fires promptly
+      // (wss.close() alone only stops new connections; open clients keep the HTTP server alive)
+      for (const client of this.wss.clients) {
+        try { client.terminate(); } catch (_) { /* ignore */ }
+      }
       this.wss.close();
     }
     if (this.server) {
