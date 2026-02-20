@@ -44,23 +44,11 @@ class RestartManager {
     const rssMB = (mem.rss / (1024 * 1024)).toFixed(1);
     const heapMB = (mem.heapUsed / (1024 * 1024)).toFixed(1);
 
-    // Automatic GC when RSS exceeds threshold
+    // Schedule GC via setImmediate so any in-flight I/O callbacks complete first.
+    // global.gc() is synchronous and can stall the event loop 100-300ms on large heaps.
     if (mem.rss > this.gcThresholdBytes && typeof global.gc === 'function') {
-      console.log(`[memory] RSS ${rssMB} MB exceeds GC threshold, attempting garbage collection...`);
-      const before = mem.rss;
-
-      // Try minor GC first (young generation, ~5ms)
-      try { global.gc({ type: 'minor' }); } catch (_) { /* ignore */ }
-
-      const afterMinor = process.memoryUsage().rss;
-      if (afterMinor > this.gcThresholdBytes) {
-        // Minor GC wasn't enough, do full GC (~100-300ms)
-        try { global.gc(); } catch (_) { /* ignore */ }
-      }
-
-      const after = process.memoryUsage().rss;
-      const reclaimedMB = ((before - after) / (1024 * 1024)).toFixed(1);
-      console.log(`[memory] GC complete. Reclaimed ${reclaimedMB} MB. RSS: ${(after / (1024 * 1024)).toFixed(1)} MB`);
+      console.log(`[memory] RSS ${rssMB} MB exceeds GC threshold, scheduling garbage collection...`);
+      setImmediate(() => this._runGc());
     }
 
     // Notify user when RSS exceeds warning threshold (throttled)
@@ -80,6 +68,22 @@ class RestartManager {
         });
       }
     }
+  }
+
+  _runGc() {
+    const before = process.memoryUsage().rss;
+    // Try minor GC first (young generation, ~5ms)
+    try { global.gc({ type: 'minor' }); } catch (_) { /* ignore */ }
+
+    const afterMinor = process.memoryUsage().rss;
+    if (afterMinor > this.gcThresholdBytes) {
+      // Minor GC wasn't enough, do full GC (~100-300ms)
+      try { global.gc(); } catch (_) { /* ignore */ }
+    }
+
+    const after = process.memoryUsage().rss;
+    const reclaimedMB = ((before - after) / (1024 * 1024)).toFixed(1);
+    console.log(`[memory] GC complete. Reclaimed ${reclaimedMB} MB. RSS: ${(after / (1024 * 1024)).toFixed(1)} MB`);
   }
 
   async initiateRestart(reason = 'manual') {

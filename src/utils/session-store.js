@@ -87,7 +87,10 @@ class SessionStore {
             // Write to a temporary file first, then rename (atomic operation)
             // Use restrictive permissions (owner-only) since output may contain secrets
             const tempFile = `${this.sessionsFile}.tmp`;
-            await fs.writeFile(tempFile, JSON.stringify(data), { mode: 0o600 });
+            // JSON.stringify is CPU-bound; yield to in-flight I/O (e.g. WebSocket sends)
+            // before serialising to avoid blocking the event loop for tens of milliseconds.
+            const jsonStr = await new Promise(resolve => setImmediate(() => resolve(JSON.stringify(data))));
+            await fs.writeFile(tempFile, jsonStr, { mode: 0o600 });
             // Ensure directory still exists before rename (handles race conditions)
             await fs.mkdir(this.storageDir, { recursive: true });
             await fs.rename(tempFile, this.sessionsFile);

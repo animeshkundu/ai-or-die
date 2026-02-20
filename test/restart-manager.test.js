@@ -86,6 +86,60 @@ describe('RestartManager', function () {
 
       assert.strictEqual(broadcastCount, 1, 'should only broadcast once within throttle window');
     });
+
+    it('should schedule GC via setImmediate when global.gc is available', function (done) {
+      const rm = new RestartManager(createMockServer());
+      rm.gcThresholdBytes = 1; // Always triggers
+      // Stub global.gc so the GC branch is reachable without --expose-gc
+      const origGc = global.gc;
+      global.gc = () => {};
+      let gcScheduled = false;
+      const origSetImmediate = global.setImmediate;
+      global.setImmediate = (fn) => {
+        gcScheduled = true;
+        global.setImmediate = origSetImmediate;
+        global.gc = origGc;
+        // Execute the scheduled GC callback, then verify and complete
+        origSetImmediate(() => {
+          fn();
+          assert.ok(gcScheduled, 'GC should have been scheduled via setImmediate');
+          done();
+        });
+      };
+      try {
+        rm._checkMemory();
+      } catch (e) {
+        global.setImmediate = origSetImmediate;
+        global.gc = origGc;
+        done(e);
+      }
+    });
+  });
+
+  describe('_runGc', function () {
+    it('should log reclaimed MB after GC', function () {
+      const rm = new RestartManager(createMockServer());
+      const messages = [];
+      const origLog = console.log;
+      console.log = (...args) => messages.push(args.join(' '));
+      try {
+        rm._runGc();
+      } finally {
+        console.log = origLog;
+      }
+      assert.ok(messages.some(m => m.includes('GC complete')), 'should log GC completion');
+    });
+
+    it('should not throw when global.gc is undefined', function () {
+      const rm = new RestartManager(createMockServer());
+      const origGc = global.gc;
+      delete global.gc;
+      try {
+        assert.doesNotThrow(() => rm._runGc());
+      } finally {
+        if (origGc !== undefined) global.gc = origGc;
+      }
+    });
   });
 
   describe('initiateRestart', function () {

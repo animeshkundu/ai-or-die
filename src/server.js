@@ -79,6 +79,14 @@ class ClaudeCodeWebServer {
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
     this.supervised = typeof process.send === 'function'; // Running under supervisor with IPC
+    // Process listener references — stored so they can be removed in close()
+    this._onSigInt = null;
+    this._onSigTerm = null;
+    this._onBeforeExit = null;
+    this._onUncaughtException = null;
+    this._onUnhandledRejection = null;
+    this._onIpcMessage = null;
+    this._onIpcDisconnect = null;
     this.restartManager = new RestartManager(this);
     this.restartManager.startMemoryMonitoring();
     // Commands dropdown removed
@@ -138,10 +146,10 @@ class ClaudeCodeWebServer {
     }, 5 * 60 * 1000);
 
     // Also save on process exit
-    process.on('SIGINT', () => this.handleShutdown());
-    process.on('SIGTERM', () => this.handleShutdown());
-    process.on('beforeExit', () => this.saveSessionsToDisk(true));
-    process.on('uncaughtException', (err) => {
+    this._onSigInt = () => this.handleShutdown();
+    this._onSigTerm = () => this.handleShutdown();
+    this._onBeforeExit = () => this.saveSessionsToDisk(true);
+    this._onUncaughtException = (err) => {
       console.error('Uncaught exception:', err);
       // Synchronous save — async is unsafe after uncaught exception
       try {
@@ -154,27 +162,34 @@ class ClaudeCodeWebServer {
         console.error('Failed to save sessions on crash:', saveErr);
       }
       process.exit(1);
-    });
-    process.on('unhandledRejection', (reason) => {
+    };
+    this._onUnhandledRejection = (reason) => {
       console.error('Unhandled rejection:', reason);
       // Don't swallow — let it propagate to uncaughtException on Node 15+
-    });
+    };
+    process.on('SIGINT', this._onSigInt);
+    process.on('SIGTERM', this._onSigTerm);
+    process.on('beforeExit', this._onBeforeExit);
+    process.on('uncaughtException', this._onUncaughtException);
+    process.on('unhandledRejection', this._onUnhandledRejection);
   }
 
   setupIpcListener() {
     if (!this.supervised) return;
     // When running under the supervisor, listen for graceful shutdown via IPC
-    process.on('message', (msg) => {
+    this._onIpcMessage = (msg) => {
       if (msg && msg.type === 'shutdown') {
         console.log('Received shutdown request via IPC');
         this.handleShutdown();
       }
-    });
+    };
     // If the supervisor crashes, continue running standalone
-    process.on('disconnect', () => {
+    this._onIpcDisconnect = () => {
       console.warn('IPC channel disconnected (supervisor may have crashed). Continuing standalone.');
       this.supervised = false;
-    });
+    };
+    process.on('message', this._onIpcMessage);
+    process.on('disconnect', this._onIpcDisconnect);
   }
   
   setTunnelManager(tm) {
@@ -2158,6 +2173,16 @@ class ClaudeCodeWebServer {
     }
     const timeout = new Promise(resolve => setTimeout(resolve, 5000));
     await Promise.race([Promise.allSettled(stopPromises), timeout]);
+
+    // Remove process-level listeners added during setup to prevent listener
+    // accumulation when multiple server instances are created (e.g. in tests).
+    process.removeListener('SIGINT', this._onSigInt);
+    process.removeListener('SIGTERM', this._onSigTerm);
+    process.removeListener('beforeExit', this._onBeforeExit);
+    process.removeListener('uncaughtException', this._onUncaughtException);
+    process.removeListener('unhandledRejection', this._onUnhandledRejection);
+    process.removeListener('message', this._onIpcMessage);
+    process.removeListener('disconnect', this._onIpcDisconnect);
 
     // Clear all data
     this.claudeSessions.clear();
