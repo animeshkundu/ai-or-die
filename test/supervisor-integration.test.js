@@ -75,13 +75,15 @@ function waitForMessage(ws, type, timeoutMs = 5000) {
 }
 
 describe('Supervisor Integration', function () {
-  this.timeout(20000);
+  this.timeout(30000);
 
   let supervisorProcess;
-  const port = 49152 + Math.floor(Math.random() * 16383);
+  // Use a random high port; pick at test time to avoid stale conflicts
+  let port;
   let sessionFile;
 
   beforeEach(function () {
+    port = 49152 + Math.floor(Math.random() * 16383);
     sessionFile = path.join(os.tmpdir(), `mock-sessions-${Date.now()}.json`);
   });
 

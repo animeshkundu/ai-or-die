@@ -85,9 +85,14 @@ class SessionStore {
             };
 
             // Write to a temporary file first, then rename (atomic operation)
-            // Use restrictive permissions (owner-only) since output may contain secrets
+            // Use restrictive permissions (owner-only) since output may contain secrets.
+            // Note: mode 0o600 is silently ignored on Windows (which uses ACLs instead
+            // of Unix permissions). The file inherits the user's default ACL, which is
+            // acceptable but not explicitly enforced.
             const tempFile = `${this.sessionsFile}.tmp`;
-            await fs.writeFile(tempFile, JSON.stringify(data), { mode: 0o600 });
+            // JSON.stringify is CPU-bound; yield to pending I/O before serializing
+            const jsonStr = await new Promise(resolve => setImmediate(() => resolve(JSON.stringify(data))));
+            await fs.writeFile(tempFile, jsonStr, { mode: 0o600 });
             // Ensure directory still exists before rename (handles race conditions)
             await fs.mkdir(this.storageDir, { recursive: true });
             await fs.rename(tempFile, this.sessionsFile);

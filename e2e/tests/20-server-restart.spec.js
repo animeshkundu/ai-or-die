@@ -51,10 +51,10 @@ test.describe('Server Restart', () => {
     // Verify banner text mentions memory
     const text = await banner.textContent();
     expect(text).toContain('2.1 GB');
-    expect(text).toContain('memory');
+    expect(text).toContain('Memory usage is high');
 
     // Verify restart button exists (supervised mode)
-    const restartBtn = banner.locator('button', { hasText: 'Restart Server' });
+    const restartBtn = banner.locator('button', { hasText: 'Restart Now' });
     await expect(restartBtn).toBeVisible();
 
     // Verify dismiss button exists
@@ -113,13 +113,13 @@ test.describe('Server Restart', () => {
     const banner = page.locator('#memoryWarningBanner');
     await expect(banner).toBeVisible({ timeout: 5000 });
 
-    // Should NOT have a "Restart Server" button
-    const restartBtn = banner.locator('button', { hasText: 'Restart Server' });
+    // Should NOT have a "Restart Now" button
+    const restartBtn = banner.locator('button', { hasText: 'Restart Now' });
     await expect(restartBtn).not.toBeAttached();
 
-    // Should mention manual restart
+    // Should give actionable instructions for non-supervised mode
     const text = await banner.textContent();
-    expect(text).toContain('manually');
+    expect(text).toContain('Ctrl+C');
   });
 
   test('server_restarting message shows restarting status', async ({ page }) => {
@@ -186,7 +186,7 @@ test.describe('Server Restart', () => {
       if (!buf) return false;
       for (let i = 0; i < buf.length; i++) {
         const line = buf.getLine(i)?.translateToString(true) || '';
-        if (line.includes('Server was restarted')) return true;
+        if (line.includes('server was restarted')) return true;
       }
       return false;
     }, { timeout: 10000 });

@@ -93,13 +93,17 @@ function shutdownGracefully() {
   // Fallback: force kill after timeout
   const killTimer = setTimeout(() => {
     console.warn('[supervisor] Server did not exit within timeout, force killing');
-    try { child.kill('SIGKILL'); } catch (_) { /* ignore */ }
+    // child may be null if exit handler fired between IPC send and this timer
+    if (child) {
+      try { child.kill('SIGKILL'); } catch (_) { /* ignore */ }
+    }
     setTimeout(() => process.exit(1), 1000);
   }, SHUTDOWN_TIMEOUT_MS);
   killTimer.unref();
 }
 
 process.on('SIGINT', shutdownGracefully);
+// SIGTERM is not available on Windows; IPC message (below) is the Windows shutdown path
 process.on('SIGTERM', shutdownGracefully);
 // Allow test harness to trigger shutdown via IPC
 process.on('message', (msg) => {
