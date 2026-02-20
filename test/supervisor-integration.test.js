@@ -120,6 +120,9 @@ describe('Supervisor Integration', function () {
       supervisorScript, '--port', String(port)
     ], {
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      // detached: true on Linux creates a new process group so afterEach can
+      // kill the whole tree with process.kill(-pid, 'SIGKILL').
+      // On Windows, detached is not set; afterEach uses 'taskkill /T /F' instead.
       detached: process.platform !== 'win32',
       env: {
         ...process.env,

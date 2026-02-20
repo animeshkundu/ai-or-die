@@ -85,7 +85,10 @@ class SessionStore {
             };
 
             // Write to a temporary file first, then rename (atomic operation)
-            // Use restrictive permissions (owner-only) since output may contain secrets
+            // Use restrictive permissions (owner-only) since output may contain secrets.
+            // Note: mode 0o600 is silently ignored on Windows (which uses ACLs instead
+            // of Unix permissions). The file will be accessible only to the current user
+            // via Windows default ACL inheritance, which is acceptable but not enforced.
             const tempFile = `${this.sessionsFile}.tmp`;
             await fs.writeFile(tempFile, JSON.stringify(data), { mode: 0o600 });
             // Ensure directory still exists before rename (handles race conditions)
