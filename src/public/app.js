@@ -1748,8 +1748,8 @@ class ClaudeCodeWebInterface {
                     this.pendingJoinSessionId = null;
                 }
 
-                // Reset terminal state when switching sessions to prevent
-                // mouse/alt-screen mode leakage between tabs.
+                // Reset terminal state on every join (even with no output buffer)
+                // to prevent mouse/alt-screen mode leakage between tabs.
                 this.terminal.reset();
                 
                 // Replay output buffer if available
