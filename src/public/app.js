@@ -1747,10 +1747,13 @@ class ClaudeCodeWebInterface {
                     this.pendingJoinResolve = null;
                     this.pendingJoinSessionId = null;
                 }
+
+                // Reset terminal state when switching sessions to prevent
+                // mouse/alt-screen mode leakage between tabs.
+                this.terminal.reset();
                 
                 // Replay output buffer if available
                 if (message.outputBuffer && message.outputBuffer.length > 0) {
-                    this.terminal.clear();
                     message.outputBuffer.forEach(data => {
                         // Filter out focus tracking sequences (^[[I and ^[[O)
                         const filteredData = data.replace(/\x1b\[\[?[IO]/g, '');

@@ -87,4 +87,37 @@ test.describe('Tab switching: multiple sessions with isolated content', () => {
     const garbledPattern = /\x1b\[[0-9;]*$/m;
     expect(contentA).not.toMatch(garbledPattern);
   });
+
+  test('switching tabs resets terminal mouse mode state', async ({ page }) => {
+    setupPageCapture(page);
+
+    const sessionA = await createSessionViaApi(port, 'Mouse Mode A');
+    const sessionB = await createSessionViaApi(port, 'Mouse Mode B');
+
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionA);
+
+    // Enable mouse reporting mode in session A.
+    await typeInTerminal(page, "printf '\\033[?1000h\\033[?1006h'");
+    await pressKey(page, 'Enter');
+
+    await page.waitForFunction(() => {
+      const modes = window.app?.terminal?.modes;
+      return modes && modes.mouseTrackingMode && modes.mouseTrackingMode !== 'none';
+    }, { timeout: 10000 });
+
+    // Switch to session B (no output buffer); terminal modes must reset.
+    await page.evaluate(async (sid) => {
+      const app = window.app;
+      if (app.sessionTabManager) {
+        app.sessionTabManager.addTab(sid, 'Mouse Mode B', 'idle');
+        await app.sessionTabManager.switchToTab(sid);
+      }
+    }, sessionB);
+
+    const modeAfterSwitch = await page.evaluate(() => window.app?.terminal?.modes?.mouseTrackingMode || 'none');
+    expect(modeAfterSwitch).toBe('none');
+  });
 });
