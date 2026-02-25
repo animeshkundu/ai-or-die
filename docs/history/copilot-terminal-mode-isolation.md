@@ -13,6 +13,7 @@ xterm.js VT modes (including mouse tracking modes) are stateful on the terminal 
 Reset terminal state on `session_joined` before output buffer replay:
 
 - `src/public/app.js`: call `this.terminal.reset()` immediately before replaying `message.outputBuffer`.
+- For inactive sessions, strip replayed mouse tracking mode toggles (`ESC[?1000/1001/1002/1003/1005/1006/1015/1016 h/l`) so stale historical output cannot re-enable mouse capture.
 
 This keeps behavior isolated between tabs while preserving per-session output replay.
 

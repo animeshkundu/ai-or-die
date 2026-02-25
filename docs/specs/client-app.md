@@ -109,7 +109,7 @@ The main application controller. Instantiated once on page load.
 - **Connection:** Constructs the URL with the session token via `authManager.getWebSocketUrl()`. Reconnects automatically with exponential backoff up to `maxReconnectAttempts`.
 - **Message handling:** Routes incoming messages by `type` field to appropriate handlers (output rendering, session state updates, usage updates, etc.).
 - **Output rendering:** Writes raw terminal data directly to xterm.js via `terminal.write(data)`. Also feeds data to `planDetector.processOutput(data)` and `sessionTabManager.markSessionActivity()`.
-- **Session switch isolation:** On `session_joined`, the terminal is reset before replaying buffered output so VT modes (for example mouse tracking enabled by full-screen CLIs) do not leak between tabs.
+- **Session switch isolation:** On `session_joined`, the terminal is reset before replaying buffered output so VT modes (for example mouse tracking enabled by full-screen CLIs) do not leak between tabs. For inactive sessions, replay strips mouse-tracking enable/disable sequences to avoid stale mode reactivation from historical output.
 - **Background session events:** Handles `session_activity`, `session_exit`, `session_error`, `session_started`, and `session_stopped` messages for sessions the client is not actively joined to. These update tab status indicators and feed the notification idle timer. These handlers never modify the terminal or show overlays — they only interact with `SessionTabManager`.
 
 ### Terminal Configuration

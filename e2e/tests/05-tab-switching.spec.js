@@ -120,4 +120,47 @@ test.describe('Tab switching: multiple sessions with isolated content', () => {
     const modeAfterSwitch = await page.evaluate(() => window.app?.terminal?.modes?.mouseTrackingMode || 'none');
     expect(modeAfterSwitch).toBe('none');
   });
+
+  test('inactive session replay does not re-enable stale mouse mode', async ({ page }) => {
+    setupPageCapture(page);
+
+    const sessionA = await createSessionViaApi(port, 'Stale Mouse A');
+    const sessionB = await createSessionViaApi(port, 'Stale Mouse B');
+
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionA);
+
+    // Enable mouse mode in A and confirm.
+    await typeInTerminal(page, "printf '\\033[?1000h\\033[?1006h'");
+    await pressKey(page, 'Enter');
+    await page.waitForFunction(() => {
+      const modes = window.app?.terminal?.modes;
+      return modes && modes.mouseTrackingMode && modes.mouseTrackingMode !== 'none';
+    }, { timeout: 10000 });
+
+    // Stop tool so session A becomes inactive, but buffer still contains mode toggles.
+    await page.evaluate(() => window.app.send({ type: 'stop' }));
+    await page.waitForTimeout(2500);
+
+    // Switch away to B.
+    await page.evaluate(async (sid) => {
+      const app = window.app;
+      if (app.sessionTabManager) {
+        app.sessionTabManager.addTab(sid, 'Stale Mouse B', 'idle');
+        await app.sessionTabManager.switchToTab(sid);
+      }
+    }, sessionB);
+    await page.waitForTimeout(1000);
+
+    // Rejoin inactive A; replay should not re-enable mouse mode.
+    await page.evaluate(async (sid) => {
+      await window.app.sessionTabManager.switchToTab(sid);
+    }, sessionA);
+    await page.waitForTimeout(1000);
+
+    const modeAfterReplay = await page.evaluate(() => window.app?.terminal?.modes?.mouseTrackingMode || 'none');
+    expect(modeAfterReplay).toBe('none');
+  });
 });
