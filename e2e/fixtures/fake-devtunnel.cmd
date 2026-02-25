@@ -3,7 +3,10 @@ REM Mock devtunnel CLI for E2E testing.
 REM Simulates the subcommands used by VSCodeTunnelManager's two-process model.
 
 REM --- user show: auth check (exit 0 = authenticated) ---
-if "%1"=="user" if "%2"=="show" exit /b 0
+if "%1"=="user" if "%2"=="show" (
+  echo Logged in as mock-user using GitHub.
+  exit /b 0
+)
 
 REM --- user login: authenticate (exit 0 = success) ---
 if "%1"=="user" if "%2"=="login" exit /b 0

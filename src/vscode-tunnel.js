@@ -45,6 +45,7 @@ class VSCodeTunnelManager {
 
     this._healthInterval = null;
     this._reservedPorts = new Set();
+    this._authProvider = null;
 
     // Kick off async command discovery at construction time
     this._initPromise = Promise.all([
@@ -123,7 +124,7 @@ class VSCodeTunnelManager {
       connectionToken,
       localUrl: null,
       publicUrl: null,
-      tunnelId: `aiordie-vscode-${sessionId.slice(0, 12).replace(/[^a-z0-9-]/gi, '')}`,
+      tunnelId: `aiordie-vscode-${sessionId.slice(0, 12).replace(/[^a-z0-9-]/gi, '')}${this._authProvider === 'github' ? '-gh' : ''}`,
       status: 'starting',
       sessionId,
       workingDir: workingDir || process.cwd(),
@@ -161,6 +162,13 @@ class VSCodeTunnelManager {
         return { success: false, error: 'Authentication failed or was cancelled' };
       }
       console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: devtunnel login successful`);
+      // Re-check to detect auth provider after fresh login
+      await this._checkDevtunnelAuth();
+    }
+
+    // Update tunnel ID with auth-provider suffix after detection
+    if (this._authProvider === 'github') {
+      tunnel.tunnelId = `aiordie-vscode-${sessionId.slice(0, 12).replace(/[^a-z0-9-]/gi, '')}-gh`;
     }
 
     // Start health check interval (once)
@@ -241,7 +249,7 @@ class VSCodeTunnelManager {
 
     // Step 2: Clean up devtunnel (fire-and-forget)
     if (this._devtunnelCommand) {
-      execFile(this._devtunnelCommand, ['delete', tunnel.tunnelId, '-y'], { timeout: 10000 }, () => {});
+      execFile(this._devtunnelCommand, ['delete', tunnel.tunnelId, '-f'], { timeout: 10000 }, () => {});
     }
 
     // Step 3: Kill server process
@@ -457,12 +465,22 @@ class VSCodeTunnelManager {
 
   /**
    * Check if user is authenticated with devtunnel (OS-level credential store).
+   * Also detects auth provider (GitHub vs Entra) for tunnel name suffixing.
    */
   async _checkDevtunnelAuth() {
     if (!this._devtunnelCommand) return false;
     return new Promise((resolve) => {
-      execFile(this._devtunnelCommand, ['user', 'show'], { timeout: 10000 }, (err) => {
-        resolve(!err);
+      execFile(this._devtunnelCommand, ['user', 'show'], { timeout: 10000 }, (err, stdout) => {
+        if (err) {
+          resolve(false);
+        } else {
+          const output = (stdout || '').toString();
+          const match = output.match(/using\s+(GitHub)/i);
+          if (match) {
+            this._authProvider = 'github';
+          }
+          resolve(true);
+        }
       });
     });
   }
