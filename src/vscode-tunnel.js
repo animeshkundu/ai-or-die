@@ -704,12 +704,14 @@ class VSCodeTunnelManager {
     );
     if (!tunnelCreated) return false;
 
-    // Step 2: Configure the port
+    // Step 2: Configure the port (best-effort — GitHub auth may lack manage:ports scope)
     const portCreated = await this._execDevtunnel(
       ['port', 'create', tunnel.tunnelId, '-p', String(tunnel.localPort)],
       sessionId
     );
-    if (!portCreated) return false;
+    if (!portCreated) {
+      console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: port pre-configuration failed (likely GitHub auth scope limitation). Will pass port directly to host command.`);
+    }
 
     return true;
   }
@@ -742,7 +744,7 @@ class VSCodeTunnelManager {
     const tunnel = this.tunnels.get(sessionId);
     if (!tunnel || tunnel.stopping) return;
 
-    const args = ['host', tunnel.tunnelId];
+    const args = ['host', tunnel.tunnelId, '-p', String(tunnel.localPort)];
 
     return new Promise((resolve) => {
       // devtunnel is a standalone binary — no shell: true needed

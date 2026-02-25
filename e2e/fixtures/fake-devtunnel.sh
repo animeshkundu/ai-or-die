@@ -25,6 +25,7 @@ if [ "$1" = "port" ] && [ "$2" = "create" ]; then
 fi
 
 # --- host: start hosting the tunnel (long-running) ---
+# Accepts optional -p <port> flag (ignored by mock)
 if [ "$1" = "host" ]; then
   echo "Connect via browser: https://mock-e2e-test.devtunnels.ms"
   # Stay alive until killed (real devtunnel host is a long-running daemon)

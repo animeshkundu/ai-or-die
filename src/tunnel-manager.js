@@ -227,13 +227,16 @@ class TunnelManager {
     );
     if (!tunnelCreated) return false;
 
-    // Step 2: Configure the port
+    // Step 2: Configure the port (best-effort — GitHub auth may lack manage:ports scope)
     const portCreated = await this._execDevtunnel(
       ['port', 'create', this.tunnelId, '-p', String(this.port)],
       `  Configuring port ${this.port}...`,
       `  Port ${this.port} configured.`
     );
-    if (!portCreated) return false;
+    if (!portCreated) {
+      console.warn('  \x1b[33mPort pre-configuration failed (likely GitHub auth scope limitation).\x1b[0m');
+      console.warn('  Will pass port directly to host command instead.');
+    }
 
     return true;
   }
@@ -264,11 +267,12 @@ class TunnelManager {
 
   /**
    * Spawn the devtunnel host process and wait for the public URL.
-   * No -p flag needed — port is already configured via _ensureTunnel().
+   * Always passes -p <port> so forwarding works even when port create
+   * was skipped (e.g. GitHub auth scope limitation).
    */
   async _spawn() {
     this._lastSpawnTime = Date.now();
-    const args = ['host', this.tunnelId];
+    const args = ['host', this.tunnelId, '-p', String(this.port)];
 
     return new Promise((resolve) => {
       this.process = spawn('devtunnel', args, {

@@ -19,7 +19,7 @@ Each session gets two independent child processes:
 | Process | Command | Purpose |
 |---------|---------|---------|
 | **VS Code Server** | `code serve-web --host 127.0.0.1 --port <port> --connection-token <token> --accept-server-license-terms` | Local HTTP server hosting the VS Code web IDE |
-| **Dev Tunnel** | `devtunnel host <tunnelId>` | Forwards the local port to a `*.devtunnels.ms` public URL |
+| **Dev Tunnel** | `devtunnel host <tunnelId> -p <port>` | Forwards the local port to a `*.devtunnels.ms` public URL |
 
 The server process binds to `127.0.0.1` on an allocated port. The tunnel process makes that port reachable from the internet. A connection token (`crypto.randomBytes(32).toString('hex')`) is appended as `?tkn=<token>` to both the local and public URLs for access control.
 
@@ -192,8 +192,8 @@ The tunnel start is a four-phase process:
 
 **Phase 4 -- Tunnel Setup:**
 1. `devtunnel create <tunnelId> --allow-anonymous` (idempotent; "Conflict" = already exists)
-2. `devtunnel port create <tunnelId> -p <localPort>` (idempotent)
-3. `devtunnel host <tunnelId>` spawned as long-running child process
+2. `devtunnel port create <tunnelId> -p <localPort>` (best-effort, idempotent; may fail with GitHub auth due to limited scopes — this is non-fatal)
+3. `devtunnel host <tunnelId> -p <localPort>` spawned as long-running child process (the `-p` flag ensures port forwarding works even when step 2 fails)
 4. Stdout parsed for `https://<id>.devtunnels.ms` URL
 5. Connection token appended: `<baseUrl>?tkn=<token>` (or `&tkn=<token>` if URL already has query params)
 6. On URL detection, status set to `running`, emit `vscode_tunnel_started`

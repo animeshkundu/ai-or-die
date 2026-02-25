@@ -584,6 +584,52 @@ describe('VSCodeTunnelManager', function () {
     });
   });
 
+  // ── _ensureDevtunnel port create fallback ────────────────────
+
+  describe('_ensureDevtunnel port create fallback', function () {
+    it('should return true even when port create fails (GitHub auth scope)', async function () {
+      manager._devtunnelCommand = 'fake-devtunnel';
+
+      const calls = [];
+      manager._execDevtunnel = async (args, sessionId) => {
+        calls.push(args.slice(0, 2).join(' '));
+        // Simulate port create failure (GitHub auth scope limitation)
+        if (args[0] === 'port') return false;
+        return true;
+      };
+
+      // Set up a minimal tunnel state
+      manager.tunnels.set('test-session', {
+        tunnelId: 'aiordie-vscode-test',
+        localPort: 9100,
+        stopping: false,
+      });
+
+      const result = await manager._ensureDevtunnel('test-session');
+      assert.strictEqual(result, true, '_ensureDevtunnel should succeed even when port create fails');
+      assert.ok(calls.some(c => c.startsWith('create')), 'should have called create');
+      assert.ok(calls.some(c => c.startsWith('port')), 'should have attempted port create');
+    });
+
+    it('should return false when tunnel create fails', async function () {
+      manager._devtunnelCommand = 'fake-devtunnel';
+
+      manager._execDevtunnel = async (args) => {
+        if (args[0] === 'create') return false;
+        return true;
+      };
+
+      manager.tunnels.set('test-session', {
+        tunnelId: 'aiordie-vscode-test',
+        localPort: 9100,
+        stopping: false,
+      });
+
+      const result = await manager._ensureDevtunnel('test-session');
+      assert.strictEqual(result, false, '_ensureDevtunnel should fail when create fails');
+    });
+  });
+
   // ── _installInstructions ───────────────────────────────────
 
   describe('_installInstructions', function () {

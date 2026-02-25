@@ -21,6 +21,7 @@ if "%1"=="port" if "%2"=="create" (
 )
 
 REM --- host: start hosting the tunnel (long-running) ---
+REM Accepts optional -p <port> flag (ignored by mock)
 if "%1"=="host" (
   echo Connect via browser: https://mock-e2e-test.devtunnels.ms
   REM Stay alive until killed (real devtunnel host is a long-running daemon)
