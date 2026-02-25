@@ -32,7 +32,12 @@ describe('TunnelManager', function() {
     it('should generate a tunnel ID from hostname', function() {
       const tm = new TunnelManager();
       assert.ok(tm.tunnelId.startsWith('aiordie-'));
-      assert.ok(/^aiordie-[a-z0-9-]*$/.test(tm.tunnelId));
+      assert.ok(/^aiordie-[a-z0-9-]+$/.test(tm.tunnelId));
+    });
+
+    it('should initialize auth provider as null', function() {
+      const tm = new TunnelManager();
+      assert.strictEqual(tm._authProvider, null);
     });
 
     it('should initialize resilience tracking fields', function() {
@@ -47,6 +52,32 @@ describe('TunnelManager', function() {
     it('should allow test override of stability threshold', function() {
       const tm = new TunnelManager({ _stabilityThresholdMs: 100 });
       assert.strictEqual(tm._stabilityThresholdMs, 100);
+    });
+  });
+
+  describe('_applyAuthSuffix', function() {
+    it('should append -gh suffix when GitHub auth is detected', function() {
+      const tm = new TunnelManager();
+      const baseTunnelId = tm.tunnelId;
+      tm._applyAuthSuffix('Logged in as testuser using GitHub.');
+      assert.strictEqual(tm._authProvider, 'github');
+      assert.strictEqual(tm.tunnelId, baseTunnelId + '-gh');
+    });
+
+    it('should not modify tunnel ID for non-GitHub auth', function() {
+      const tm = new TunnelManager();
+      const baseTunnelId = tm.tunnelId;
+      tm._applyAuthSuffix('Logged in as testuser using Microsoft.');
+      assert.strictEqual(tm._authProvider, null);
+      assert.strictEqual(tm.tunnelId, baseTunnelId);
+    });
+
+    it('should not modify tunnel ID for empty output', function() {
+      const tm = new TunnelManager();
+      const baseTunnelId = tm.tunnelId;
+      tm._applyAuthSuffix('');
+      assert.strictEqual(tm._authProvider, null);
+      assert.strictEqual(tm.tunnelId, baseTunnelId);
     });
   });
 

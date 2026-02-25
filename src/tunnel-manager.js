@@ -21,7 +21,9 @@ class TunnelManager {
     this.stopping = false;
     this._restarting = false;
     this.retryCount = 0;
-    this.tunnelId = `aiordie-${os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '')}`;
+    this._hostnameSlug = os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '');
+    this.tunnelId = `aiordie-${this._hostnameSlug}`;
+    this._authProvider = null;
 
     // Resilience tracking
     this._lastSpawnTime = null;
@@ -183,15 +185,20 @@ class TunnelManager {
 
   /**
    * Check if user is logged in. If not, attempt interactive login.
+   * Detects auth provider (GitHub vs Entra) and adjusts tunnel ID to avoid
+   * cross-provider name collisions.
    */
   async _checkLogin() {
-    const isLoggedIn = await new Promise((resolve) => {
-      execFile('devtunnel', ['user', 'show'], { timeout: 10000 }, (err) => {
-        resolve(!err);
+    const result = await new Promise((resolve) => {
+      execFile('devtunnel', ['user', 'show'], { timeout: 10000 }, (err, stdout) => {
+        resolve({ ok: !err, stdout: (stdout || '').toString() });
       });
     });
 
-    if (isLoggedIn) return true;
+    if (result.ok) {
+      this._applyAuthSuffix(result.stdout);
+      return true;
+    }
 
     console.log('  DevTunnel requires authentication. Launching login...\n');
 
@@ -206,11 +213,31 @@ class TunnelManager {
 
     if (loginOk) {
       console.log('\n  Login successful. Connecting tunnel...');
+      // Re-check to detect which provider was used
+      const recheck = await new Promise((resolve) => {
+        execFile('devtunnel', ['user', 'show'], { timeout: 10000 }, (err, stdout) => {
+          resolve((stdout || '').toString());
+        });
+      });
+      this._applyAuthSuffix(recheck);
       return true;
     }
 
     console.error('\n  \x1b[33mLogin failed or cancelled. Server will continue on localhost only.\x1b[0m\n');
     return false;
+  }
+
+  /**
+   * Parse auth provider from `devtunnel user show` output and append
+   * a suffix to the tunnel ID when using GitHub auth. This prevents
+   * name collisions with tunnels created under a different provider.
+   */
+  _applyAuthSuffix(userShowOutput) {
+    const match = userShowOutput.match(/using\s+(GitHub)/i);
+    if (match) {
+      this._authProvider = 'github';
+      this.tunnelId = `aiordie-${this._hostnameSlug}-gh`;
+    }
   }
 
   /**

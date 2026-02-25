@@ -4,6 +4,7 @@
 
 # --- user show: auth check (exit 0 = authenticated) ---
 if [ "$1" = "user" ] && [ "$2" = "show" ]; then
+  echo "Logged in as mock-user using GitHub."
   exit 0
 fi
 
