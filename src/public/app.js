@@ -1747,14 +1747,23 @@ class ClaudeCodeWebInterface {
                     this.pendingJoinResolve = null;
                     this.pendingJoinSessionId = null;
                 }
+
+                // Reset terminal state on every join (even with no output buffer)
+                // to prevent mouse/alt-screen mode leakage between tabs.
+                this.terminal.reset();
                 
                 // Replay output buffer if available
                 if (message.outputBuffer && message.outputBuffer.length > 0) {
-                    this.terminal.clear();
+                    const stripMouseTrackingModes = (data) => {
+                        // For inactive sessions, don't replay mouse tracking mode toggles.
+                        // Replaying stale mode-enable sequences can break scroll/copy in the next active tool.
+                        return data.replace(/\x1b\[\?(1000|1001|1002|1003|1005|1006|1015|1016)[hl]/g, '');
+                    };
                     message.outputBuffer.forEach(data => {
                         // Filter out focus tracking sequences (^[[I and ^[[O)
                         const filteredData = data.replace(/\x1b\[\[?[IO]/g, '');
-                        this.terminal.write(filteredData);
+                        const replayData = message.active ? filteredData : stripMouseTrackingModes(filteredData);
+                        this.terminal.write(replayData);
                     });
                 }
                 
