@@ -1,0 +1,168 @@
+/* input-overlay.css — Type-ahead input overlay styles */
+
+/* Backdrop: dims terminal, prevents click-through */
+.input-overlay-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: calc(var(--z-input-overlay) - 1);
+}
+
+/* Overlay panel — anchored to bottom of terminal container */
+.input-overlay {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  right: 16px;
+  z-index: var(--z-input-overlay);
+  background: var(--surface-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+/* Header row */
+.input-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px 0;
+}
+
+.input-overlay-title {
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.input-overlay-hint {
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Textarea */
+.input-overlay-textarea {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--text-primary);
+  background: var(--surface-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin: 8px 16px;
+  resize: vertical;
+  min-height: 60px;
+  max-height: 200px;
+  outline: none;
+  transition: border-color var(--duration-fast) var(--ease-default);
+}
+
+.input-overlay-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.input-overlay-textarea:focus {
+  border-color: var(--border-focus);
+}
+
+/* Footer row */
+.input-overlay-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 10px;
+}
+
+.input-overlay-charcount {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  min-width: 24px;
+}
+
+.input-overlay-charcount.charcount-warn {
+  color: var(--status-warning);
+  font-weight: var(--weight-semibold);
+}
+
+.input-overlay-voice {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--duration-normal) var(--ease-default),
+              background var(--duration-normal) var(--ease-default);
+}
+
+.input-overlay-voice:hover {
+  color: var(--text-primary);
+  background: var(--surface-tertiary);
+}
+
+.input-overlay-voice.recording {
+  color: var(--status-error);
+  animation: voice-pulse 1.5s ease-in-out infinite;
+}
+
+.input-overlay-spacer {
+  flex: 1;
+}
+
+/* Action buttons — gap between Insert and Send */
+.input-overlay-footer .btn + .btn {
+  margin-left: 16px;
+}
+
+/* Trigger button in header */
+.tab-action-btn-overlay {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color var(--duration-normal) var(--ease-default),
+              background var(--duration-normal) var(--ease-default);
+}
+
+.tab-action-btn-overlay:hover {
+  color: var(--accent-default);
+  background: var(--accent-soft);
+}
+
+/* Reduced motion: disable animations */
+@media (prefers-reduced-motion: reduce) {
+  .input-overlay-voice.recording {
+    animation: none;
+    opacity: 0.8;
+  }
+
+  .input-overlay,
+  .input-overlay-backdrop {
+    transition: none;
+  }
+}
+
+/* Mobile adjustments */
+@media (max-width: 480px) {
+  .input-overlay {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+  }
+}

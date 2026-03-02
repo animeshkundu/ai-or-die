@@ -94,7 +94,7 @@ ninja-keys {
     --ninja-font-family: var(--font-sans);
     --ninja-font-size: 14px;
     --ninja-top: 20%;
-    --ninja-z-index: 10002;
+    --ninja-z-index: var(--z-toast, 500);
     --ninja-overflow-background: rgba(0, 0, 0, 0.7);
     --ninja-modal-background: var(--surface-secondary);
     --ninja-actions-background: var(--surface-primary);
