@@ -239,8 +239,8 @@
 
       var btn = container.querySelector('#vstStatusIndicator');
 
-      // Remove indicator when stopped
-      if (this.status === 'stopped') {
+      // Only show indicator when banner is dismissed (not when banner is visible)
+      if (this.status === 'stopped' || !this._bannerDismissed) {
         if (btn) btn.remove();
         return;
       }

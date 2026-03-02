@@ -277,8 +277,8 @@
 
       var btn = container.querySelector('#appTunnelStatusIndicator');
 
-      // Remove indicator when stopped or not configured
-      if (this.status === 'stopped' || this.status === 'unknown') {
+      // Only show indicator when banner is dismissed (not when banner is visible)
+      if (this.status === 'stopped' || this.status === 'unknown' || !this._bannerDismissed) {
         if (btn) btn.remove();
         return;
       }
