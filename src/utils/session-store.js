@@ -9,7 +9,9 @@ class SessionStore {
     constructor(options) {
         options = options || {};
         // Store sessions in user's home directory (or custom path for testing)
-        this.storageDir = options.storageDir || path.join(os.homedir(), '.ai-or-die');
+        this.storageDir = options.storageDir
+            || process.env.AI_OR_DIE_SESSION_DIR
+            || path.join(os.homedir(), '.ai-or-die');
         this.sessionsFile = path.join(this.storageDir, 'sessions.json');
         this._dirty = false;
         this.initializeStorage();

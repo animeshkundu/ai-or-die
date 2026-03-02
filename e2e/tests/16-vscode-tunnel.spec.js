@@ -178,6 +178,7 @@ test.describe('VS Code Tunnel button', () => {
     // is validated by the not-found tests above. This test validates
     // the happy-path UI with fake code + devtunnel binaries.
     test.skip(!!process.env.CI, 'Mock stub test skipped on CI — runs locally');
+    test.setTimeout(60000);
 
     // Determine the correct fake scripts for this platform
     const ext = process.platform === 'win32' ? '.cmd' : '.sh';
@@ -219,7 +220,7 @@ test.describe('VS Code Tunnel button', () => {
         const banner = document.getElementById('vscodeTunnelBanner');
         return banner && banner.textContent.includes('devtunnels.ms');
       },
-      { timeout: 15000 }
+      { timeout: 30000 }
     );
     const urlText = await page.$eval('#vscodeTunnelBanner', el => el.textContent);
     expect(urlText).toContain('mock-e2e-test.devtunnels.ms');

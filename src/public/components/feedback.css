@@ -1,9 +1,9 @@
 /* feedback.css — Toast notification styles */
 
-/* Container: fixed top-right stack */
+/* Container: fixed top-right stack, below header bar */
 .toast-container {
   position: fixed;
-  top: 16px;
+  top: 52px;
   right: 16px;
   z-index: var(--z-toast, 500);
   display: flex;

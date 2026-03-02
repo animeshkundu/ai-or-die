@@ -103,9 +103,8 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
 
     // Save settings
     await page.click('#saveSettingsBtn');
-    await page.waitForTimeout(500);
-    await page.click('#closeSettingsBtn');
-    await page.waitForTimeout(300);
+    // Wait for modal to close after save (save triggers auto-close)
+    await expect(page.locator('#settingsModal')).not.toHaveClass(/active/, { timeout: 5000 });
 
     // Reload page — settings persist in localStorage, no need for terminal
     await page.reload();
@@ -227,9 +226,8 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
 
     // Save settings
     await page.click('#saveSettingsBtn');
-    await page.waitForTimeout(500);
-    await page.click('#closeSettingsBtn');
-    await page.waitForTimeout(300);
+    // Wait for modal to close after save (save triggers auto-close)
+    await expect(page.locator('#settingsModal')).not.toHaveClass(/active/, { timeout: 5000 });
 
     // Reload page — settings persist in localStorage
     await page.reload();

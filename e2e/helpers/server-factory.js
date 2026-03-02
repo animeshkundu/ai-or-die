@@ -36,11 +36,12 @@ async function spawnCli() {
 
   // Use a random high port (CLI rejects port 0)
   const randomPort = 49152 + Math.floor(Math.random() * 16383);
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-or-die-test-'));
 
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [binPath, '--disable-auth', '--no-open', '--port', String(randomPort)], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_ENV: 'test' }
+      env: { ...process.env, NODE_ENV: 'test', AI_OR_DIE_SESSION_DIR: tempDir }
     });
 
     let output = '';
