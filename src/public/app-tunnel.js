@@ -15,9 +15,14 @@
       this.publicUrl = null;
       this._bannerDismissed = false;
       this._restartLocked = false;
+      this._autoDismissTimer = null;
+      this._autoDismissRemaining = 0;
+      this._autoDismissStart = 0;
 
       // Fetch initial status
       this._fetchStatus();
+      // Bind hover-pause for auto-dismiss
+      this._bindBannerHoverPause();
     }
 
     /**
@@ -98,6 +103,7 @@
      */
     dismiss() {
       this._bannerDismissed = true;
+      this._clearAutoDismiss();
       if (this.banner) this.banner.classList.remove('visible');
       this._updateStatusIndicator();
     }
@@ -183,6 +189,8 @@
       } else if (this.status === 'running' && this.publicUrl) {
         this._renderRunningBanner();
       }
+
+      this._scheduleAutoDismiss();
     }
 
     _renderRunningBanner() {
@@ -265,6 +273,57 @@
 
       const urlEl = this.banner.querySelector('.vst-url');
       if (urlEl) urlEl.addEventListener('click', () => self.copyUrl());
+    }
+
+    _bannerHasActions() {
+      if (!this.banner) return false;
+      return !!(
+        this.banner.querySelector('.vst-copy-btn') ||
+        this.banner.querySelector('.vst-open-btn') ||
+        this.banner.querySelector('.vst-restart-btn')
+      );
+    }
+
+    _scheduleAutoDismiss() {
+      this._clearAutoDismiss();
+      this._autoDismissRemaining = this._bannerHasActions() ? 20000 : 5000;
+      this._autoDismissStart = Date.now();
+      this._autoDismissTimer = setTimeout(() => {
+        this._autoDismissTimer = null;
+        this._autoDismissRemaining = 0;
+        this.dismiss();
+      }, this._autoDismissRemaining);
+    }
+
+    _clearAutoDismiss() {
+      if (this._autoDismissTimer) {
+        clearTimeout(this._autoDismissTimer);
+        this._autoDismissTimer = null;
+      }
+      this._autoDismissRemaining = 0;
+    }
+
+    _bindBannerHoverPause() {
+      if (!this.banner) return;
+      const self = this;
+      this.banner.addEventListener('mouseenter', () => {
+        if (self._autoDismissTimer && self._autoDismissRemaining > 0) {
+          clearTimeout(self._autoDismissTimer);
+          self._autoDismissTimer = null;
+          var elapsed = Date.now() - (self._autoDismissStart || Date.now());
+          self._autoDismissRemaining = Math.max(0, self._autoDismissRemaining - elapsed);
+        }
+      });
+      this.banner.addEventListener('mouseleave', () => {
+        if (self._autoDismissRemaining > 0 && !self._autoDismissTimer && !self._bannerDismissed) {
+          self._autoDismissStart = Date.now();
+          self._autoDismissTimer = setTimeout(() => {
+            self._autoDismissTimer = null;
+            self._autoDismissRemaining = 0;
+            self.dismiss();
+          }, self._autoDismissRemaining);
+        }
+      });
     }
 
     /**

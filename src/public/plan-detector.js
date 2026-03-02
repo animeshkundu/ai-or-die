@@ -41,7 +41,13 @@ class PlanDetector {
       // Codex
       '[DRAFT PLAN]',
       '[APPROVED PLAN]',
-      '[REFINED PLAN]'
+      '[REFINED PLAN]',
+      // Gemini
+      'Sandbox mode',
+      '## Analysis',
+      '## Plan',
+      'Plan approved',
+      'Executing plan'
     ];
   }
 
@@ -151,6 +157,13 @@ class PlanDetector {
       }
     }
 
+    // Gemini indicators
+    if (!tool || tool === 'gemini') {
+      if (text.includes('Sandbox mode') || text.includes('## Analysis')) {
+        return true;
+      }
+    }
+
     return false;
   }
 
@@ -193,6 +206,23 @@ class PlanDetector {
       }
     }
 
+    // Gemini: ## Analysis + ## Plan sections, or ## Plan with numbered items
+    if (!tool || tool === 'gemini') {
+      const hasAnalysis = text.includes('## Analysis');
+      const hasPlan = text.includes('## Plan');
+      if (hasAnalysis && hasPlan) {
+        return true;
+      }
+      if (hasPlan) {
+        const planIdx = text.lastIndexOf('## Plan');
+        const afterPlan = text.slice(planIdx);
+        const numberedItems = afterPlan.match(/^\s*\d+\.\s+/gm);
+        if (numberedItems && numberedItems.length >= 2) {
+          return true;
+        }
+      }
+    }
+
     return false;
   }
 
@@ -230,6 +260,20 @@ class PlanDetector {
           // No end marker yet; extract from [DRAFT PLAN] to end
           plan = text.slice(draftIdx).trim();
         }
+      }
+    }
+
+    // Gemini extraction: from last ## Analysis or ## Plan to end/approval markers
+    if (!plan && (!tool || tool === 'gemini')) {
+      const analysisIdx = text.lastIndexOf('## Analysis');
+      const planIdx = text.lastIndexOf('## Plan');
+      const startIdx = analysisIdx !== -1 ? analysisIdx
+        : planIdx !== -1 ? planIdx
+          : -1;
+      if (startIdx !== -1) {
+        const fromStart = text.slice(startIdx);
+        const endMatch = fromStart.match(/(?:Plan approved|Executing plan)/);
+        plan = endMatch ? fromStart.slice(0, endMatch.index).trim() : fromStart.trim();
       }
     }
 
@@ -323,6 +367,17 @@ class PlanDetector {
         '[APPROVED PLAN]'
       ];
       if (codexEnd.some(indicator => text.includes(indicator))) {
+        return true;
+      }
+    }
+
+    // Gemini end indicators
+    if (!tool || tool === 'gemini') {
+      const geminiEnd = [
+        'Plan approved',
+        'Executing plan'
+      ];
+      if (geminiEnd.some(indicator => text.includes(indicator))) {
         return true;
       }
     }

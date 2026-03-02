@@ -1225,40 +1225,95 @@ class ClaudeCodeWebInterface {
         const banner = document.getElementById('memoryWarningBanner');
         if (!banner || banner.style.display !== 'none') return;
 
-        const text = document.getElementById('memoryWarningText');
-        const actions = document.getElementById('memoryWarningActions');
-        const dismissBtn = document.getElementById('memoryWarningDismiss');
+        const supervised = !!message.supervised;
+        const text = supervised
+            ? 'Memory usage is high (' + message.rss + '). Save your work \u2014 you can restart now to keep things running smoothly.'
+            : 'Memory usage is high (' + message.rss + '). Save your work, then stop the server (Ctrl+C) and run \u201cnpm start\u201d again to free memory.';
 
-        // Set message text
-        if (message.supervised) {
-            text.textContent = 'Memory usage is high (' + message.rss + '). Save your work \u2014 you can restart now to keep things running smoothly.';
-        } else {
-            text.textContent = 'Memory usage is high (' + message.rss + '). Save your work, then stop the server (Ctrl+C) and run \u201cnpm start\u201d again to free memory.';
+        let actionsHtml = '';
+        if (supervised) {
+            actionsHtml = '<div class="vst-actions"><button class="vst-btn primary vst-restart-btn">Restart Now</button></div>';
         }
 
-        // Build action buttons
-        actions.innerHTML = '';
-        if (message.supervised) {
-            const restartBtn = document.createElement('button');
-            restartBtn.className = 'btn btn-danger btn-small';
-            restartBtn.textContent = 'Restart Now';
-            restartBtn.setAttribute('aria-label', 'Restart the server now to free memory');
-            restartBtn.addEventListener('click', () => {
-                this.send({ type: 'restart_server' });
-                banner.style.display = 'none';
-            });
-            actions.appendChild(restartBtn);
-        }
+        banner.innerHTML = `
+            <span class="vst-icon error">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+            </span>
+            <span class="vst-message">${text}</span>
+            ${actionsHtml}
+            <button class="vst-close vst-dismiss-btn" title="Dismiss">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+        `;
 
         // Show banner
         banner.style.display = '';
         banner.classList.add('visible');
 
-        // Dismiss button
-        dismissBtn.onclick = () => {
+        // Bind events
+        const self = this;
+        const restartBtn = banner.querySelector('.vst-restart-btn');
+        if (restartBtn) {
+            restartBtn.addEventListener('click', () => {
+                if (this._memoryWarningTimer) {
+                    clearTimeout(this._memoryWarningTimer);
+                    this._memoryWarningTimer = null;
+                }
+                self.send({ type: 'restart_server' });
+                banner.classList.remove('visible');
+                banner.style.display = 'none';
+            });
+        }
+
+        const dismissBtn = banner.querySelector('.vst-dismiss-btn');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', () => {
+                if (this._memoryWarningTimer) {
+                    clearTimeout(this._memoryWarningTimer);
+                    this._memoryWarningTimer = null;
+                }
+                banner.classList.remove('visible');
+                banner.style.display = 'none';
+            });
+        }
+
+        // Auto-dismiss: 20s when supervised (has action buttons), 5s when unsupervised
+        const autoDismissMs = supervised ? 20000 : 5000;
+        this._memoryWarningRemaining = autoDismissMs;
+        this._memoryWarningStart = Date.now();
+        this._memoryWarningTimer = setTimeout(() => {
+            this._memoryWarningTimer = null;
+            this._memoryWarningRemaining = 0;
             banner.classList.remove('visible');
             banner.style.display = 'none';
-        };
+        }, autoDismissMs);
+
+        // Hover-pause: pause auto-dismiss while hovering
+        banner.addEventListener('mouseenter', () => {
+            if (this._memoryWarningTimer && this._memoryWarningRemaining > 0) {
+                clearTimeout(this._memoryWarningTimer);
+                this._memoryWarningTimer = null;
+                var elapsed = Date.now() - (this._memoryWarningStart || Date.now());
+                this._memoryWarningRemaining = Math.max(0, this._memoryWarningRemaining - elapsed);
+            }
+        });
+        banner.addEventListener('mouseleave', () => {
+            if (this._memoryWarningRemaining > 0 && !this._memoryWarningTimer) {
+                this._memoryWarningStart = Date.now();
+                this._memoryWarningTimer = setTimeout(() => {
+                    this._memoryWarningTimer = null;
+                    this._memoryWarningRemaining = 0;
+                    banner.classList.remove('visible');
+                    banner.style.display = 'none';
+                }, this._memoryWarningRemaining);
+            }
+        });
     }
 
     _handleVoiceMessage(message) {

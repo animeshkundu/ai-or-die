@@ -53,6 +53,14 @@ test.describe('Tunnel Banner UI', () => {
     });
     expect(bannerVisible).toBe(true);
 
+    // After auto-dismiss timer (running has actions → 20s timer, but we verify it eventually auto-dismisses)
+    // For this test, just verify the timer is active on the tunnel UI
+    const hasTimer = await page.evaluate(() => {
+      const tunnelUI = window.app._appTunnelUI;
+      return tunnelUI && tunnelUI._autoDismissRemaining > 0;
+    });
+    expect(hasTimer).toBe(true);
+
     // Verify the banner contains the tunnel URL text
     const bannerText = await page.evaluate(() => {
       const banner = document.getElementById('appTunnelBanner');
