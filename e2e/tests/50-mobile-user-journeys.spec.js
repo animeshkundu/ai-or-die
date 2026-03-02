@@ -449,7 +449,21 @@ test('extra key Tab dispatches to running terminal via app.send', async ({ page 
 
   setupPageCapture(page);
   await page.goto(url);
-  await joinSessionAndStartTerminal(page, sessionId);
+  await waitForAppReady(page);
+  await waitForTerminalCanvas(page);
+
+  // Join session — retry once if execution context is destroyed (mobile redirect race)
+  try {
+    await joinSessionAndStartTerminal(page, sessionId);
+  } catch (e) {
+    if (e.message.includes('Execution context was destroyed')) {
+      await page.waitForTimeout(1000);
+      await waitForAppReady(page);
+      await joinSessionAndStartTerminal(page, sessionId);
+    } else {
+      throw e;
+    }
+  }
 
   // Show extra keys
   await page.evaluate(() => {
