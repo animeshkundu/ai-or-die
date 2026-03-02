@@ -228,12 +228,12 @@ test.describe('Plan detector — multi-tool awareness', () => {
     const result = await page.evaluate(() => {
       const pd = window.app?.planDetector;
       if (!pd) return { exists: false };
-      pd._buffer = 'some old buffer content';
+      pd.outputBuffer = ['some old buffer content'];
       pd.setTool('copilot');
       return {
         exists: true,
         tool: pd.currentTool,
-        bufferCleared: pd._buffer === ''
+        bufferCleared: pd.outputBuffer.length === 0
       };
     });
 
