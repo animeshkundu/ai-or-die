@@ -3697,6 +3697,7 @@ class ClaudeCodeWebInterface {
     showMobileSessionsModal() {
         if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
         if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'mobileSessionsModal';
         const modal = document.getElementById('mobileSessionsModal');
         modal.classList.add('active');
 
@@ -3856,6 +3857,20 @@ class ClaudeCodeWebInterface {
         // Clean up any active voice state before switching sessions
         this._cleanupVoiceState();
 
+        // Clean up plan and overlay state from previous session
+        this._stopPlanPolling();
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        const planBtn = document.getElementById('planIndicatorBtn');
+        if (planBtn) {
+            planBtn.style.display = 'none';
+            planBtn.classList.remove('plan-pulse');
+        }
+        this._latestPlan = null;
+        if (this.planDetector) {
+            this.planDetector.clearBuffer();
+            this.planDetector.planModeActive = false;
+        }
+
         // Ensure we're connected first
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
             // Check if we're already connecting (readyState === 0 means CONNECTING)
@@ -3957,6 +3972,14 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionName = null;
                 this.updateSessionButton('Sessions');
                 this.terminal.clear();
+                this._stopPlanPolling();
+                if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+                const delPlanBtn = document.getElementById('planIndicatorBtn');
+                if (delPlanBtn) {
+                    delPlanBtn.style.display = 'none';
+                    delPlanBtn.classList.remove('plan-pulse');
+                }
+                this._latestPlan = null;
                 this.showOverlay('startPrompt');
             }
         } catch (error) {
@@ -4020,6 +4043,7 @@ class ClaudeCodeWebInterface {
     showNewSessionModal() {
         if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
         if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'newSessionModal';
         const modal = document.getElementById('newSessionModal');
         modal.classList.add('active');
 
@@ -4307,7 +4331,10 @@ class ClaudeCodeWebInterface {
         this._planPollLastMtime = null;
         this._planPollStableCount = 0;
         this._planPollTimer = null;
-        this._pollPlanFile();
+        // Generation counter: incremented on each start, checked after each await
+        // in _pollPlanFile to abandon stale poll chains.
+        this._planPollGeneration = (this._planPollGeneration || 0) + 1;
+        this._pollPlanFile(this._planPollGeneration);
     }
 
     _stopPlanPolling() {
@@ -4315,22 +4342,28 @@ class ClaudeCodeWebInterface {
             clearTimeout(this._planPollTimer);
             this._planPollTimer = null;
         }
+        // Bump generation to invalidate any in-flight poll
+        this._planPollGeneration = (this._planPollGeneration || 0) + 1;
     }
 
-    async _pollPlanFile() {
+    async _pollPlanFile(generation) {
         if (!this._planPollPath) return;
+        // Bail if this poll chain was superseded by a newer start/stop
+        if (generation !== this._planPollGeneration) return;
         try {
             const fetchFn = this.authFetch ? this.authFetch.bind(this) : fetch;
             const url = this._planPollScope === 'global'
                 ? '/api/plans/content?name=' + encodeURIComponent(this._planPollPath) + '&scope=global'
                 : '/api/files/stat?path=' + encodeURIComponent(this._planPollPath);
             const res = await fetchFn(url);
+            if (generation !== this._planPollGeneration) return;
             if (!res.ok) {
                 // File doesn't exist yet or was deleted — poll again
-                this._planPollTimer = setTimeout(() => this._pollPlanFile(), 3000);
+                this._planPollTimer = setTimeout(() => this._pollPlanFile(generation), 3000);
                 return;
             }
             const data = await res.json();
+            if (generation !== this._planPollGeneration) return;
             const mtime = data.modified || data.mtime;
             if (mtime !== this._planPollLastMtime) {
                 this._planPollLastMtime = mtime;
@@ -4342,8 +4375,10 @@ class ClaudeCodeWebInterface {
             if (this._planPollStableCount >= 2 && this._planPollScope !== 'global') {
                 // Stable — fetch content
                 const contentRes = await fetchFn('/api/files/content?path=' + encodeURIComponent(this._planPollPath));
+                if (generation !== this._planPollGeneration) return;
                 if (contentRes.ok) {
                     const contentData = await contentRes.json();
+                    if (generation !== this._planPollGeneration) return;
                     if (contentData.content && this.planDetector) {
                         this._latestPlan = { content: contentData.content, timestamp: Date.now(), raw: contentData.content };
                         const btn = document.getElementById('planIndicatorBtn');
@@ -4358,8 +4393,10 @@ class ClaudeCodeWebInterface {
         } catch (e) {
             // Ignore fetch errors during polling
         }
-        // Schedule next poll
-        this._planPollTimer = setTimeout(() => this._pollPlanFile(), 3000);
+        // Schedule next poll (only if this generation is still active)
+        if (generation === this._planPollGeneration) {
+            this._planPollTimer = setTimeout(() => this._pollPlanFile(generation), 3000);
+        }
     }
 
     requestUsageStats() {

@@ -32,6 +32,16 @@ class FeedbackManager {
     opts = opts || {};
     if (this._isDuplicate(message)) return;
     if (this._visible.length >= this._maxVisible) {
+      // If all visible slots are occupied by persistent (no-timer) toasts,
+      // evict the oldest persistent one to prevent the queue from stalling.
+      // Push the current toast to the front of the queue so it gets shown
+      // when _dismiss dequeues the next item.
+      var allPersistent = this._visible.every(function(v) { return !v.timer; });
+      if (allPersistent && this._visible.length > 0) {
+        this._queue.unshift({ type: type, message: message, opts: opts });
+        this._dismiss(this._visible[0]);
+        return;
+      }
       this._queue.push({ type: type, message: message, opts: opts });
       return;
     }
@@ -71,9 +81,13 @@ class FeedbackManager {
     if (!entry.el.parentNode) return;
     if (entry.timer) clearTimeout(entry.timer);
     entry.el.classList.add('toast--exit');
-    entry.el.addEventListener('animationend', function() {
+    var removeEl = function() {
       if (entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
-    });
+    };
+    entry.el.addEventListener('animationend', removeEl);
+    // Fallback: if animationend doesn't fire (e.g. tab backgrounded, animation
+    // disabled, or reduced-motion preference), force removal after 500ms.
+    setTimeout(removeEl, 500);
     this._visible = this._visible.filter(function(v) { return v !== entry; });
     if (this._queue.length > 0) {
       var next = this._queue.shift();
