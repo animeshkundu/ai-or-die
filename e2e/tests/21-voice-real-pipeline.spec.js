@@ -121,7 +121,7 @@ test.describe('@voice-real Real STT Pipeline', () => {
     // The transcription of a 440Hz tone may be empty or garbled, but
     // the critical validation is that the pipeline completed without error.
     // No error toast should be visible.
-    const errorToast = page.locator('.clipboard-toast:has-text("error")');
+    const errorToast = page.locator('.toast.toast--error');
     await expect(errorToast).toBeHidden({ timeout: 2000 }).catch(() => {
       // Toast may not exist at all, which is fine
     });

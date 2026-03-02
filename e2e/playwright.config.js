@@ -127,6 +127,11 @@ module.exports = defineConfig({
       name: 'mobile-journeys',
       testMatch: '50-mobile-user-journeys.spec.js',
     },
+    // UX features: feedback system, input overlay, plan viewer
+    {
+      name: 'ux-features',
+      testMatch: /5[1-3]-.*\.spec\.js/,
+    },
     // Server restart feature tests
     {
       name: 'restart',

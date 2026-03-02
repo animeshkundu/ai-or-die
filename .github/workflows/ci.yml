@@ -507,6 +507,42 @@ jobs:
             playwright-report/
           retention-days: 14
 
+  test-browser-ux-features:
+    runs-on: ${{ matrix.os }}
+    needs: test
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Run UX features tests
+        run: npx playwright test --config e2e/playwright.config.js --project ux-features
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-ux-features-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
   test-browser-restart:
     runs-on: ${{ matrix.os }}
     needs: test
