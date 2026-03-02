@@ -67,7 +67,7 @@ class ClaudeCodeWebServer {
       numThreads: options.sttThreads ? parseInt(options.sttThreads, 10) : undefined,
     });
     this._voiceUploadCounts = new Map();
-    this.sessionStore = new SessionStore();
+    this.sessionStore = new SessionStore(options.sessionStoreOptions);
     this.usageReader = new UsageReader(this.sessionDurationHours);
     this.usageAnalytics = new UsageAnalytics({
       sessionDurationHours: this.sessionDurationHours,

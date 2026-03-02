@@ -6,9 +6,10 @@ const CircularBuffer = require('./circular-buffer');
 const MAX_BUFFER_BYTES_PER_SESSION = 512 * 1024; // 512KB per-session byte cap
 
 class SessionStore {
-    constructor() {
-        // Store sessions in user's home directory
-        this.storageDir = path.join(os.homedir(), '.ai-or-die');
+    constructor(options) {
+        options = options || {};
+        // Store sessions in user's home directory (or custom path for testing)
+        this.storageDir = options.storageDir || path.join(os.homedir(), '.ai-or-die');
         this.sessionsFile = path.join(this.storageDir, 'sessions.json');
         this._dirty = false;
         this.initializeStorage();
