@@ -142,7 +142,7 @@ class SessionTabManager {
                 document.title = originalTitle;
             }
         }, 1000);
-        
+
         // Try to vibrate if available (Android)
         if ('vibrate' in navigator) {
             try {
@@ -151,65 +151,17 @@ class SessionTabManager {
                 console.log('Vibration not available');
             }
         }
-        
-        // Show a toast-style notification at the top of the screen
-        const toast = document.createElement('div');
-        toast.className = 'mobile-notification';
 
-        const titleEl = document.createElement('div');
-        titleEl.className = 'mobile-notification-title';
-        titleEl.textContent = title;
-        const bodyEl = document.createElement('div');
-        bodyEl.className = 'mobile-notification-body';
-        bodyEl.textContent = body;
-        toast.appendChild(titleEl);
-        toast.appendChild(bodyEl);
-        
-        // Add CSS animation
-        if (!document.querySelector('#mobileNotificationStyles')) {
-            const style = document.createElement('style');
-            style.id = 'mobileNotificationStyles';
-            style.textContent = `
-                @keyframes slideDown {
-                    from {
-                        transform: translateX(-50%) translateY(-100%);
-                        opacity: 0;
-                    }
-                    to {
-                        transform: translateX(-50%) translateY(0);
-                        opacity: 1;
-                    }
-                }
-                @keyframes slideUp {
-                    from {
-                        transform: translateX(-50%) translateY(0);
-                        opacity: 1;
-                    }
-                    to {
-                        transform: translateX(-50%) translateY(-100%);
-                        opacity: 0;
-                    }
-                }
-            `;
-            document.head.appendChild(style);
-        }
-        
-        toast.onclick = () => {
-            this.switchToTab(sessionId);
-            toast.style.animation = 'slideUp 0.3s ease-out';
-            setTimeout(() => toast.remove(), 300);
-        };
-        
-        document.body.appendChild(toast);
-        
-        // Auto-remove after 5 seconds
-        setTimeout(() => {
-            if (toast.parentNode) {
-                toast.style.animation = 'slideUp 0.3s ease-out';
-                setTimeout(() => toast.remove(), 300);
+        // Show toast via FeedbackManager
+        if (window.feedback) {
+            const opts = {};
+            if (sessionId) {
+                opts.action = 'Switch';
+                opts.onAction = () => { this.switchToTab(sessionId); };
             }
-        }, 5000);
-        
+            window.feedback.info(title + ': ' + body, opts);
+        }
+
         // Play notification chime
         this.playNotificationChime(notifType || 'idle');
     }
@@ -356,36 +308,17 @@ class SessionTabManager {
     
     checkAndPromptForNotifications() {
         if ('Notification' in window && Notification.permission === 'default') {
-            // Create a small prompt to enable notifications
-            const promptDiv = document.createElement('div');
-            promptDiv.className = 'notif-permission-prompt';
-            promptDiv.innerHTML = `
-                <div class="prompt-body">
-                    <strong>Enable Desktop Notifications?</strong><br>
-                    Get notified when ${this.getAlias('claude')} completes tasks in background tabs.
-                </div>
-                <div class="prompt-actions">
-                    <button id="enableNotifications" class="btn btn-primary btn-small">Enable</button>
-                    <button id="dismissNotifications" class="btn btn-secondary btn-small">Not Now</button>
-                </div>
-            `;
-            document.body.appendChild(promptDiv);
-            
-            document.getElementById('enableNotifications').onclick = () => {
-                this.requestNotificationPermission();
-                promptDiv.remove();
-            };
-            
-            document.getElementById('dismissNotifications').onclick = () => {
-                promptDiv.remove();
-            };
-            
-            // Auto-dismiss after 10 seconds
-            setTimeout(() => {
-                if (promptDiv.parentNode) {
-                    promptDiv.remove();
-                }
-            }, 10000);
+            if (window.feedback) {
+                var self = this;
+                window.feedback.info(
+                    'Enable desktop notifications? Get notified when ' + this.getAlias('claude') + ' completes tasks in background tabs.',
+                    {
+                        duration: 10000,
+                        action: 'Enable',
+                        onAction: function() { self.requestNotificationPermission(); }
+                    }
+                );
+            }
         }
     }
 

@@ -99,6 +99,7 @@
     dismiss() {
       this._bannerDismissed = true;
       if (this.banner) this.banner.classList.remove('visible');
+      this._updateStatusIndicator();
     }
 
     /**
@@ -157,6 +158,7 @@
       // Hide button entirely when tunnel is not configured
       this.button.style.display = (this.status === 'stopped' || this.status === 'unknown') && !this.publicUrl
         ? 'none' : '';
+      this._updateStatusIndicator();
     }
 
     _renderBanner() {
@@ -263,6 +265,64 @@
 
       const urlEl = this.banner.querySelector('.vst-url');
       if (urlEl) urlEl.addEventListener('click', () => self.copyUrl());
+    }
+
+    /**
+     * Create or update a status indicator button in #statusIndicators.
+     * Shows the tunnel state when the banner is dismissed.
+     */
+    _updateStatusIndicator() {
+      var container = document.getElementById('statusIndicators');
+      if (!container) return;
+
+      var btn = container.querySelector('#appTunnelStatusIndicator');
+
+      // Remove indicator when stopped or not configured
+      if (this.status === 'stopped' || this.status === 'unknown') {
+        if (btn) btn.remove();
+        return;
+      }
+
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.id = 'appTunnelStatusIndicator';
+        btn.className = 'status-indicator';
+        btn.addEventListener('click', () => {
+          this._bannerDismissed = false;
+          this._renderBanner();
+        });
+        container.appendChild(btn);
+      }
+
+      // Determine status class and icon
+      btn.classList.remove('status-healthy', 'status-warning', 'status-error', 'status-loading');
+      var label, svg;
+      switch (this.status) {
+        case 'running':
+          btn.classList.add('status-healthy');
+          label = 'App Tunnel: running';
+          svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+          break;
+        case 'error':
+          btn.classList.add('status-error');
+          label = 'App Tunnel: error';
+          svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
+          break;
+        case 'restarting':
+          btn.classList.add('status-loading');
+          label = 'App Tunnel: restarting';
+          svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+          break;
+        default:
+          label = 'App Tunnel';
+          svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>';
+      }
+      btn.setAttribute('aria-label', label);
+      btn.setAttribute('title', label);
+      btn.innerHTML = svg;
+
+      // Only show indicator when banner is dismissed and tunnel is active
+      btn.style.display = (this._bannerDismissed && this.status !== 'stopped' && this.status !== 'unknown') ? '' : 'none';
     }
 
     _escapeHtml(str) {

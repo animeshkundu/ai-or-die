@@ -857,6 +857,108 @@ class ClaudeCodeWebServer {
       }
     });
 
+    // ── Plan File Endpoints ───────────────────────────────────────────────
+
+    // GET /api/plans/content — Read a plan file from known plan directories
+    this.app.get('/api/plans/content', async (req, res) => {
+      const { name, scope } = req.query;
+      if (!name || !scope) {
+        return res.status(400).json({ error: 'name and scope are required' });
+      }
+
+      const PLAN_DIRS = {
+        workspace: () => path.join(this.baseFolder, '.claude', 'plans'),
+        global: () => path.join(os.homedir(), '.claude', 'plans'),
+      };
+
+      if (!PLAN_DIRS[scope]) {
+        return res.status(400).json({ error: 'scope must be workspace or global' });
+      }
+
+      // Sanitize filename — strip path separators and dangerous chars
+      const safeName = sanitizeFileName(name);
+      const safeBase = path.basename(safeName);
+      if (!safeBase || safeBase === '.' || safeBase === '..') {
+        return res.status(400).json({ error: 'Invalid plan name' });
+      }
+
+      const planDir = PLAN_DIRS[scope]();
+      const resolved = path.resolve(planDir, safeBase);
+
+      // Containment check
+      const relative = path.relative(planDir, resolved);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+
+      try {
+        // Check symlinks
+        const lstat = await fs.promises.lstat(resolved);
+        if (lstat.isSymbolicLink()) {
+          return res.status(403).json({ error: 'Symlinks not allowed' });
+        }
+
+        // Size check
+        if (lstat.size > 512 * 1024) {
+          return res.status(413).json({ error: 'Plan file too large' });
+        }
+
+        const content = await fs.promises.readFile(resolved, 'utf8');
+        res.json({
+          name: safeBase,
+          scope: scope,
+          content: content,
+          modified: lstat.mtime.toISOString(),
+          size: lstat.size
+        });
+      } catch (err) {
+        if (err.code === 'ENOENT') {
+          return res.status(404).json({ error: 'Plan file not found' });
+        }
+        res.status(500).json({ error: 'Failed to read plan file' });
+      }
+    });
+
+    // GET /api/plans/list — List plan files from workspace and/or global scope
+    this.app.get('/api/plans/list', async (req, res) => {
+      const { scope } = req.query;
+      const PLAN_DIRS = {
+        workspace: () => path.join(this.baseFolder, '.claude', 'plans'),
+        global: () => path.join(os.homedir(), '.claude', 'plans'),
+      };
+
+      const scopes = scope ? [scope] : ['workspace', 'global'];
+      const plans = [];
+
+      for (const s of scopes) {
+        if (!PLAN_DIRS[s]) continue;
+        const dir = PLAN_DIRS[s]();
+        try {
+          const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (entry.isFile() && !entry.isSymbolicLink() && (entry.name.endsWith('.md') || entry.name.endsWith('.json'))) {
+              const filePath = path.join(dir, entry.name);
+              // Double-check with lstat to catch symlinks on older Node versions
+              const lstat = await fs.promises.lstat(filePath);
+              if (lstat.isSymbolicLink()) continue;
+              plans.push({
+                name: entry.name,
+                scope: s,
+                modified: lstat.mtime.toISOString(),
+                size: lstat.size
+              });
+            }
+          }
+        } catch {
+          // Directory doesn't exist — that's fine
+        }
+      }
+
+      // Sort by modified descending
+      plans.sort((a, b) => new Date(b.modified) - new Date(a.modified));
+      res.json({ plans: plans.slice(0, 50) });
+    });
+
     // GET /api/files/content — Serve text content as JSON envelope
     this.app.get('/api/files/content', async (req, res) => {
       const filePath = req.query.path;

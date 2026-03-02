@@ -531,6 +531,11 @@ class SplitContainer {
 
         this.activeSplitIndex = index;
 
+        // Keep input overlay's pane tracker in sync
+        if (this.app) {
+            this.app._lastFocusedPaneIndex = index;
+        }
+
         // Focus the terminal in this split
         const split = this.splits[index];
         if (split.terminal) {
