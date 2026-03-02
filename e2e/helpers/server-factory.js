@@ -1,17 +1,28 @@
 const { spawn } = require('child_process');
 const http = require('http');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 /**
  * Start the server programmatically via ClaudeCodeWebServer class.
- * Each test spec gets its own instance to prevent session pollution.
+ * Each test spec gets its own instance with an isolated session store
+ * to prevent session pollution across test files.
  * @returns {Promise<{server: Object, port: number, url: string}>}
  */
 async function createServer() {
+  // Create a unique temp directory for this server instance's session store
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-or-die-test-'));
   const { ClaudeCodeWebServer } = require('../../src/server');
-  const server = new ClaudeCodeWebServer({ port: 0, noAuth: true });
+  const server = new ClaudeCodeWebServer({
+    port: 0,
+    noAuth: true,
+    sessionStoreOptions: { storageDir: tempDir }
+  });
   const httpServer = await server.start();
   const port = httpServer.address().port;
+  // Store tempDir on server for cleanup
+  server._testTempDir = tempDir;
   return { server, port, url: `http://127.0.0.1:${port}` };
 }
 
@@ -25,11 +36,12 @@ async function spawnCli() {
 
   // Use a random high port (CLI rejects port 0)
   const randomPort = 49152 + Math.floor(Math.random() * 16383);
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-or-die-test-'));
 
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [binPath, '--disable-auth', '--no-open', '--port', String(randomPort)], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, NODE_ENV: 'test' }
+      env: { ...process.env, NODE_ENV: 'test', AI_OR_DIE_SESSION_DIR: tempDir }
     });
 
     let output = '';

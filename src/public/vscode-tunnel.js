@@ -19,6 +19,7 @@
       this.deviceCode = null;
       this._bannerDismissed = false;
       this._autoCollapseTimer = null;
+      this._autoCollapseRemaining = 0;
     }
 
     /**
@@ -144,9 +145,11 @@
      */
     dismiss() {
       this._bannerDismissed = true;
+      this._clearAutoCollapse();
       if (this.banner) {
         this.banner.classList.remove('visible');
       }
+      this._updateStatusIndicator();
     }
 
     // ── Private ──────────────────────────────────────────────
@@ -154,21 +157,141 @@
     _setStatus(status) {
       this.status = status;
       this._updateButton();
+      this._updateStatusIndicator();
       // Cancel auto-collapse if status changes away from running
       if (status !== 'running' && this._autoCollapseTimer) {
-        clearTimeout(this._autoCollapseTimer);
-        this._autoCollapseTimer = null;
+        this._clearAutoCollapse();
       }
     }
 
     _scheduleAutoCollapse() {
-      if (this._autoCollapseTimer) clearTimeout(this._autoCollapseTimer);
+      this._clearAutoCollapse();
+      // Banners with action buttons never auto-dismiss
+      if (this._bannerHasActions()) return;
+      this._autoCollapseRemaining = 20000;
+      this._autoCollapseStart = Date.now();
       this._autoCollapseTimer = setTimeout(() => {
         this._autoCollapseTimer = null;
-        if (this.status === 'running') {
+        this._autoCollapseRemaining = 0;
+        if (this.status === 'running' || this.status === 'starting' || this.status === 'degraded') {
           this.dismiss();
         }
-      }, 5000);
+      }, this._autoCollapseRemaining);
+    }
+
+    _clearAutoCollapse() {
+      if (this._autoCollapseTimer) {
+        clearTimeout(this._autoCollapseTimer);
+        this._autoCollapseTimer = null;
+      }
+      this._autoCollapseRemaining = 0;
+    }
+
+    /**
+     * Check whether the current banner contains action buttons (stop, auth, install, etc.).
+     * Banners with actions should NOT auto-dismiss per WCAG 2.2.1.
+     */
+    _bannerHasActions() {
+      if (!this.banner) return false;
+      return !!(
+        this.banner.querySelector('.vst-stop-btn') ||
+        this.banner.querySelector('.vst-retry-btn') ||
+        this.banner.querySelector('.vst-open-btn') ||
+        this.banner.querySelector('.vst-copy-btn')
+      );
+    }
+
+    /**
+     * Bind mouseenter/mouseleave on the banner to pause/resume auto-collapse timer.
+     */
+    _bindBannerHoverPause() {
+      if (!this.banner) return;
+      const self = this;
+      this.banner.addEventListener('mouseenter', () => {
+        if (self._autoCollapseTimer && self._autoCollapseRemaining > 0) {
+          clearTimeout(self._autoCollapseTimer);
+          self._autoCollapseTimer = null;
+          var elapsed = Date.now() - (self._autoCollapseStart || Date.now());
+          self._autoCollapseRemaining = Math.max(0, self._autoCollapseRemaining - elapsed);
+        }
+      });
+      this.banner.addEventListener('mouseleave', () => {
+        if (self._autoCollapseRemaining > 0 && !self._autoCollapseTimer && !self._bannerDismissed) {
+          self._autoCollapseStart = Date.now();
+          self._autoCollapseTimer = setTimeout(() => {
+            self._autoCollapseTimer = null;
+            self._autoCollapseRemaining = 0;
+            if (self.status === 'running' || self.status === 'starting' || self.status === 'degraded') {
+              self.dismiss();
+            }
+          }, self._autoCollapseRemaining);
+        }
+      });
+    }
+
+    /**
+     * Create or update a status indicator button in #statusIndicators.
+     * Shows the tunnel state when the banner is dismissed or stopped.
+     */
+    _updateStatusIndicator() {
+      var container = document.getElementById('statusIndicators');
+      if (!container) return;
+
+      var btn = container.querySelector('#vstStatusIndicator');
+
+      // Remove indicator when stopped
+      if (this.status === 'stopped') {
+        if (btn) btn.remove();
+        return;
+      }
+
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.id = 'vstStatusIndicator';
+        btn.className = 'status-indicator';
+        btn.addEventListener('click', () => {
+          this._bannerDismissed = false;
+          this._renderBanner();
+        });
+        container.appendChild(btn);
+        this._bindBannerHoverPause();
+      }
+
+      // Determine status class and icon
+      btn.classList.remove('status-healthy', 'status-warning', 'status-error', 'status-loading');
+      var label, svg;
+      switch (this.status) {
+        case 'running':
+          btn.classList.add('status-healthy');
+          label = 'VS Code Tunnel: running';
+          svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+          break;
+        case 'degraded':
+          btn.classList.add('status-warning');
+          label = 'VS Code Tunnel: reconnecting';
+          svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+          break;
+        case 'error':
+          btn.classList.add('status-error');
+          label = 'VS Code Tunnel: error';
+          svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>';
+          break;
+        case 'starting':
+        case 'restarting':
+          btn.classList.add('status-loading');
+          label = 'VS Code Tunnel: starting';
+          svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+          break;
+        default:
+          label = 'VS Code Tunnel';
+          svg = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>';
+      }
+      btn.setAttribute('aria-label', label);
+      btn.setAttribute('title', label);
+      btn.innerHTML = svg;
+
+      // Only show indicator when banner is dismissed and tunnel is active
+      btn.style.display = (this._bannerDismissed && this.status !== 'stopped') ? '' : 'none';
     }
 
     _updateButton() {
@@ -257,7 +380,7 @@
         <span class="vst-message">
           Connected &mdash;
           <span class="vst-url" title="${this._escapeHtml(displayUrl)}">${this._escapeHtml(shortUrl)}</span>
-          <span style="color:var(--status-success);font-size:12px;margin-left:6px">URL copied</span>
+          <span style="color:var(--status-success);font-size:var(--text-sm);margin-left:6px">URL copied</span>
         </span>
         <div class="vst-actions">
           <button class="vst-btn vst-copy-btn">Copy URL</button>

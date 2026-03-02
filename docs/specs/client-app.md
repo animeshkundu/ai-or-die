@@ -12,10 +12,14 @@ The frontend is a single-page application served from `src/public/`. It runs ent
 | xterm-addon-fit | 0.8.0 | unpkg CDN | Auto-fit terminal to container |
 | xterm-addon-web-links | 0.9.0 | unpkg CDN | Clickable URLs in terminal output |
 | xterm-addon-unicode11 | 0.6.0 | unpkg CDN | Unicode 11 character width support for Nerd Font / powerline glyphs |
+| marked.js | 15.x | Vendored (`src/public/vendor/marked.min.js`) | Markdown parser for plan viewer |
+| DOMPurify | 3.x | Vendored (`src/public/vendor/purify.min.js`) | HTML sanitizer for plan viewer |
 | JetBrains Mono | -- | Google Fonts | Monospace font for terminal (fallback) |
 | MesloLGS Nerd Font | v3.3.0 | Self-hosted WOFF2 + jsDelivr CDN fallback | Primary terminal font with Nerd Font glyphs |
 | Inter | -- | Google Fonts | UI font for headers, tabs, controls |
 | clipboard-handler.js | -- | Local | Keyboard shortcuts (Ctrl+C/V) and clipboard utility functions |
+| feedback-manager.js | -- | Local | Toast notification system (FeedbackManager singleton) |
+| input-overlay.js | -- | Local | Type-ahead input overlay with voice integration |
 
 ---
 

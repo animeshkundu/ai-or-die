@@ -6,6 +6,7 @@ const {
   attachFailureArtifacts,
   waitForAppReady,
   waitForWebSocket,
+  waitForTerminalCanvas,
   joinSessionAndStartTerminal,
   getTerminalDimensions,
 } = require('../helpers/terminal-helpers');
@@ -386,13 +387,32 @@ test.describe('orientation change terminal refit', () => {
     setupPageCapture(page);
     // Navigate first at iPhone 14 size (390x844 from device config)
     await page.goto(url);
-    await joinSessionAndStartTerminal(page, sessionId);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+
+    // Join session — retry once if execution context is destroyed (mobile redirect race)
+    try {
+      await joinSessionAndStartTerminal(page, sessionId);
+    } catch (e) {
+      if (e.message.includes('Execution context was destroyed')) {
+        await page.waitForTimeout(1000);
+        await waitForAppReady(page);
+        await joinSessionAndStartTerminal(page, sessionId);
+      } else {
+        throw e;
+      }
+    }
 
     const portraitDims = await getTerminalDimensions(page);
     expect(portraitDims.cols).toBeGreaterThan(0);
 
     // Switch to landscape
     await page.setViewportSize({ width: 844, height: 390 });
+    // Wait for CSS layout to settle before recalculating terminal dimensions
+    await page.waitForFunction(() => {
+      const el = document.querySelector('.terminal-container');
+      return el && el.offsetWidth > 500;
+    }, { timeout: 5000 });
     await page.evaluate(() => window.app.fitTerminal());
     await page.waitForTimeout(500);
 
@@ -429,7 +449,21 @@ test('extra key Tab dispatches to running terminal via app.send', async ({ page 
 
   setupPageCapture(page);
   await page.goto(url);
-  await joinSessionAndStartTerminal(page, sessionId);
+  await waitForAppReady(page);
+  await waitForTerminalCanvas(page);
+
+  // Join session — retry once if execution context is destroyed (mobile redirect race)
+  try {
+    await joinSessionAndStartTerminal(page, sessionId);
+  } catch (e) {
+    if (e.message.includes('Execution context was destroyed')) {
+      await page.waitForTimeout(1000);
+      await waitForAppReady(page);
+      await joinSessionAndStartTerminal(page, sessionId);
+    } else {
+      throw e;
+    }
+  }
 
   // Show extra keys
   await page.evaluate(() => {

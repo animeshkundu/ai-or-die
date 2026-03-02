@@ -58,7 +58,7 @@ test.describe('Server Restart', () => {
     await expect(restartBtn).toBeVisible();
 
     // Verify dismiss button exists
-    const dismissBtn = banner.locator('button', { hasText: 'Dismiss' });
+    const dismissBtn = banner.locator('#memoryWarningDismiss');
     await expect(dismissBtn).toBeVisible();
   });
 
@@ -84,11 +84,14 @@ test.describe('Server Restart', () => {
     const banner = page.locator('#memoryWarningBanner');
     await expect(banner).toBeVisible({ timeout: 5000 });
 
-    // Click dismiss
-    await banner.locator('button', { hasText: 'Dismiss' }).click();
+    // Click dismiss via JS (banner has CSS slide transition that interferes with
+    // Playwright's actionability checks)
+    await page.evaluate(() => {
+      document.getElementById('memoryWarningDismiss').click();
+    });
 
-    // Banner should be gone
-    await expect(banner).not.toBeAttached({ timeout: 3000 });
+    // Banner should be hidden (predefined element stays in DOM, display:none)
+    await expect(banner).not.toBeVisible({ timeout: 3000 });
   });
 
   test('unsupervised mode shows manual restart message without restart button', async ({ page }) => {

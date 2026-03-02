@@ -1,0 +1,109 @@
+/* Banner base — shared styles for all banner types */
+.banner-base {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: var(--z-banner, 50);
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  gap: 8px;
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  background: var(--surface-elevated);
+  border-bottom: 1px solid var(--border-default);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-100%);
+  transition: transform var(--duration-slow) var(--ease-out);
+}
+
+.banner-base.visible {
+  transform: translateY(0);
+}
+
+.banner-base .banner-message {
+  flex: 1;
+  min-width: 0;
+}
+
+.banner-base .banner-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.banner-base .banner-dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.banner-base .banner-dismiss:hover {
+  color: var(--text-primary);
+}
+
+@keyframes banner-slide-down {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .banner-base { transition: none; }
+}
+
+/* Status indicator icon buttons — shown in header when banner is dismissed */
+.status-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  padding: 0;
+  background: transparent;
+  color: var(--text-muted);
+  transition: color var(--duration-fast), background var(--duration-fast);
+}
+
+.status-indicator:hover {
+  background: var(--surface-tertiary);
+}
+
+.status-indicator.status-healthy { color: var(--status-success); }
+.status-indicator.status-warning { color: var(--status-warning); }
+.status-indicator.status-error { color: var(--status-error); }
+.status-indicator.status-loading { color: var(--status-info); }
+
+/* Loading spinner for status-loading */
+.status-indicator.status-loading svg {
+  animation: spin 1s linear infinite;
+}
+
+@media (pointer: coarse) {
+  .status-indicator {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+/* Memory warning banner — amber theme */
+.memory-warning-banner {
+  background: #92400e;
+  color: #fef3c7;
+  border-bottom-color: #78350f;
+}
+.memory-warning-banner .banner-dismiss {
+  color: #fef3c7;
+}
+.memory-warning-banner .banner-dismiss:hover {
+  color: #fff;
+}

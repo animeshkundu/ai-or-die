@@ -21,6 +21,8 @@ class ClaudeCodeWebInterface {
         this._overlayExplicitlyHidden = false;
         this.planDetector = null;
         this.planModal = null;
+        this._latestPlan = null;
+        this._planLibsLoading = null;
         // Aliases for assistants (populated from /api/config)
         this.aliases = { claude: 'Claude', codex: 'Codex' };
         // Available tools (populated from /api/config)
@@ -46,6 +48,11 @@ class ClaudeCodeWebInterface {
         this.voiceMode = null;
         this._voiceTimerInterval = null;
         this._voiceTranscriptionTimeout = null;
+        this._voiceTarget = 'terminal';
+
+        // Input overlay
+        this._inputOverlay = null;
+        this._lastFocusedPaneIndex = 0;
 
         // Cached TextDecoder for lazy string decode on hot path
         this._textDecoder = new TextDecoder();
@@ -66,6 +73,12 @@ class ClaudeCodeWebInterface {
         this._inputBuffer = '';
         this._inputFlushScheduled = false;
         this._INPUT_BUFFER_MAX = 64 * 1024; // 64KB safety cap
+
+        // Modal mutual exclusion: only one modal-class element open at a time
+        this._activeModal = null;
+
+        // Clipboard copy feedback badge timer
+        this._copyBadgeTimer = null;
 
         // Deferred plan detection: accumulate binary data, decode after 100ms idle
         this._planDetectChunks = [];
@@ -115,6 +128,11 @@ class ClaudeCodeWebInterface {
         this.setupUI();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
+        if (window.InputOverlay) {
+            this._inputOverlay = new InputOverlay(this);
+            var overlayBtn = document.getElementById('inputOverlayBtn');
+            if (overlayBtn) overlayBtn.style.display = '';
+        }
         this.applySettings(this.loadSettings());
         this.applyAliasesToUI();
         this.disablePullToRefresh();
@@ -899,6 +917,29 @@ class ClaudeCodeWebInterface {
         if (settingsBtn) settingsBtn.addEventListener('click', () => this.showSettings());
         if (retryBtn) retryBtn.addEventListener('click', () => this.reconnect());
 
+        // Clipboard copy feedback badge — wired as callback for clipboard-handler.js
+        window.showCopiedFeedback = () => {
+            const badge = document.getElementById('copyFeedbackBadge');
+            if (!badge) return;
+            badge.textContent = 'Copied';
+            badge.classList.remove('error');
+            badge.classList.add('visible');
+            clearTimeout(this._copyBadgeTimer);
+            this._copyBadgeTimer = setTimeout(() => badge.classList.remove('visible'), 1500);
+        };
+
+        window.showClipboardError = (msg) => {
+            const badge = document.getElementById('copyFeedbackBadge');
+            if (!badge) return;
+            badge.textContent = msg || 'Clipboard denied';
+            badge.classList.add('visible', 'error');
+            clearTimeout(this._copyBadgeTimer);
+            this._copyBadgeTimer = setTimeout(() => {
+                badge.classList.remove('visible', 'error');
+                badge.textContent = 'Copied';
+            }, 3000);
+        };
+
         // Attach Image button
         const attachBtn = document.getElementById('attachImageBtn');
         if (attachBtn && window.imageHandler) {
@@ -952,6 +993,9 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        // Header overflow menu (tablet/mobile three-dot button)
+        this._setupOverflowMenu();
+
         // Tile view toggle
         // Mobile menu event listeners
         if (closeMenuBtn) closeMenuBtn.addEventListener('click', () => this.closeMobileMenu());
@@ -977,6 +1021,36 @@ class ClaudeCodeWebInterface {
         this.setupMobileSessionsModal();
 
         // Custom prompts dropdown removed
+    }
+
+    _setupOverflowMenu() {
+        const btn = document.getElementById('overflowMenuBtn');
+        const panel = document.getElementById('overflowMenuPanel');
+        if (!btn || !panel) return;
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = panel.classList.toggle('open');
+            btn.setAttribute('aria-expanded', String(isOpen));
+        });
+
+        // Close on click outside
+        document.addEventListener('click', (e) => {
+            if (!panel.classList.contains('open')) return;
+            if (!panel.contains(e.target) && e.target !== btn) {
+                panel.classList.remove('open');
+                btn.setAttribute('aria-expanded', 'false');
+            }
+        });
+
+        // Close on Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && panel.classList.contains('open')) {
+                panel.classList.remove('open');
+                btn.setAttribute('aria-expanded', 'false');
+                btn.focus();
+            }
+        });
     }
 
     setupVoiceInput() {
@@ -1064,12 +1138,10 @@ class ClaudeCodeWebInterface {
                         self._voiceTranscriptionTimeout = null;
                         btn.classList.remove('processing');
                         var errorMsg = 'Transcription timed out';
-                        // Show error toast
-                        var toast = document.createElement('div');
-                        toast.className = 'clipboard-toast';
-                        toast.textContent = errorMsg;
-                        document.body.appendChild(toast);
-                        setTimeout(function () { toast.remove(); }, 4000);
+                        // Show error toast via FeedbackManager
+                        if (window.feedback) {
+                            window.feedback.error(errorMsg);
+                        }
                         if (self.terminal) {
                             self.terminal.write('\r\n\x1b[31m[Voice error] ' + errorMsg + '\x1b[0m\r\n');
                         }
@@ -1110,11 +1182,9 @@ class ClaudeCodeWebInterface {
                 if (errorMessage.indexOf('not-allowed') !== -1 || errorMessage.indexOf('Permission') !== -1 || errorMessage.indexOf('permission') !== -1) {
                     toastMsg = errorMessage + '. Check browser permissions';
                 }
-                var toast = document.createElement('div');
-                toast.className = 'clipboard-toast';
-                toast.textContent = toastMsg;
-                document.body.appendChild(toast);
-                setTimeout(function () { toast.remove(); }, 4000);
+                if (window.feedback) {
+                    window.feedback.error(toastMsg);
+                }
             },
             onCancel: function () {
                 btn.classList.remove('recording', 'processing');
@@ -1152,61 +1222,43 @@ class ClaudeCodeWebInterface {
     }
 
     _showMemoryWarning(message) {
-        // Don't show duplicate warnings if banner already visible
-        if (document.getElementById('memoryWarningBanner')) return;
+        const banner = document.getElementById('memoryWarningBanner');
+        if (!banner || banner.style.display !== 'none') return;
 
-        const banner = document.createElement('div');
-        banner.id = 'memoryWarningBanner';
-        banner.setAttribute('role', 'alert');
-        banner.setAttribute('aria-atomic', 'true');
-        banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:10000;background:#92400e;color:#fef3c7;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;font-family:Inter,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
+        const text = document.getElementById('memoryWarningText');
+        const actions = document.getElementById('memoryWarningActions');
+        const dismissBtn = document.getElementById('memoryWarningDismiss');
 
-        const text = document.createElement('span');
-        const icon = document.createElement('span');
-        icon.setAttribute('aria-hidden', 'true');
-        icon.textContent = '\u26a0\ufe0f ';
-        text.appendChild(icon);
+        // Set message text
         if (message.supervised) {
-            text.appendChild(document.createTextNode(`Memory usage is high (${message.rss}). Save your work \u2014 you can restart now to keep things running smoothly.`));
+            text.textContent = 'Memory usage is high (' + message.rss + '). Save your work \u2014 you can restart now to keep things running smoothly.';
         } else {
-            text.appendChild(document.createTextNode(`Memory usage is high (${message.rss}). Save your work, then stop the server (Ctrl+C) and run \u201cnpm start\u201d again to free memory.`));
+            text.textContent = 'Memory usage is high (' + message.rss + '). Save your work, then stop the server (Ctrl+C) and run \u201cnpm start\u201d again to free memory.';
         }
-        banner.appendChild(text);
 
-        const btnGroup = document.createElement('div');
-        btnGroup.style.cssText = 'display:flex;gap:8px;flex-shrink:0;';
-
+        // Build action buttons
+        actions.innerHTML = '';
         if (message.supervised) {
             const restartBtn = document.createElement('button');
+            restartBtn.className = 'btn btn-danger btn-small';
             restartBtn.textContent = 'Restart Now';
             restartBtn.setAttribute('aria-label', 'Restart the server now to free memory');
-            restartBtn.style.cssText = 'background:#b91c1c;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;min-height:32px;';
             restartBtn.addEventListener('click', () => {
                 this.send({ type: 'restart_server' });
-                banner.remove();
+                banner.style.display = 'none';
             });
-            btnGroup.appendChild(restartBtn);
+            actions.appendChild(restartBtn);
         }
 
-        const dismissBtn = document.createElement('button');
-        dismissBtn.textContent = 'Dismiss';
-        dismissBtn.setAttribute('aria-label', 'Dismiss memory warning');
-        dismissBtn.style.cssText = 'background:transparent;color:#fef3c7;border:1px solid #fef3c7;padding:6px 12px;border-radius:4px;cursor:pointer;font-size:12px;min-height:32px;';
-        dismissBtn.addEventListener('click', () => banner.remove());
-        btnGroup.appendChild(dismissBtn);
+        // Show banner
+        banner.style.display = '';
+        banner.classList.add('visible');
 
-        banner.appendChild(btnGroup);
-        document.body.appendChild(banner);
-
-        // Focus dismiss button unless user is actively typing
-        const active = document.activeElement;
-        const isTyping = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable);
-        if (!isTyping) dismissBtn.focus();
-
-        // Auto-dismiss after 90 seconds (longer to account for users stepping away)
-        setTimeout(() => {
-            if (banner.parentNode) banner.remove();
-        }, 90000);
+        // Dismiss button
+        dismissBtn.onclick = () => {
+            banner.classList.remove('visible');
+            banner.style.display = 'none';
+        };
     }
 
     _handleVoiceMessage(message) {
@@ -1300,6 +1352,26 @@ class ClaudeCodeWebInterface {
             return;
         }
 
+        // Redirect to input overlay if active
+        if (this._voiceTarget === 'overlay' && this._inputOverlay && this._inputOverlay._open) {
+            var ta = document.getElementById('inputOverlayText');
+            if (ta) {
+                var pos = ta.selectionStart;
+                ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos);
+                ta.selectionStart = ta.selectionEnd = pos + text.length;
+                ta.focus();
+                if (this._inputOverlay) this._inputOverlay._updateCharCount();
+            }
+            if (srEl) srEl.textContent = 'Voice text inserted into overlay.';
+            return;
+        }
+
+        // Edge case: overlay closed between recording start and transcription delivery
+        if (this._voiceTarget === 'overlay' && (!this._inputOverlay || !this._inputOverlay._open)) {
+            this._voiceTarget = 'terminal';
+            this._showVoiceToast('Voice text delivered to terminal');
+        }
+
         // Gate: WebSocket must be open
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
             if (srEl) srEl.textContent = 'Voice text discarded: not connected.';
@@ -1361,15 +1433,13 @@ class ClaudeCodeWebInterface {
 
     /**
      * Show a brief toast message for voice input feedback.
-     * Uses the existing clipboard-toast pattern.
+     * Delegates to the FeedbackManager toast system.
      * @param {string} msg - The message to display
      */
     _showVoiceToast(msg) {
-        var toast = document.createElement('div');
-        toast.className = 'clipboard-toast';
-        toast.textContent = msg;
-        document.body.appendChild(toast);
-        setTimeout(function () { toast.remove(); }, 4000);
+        if (window.feedback) {
+            window.feedback.info(msg);
+        }
     }
 
     setupSettingsModal() {
@@ -2446,6 +2516,12 @@ class ClaudeCodeWebInterface {
             }
         }, 45000);
 
+        // Inform plan detector which tool is being started so it uses the
+        // correct detection heuristics (Claude vs Copilot vs Codex).
+        if (this.planDetector) {
+            this.planDetector.setTool(toolId);
+        }
+
         this.send({
             type: `start_${toolId}`,
             options,
@@ -2678,13 +2754,11 @@ class ClaudeCodeWebInterface {
             sendFn(normalized);
         };
 
-        // Helper: show clipboard error toast
+        // Helper: show clipboard error via inline badge
         const showClipboardError = () => {
-            const toast = document.createElement('div');
-            toast.className = 'clipboard-toast';
-            toast.textContent = 'Clipboard access denied. Use Ctrl+V to paste.';
-            document.body.appendChild(toast);
-            setTimeout(() => toast.remove(), 3000);
+            if (window.showClipboardError) {
+                window.showClipboardError('Clipboard denied');
+            }
         };
 
         // Right-click handler — listen on <main> for event delegation (covers splits)
@@ -2953,6 +3027,7 @@ class ClaudeCodeWebInterface {
     hideModal(overlayId) {
         const overlay = document.getElementById(overlayId);
         if (!overlay) return;
+        if (this._activeModal === overlayId) this._activeModal = null;
         if (window.focusTrap) window.focusTrap.deactivate();
         const content = overlay.querySelector('.modal-content');
         if (content) {
@@ -2980,6 +3055,10 @@ class ClaudeCodeWebInterface {
     }
 
     showSettings() {
+        // Modal mutex: close any open modal before opening a new one
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'settingsModal';
         const modal = document.getElementById('settingsModal');
         modal.classList.add('active');
 
@@ -3312,6 +3391,9 @@ class ClaudeCodeWebInterface {
     }
 
     async showFolderBrowser() {
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'folderBrowserModal';
         const modal = document.getElementById('folderBrowserModal');
         modal.classList.add('active');
 
@@ -3613,6 +3695,9 @@ class ClaudeCodeWebInterface {
     }
     
     showMobileSessionsModal() {
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'mobileSessionsModal';
         const modal = document.getElementById('mobileSessionsModal');
         modal.classList.add('active');
 
@@ -3772,6 +3857,20 @@ class ClaudeCodeWebInterface {
         // Clean up any active voice state before switching sessions
         this._cleanupVoiceState();
 
+        // Clean up plan and overlay state from previous session
+        this._stopPlanPolling();
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        const planBtn = document.getElementById('planIndicatorBtn');
+        if (planBtn) {
+            planBtn.style.display = 'none';
+            planBtn.classList.remove('plan-pulse');
+        }
+        this._latestPlan = null;
+        if (this.planDetector) {
+            this.planDetector.clearBuffer();
+            this.planDetector.planModeActive = false;
+        }
+
         // Ensure we're connected first
         if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
             // Check if we're already connecting (readyState === 0 means CONNECTING)
@@ -3873,6 +3972,14 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionName = null;
                 this.updateSessionButton('Sessions');
                 this.terminal.clear();
+                this._stopPlanPolling();
+                if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+                const delPlanBtn = document.getElementById('planIndicatorBtn');
+                if (delPlanBtn) {
+                    delPlanBtn.style.display = 'none';
+                    delPlanBtn.classList.remove('plan-pulse');
+                }
+                this._latestPlan = null;
                 this.showOverlay('startPrompt');
             }
         } catch (error) {
@@ -3934,6 +4041,9 @@ class ClaudeCodeWebInterface {
     }
     
     showNewSessionModal() {
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'newSessionModal';
         const modal = document.getElementById('newSessionModal');
         modal.classList.add('active');
 
@@ -4009,12 +4119,44 @@ class ClaudeCodeWebInterface {
         
         // Set up callbacks
         this.planDetector.onPlanDetected = (plan) => {
-            this.showPlanModal(plan);
+            // Store plan but do NOT auto-open modal — user clicks indicator to view
+            this._latestPlan = plan;
+            const btn = document.getElementById('planIndicatorBtn');
+            if (btn) btn.classList.add('plan-pulse');
         };
-        
+
+        // Show plan indicator button when plan mode activates
         this.planDetector.onPlanModeChange = (isActive) => {
             this.updatePlanModeIndicator(isActive);
+            const btn = document.getElementById('planIndicatorBtn');
+            if (btn) btn.style.display = isActive ? '' : 'none';
+
+            // Start/stop file-based plan polling for tools that write plan files
+            const tool = this.planDetector.currentTool;
+            if (isActive && tool && tool !== 'copilot') {
+                const planPaths = {
+                    claude: '.claude/plan.md',
+                    codex: '.codex/plan.json',
+                    gemini: '.gemini/plan.md'
+                };
+                const planPath = planPaths[tool];
+                if (planPath) {
+                    this._startPlanPolling(planPath, 'workspace');
+                }
+            } else if (!isActive) {
+                this._stopPlanPolling();
+            }
         };
+
+        // Plan indicator click shows modal
+        document.getElementById('planIndicatorBtn')?.addEventListener('click', () => {
+            const plan = this._latestPlan || this.planDetector.currentPlan;
+            if (plan) {
+                this.showPlanModal(plan);
+                const btn = document.getElementById('planIndicatorBtn');
+                if (btn) btn.classList.remove('plan-pulse');
+            }
+        });
         
         // Set up modal buttons
         const acceptBtn = document.getElementById('acceptPlanBtn');
@@ -4029,27 +4171,107 @@ class ClaudeCodeWebInterface {
         this.planDetector.startMonitoring();
     }
     
-    showPlanModal(plan) {
+    _renderCodexPlan(json) {
+        const esc = (s) => {
+            const d = document.createElement('div');
+            d.textContent = s || '';
+            return d.innerHTML;
+        };
+        let html = '';
+        if (json.context) html += '<p>' + esc(json.context) + '</p>';
+        if (json.scope) {
+            html += '<h3>Scope</h3>';
+            if (json.scope.in) html += '<p><strong>In:</strong> ' + esc(json.scope.in.join(', ')) + '</p>';
+            if (json.scope.out) html += '<p><strong>Out:</strong> ' + esc(json.scope.out.join(', ')) + '</p>';
+        }
+        if (json.action_items) {
+            html += '<h3>Action Items</h3><ol>';
+            json.action_items.forEach(function(item) {
+                var check = item.status === 'done' ? '\u2713' : '\u25CB';
+                html += '<li>' + check + ' ' + esc(item.step) + '</li>';
+            });
+            html += '</ol>';
+        }
+        if (json.open_questions && json.open_questions.length) {
+            html += '<h3>Open Questions</h3><ul>';
+            json.open_questions.forEach(function(q) {
+                html += '<li>' + esc(q) + '</li>';
+            });
+            html += '</ul>';
+        }
+        return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
+    }
+
+    async _loadPlanLibraries() {
+        if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+            return true; // Already loaded
+        }
+        if (this._planLibsLoading) return this._planLibsLoading;
+
+        this._planLibsLoading = new Promise((resolve) => {
+            let loaded = 0;
+            const check = () => { if (++loaded >= 2) resolve(true); };
+            const fail = () => { if (++loaded >= 2) resolve(false); };
+
+            const s1 = document.createElement('script');
+            s1.src = 'vendor/marked.min.js';
+            s1.onload = check;
+            s1.onerror = fail;
+            document.head.appendChild(s1);
+
+            const s2 = document.createElement('script');
+            s2.src = 'vendor/purify.min.js';
+            s2.onload = check;
+            s2.onerror = fail;
+            document.head.appendChild(s2);
+        });
+
+        return this._planLibsLoading;
+    }
+
+    async showPlanModal(plan) {
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'planModal';
         const modal = document.getElementById('planModal');
         const content = document.getElementById('planContent');
-        
-        // Format the plan content
-        let formattedContent = plan.content;
-        
-        // Convert markdown to basic HTML for better display
-        formattedContent = formattedContent
-            .replace(/^### (.*?)$/gm, '<h3>$1</h3>')
-            .replace(/^## (.*?)$/gm, '<h2>$1</h2>')
-            .replace(/^- (.*?)$/gm, '• $1')
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/`([^`]+)`/g, '<code>$1</code>');
-        
-        content.innerHTML = formattedContent;
+
+        // Lazy-load marked + DOMPurify on first use
+        await this._loadPlanLibraries();
+
+        // Clean ANSI codes
+        let cleaned = plan.content
+            .replace(/\x1b\[[0-9;]*m/g, '')
+            .replace(/\x1b\[[0-9]*[A-Za-z]/g, '')
+            .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');  // OSC sequences
+
+        // Try to detect JSON plan (Codex format)
+        try {
+            const jsonPlan = JSON.parse(cleaned);
+            if (jsonPlan && (jsonPlan.action_items || jsonPlan.scope)) {
+                content.innerHTML = this._renderCodexPlan(jsonPlan);
+                content.classList.remove('plan-content--raw');
+                modal.classList.add('active');
+                if (window.focusTrap) window.focusTrap.activate(modal);
+                this.playNotificationSound();
+                return;
+            }
+        } catch (e) {
+            // Not JSON, continue with markdown rendering
+        }
+
+        // Render markdown with sanitization
+        if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+            content.innerHTML = DOMPurify.sanitize(marked.parse(cleaned));
+            content.classList.remove('plan-content--raw');
+        } else {
+            // Fallback: escaped pre-formatted text
+            content.textContent = cleaned;
+            content.classList.add('plan-content--raw');
+        }
+
         modal.classList.add('active');
         if (window.focusTrap) window.focusTrap.activate(modal);
-
-        // Play a subtle notification sound (optional)
         this.playNotificationSound();
     }
     
@@ -4070,7 +4292,7 @@ class ClaudeCodeWebInterface {
         this.planDetector.clearBuffer();
         
         // Show confirmation
-        this.showNotification('Plan accepted! Claude will begin implementation.');
+        if (window.feedback) window.feedback.success('Plan accepted! Claude will begin implementation.');
     }
     
     rejectPlan() {
@@ -4086,7 +4308,7 @@ class ClaudeCodeWebInterface {
         this.planDetector.clearBuffer();
         
         // Show confirmation
-        this.showNotification('Plan rejected. You can provide feedback to Claude.');
+        if (window.feedback) window.feedback.info('Plan rejected. You can provide feedback to Claude.');
     }
     
     updatePlanModeIndicator(isActive) {
@@ -4101,7 +4323,82 @@ class ClaudeCodeWebInterface {
             }
         }
     }
-    
+
+    _startPlanPolling(planPath, scope) {
+        this._stopPlanPolling();
+        this._planPollPath = planPath;
+        this._planPollScope = scope || 'workspace';
+        this._planPollLastMtime = null;
+        this._planPollStableCount = 0;
+        this._planPollTimer = null;
+        // Generation counter: incremented on each start, checked after each await
+        // in _pollPlanFile to abandon stale poll chains.
+        this._planPollGeneration = (this._planPollGeneration || 0) + 1;
+        this._pollPlanFile(this._planPollGeneration);
+    }
+
+    _stopPlanPolling() {
+        if (this._planPollTimer) {
+            clearTimeout(this._planPollTimer);
+            this._planPollTimer = null;
+        }
+        // Bump generation to invalidate any in-flight poll
+        this._planPollGeneration = (this._planPollGeneration || 0) + 1;
+    }
+
+    async _pollPlanFile(generation) {
+        if (!this._planPollPath) return;
+        // Bail if this poll chain was superseded by a newer start/stop
+        if (generation !== this._planPollGeneration) return;
+        try {
+            const fetchFn = this.authFetch ? this.authFetch.bind(this) : fetch;
+            const url = this._planPollScope === 'global'
+                ? '/api/plans/content?name=' + encodeURIComponent(this._planPollPath) + '&scope=global'
+                : '/api/files/stat?path=' + encodeURIComponent(this._planPollPath);
+            const res = await fetchFn(url);
+            if (generation !== this._planPollGeneration) return;
+            if (!res.ok) {
+                // File doesn't exist yet or was deleted — poll again
+                this._planPollTimer = setTimeout(() => this._pollPlanFile(generation), 3000);
+                return;
+            }
+            const data = await res.json();
+            if (generation !== this._planPollGeneration) return;
+            const mtime = data.modified || data.mtime;
+            if (mtime !== this._planPollLastMtime) {
+                this._planPollLastMtime = mtime;
+                this._planPollStableCount = 0;
+            } else {
+                this._planPollStableCount++;
+            }
+            // Wait for mtime stability (2 consecutive same = 6 seconds)
+            if (this._planPollStableCount >= 2 && this._planPollScope !== 'global') {
+                // Stable — fetch content
+                const contentRes = await fetchFn('/api/files/content?path=' + encodeURIComponent(this._planPollPath));
+                if (generation !== this._planPollGeneration) return;
+                if (contentRes.ok) {
+                    const contentData = await contentRes.json();
+                    if (generation !== this._planPollGeneration) return;
+                    if (contentData.content && this.planDetector) {
+                        this._latestPlan = { content: contentData.content, timestamp: Date.now(), raw: contentData.content };
+                        const btn = document.getElementById('planIndicatorBtn');
+                        if (btn) btn.classList.add('plan-pulse');
+                        // Update modal if open
+                        if (this._activeModal === 'planModal') {
+                            this.showPlanModal(this._latestPlan);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // Ignore fetch errors during polling
+        }
+        // Schedule next poll (only if this generation is still active)
+        if (generation === this._planPollGeneration) {
+            this._planPollTimer = setTimeout(() => this._pollPlanFile(generation), 3000);
+        }
+    }
+
     requestUsageStats() {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify({ type: 'get_usage' }));
@@ -4322,31 +4619,6 @@ class ClaudeCodeWebInterface {
         if (rate > 100) return `<span class="icon" aria-hidden="true">${icon}</span> Moderate`;
         if (rate > 50) return `<span class="icon" aria-hidden="true">${icon}</span> Low`;
         return `<span class="icon" aria-hidden="true">${icon}</span> Very low`;
-    }
-    
-    showNotification(message) {
-        // Simple notification - you could enhance this with a toast notification
-        const notification = document.createElement('div');
-        notification.className = 'notification';
-        notification.textContent = message;
-        notification.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: var(--accent);
-            color: white;
-            padding: 12px 20px;
-            border-radius: 8px;
-            z-index: 10002;
-            animation: slideIn 0.3s ease;
-        `;
-        
-        document.body.appendChild(notification);
-        
-        setTimeout(() => {
-            notification.style.animation = 'slideOut 0.3s ease';
-            setTimeout(() => notification.remove(), 300);
-        }, 3000);
     }
     
     _playMicChime(type) {

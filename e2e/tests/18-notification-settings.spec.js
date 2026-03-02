@@ -141,7 +141,7 @@ test.describe('Notification settings', () => {
           type: 'idle',
         });
         setTimeout(() => {
-          const toast = document.querySelector('.mobile-notification');
+          const toast = document.querySelector('.toast-container .toast');
           resolve(!!toast);
         }, 500);
       });

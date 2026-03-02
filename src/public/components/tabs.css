@@ -206,13 +206,14 @@
     .tab-new-main,
     .tab-new-dropdown { min-width: 44px; min-height: 44px; }
     .tab-new-split { min-height: 44px; }
+    .overflow-menu-btn { min-width: 44px; min-height: 44px; }
 }
 
 .tab-name-input {
     width: 100%;
     font: inherit;
     color: var(--text-primary);
-    background: var(--bg-primary);
+    background: var(--surface-primary);
     border: 1px solid var(--border-hover);
     border-radius: 4px;
     padding: 2px 4px;
@@ -286,7 +287,102 @@
     margin-left: 4px;
 }
 
-.tab-actions { display: flex; gap: 6px; align-items: center; }
+.tab-actions { display: flex; gap: 6px; align-items: center; position: relative; }
+
+/* Clipboard copy feedback badge — inline in tab-actions */
+.copy-feedback-badge {
+    display: none;
+    font-size: var(--text-sm);
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    color: var(--accent-default);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+}
+.copy-feedback-badge.visible {
+    display: inline-flex;
+    opacity: 1;
+}
+.copy-feedback-badge.error {
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--status-error);
+}
+@media (prefers-reduced-motion: reduce) {
+    .copy-feedback-badge { transition: none; }
+}
+
+/* Header action overflow menu — desktop: children flow inline; tablet/mobile: dropdown */
+.overflow-menu-panel {
+    display: contents;
+}
+
+.overflow-menu-btn {
+    display: none;
+    width: 28px;
+    height: 28px;
+    align-items: center;
+    justify-content: center;
+    background-color: transparent;
+    border: 1px solid var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    flex-shrink: 0;
+    padding: 0;
+}
+
+.overflow-menu-btn:hover {
+    background-color: var(--surface-tertiary);
+    color: var(--text-primary);
+}
+
+/* Tablet breakpoint: collapse overflow items behind three-dot button */
+@media (max-width: 1023px) {
+    .overflow-menu-btn {
+        display: inline-flex;
+    }
+
+    .overflow-menu-panel {
+        display: none;
+        position: absolute;
+        top: 100%;
+        right: 0;
+        flex-direction: column;
+        background: var(--surface-elevated);
+        border: 1px solid var(--border-default);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-lg);
+        z-index: var(--z-dropdown);
+        padding: 4px 0;
+        min-width: 180px;
+    }
+
+    .overflow-menu-panel.open {
+        display: flex;
+    }
+
+    .overflow-menu-panel > button,
+    .overflow-menu-panel > .tab-browse-files,
+    .overflow-menu-panel > .tab-attach-image,
+    .overflow-menu-panel > .tab-vscode-tunnel,
+    .overflow-menu-panel > .tab-app-tunnel {
+        width: 100%;
+        justify-content: flex-start;
+        padding: 8px 12px;
+        border-radius: 0;
+        gap: 8px;
+        font-size: var(--text-sm);
+    }
+
+    .overflow-menu-panel > button:hover {
+        background-color: var(--surface-tertiary);
+    }
+}
 
 .connection-status {
     display: inline-block;
@@ -445,8 +541,8 @@
 }
 
 .overflow-tab-close:hover {
-    background-color: var(--error);
-    color: white;
+    background-color: var(--status-error);
+    color: var(--text-inverse, #fff);
 }
 
 /* Mobile: compact session pills instead of wide tabs (820px catches iPad Mini portrait) */
@@ -526,6 +622,15 @@
     .tab-actions .tab-vscode-tunnel,
     .tab-actions .tab-attach-image,
     .tab-actions .tab-voice-input {
+        display: none;
+    }
+
+    /* Hide the overflow menu button on mobile — bottom nav handles these actions */
+    .overflow-menu-btn {
+        display: none;
+    }
+
+    .overflow-menu-panel {
         display: none;
     }
 

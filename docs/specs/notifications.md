@@ -2,47 +2,57 @@
 
 ## Overview
 
-The notification system alerts users when background sessions complete tasks, encounter errors, or go idle. It supports desktop notifications (Windows Notification Center via Service Worker), in-app toast notifications, and synthesized audio chimes.
+The notification system uses a three-layer taxonomy (see [ADR-0014](../adrs/0014-notification-taxonomy.md)):
 
-## Notification Types
+| Layer | Purpose | Implementation | Duration |
+|-------|---------|----------------|----------|
+| **Micro-feedback** | Confirm user's direct action | Inline badge at trigger point | 1.5s auto-revert |
+| **Toasts** | System events needing awareness | `FeedbackManager` (`window.feedback`) | 4-8s or persistent |
+| **Banners** | Ongoing conditions/states | `banner-base.css` + tunnel-specific JS | Until condition resolves |
 
-| Type | Trigger | Chime | Example Title |
-|------|---------|-------|---------------|
-| `success` | Build/test/deploy completion pattern matched | Ascending C5→E5 | `[HOST] my-project — Build completed` |
-| `error` | Session error detected | Descending E4→C4 | `[HOST] my-project — Error detected` |
-| `idle` | 90 seconds of no output after activity | Single G5 | `[HOST] my-project — Claude appears finished` |
+Additionally, desktop notifications (Windows Notification Center via Service Worker) fire when the page is not visible.
 
-## Notification Content
+## Layer 1: Micro-Feedback
 
-### Title Format
+### Clipboard "Copied" Badge
+- `clipboard-handler.js` calls `window.showCopiedFeedback()` callback (decoupled via callback pattern)
+- `app.js` wires callback to show/hide `#copyFeedbackBadge` element in terminal header
+- Fades after 1.5s, accent background, `font-size: var(--text-sm)`
+- Clipboard errors show in same badge location with `.error` class (red color)
+- Screen reader: `#srAnnounce` element updated with "Copied to clipboard"
+
+## Layer 2: Toasts (FeedbackManager)
+
+Source: `src/public/feedback-manager.js` (~99 lines)
+
+### API
+```js
+window.feedback.info(message, opts?)    // 4s auto-dismiss
+window.feedback.success(message, opts?) // 4s auto-dismiss
+window.feedback.warning(message, opts?) // 6s auto-dismiss
+window.feedback.error(message, opts?)   // persistent (requires dismiss)
 ```
-[Hostname] SessionName — Event Description
-```
-- **Hostname**: Machine name from `os.hostname()`, exposed via `/api/config`
-- Omitted if hostname is empty (e.g., local-only usage)
 
-### Body Format
-```
-.../parent/workingDir
-45s | Claude
-```
-- Working directory abbreviated to last 2 path segments
-- Duration since last activity (seconds)
-- Agent name (Claude, Codex, Copilot, Gemini, Terminal)
+`opts`: `{ duration, action, onAction, dismissible, id }`
 
-## Delivery Channels
+### Behavior
+- Position: `top: 16px; right: 16px; z-index: var(--z-toast, 500)`
+- Max 3 visible, overflow queued (FIFO)
+- Deduplication: same-message toast already visible → skip
+- Distinct SVG icon shapes per type (WCAG 1.4.1 — not color alone)
+- Colored left-border: `--status-info` / `--status-success` / `--status-warning` / `--status-error`
+- ARIA: `role="status"` for info/success, `role="alert"` only for errors
+- `@media (prefers-reduced-motion: reduce)`: instant opacity transitions
+- Mobile (<480px): full-width
 
-### Desktop Notifications (page not visible)
-1. **Service Worker** (preferred): `ServiceWorkerRegistration.showNotification()` — persists in Windows Notification Center / Action Center. Supports "Open Session" action button.
-2. **Fallback**: `new Notification()` — transient, does not persist in Action Center. Used when SW is not available.
-
-### In-App Toast (page visible, background tab)
-- Fixed position, top center
-- Slide-down animation (300ms)
-- Auto-dismiss after 5 seconds
-- Click to switch to session tab
-- Title flashing in page title bar
-- Vibration on mobile (200ms-100ms-200ms pattern)
+### Callers
+| Caller | Method | Message |
+|--------|--------|---------|
+| Voice transcription timeout | `feedback.error(msg)` | Transcription timed out |
+| Voice recording error | `feedback.error(msg)` | Microphone access denied |
+| Background session activity | `feedback.info(title + body, { action: 'Switch' })` | Session completed |
+| SW update available | `feedback.info(msg, { action: 'Refresh Now' })` | New version available |
+| Notification permission | `feedback.info(msg, { action: 'Enable' })` | Enable notifications? |
 
 ## Audio Chimes
 
@@ -107,12 +117,18 @@ Plays synthesized chime for given type. Respects `notifSound` and `notifVolume` 
 
 | File | Role |
 |------|------|
-| `src/public/session-manager.js` | Notification triggering, chime synthesis, toast UI |
+| `src/public/feedback-manager.js` | `FeedbackManager` class — toast API (Layer 2) |
+| `src/public/components/feedback.css` | Toast styles |
+| `src/public/components/banner-base.css` | Shared banner base styles (Layer 3) |
+| `src/public/clipboard-handler.js` | Micro-feedback callback (`showCopiedFeedback`) |
+| `src/public/session-manager.js` | Notification triggering, chime synthesis, desktop notifications |
 | `src/public/service-worker.js` | `notificationclick` handler, cache version |
-| `src/public/app.js` | Hostname storage, SW message listener, settings wiring |
-| `src/public/index.html` | Notification settings HTML in settings modal |
+| `src/public/app.js` | Micro-feedback wiring, modal mutex, voice redirect |
+| `src/public/index.html` | Badge element, notification settings HTML, toast script tag |
+| `src/public/vscode-tunnel.js` | Status indicators, WCAG auto-dismiss (Layer 3) |
+| `src/public/app-tunnel.js` | Status indicators (Layer 3) |
 | `src/server.js` | `hostname` in `/api/config` response |
-| `src/public/components/modals.css` | `.setting-divider` style |
+| `src/public/components/notifications.css` | Loading patterns (deprecated toast/banner classes removed) |
 
 ## Accessibility
 

@@ -54,9 +54,9 @@ test.describe('Background session notifications', () => {
         // Page is visible, so desktop notification should be skipped
         // In-app toast should show instead
         stm.sendNotification('Test Title', 'Test Body', bgSessionId);
-        // Check if the mobile notification toast was created
+        // Check if the feedback toast was created
         setTimeout(() => {
-          const toast = document.querySelector('.mobile-notification');
+          const toast = document.querySelector('.toast-container .toast');
           resolve(!!toast);
         }, 500);
       });
@@ -64,10 +64,11 @@ test.describe('Background session notifications', () => {
 
     expect(toastShown).toBe(true);
 
-    // Verify toast content
+    // Verify toast content — FeedbackManager formats as "Title: Body" inside .toast__msg
     const toastText = await page.evaluate(() => {
-      const toast = document.querySelector('.mobile-notification');
-      return toast ? toast.textContent : '';
+      const toast = document.querySelector('.toast-container .toast');
+      const msg = toast ? toast.querySelector('.toast__msg') : null;
+      return msg ? msg.textContent : '';
     });
     expect(toastText).toContain('Test Title');
     expect(toastText).toContain('Test Body');
@@ -92,7 +93,7 @@ test.describe('Background session notifications', () => {
         const activeId = stm.activeTabId;
         stm.sendNotification('Should Not Show', 'Suppressed', activeId);
         setTimeout(() => {
-          const toast = document.querySelector('.mobile-notification');
+          const toast = document.querySelector('.toast-container .toast');
           resolve(!!toast);
         }, 500);
       });
@@ -356,8 +357,9 @@ test.describe('Background session notifications', () => {
           type: 'success',
         });
         setTimeout(() => {
-          const toast = document.querySelector('.mobile-notification');
-          resolve(toast ? toast.textContent : '');
+          const toast = document.querySelector('.toast-container .toast');
+          const msg = toast ? toast.querySelector('.toast__msg') : null;
+          resolve(msg ? msg.textContent : '');
         }, 500);
       });
     }, sessionB);
@@ -399,8 +401,9 @@ test.describe('Background session notifications', () => {
           type: 'success',
         });
         setTimeout(() => {
-          const toast = document.querySelector('.mobile-notification');
-          resolve(toast ? toast.textContent : '');
+          const toast = document.querySelector('.toast-container .toast');
+          const msg = toast ? toast.querySelector('.toast__msg') : null;
+          resolve(msg ? msg.textContent : '');
         }, 500);
       });
     }, sessionB);
@@ -563,8 +566,9 @@ test.describe('Background session notifications', () => {
         const stm = window.app.sessionTabManager;
         stm.checkForCommandCompletion(bgSessionId, 'build successful', Date.now() - 30000);
         setTimeout(() => {
-          const toast = document.querySelector('.mobile-notification');
-          resolve(toast ? toast.textContent : '');
+          const toast = document.querySelector('.toast-container .toast');
+          const msg = toast ? toast.querySelector('.toast__msg') : null;
+          resolve(msg ? msg.textContent : '');
         }, 500);
       });
     }, sessionB);

@@ -539,6 +539,7 @@ function VoiceInputController(options) {
   this._onCancel = options.onCancel || null;
 
   this._recorder = null;
+  this._starting = false;
   this._keydownTime = null;
   this._isPushToTalk = false;
   this._pttTimer = null;
@@ -579,15 +580,19 @@ VoiceInputController.prototype._createRecorder = function () {
  */
 VoiceInputController.prototype.startRecording = function () {
   var self = this;
+  if (self._starting) return;
   if (self._recorder && self._recorder.isRecording) return;
 
+  self._starting = true;
   self._recorder = self._createRecorder();
 
   self._recorder.start().then(function () {
+    self._starting = false;
     if (self._onRecordingStart) {
       self._onRecordingStart();
     }
   }).catch(function (err) {
+    self._starting = false;
     if (self._onError) {
       self._onError(err);
     }

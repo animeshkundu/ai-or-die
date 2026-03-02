@@ -66,7 +66,7 @@ class AuthManager {
             display: flex;
             align-items: center;
             justify-content: center;
-            z-index: 10000;
+            z-index: var(--z-auth, 9999);
         `;
 
         const loginForm = document.createElement('div');

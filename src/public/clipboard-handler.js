@@ -21,26 +21,16 @@ function wrapBracketedPaste(text) {
 }
 
 /**
- * Show a brief "Copied" toast indicator at the bottom of the screen.
+ * Show a brief "Copied" feedback indicator via inline badge callback.
+ * Decoupled from DOM — app.js wires window.showCopiedFeedback to the badge.
  */
-var _copiedToast = null;
 function showCopiedToast() {
-  if (typeof document === 'undefined') return;
-  // Deduplicate — remove existing toast before showing new one
-  if (_copiedToast && _copiedToast.parentNode) _copiedToast.remove();
-  var toast = document.createElement('div');
-  toast.textContent = 'Copied';
-  toast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--surface-elevated);color:var(--text-primary);padding:6px 16px;border-radius:var(--radius-sm);font-size:13px;z-index:var(--z-tooltip,500);opacity:0;transition:opacity 0.2s;pointer-events:none;';
-  document.body.appendChild(toast);
-  _copiedToast = toast;
+  if (typeof window !== 'undefined' && window.showCopiedFeedback) {
+    window.showCopiedFeedback();
+  }
   // Screen reader announcement
-  var sr = document.getElementById('srAnnounce');
+  var sr = typeof document !== 'undefined' ? document.getElementById('srAnnounce') : null;
   if (sr) sr.textContent = 'Copied to clipboard';
-  requestAnimationFrame(function() { toast.style.opacity = '1'; });
-  setTimeout(function() {
-    toast.style.opacity = '0';
-    setTimeout(function() { toast.remove(); if (_copiedToast === toast) _copiedToast = null; }, 200);
-  }, 1500);
 }
 
 /**
