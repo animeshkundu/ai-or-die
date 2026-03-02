@@ -4150,14 +4150,18 @@ class ClaudeCodeWebInterface {
 
         // Plan indicator click shows modal
         document.getElementById('planIndicatorBtn')?.addEventListener('click', () => {
-            const plan = this._latestPlan || this.planDetector.currentPlan;
-            if (plan) {
-                this.showPlanModal(plan);
-                const btn = document.getElementById('planIndicatorBtn');
-                if (btn) btn.classList.remove('plan-pulse');
-            }
+            this._openPlanViewer();
         });
-        
+
+        // Ctrl+Shift+P keyboard shortcut to open plan viewer
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'P') {
+                e.preventDefault();
+                e.stopPropagation();
+                this._openPlanViewer();
+            }
+        }, true);
+
         // Set up modal buttons
         const acceptBtn = document.getElementById('acceptPlanBtn');
         const rejectBtn = document.getElementById('rejectPlanBtn');
@@ -4275,6 +4279,15 @@ class ClaudeCodeWebInterface {
         this.playNotificationSound();
     }
     
+    _openPlanViewer() {
+        const plan = this._latestPlan || (this.planDetector && this.planDetector.currentPlan);
+        if (plan) {
+            this.showPlanModal(plan);
+            const btn = document.getElementById('planIndicatorBtn');
+            if (btn) btn.classList.remove('plan-pulse');
+        }
+    }
+
     hidePlanModal() {
         this.hideModal('planModal');
     }
