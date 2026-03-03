@@ -102,11 +102,10 @@
           this._setStatus('running');
           this._bannerDismissed = false;
           this._renderBanner();
-          // Auto-copy URL and schedule banner collapse
+          // Auto-copy URL
           if (this.url) {
             navigator.clipboard.writeText(this.url).catch(() => {});
           }
-          this._scheduleAutoCollapse();
           break;
 
         case 'vscode_tunnel_status':
@@ -166,9 +165,7 @@
 
     _scheduleAutoCollapse() {
       this._clearAutoCollapse();
-      // Banners with action buttons never auto-dismiss
-      if (this._bannerHasActions()) return;
-      this._autoCollapseRemaining = 20000;
+      this._autoCollapseRemaining = this._bannerHasActions() ? 20000 : 5000;
       this._autoCollapseStart = Date.now();
       this._autoCollapseTimer = setTimeout(() => {
         this._autoCollapseTimer = null;
@@ -239,8 +236,8 @@
 
       var btn = container.querySelector('#vstStatusIndicator');
 
-      // Remove indicator when stopped
-      if (this.status === 'stopped') {
+      // Only show indicator when banner is dismissed (not when banner is visible)
+      if (this.status === 'stopped' || !this._bannerDismissed) {
         if (btn) btn.remove();
         return;
       }
@@ -323,6 +320,8 @@
       } else if (this.status === 'running' && this.url) {
         this._renderRunningBanner();
       }
+
+      this._scheduleAutoCollapse();
     }
 
     _renderStartingBanner() {

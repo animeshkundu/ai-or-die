@@ -94,16 +94,3 @@
     min-height: 44px;
   }
 }
-
-/* Memory warning banner — amber theme */
-.memory-warning-banner {
-  background: #92400e;
-  color: #fef3c7;
-  border-bottom-color: #78350f;
-}
-.memory-warning-banner .banner-dismiss {
-  color: #fef3c7;
-}
-.memory-warning-banner .banner-dismiss:hover {
-  color: #fff;
-}

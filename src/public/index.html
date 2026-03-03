@@ -118,7 +118,7 @@
             <div class="tab-actions">
                 <span class="copy-feedback-badge" id="copyFeedbackBadge">Copied</span>
                 <span class="connection-status" id="connectionStatus" title="Connecting..." aria-label="Connecting to server" role="status"></span>
-                <button class="tab-action-btn plan-indicator" id="planIndicatorBtn" title="View Plan" aria-label="View Plan" style="display:none;">
+                <button class="tab-action-btn plan-indicator" id="planIndicatorBtn" title="View Plan (Ctrl+Shift+P)" aria-label="View Plan" style="display:none;">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
                         <rect x="3" y="1.5" width="10" height="13" rx="1.5"/>
                         <line x1="5.5" y1="4.5" x2="10.5" y2="4.5"/>
@@ -189,12 +189,7 @@
 
         <div class="app-tunnel-banner" id="appTunnelBanner"></div>
         <div class="vscode-tunnel-banner" id="vscodeTunnelBanner"></div>
-        <div class="banner-base memory-warning-banner" id="memoryWarningBanner" role="alert" aria-atomic="true" style="display:none;">
-            <span class="banner-icon" aria-hidden="true">&#9888;&#65039;</span>
-            <span class="banner-message" id="memoryWarningText"></span>
-            <div class="banner-actions" id="memoryWarningActions"></div>
-            <button class="banner-dismiss" id="memoryWarningDismiss" aria-label="Dismiss">&times;</button>
-        </div>
+        <div class="vscode-tunnel-banner" id="memoryWarningBanner" role="alert" aria-atomic="true" style="display:none;"></div>
         <div class="voice-download-banner" id="voiceDownloadBanner" style="display: none;">
             <span class="voice-download-icon">&#11015;</span>
             <span class="voice-download-text">Downloading speech recognition model (670 MB)...</span>

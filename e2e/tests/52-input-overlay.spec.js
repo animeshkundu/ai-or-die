@@ -276,4 +276,100 @@ test.describe('Type-ahead input overlay', () => {
     });
     expect(settingsOpen).toBe(true);
   });
+
+  test('Insert collapses multi-line text to single line', async ({ page }) => {
+    setupPageCapture(page);
+    const sessionId = await createSessionViaApi(port, 'overlay-multiline-insert');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    await page.locator('#inputOverlayBtn').click();
+    await expect(page.locator('#inputOverlay')).toBeVisible({ timeout: 2000 });
+
+    // Type multi-line text
+    await page.locator('#inputOverlayText').fill('line one\nline two\nline three');
+
+    const insertSent = page.evaluate(() => {
+      return new Promise((resolve) => {
+        const origSend = window.app.socket.send.bind(window.app.socket);
+        window.app.socket.send = function(data) {
+          origSend(data);
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'input') resolve(parsed.data);
+          } catch(e) {}
+        };
+        setTimeout(() => resolve(null), 5000);
+      });
+    });
+
+    await page.locator('.input-overlay-insert').click();
+    const sentData = await insertSent;
+    expect(sentData).toBeTruthy();
+    // Insert should collapse newlines to spaces (no \n or \r in output)
+    expect(sentData).not.toContain('\n');
+    expect(sentData).not.toContain('\r');
+    expect(sentData).toContain('line one');
+    expect(sentData).toContain('line two');
+  });
+
+  test('Send preserves multi-line text with carriage returns', async ({ page }) => {
+    setupPageCapture(page);
+    const sessionId = await createSessionViaApi(port, 'overlay-multiline-send');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    await page.locator('#inputOverlayBtn').click();
+    await expect(page.locator('#inputOverlay')).toBeVisible({ timeout: 2000 });
+
+    await page.locator('#inputOverlayText').fill('first line\nsecond line');
+
+    const sendSent = page.evaluate(() => {
+      return new Promise((resolve) => {
+        const origSend = window.app.socket.send.bind(window.app.socket);
+        window.app.socket.send = function(data) {
+          origSend(data);
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'input') resolve(parsed.data);
+          } catch(e) {}
+        };
+        setTimeout(() => resolve(null), 5000);
+      });
+    });
+
+    await page.locator('.input-overlay-send').click();
+    const sentData = await sendSent;
+    expect(sentData).toBeTruthy();
+    // Send should end with \r (Enter key)
+    expect(sentData.endsWith('\r')).toBe(true);
+  });
+
+  test('200KB+ text shows character count warning', async ({ page }) => {
+    setupPageCapture(page);
+    const sessionId = await createSessionViaApi(port, 'overlay-200k');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    await page.locator('#inputOverlayBtn').click();
+    await expect(page.locator('#inputOverlay')).toBeVisible({ timeout: 2000 });
+
+    // Fill with >200KB of text
+    const bigText = 'x'.repeat(210000);
+    await page.locator('#inputOverlayText').fill(bigText);
+    await page.locator('#inputOverlayText').dispatchEvent('input');
+
+    // Check for warning class
+    const hasWarn = await page.evaluate(() => {
+      const el = document.getElementById('inputCharCount');
+      return el && el.classList.contains('charcount-warn');
+    });
+    expect(hasWarn).toBe(true);
+  });
 });

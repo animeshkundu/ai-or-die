@@ -216,6 +216,79 @@ test.describe('Plan viewer — indicator and modal', () => {
     const rejectBtn = page.locator('#rejectPlanBtn');
     await expect(rejectBtn).toBeVisible();
   });
+
+  test('Accept button sends y input via WebSocket', async ({ page }) => {
+    setupPageCapture(page);
+    const sessionId = await createSessionViaApi(port, 'plan-accept-ws');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    // Open plan modal
+    await page.evaluate(() => {
+      const plan = { content: '## Accept WS Test\n\n- Step 1\n', timestamp: Date.now() };
+      window.app.showPlanModal(plan);
+    });
+
+    const modal = page.locator('#planModal');
+    await expect(modal).toHaveClass(/active/, { timeout: 2000 });
+
+    // Capture WS messages
+    const inputSent = page.evaluate(() => {
+      return new Promise((resolve) => {
+        const origSend = window.app.socket.send.bind(window.app.socket);
+        window.app.socket.send = function(data) {
+          origSend(data);
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'input') resolve(parsed.data);
+          } catch(e) {}
+        };
+        setTimeout(() => resolve(null), 5000);
+      });
+    });
+
+    await page.locator('#acceptPlanBtn').click();
+    const sentData = await inputSent;
+    expect(sentData).toBe('y\n');
+  });
+
+  test('Reject button sends n input via WebSocket', async ({ page }) => {
+    setupPageCapture(page);
+    const sessionId = await createSessionViaApi(port, 'plan-reject-ws');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionId);
+
+    // Open plan modal
+    await page.evaluate(() => {
+      const plan = { content: '## Reject WS Test\n\n- Step 1\n', timestamp: Date.now() };
+      window.app.showPlanModal(plan);
+    });
+
+    const modal = page.locator('#planModal');
+    await expect(modal).toHaveClass(/active/, { timeout: 2000 });
+
+    const inputSent = page.evaluate(() => {
+      return new Promise((resolve) => {
+        const origSend = window.app.socket.send.bind(window.app.socket);
+        window.app.socket.send = function(data) {
+          origSend(data);
+          try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'input') resolve(parsed.data);
+          } catch(e) {}
+        };
+        setTimeout(() => resolve(null), 5000);
+      });
+    });
+
+    await page.locator('#rejectPlanBtn').click();
+    const sentData = await inputSent;
+    expect(sentData).toBe('n\n');
+  });
 });
 
 test.describe('Plan detector — multi-tool awareness', () => {

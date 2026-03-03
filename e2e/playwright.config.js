@@ -130,7 +130,7 @@ module.exports = defineConfig({
     // UX features: feedback system, input overlay, plan viewer
     {
       name: 'ux-features',
-      testMatch: /5[1-3]-.*\.spec\.js/,
+      testMatch: /5[1-5]-.*\.spec\.js/,
     },
     // Server restart feature tests
     {
