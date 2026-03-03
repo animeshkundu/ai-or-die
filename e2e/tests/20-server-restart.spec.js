@@ -58,7 +58,7 @@ test.describe('Server Restart', () => {
     await expect(restartBtn).toBeVisible();
 
     // Verify dismiss button exists
-    const dismissBtn = banner.locator('#memoryWarningDismiss');
+    const dismissBtn = banner.locator('.vst-dismiss-btn');
     await expect(dismissBtn).toBeVisible();
   });
 
@@ -87,7 +87,8 @@ test.describe('Server Restart', () => {
     // Click dismiss via JS (banner has CSS slide transition that interferes with
     // Playwright's actionability checks)
     await page.evaluate(() => {
-      document.getElementById('memoryWarningDismiss').click();
+      const btn = document.querySelector('#memoryWarningBanner .vst-dismiss-btn');
+      if (btn) btn.click();
     });
 
     // Banner should be hidden (predefined element stays in DOM, display:none)
