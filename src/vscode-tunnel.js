@@ -249,7 +249,9 @@ class VSCodeTunnelManager {
 
     // Step 2: Clean up devtunnel (fire-and-forget)
     if (this._devtunnelCommand) {
-      execFile(this._devtunnelCommand, ['delete', tunnel.tunnelId, '-f'], { timeout: 10000 }, () => {});
+      const execOpts = { timeout: 10000 };
+      if (process.platform === 'win32') execOpts.shell = true;
+      execFile(this._devtunnelCommand, ['delete', tunnel.tunnelId, '-f'], execOpts, () => {});
     }
 
     // Step 3: Kill server process
@@ -470,7 +472,9 @@ class VSCodeTunnelManager {
   async _checkDevtunnelAuth() {
     if (!this._devtunnelCommand) return false;
     return new Promise((resolve) => {
-      execFile(this._devtunnelCommand, ['user', 'show'], { timeout: 10000 }, (err, stdout) => {
+      const execOpts = { timeout: 10000 };
+      if (process.platform === 'win32') execOpts.shell = true;
+      execFile(this._devtunnelCommand, ['user', 'show'], execOpts, (err, stdout) => {
         if (err) {
           resolve(false);
         } else {
@@ -498,6 +502,7 @@ class VSCodeTunnelManager {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
     };
+    if (process.platform === 'win32') spawnOptions.shell = true;
 
     return new Promise((resolve) => {
       tunnel._loginProcess = spawn(this._devtunnelCommand, ['user', 'login'], spawnOptions);
@@ -737,7 +742,9 @@ class VSCodeTunnelManager {
    */
   async _execDevtunnel(args, sessionId) {
     return new Promise((resolve) => {
-      execFile(this._devtunnelCommand, args, { timeout: 15000 }, (err, stdout, stderr) => {
+      const execOpts = { timeout: 15000 };
+      if (process.platform === 'win32') execOpts.shell = true;
+      execFile(this._devtunnelCommand, args, execOpts, (err, stdout, stderr) => {
         if (err) {
           const output = (stderr || stdout || '').toString();
           if (output.includes('Conflict')) {
@@ -763,10 +770,10 @@ class VSCodeTunnelManager {
     const args = ['host', tunnel.tunnelId];
 
     return new Promise((resolve) => {
-      // devtunnel is a standalone binary — no shell: true needed
-      tunnel.tunnelProcess = spawn(this._devtunnelCommand, args, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
+      // Windows .cmd/.bat stubs require shell to execute
+      const spawnOptions = { stdio: ['pipe', 'pipe', 'pipe'] };
+      if (process.platform === 'win32') spawnOptions.shell = true;
+      tunnel.tunnelProcess = spawn(this._devtunnelCommand, args, spawnOptions);
 
       let urlResolved = false;
 
