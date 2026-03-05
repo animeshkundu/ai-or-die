@@ -80,17 +80,19 @@ Stored in `localStorage` key `cc-web-settings`:
 | Setting | Key | Type | Default | Description |
 |---------|-----|------|---------|-------------|
 | Sound | `notifSound` | boolean | `true` | Enable/disable notification chimes |
-| Volume | `notifVolume` | number (0-100) | `30` | Chime volume (maps to 0–0.3 gain) |
+| Volume | `notifVolume` | number (0-100) | `70` | Chime volume (maps to 0–0.3 gain) |
 | Desktop | `notifDesktop` | boolean | `true` | Enable/disable desktop notifications |
 
 Settings accessible from Settings modal under "Notifications" section.
 
 ## Suppression Rules
 
-- Notifications are **never** sent for the active tab
+- Notifications are suppressed for the active tab when the page is **visible** (i.e., `document.visibilityState === 'visible'` and `sessionId === activeTabId`)
+- When the page is hidden (user alt-tabbed), notifications fire for the active tab to alert the user
 - Desktop notifications only fire when `document.visibilityState !== 'visible'`
 - Audio only plays if `notifSound` is `true` and `notifVolume > 0`
 - Desktop only fires if `notifDesktop` is `true`
+- Work-cycle deduplication: at most one idle/completion notification per work cycle per session (cycle increments on meaningful user input)
 
 ## Service Worker Integration
 

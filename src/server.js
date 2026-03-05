@@ -14,6 +14,7 @@ const CopilotBridge = require('./copilot-bridge');
 const GeminiBridge = require('./gemini-bridge');
 const TerminalBridge = require('./terminal-bridge');
 const SessionStore = require('./utils/session-store');
+const { stripAnsi, cleanControl, isMeaningfulInput, extractActivitySnippet, detectCompletionMetadata, redactSecrets } = require('./utils/ansi-utils');
 const { getFileInfo, computeFileHash, isBinaryFile, sanitizeFileName, isBlockedExtension, formatFileSize, normalizePath, BLOCKED_EXTENSIONS } = require('./utils/file-utils');
 const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
@@ -103,6 +104,12 @@ class ClaudeCodeWebServer {
       // Merge loaded sessions into the existing map to avoid overwriting
       // sessions created between constructor and load completion
       for (const [id, session] of sessions) {
+        if (typeof session._workCycleId !== 'number') {
+          session._workCycleId = 0;
+        }
+        if (!Object.prototype.hasOwnProperty.call(session, 'agent')) {
+          session.agent = null;
+        }
         if (!this.claudeSessions.has(id)) {
           this.claudeSessions.set(id, session);
         }
@@ -423,6 +430,7 @@ class ClaudeCodeWebServer {
         name: session.name,
         created: session.created,
         active: session.active,
+        agent: session.agent || null,
         workingDir: session.workingDir,
         connectedClients: session.connections.size,
         lastActivity: session.lastActivity
@@ -470,6 +478,7 @@ class ClaudeCodeWebServer {
           totalCost: 0,
           models: {}
         },
+        _workCycleId: 0,
         maxBufferSize: 1000
       };
       
@@ -1504,6 +1513,9 @@ class ClaudeCodeWebServer {
           if (session && session.connections.has(wsId)) {
             // Only send if an agent is running in this session
             if (session.active && session.agent) {
+              if (this._isMeaningfulInput(data.data)) {
+                session._workCycleId = (typeof session._workCycleId === 'number' ? session._workCycleId : 0) + 1;
+              }
               try {
                 const inputBridge = this.getBridgeForAgent(session.agent);
                 if (inputBridge) {
@@ -1723,6 +1735,7 @@ class ClaudeCodeWebServer {
       created: new Date(),
       lastActivity: new Date(),
       active: false,
+      agent: null,
       workingDir: validWorkingDir,
       connections: new Set([wsId]),
       outputBuffer: new CircularBuffer(1000),
@@ -1736,6 +1749,7 @@ class ClaudeCodeWebServer {
         totalCost: 0,
         models: {}
       },
+      _workCycleId: 0,
       maxBufferSize: 1000
     };
     
@@ -1826,6 +1840,35 @@ class ClaudeCodeWebServer {
     return bridges[agentType] || null;
   }
 
+  _stripAnsi(text) {
+    return stripAnsi(text);
+  }
+
+  _isMeaningfulInput(input) {
+    return isMeaningfulInput(input);
+  }
+
+  /**
+   * Extract last meaningful line from output chunk (max 180 chars).
+   * Expects pre-stripped (ANSI-free) text.
+   */
+  _extractActivitySnippet(cleanText) {
+    return extractActivitySnippet(cleanText);
+  }
+
+  /**
+   * Detect completion/failure patterns in output.
+   * Expects pre-stripped (ANSI-free) text.
+   */
+  _detectCompletionMetadata(cleanText) {
+    return detectCompletionMetadata(cleanText);
+  }
+
+  /** Redact common secret patterns from a snippet string. */
+  _redactSecrets(text) {
+    return redactSecrets(text);
+  }
+
   async startToolSession(wsId, toolName, bridge, options, cols, rows) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) {
@@ -1892,6 +1935,9 @@ class ClaudeCodeWebServer {
     // session.active check above and spawn duplicate PTY processes.
     session.active = true;
     session.agent = toolName;
+    if (typeof session._workCycleId !== 'number') {
+      session._workCycleId = 0;
+    }
     this.activityBroadcastTimestamps.set(sessionId, Date.now());
 
     try {
@@ -1906,12 +1952,28 @@ class ClaudeCodeWebServer {
           currentSession.outputBuffer.push(data);
           this.sessionStore.markDirty();
           this._throttledOutputBroadcast(sessionId, data);
+
           // Notify non-joined connections about activity (throttled to 1/sec)
           const now = Date.now();
           const lastBroadcast = this.activityBroadcastTimestamps.get(sessionId) || 0;
           if (now - lastBroadcast > 1000) {
             this.activityBroadcastTimestamps.set(sessionId, now);
-            this.broadcastSessionActivity(sessionId, 'session_activity');
+            // Strip ANSI once, share between snippet extraction and completion detection
+            const clean = cleanControl(stripAnsi(data));
+            const snippet = this._redactSecrets(this._extractActivitySnippet(clean));
+            const completion = this._detectCompletionMetadata(clean);
+            const workCycleId = typeof currentSession._workCycleId === 'number'
+              ? currentSession._workCycleId
+              : 0;
+
+            const meta = {
+              workCycleId,
+              snippet,
+            };
+            if (completion) {
+              meta.completion = completion;
+            }
+            this.broadcastSessionActivity(sessionId, 'session_activity', meta);
           }
         },
         onExit: (code, signal) => {
@@ -2024,10 +2086,11 @@ class ClaudeCodeWebServer {
   broadcastSessionActivity(sessionId, eventType, extraData = {}) {
     const session = this.claudeSessions.get(sessionId);
     const sessionName = session ? session.name : '';
+    const agent = session ? (session.agent || null) : null;
     this.webSocketConnections.forEach((wsInfo, wsId) => {
       if (wsInfo.claudeSessionId === sessionId) return;
       if (wsInfo.ws.readyState !== WebSocket.OPEN) return;
-      this.sendToWebSocket(wsInfo.ws, { type: eventType, sessionId, sessionName, ...extraData });
+      this.sendToWebSocket(wsInfo.ws, { type: eventType, sessionId, sessionName, agent, ...extraData });
     });
   }
 

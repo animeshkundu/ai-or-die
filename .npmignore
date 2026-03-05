@@ -6,12 +6,36 @@ node_modules/
 .gitignore
 *.log
 .DS_Store
+nul
+
+# Tooling and CI configs
+.github/
+.claude/
+.cursor/
+.prompts/
+AGENTS.md
+CLAUDE.md
+CONTRIBUTING.md
 
 # Test files
 test/
 tests/
+e2e/
 *.test.js
 *.spec.js
+test-results/
+tmp-ci-artifacts/
+Softwareai-or-dietmp-baselines-linux/
+playwright-test-*.tgz
+
+# Documentation (internal)
+docs/
+
+# Proof of concept / experiments
+poc/
+
+# Site screenshots (large binaries)
+site/screenshots/
 
 # Build artifacts
 dist/

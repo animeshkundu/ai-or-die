@@ -49,6 +49,82 @@ test.describe('Notification settings', () => {
     expect(hasNotifVolumeValue).toBe(true);
   });
 
+  test('notification volume defaults to 70%', async ({ page }) => {
+    setupPageCapture(page);
+
+    await createSessionViaApi(port, 'Settings Default Volume');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+
+    await page.evaluate(() => {
+      localStorage.removeItem('cc-web-settings');
+      if (window.app.showSettings) window.app.showSettings();
+    });
+    await page.waitForTimeout(300);
+
+    const defaults = await page.evaluate(() => ({
+      notifVolume: document.getElementById('notifVolume')?.value,
+      notifVolumeValue: document.getElementById('notifVolumeValue')?.textContent,
+    }));
+
+    expect(defaults.notifVolume).toBe('70');
+    expect(defaults.notifVolumeValue).toBe('70%');
+  });
+
+  test('install setting is shown only when one-click install is available', async ({ page }) => {
+    setupPageCapture(page);
+
+    await createSessionViaApi(port, 'Settings Install Visibility');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+
+    await page.evaluate(() => {
+      if (window.app.showSettings) window.app.showSettings();
+    });
+    await page.waitForTimeout(300);
+
+    const hiddenInitially = await page.evaluate(() => {
+      const row = document.getElementById('installAppSetting');
+      return !!row && getComputedStyle(row).display === 'none';
+    });
+    expect(hiddenInitially).toBe(true);
+
+    const visibleAndClicked = await page.evaluate(async () => {
+      window.__installClicks = 0;
+      window.aodCanInstall = () => true;
+      window.aodInstallApp = async () => {
+        window.__installClicks += 1;
+        return { outcome: 'accepted' };
+      };
+      window.dispatchEvent(new CustomEvent('aod-install-availability', {
+        detail: { canInstall: true, installed: false },
+      }));
+
+      const row = document.getElementById('installAppSetting');
+      const btn = document.getElementById('installAppBtn');
+      const visible = !!row && getComputedStyle(row).display !== 'none';
+      if (btn) btn.click();
+      await new Promise(r => setTimeout(r, 50));
+      return { visible, clicks: window.__installClicks };
+    });
+
+    expect(visibleAndClicked.visible).toBe(true);
+    expect(visibleAndClicked.clicks).toBe(1);
+
+    const hiddenAgain = await page.evaluate(() => {
+      window.aodCanInstall = () => false;
+      window.dispatchEvent(new CustomEvent('aod-install-availability', {
+        detail: { canInstall: false, installed: false },
+      }));
+      const row = document.getElementById('installAppSetting');
+      return !!row && getComputedStyle(row).display === 'none';
+    });
+
+    expect(hiddenAgain).toBe(true);
+  });
+
   test('notification settings persist to localStorage', async ({ page }) => {
     setupPageCapture(page);
 
@@ -180,3 +256,4 @@ test.describe('Notification settings', () => {
     expect(hasSections).toBe(true);
   });
 });
+

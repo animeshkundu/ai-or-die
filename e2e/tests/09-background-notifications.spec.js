@@ -102,6 +102,126 @@ test.describe('Background session notifications', () => {
     expect(toastShown).toBe(false);
   });
 
+  test('sendNotification shows toast for active tab when page is hidden', async ({ page }) => {
+    setupPageCapture(page);
+
+    const sessionA = await createSessionViaApi(port, 'Hidden Active');
+
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+
+    await joinSessionAndStartTerminal(page, sessionA);
+
+    const toastShown = await page.evaluate(() => {
+      return new Promise((resolve) => {
+        const stm = window.app.sessionTabManager;
+        const activeId = stm.activeTabId;
+
+        Object.defineProperty(document, 'visibilityState', {
+          configurable: true,
+          get: () => 'hidden',
+        });
+
+        stm.sendNotification('Hidden Active', 'Still notify active session', activeId);
+        setTimeout(() => {
+          const toast = document.querySelector('.toast-container .toast');
+          resolve(!!toast);
+        }, 500);
+      });
+    });
+
+    expect(toastShown).toBe(true);
+  });
+
+  test('completion metadata notifies once per work cycle with snippet context', async ({ page }) => {
+    setupPageCapture(page);
+
+    const sessionA = await createSessionViaApi(port, 'Meta A');
+    const sessionB = await createSessionViaApi(port, 'Meta B');
+
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionA);
+
+    await page.evaluate(async (sid) => {
+      window.app.sessionTabManager.addTab(sid, 'Meta B', 'idle');
+    }, sessionB);
+
+    const notifications = await page.evaluate((sid) => {
+      const stm = window.app.sessionTabManager;
+      const sent = [];
+      const originalSend = stm.sendNotification.bind(stm);
+      stm.sendNotification = (opts, legacyBody, legacySessionId) => {
+        if (typeof opts === 'object' && opts !== null) {
+          sent.push(opts);
+        } else {
+          sent.push({ title: opts, body: legacyBody, sessionId: legacySessionId });
+        }
+      };
+
+      stm.markSessionActivity(sid, true, 'build successful', {
+        workCycleId: 12,
+        completion: { label: 'Build completed' },
+        snippet: 'Build successful in 1.2s',
+      });
+      stm.markSessionActivity(sid, true, 'build successful', {
+        workCycleId: 12,
+        completion: { label: 'Build completed' },
+        snippet: 'Build successful in 1.2s',
+      });
+
+      stm.sendNotification = originalSend;
+      return sent;
+    }, sessionB);
+
+    expect(notifications.length).toBe(1);
+    expect(notifications[0].title).toContain('Build completed');
+    expect(notifications[0].body).toContain('Output: Build successful in 1.2s');
+  });
+
+  test('idle fallback sends at most one notification per work cycle', async ({ page }) => {
+    setupPageCapture(page);
+
+    const sessionA = await createSessionViaApi(port, 'Idle Dedupe A');
+    const sessionB = await createSessionViaApi(port, 'Idle Dedupe B');
+
+    await page.goto(url);
+    await waitForAppReady(page);
+    await waitForTerminalCanvas(page);
+    await joinSessionAndStartTerminal(page, sessionA);
+
+    await page.evaluate(async (sid) => {
+      window.app.sessionTabManager.addTab(sid, 'Idle Dedupe B', 'idle');
+    }, sessionB);
+
+    const count = await page.evaluate(async (sid) => {
+      const stm = window.app.sessionTabManager;
+      const originalSend = stm.sendNotification.bind(stm);
+      let sentCount = 0;
+      stm.sendNotification = () => { sentCount += 1; };
+      stm.idleTimeoutMs = 70;
+
+      stm.markSessionActivity(sid, true, 'working...', {
+        workCycleId: 33,
+        snippet: 'working...',
+      });
+      await new Promise(r => setTimeout(r, 110));
+
+      stm.markSessionActivity(sid, true, 'still working...', {
+        workCycleId: 33,
+        snippet: 'still working...',
+      });
+      await new Promise(r => setTimeout(r, 110));
+
+      stm.sendNotification = originalSend;
+      return sentCount;
+    }, sessionB);
+
+    expect(count).toBe(1);
+  });
+
   test('unread indicator clears when switching to background tab', async ({ page }) => {
     setupPageCapture(page);
 
@@ -578,3 +698,4 @@ test.describe('Background session notifications', () => {
     expect(toastText).toContain('Build completed successfully');
   });
 });
+

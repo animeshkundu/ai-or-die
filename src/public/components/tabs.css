@@ -289,6 +289,12 @@
 
 .tab-actions { display: flex; gap: 6px; align-items: center; position: relative; }
 
+@media (display-mode: window-controls-overlay) {
+    .tab-actions {
+        padding-right: calc(var(--wco-right-inset, 0px) + 4px);
+    }
+}
+
 /* Clipboard copy feedback badge — inline in tab-actions */
 .copy-feedback-badge {
     display: none;
@@ -657,3 +663,4 @@
         font-size: 10px;
     }
 }
+
