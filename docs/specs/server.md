@@ -254,7 +254,7 @@ All messages are JSON. The `type` field determines the handler.
 | `info` | Informational message (e.g., "No agent is running"). |
 | `pong` | Response to `ping`. |
 | `usage_update` | Usage statistics payload (see Usage Analytics spec). |
-| `session_activity` | Lightweight notification sent to connections NOT joined to the session, indicating new output. Fields: `sessionId`, `sessionName`. Throttled to 1/second per session. |
+| `session_activity` | Lightweight notification sent to connections NOT joined to the session, indicating new output. Fields: `sessionId`, `sessionName`, `agent`, `workCycleId`, `snippet`, `completion` (optional `{kind, label}`). Throttled to 1/second per session. |
 | `session_exit` | Sent to non-joined connections when agent exits. Fields: `sessionId`, `sessionName`, `code`, `signal`. |
 | `session_error` | Sent to non-joined connections on error. Fields: `sessionId`, `sessionName`. |
 | `session_started` | Sent to non-joined connections when a tool starts. Fields: `sessionId`, `sessionName`, `agent`. |
@@ -268,7 +268,7 @@ All messages are JSON. The `type` field determines the handler.
 
 `broadcastToSession(sessionId, data)` iterates the session's `connections` Set, verifies each WebSocket is open and belongs to the correct session, then sends the JSON-serialized message.
 
-`broadcastSessionActivity(sessionId, eventType, extraData)` sends a lightweight event to all WebSocket connections that are NOT joined to the specified session. This enables clients to track activity in background sessions for notification purposes without receiving full terminal output. Events use a `session_` prefix to distinguish cross-session events from in-session events (which are unprefixed like `output`, `exit`). The `session_activity` event is throttled to at most once per second per session to avoid flooding during high-output scenarios.
+`broadcastSessionActivity(sessionId, eventType, extraData)` sends a lightweight event to all WebSocket connections that are NOT joined to the specified session. This enables clients to track activity in background sessions for notification purposes without receiving full terminal output. Events use a `session_` prefix to distinguish cross-session events from in-session events (which are unprefixed like `output`, `exit`). The `session_activity` event is throttled to at most once per second per session to avoid flooding during high-output scenarios. Activity messages include the current `workCycleId` (incremented on meaningful user input) and a sanitized output `snippet` (last meaningful line, max 180 chars, secrets redacted). When completion or failure is detected in the output, a `completion` object `{kind: 'success'|'error', label: string}` is included.
 
 ---
 
@@ -296,7 +296,8 @@ All messages are JSON. The `type` field determines the handler.
     cacheTokens: 0,
     totalCost: 0,
     models: {}
-  }
+  },
+  _workCycleId: 0               // Incremented on meaningful user input (notification dedup)
 }
 ```
 

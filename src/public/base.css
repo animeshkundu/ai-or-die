@@ -12,6 +12,10 @@
     --error: var(--status-error);
     --warning: var(--status-warning);
     --border: var(--border-default);
+    --wco-left-inset: 0px;
+    --wco-right-inset: 0px;
+    --wco-top-inset: 0px;
+    --wco-height: 0px;
 }
 
 * {
@@ -86,9 +90,13 @@ pre, code {
    the tab bar extends into the title bar for a native terminal feel. */
 @media (display-mode: window-controls-overlay) {
     .session-tabs-bar {
-        padding-top: env(titlebar-area-y, 0);
-        padding-left: env(titlebar-area-x, 10px);
-        padding-right: calc(100% - env(titlebar-area-width, 100%) - env(titlebar-area-x, 0px) + 10px);
+        padding-top: max(env(titlebar-area-y, 0px), var(--wco-top-inset, 0px));
+        padding-left: max(env(titlebar-area-x, 10px), calc(var(--wco-left-inset, 0px) + 10px));
+        padding-right: max(
+            calc(100% - env(titlebar-area-width, 100%) - env(titlebar-area-x, 0px) + 10px),
+            calc(var(--wco-right-inset, 0px) + 10px)
+        );
+        min-height: max(40px, calc(var(--wco-height, 0px) + 8px));
         -webkit-app-region: drag;
     }
     .session-tabs-bar button,
@@ -162,3 +170,4 @@ pre, code {
         scroll-behavior: auto !important;
     }
 }
+

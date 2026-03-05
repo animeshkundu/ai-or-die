@@ -66,8 +66,9 @@ class SessionTabManager {
             sessionId = legacySessionId;
         }
 
-        // Don't send notification for active tab
-        if (sessionId === this.activeTabId) return;
+        // Suppress notifications only when this tab is active AND visible.
+        // Hidden tabs should still notify, even for the currently selected session.
+        if (sessionId && !this._shouldNotifyForSession(sessionId)) return;
 
         // Prepend hostname for multi-machine context
         const hostname = this.claudeInterface?.hostname || '';
@@ -213,8 +214,26 @@ class SessionTabManager {
         return parts.length > 2 ? '.../' + parts.slice(-2).join('/') : dir;
     }
 
+    _sanitizeSnippet(snippet) {
+        if (typeof snippet !== 'string' || !snippet) return '';
+        return snippet
+            // Combined: OSC | CSI | single-char ESC — matches server's _stripAnsi
+            .replace(/\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 140);
+    }
+
+    _shouldNotifyForSession(sessionId) {
+        return sessionId !== this.activeTabId || document.visibilityState !== 'visible';
+    }
+
+    _shouldMarkUnread(sessionId) {
+        return sessionId !== this.activeTabId;
+    }
+
     /** @private Build rich notification body from session data */
-    _buildNotifBody(session, duration) {
+    _buildNotifBody(session, duration, snippet = '') {
         const parts = [];
         if (session.workingDir) {
             parts.push(this._abbreviatePath(session.workingDir));
@@ -225,6 +244,10 @@ class SessionTabManager {
             parts.push(`${Math.round(duration / 1000)}s | ${agentName}`);
         } else {
             parts.push(agentName);
+        }
+        const sanitizedSnippet = this._sanitizeSnippet(snippet);
+        if (sanitizedSnippet) {
+            parts.push(`Output: ${sanitizedSnippet}`);
         }
         return parts.join('\n');
     }
@@ -571,7 +594,7 @@ class SessionTabManager {
             sessions.forEach((session, index) => {
                 console.log('[SessionManager.loadSessions] Adding tab for:', session.id);
                 // Don't auto-switch when loading existing sessions
-                this.addTab(session.id, session.name, session.active ? 'active' : 'idle', session.workingDir, false);
+                this.addTab(session.id, session.name, session.active ? 'active' : 'idle', session.workingDir, false, session.agent || null);
                 // Set initial timestamps based on order (older sessions get older timestamps)
                 const sessionData = this.activeSessions.get(session.id);
                 if (sessionData) {
@@ -627,7 +650,7 @@ class SessionTabManager {
         };
         const badge = toolBadges[toolType] || null;
         const badgeHtml = badge
-            ? `<span class="tab-badge" style="background:${badge.color}" title="${toolType || ''}">${badge.label}</span>`
+            ? `<span class="tab-badge" style="background:${badge.color}" title="${_esc(toolType || '')}">${badge.label}</span>`
             : '';
 
         const statusLabel = status === 'active' ? 'Active' : status === 'error' ? 'Error' : 'Idle';
@@ -698,7 +721,11 @@ class SessionTabManager {
             lastAccessed: Date.now(),
             lastActivity: Date.now(),
             unreadOutput: false,
-            hasError: false
+            hasError: false,
+            currentWorkCycleId: 0,
+            lastNotifiedCycleId: -1,
+            lastCompletionNotifiedCycleId: -1,
+            lastSnippet: ''
         });
         
         // Update overflow on mobile
@@ -1182,13 +1209,28 @@ class SessionTabManager {
         }
     }
 
-    markSessionActivity(sessionId, hasOutput = false, outputData = '') {
+    markSessionActivity(sessionId, hasOutput = false, outputData = '', meta = {}) {
         const session = this.activeSessions.get(sessionId);
         if (!session) return;
 
-        const previousActivity = session.lastActivity || 0;
-        const wasActive = session.status === 'active';
+        const previousActivity = session.lastActivity || Date.now();
         session.lastActivity = Date.now();
+
+        const workCycleId = (meta && typeof meta.workCycleId === 'number')
+            ? meta.workCycleId
+            : session.currentWorkCycleId;
+        if (typeof workCycleId === 'number') {
+            session.currentWorkCycleId = workCycleId;
+        }
+
+        const snippet = this._sanitizeSnippet((meta && meta.snippet) || outputData || session.lastSnippet || '');
+        if (snippet) {
+            session.lastSnippet = snippet;
+        }
+
+        if (meta && meta.agent && !session.toolType) {
+            session.toolType = meta.agent;
+        }
 
         // Update status to active if there's output
         if (hasOutput) {
@@ -1198,63 +1240,108 @@ class SessionTabManager {
             if (outputData) {
                 this.updateTabActivity(sessionId, outputData);
             }
-            
-            // Don't mark as unread immediately - wait for completion
-            // This prevents the blue indicator from showing while Claude is still working
-            
-            // Clear any existing timeouts
+
             clearTimeout(session.idleTimeout);
             clearTimeout(session.workCompleteTimeout);
-            
-            // Set a 90-second timeout to detect when Claude has likely finished working
+
+            // 90s fallback when no completion signal arrives
             session.workCompleteTimeout = setTimeout(() => {
                 const currentSession = this.activeSessions.get(sessionId);
-                if (currentSession && currentSession.status === 'active') {
-                    // Claude has been idle for 90 seconds - likely finished working
-                    this.updateTabStatus(sessionId, 'idle');
-                    this.restoreTabTitle(sessionId);
+                if (!currentSession || currentSession.status !== 'active') {
+                    return;
+                }
 
-                    // Only notify and mark as unread if Claude was previously active
-                    if (wasActive) {
-                        const sessionName = currentSession.name || 'Session';
-                        const duration = Date.now() - previousActivity;
-                        
-                        // Mark as unread if this is a background tab (blue indicator)
-                        if (sessionId !== this.activeTabId) {
-                            currentSession.unreadOutput = true;
-                            this.updateUnreadIndicator(sessionId, true);
-                            
-                            // Send notification that Claude appears to have finished
-                            this.sendNotification({
-                                title: `${sessionName} — ${this.getAlias(currentSession.toolType || 'claude')} appears finished`,
-                                body: this._buildNotifBody(currentSession, duration),
-                                sessionId,
-                                type: 'idle',
-                            });
-                        }
-                    }
+                this.updateTabStatus(sessionId, 'idle');
+                this.restoreTabTitle(sessionId);
+
+                const currentCycleId = typeof currentSession.currentWorkCycleId === 'number'
+                    ? currentSession.currentWorkCycleId
+                    : 0;
+
+                if (currentSession.lastNotifiedCycleId === currentCycleId) {
+                    return;
                 }
+
+                if (this._shouldMarkUnread(sessionId)) {
+                    currentSession.unreadOutput = true;
+                    this.updateUnreadIndicator(sessionId, true);
+                }
+
+                if (!this._shouldNotifyForSession(sessionId)) {
+                    return;
+                }
+
+                const sessionName = currentSession.name || 'Session';
+                const duration = Date.now() - previousActivity;
+                this.sendNotification({
+                    title: `${sessionName} — ${this.getAlias(currentSession.toolType || 'claude')} appears finished`,
+                    body: this._buildNotifBody(currentSession, duration, currentSession.lastSnippet || ''),
+                    sessionId,
+                    type: 'idle',
+                });
+                currentSession.lastNotifiedCycleId = currentCycleId;
             }, this.idleTimeoutMs);
-            
-            // Keep the original 5-minute timeout for full idle state
+
             session.idleTimeout = setTimeout(() => {
-                const currentSession = this.activeSessions.get(sessionId);
-                if (currentSession && currentSession.status === 'idle') {
-                    // Already marked as idle by the 90-second timeout, no need to do anything
-                }
-            }, 300000); // 5 minutes
+                // No-op: 90-second timeout above handles idle transition.
+                // Retained for potential future use (e.g., disconnecting idle sessions).
+            }, 300000);
         }
-        
-        // Check for command completion patterns
-        if (hasOutput && outputData) {
-            this.checkForCommandCompletion(sessionId, outputData, previousActivity);
+
+        if (!hasOutput) return;
+
+        if (meta && meta.completion) {
+            const label = meta.completion.label || meta.completion.message || 'Task completed successfully';
+            this._notifyCompletion(sessionId, label, previousActivity, session.lastSnippet || '');
+            return;
+        }
+
+        if (outputData) {
+            this.checkForCommandCompletion(sessionId, outputData, previousActivity, {
+                workCycleId: session.currentWorkCycleId,
+                snippet: session.lastSnippet || '',
+            });
         }
     }
-    
-    checkForCommandCompletion(sessionId, outputData, previousActivity) {
+
+    _notifyCompletion(sessionId, label, previousActivity, snippet = '') {
         const session = this.activeSessions.get(sessionId);
         if (!session) return;
-        
+
+        const currentCycleId = typeof session.currentWorkCycleId === 'number'
+            ? session.currentWorkCycleId
+            : 0;
+
+        if (session.lastCompletionNotifiedCycleId === currentCycleId) {
+            return;
+        }
+
+        if (!this._shouldNotifyForSession(sessionId)) {
+            return;
+        }
+
+        if (this._shouldMarkUnread(sessionId)) {
+            session.unreadOutput = true;
+            this.updateUnreadIndicator(sessionId, true);
+        }
+
+        const duration = Date.now() - previousActivity;
+        const sessionName = session.name || 'Session';
+        this.sendNotification({
+            title: `${sessionName} — ${label}`,
+            body: this._buildNotifBody(session, duration, snippet),
+            sessionId,
+            type: 'success',
+        });
+
+        session.lastCompletionNotifiedCycleId = currentCycleId;
+        session.lastNotifiedCycleId = currentCycleId;
+    }
+
+    checkForCommandCompletion(sessionId, outputData, previousActivity, options = {}) {
+        const session = this.activeSessions.get(sessionId);
+        if (!session) return;
+
         // Pattern matching for common completion indicators
         const completionPatterns = [
             /build\s+successful/i,
@@ -1266,36 +1353,69 @@ class SessionTabManager {
             /✓\s+All\s+tests\s+passed/i,
             /Done\s+in\s+\d+\.\d+s/i
         ];
-        
+
         const hasCompletion = completionPatterns.some(pattern => pattern.test(outputData));
-        
-        if (hasCompletion && sessionId !== this.activeTabId) {
-            const duration = Date.now() - previousActivity;
-            const sessionName = session.name || 'Session';
-            
-            // Extract a meaningful message from the output
-            let message = 'Task completed successfully';
-            if (/build\s+successful/i.test(outputData)) {
-                message = 'Build completed successfully';
-            } else if (/tests?\s+passed/i.test(outputData)) {
-                message = 'All tests passed';
-            } else if (/deployment\s+complete/i.test(outputData)) {
-                message = 'Deployment completed';
-            }
-            
-            // Mark tab as unread (blue indicator) for completed tasks
+        if (!hasCompletion) return;
+
+        const currentCycleId = typeof options.workCycleId === 'number'
+            ? options.workCycleId
+            : (typeof session.currentWorkCycleId === 'number' ? session.currentWorkCycleId : 0);
+
+        if (session.lastCompletionNotifiedCycleId === currentCycleId) {
+            return;
+        }
+
+        if (!this._shouldNotifyForSession(sessionId)) {
+            return;
+        }
+
+        const duration = Date.now() - previousActivity;
+        const sessionName = session.name || 'Session';
+
+        // Extract a meaningful message from the output
+        let message = 'Task completed successfully';
+        if (/build\s+successful/i.test(outputData)) {
+            message = 'Build completed successfully';
+        } else if (/tests?\s+passed/i.test(outputData)) {
+            message = 'All tests passed';
+        } else if (/deployment\s+complete/i.test(outputData)) {
+            message = 'Deployment completed';
+        }
+
+        if (this._shouldMarkUnread(sessionId)) {
             session.unreadOutput = true;
             this.updateUnreadIndicator(sessionId, true);
-            
-            this.sendNotification({
-                title: `${sessionName} — ${message}`,
-                body: this._buildNotifBody(session, duration),
-                sessionId,
-                type: 'success',
-            });
         }
+
+        const snippet = this._sanitizeSnippet(options.snippet || outputData || session.lastSnippet || '');
+        if (snippet) {
+            session.lastSnippet = snippet;
+        }
+
+        this.sendNotification({
+            title: `${sessionName} — ${message}`,
+            body: this._buildNotifBody(session, duration, session.lastSnippet || ''),
+            sessionId,
+            type: 'success',
+        });
+
+        session.lastCompletionNotifiedCycleId = currentCycleId;
+        session.lastNotifiedCycleId = currentCycleId;
     }
-    
+
+    /**
+     * Increment the work cycle ID for the given session.
+     * Called when the user sends meaningful input, mirroring the
+     * server-side _workCycleId increment for foreground sessions
+     * that don't receive session_activity broadcasts.
+     */
+    bumpWorkCycle(sessionId) {
+        const session = this.activeSessions.get(sessionId);
+        if (!session) return;
+        session.currentWorkCycleId = (typeof session.currentWorkCycleId === 'number'
+            ? session.currentWorkCycleId : 0) + 1;
+    }
+
     setTabToolType(sessionId, toolType) {
         const tab = this.tabs.get(sessionId);
         if (!tab) return;
@@ -1389,3 +1509,4 @@ if (typeof window !== 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = { SessionTabManager, _esc };
 }
+

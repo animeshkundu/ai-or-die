@@ -24,7 +24,13 @@ class ClaudeCodeWebInterface {
         this._latestPlan = null;
         this._planLibsLoading = null;
         // Aliases for assistants (populated from /api/config)
-        this.aliases = { claude: 'Claude', codex: 'Codex' };
+        this.aliases = {
+            claude: 'Claude',
+            codex: 'Codex',
+            copilot: 'Copilot',
+            gemini: 'Gemini',
+            terminal: 'Terminal'
+        };
         // Available tools (populated from /api/config)
         this.tools = {};
         // Machine hostname (populated from /api/config)
@@ -126,6 +132,7 @@ class ClaudeCodeWebInterface {
         this._setupExtraKeys();
         this._setupOrientationHandler();
         this.setupUI();
+        this._setupWindowControlsOverlay();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
         if (window.InputOverlay) {
@@ -270,10 +277,10 @@ class ClaudeCodeWebInterface {
             const res = await this.authFetch('/api/config');
             if (res.ok) {
                 const cfg = await res.json();
-                if (cfg?.aliases) {
+                if (cfg?.aliases && typeof cfg.aliases === 'object') {
                     this.aliases = {
-                        claude: cfg.aliases.claude || 'Claude',
-                        codex: cfg.aliases.codex || 'Codex'
+                        ...this.aliases,
+                        ...cfg.aliases,
                     };
                 }
                 if (typeof cfg.folderMode === 'boolean') {
@@ -313,7 +320,17 @@ class ClaudeCodeWebInterface {
 
         // Plan modal title
         const planTitle = document.querySelector('#planModal .modal-header h2');
-        if (planTitle) planTitle.innerHTML = `<span class=\"icon\" aria-hidden=\"true\">${window.icons?.clipboard?.(18) || ''}</span> ${this.getAlias('claude')}'s Plan`;
+        if (planTitle) {
+            const aliasText = document.createTextNode(`${this.getAlias('claude')}'s Plan`);
+            planTitle.textContent = '';
+            const iconSpan = document.createElement('span');
+            iconSpan.className = 'icon';
+            iconSpan.setAttribute('aria-hidden', 'true');
+            iconSpan.innerHTML = window.icons?.clipboard?.(18) || '';
+            planTitle.appendChild(iconSpan);
+            planTitle.appendChild(document.createTextNode(' '));
+            planTitle.appendChild(aliasText);
+        }
     }
     
     detectMobile() {
@@ -1531,6 +1548,8 @@ class ClaudeCodeWebInterface {
             });
         }
 
+        this._setupInstallSettingsButton();
+
         // Section collapse/expand (keyboard accessible)
         modal.querySelectorAll('.setting-section-header').forEach((header) => {
             const toggle = () => {
@@ -1552,6 +1571,85 @@ class ClaudeCodeWebInterface {
                 this.hideSettings();
             }
         });
+    }
+
+    _setupInstallSettingsButton() {
+        if (this._installSettingsWired) return;
+        const installSetting = document.getElementById('installAppSetting');
+        const installBtn = document.getElementById('installAppBtn');
+        if (!installSetting || !installBtn) return;
+
+        this._installSettingsWired = true;
+
+        installBtn.addEventListener('click', async () => {
+            if (typeof window.aodInstallApp === 'function') {
+                try {
+                    await window.aodInstallApp();
+                } catch (error) {
+                    console.warn('Install prompt failed:', error);
+                }
+            }
+            this._updateInstallSettingsVisibility();
+        });
+
+        window.addEventListener('aod-install-availability', () => {
+            this._updateInstallSettingsVisibility();
+        });
+
+        this._updateInstallSettingsVisibility();
+    }
+
+    _updateInstallSettingsVisibility() {
+        const installSetting = document.getElementById('installAppSetting');
+        if (!installSetting) return;
+
+        const canInstall = typeof window.aodCanInstall === 'function'
+            ? Boolean(window.aodCanInstall())
+            : false;
+        installSetting.style.display = canInstall ? '' : 'none';
+    }
+
+    _setupWindowControlsOverlay() {
+        if (typeof navigator === 'undefined' || !navigator.windowControlsOverlay) {
+            return;
+        }
+
+        const sync = () => this._syncWindowControlsOverlayGeometry();
+        this._syncWindowControlsOverlayGeometry();
+
+        if (typeof navigator.windowControlsOverlay.addEventListener === 'function') {
+            navigator.windowControlsOverlay.addEventListener('geometrychange', sync);
+        }
+
+        window.addEventListener('resize', sync);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                sync();
+            }
+        });
+    }
+
+    _syncWindowControlsOverlayGeometry() {
+        if (typeof navigator === 'undefined' || !navigator.windowControlsOverlay) {
+            return;
+        }
+        if (typeof navigator.windowControlsOverlay.getTitlebarAreaRect !== 'function') {
+            return;
+        }
+
+        const rect = navigator.windowControlsOverlay.getTitlebarAreaRect();
+        if (!rect) return;
+
+        const viewportWidth = window.innerWidth || 0;
+        const leftInset = Math.max(0, rect.x || 0);
+        const rightInset = Math.max(0, viewportWidth - ((rect.x || 0) + (rect.width || 0)));
+        const topInset = Math.max(0, rect.y || 0);
+        const height = Math.max(0, rect.height || 0);
+
+        document.documentElement.style.setProperty('--wco-left-inset', String(Math.round(leftInset)) + 'px');
+        document.documentElement.style.setProperty('--wco-right-inset', String(Math.round(rightInset)) + 'px');
+        document.documentElement.style.setProperty('--wco-top-inset', String(Math.round(topInset)) + 'px');
+        document.documentElement.style.setProperty('--wco-height', String(Math.round(height)) + 'px');
     }
 
     // setupCommandsMenu removed
@@ -1725,6 +1823,13 @@ class ClaudeCodeWebInterface {
         this._inputFlushScheduled = false;
         if (this._inputBuffer.length > 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.send({ type: 'input', data: this._inputBuffer });
+            // Mirror server-side work cycle increment for the foreground session
+            if (this.sessionTabManager && this.currentClaudeSessionId) {
+                const clean = this._inputBuffer.replace(/[\x00-\x1F\x7F]/g, '').trim();
+                if (clean.length > 0) {
+                    this.sessionTabManager.bumpWorkCycle(this.currentClaudeSessionId);
+                }
+            }
             this._inputBuffer = '';
         }
     }
@@ -1859,6 +1964,9 @@ class ClaudeCodeWebInterface {
                 // Update tab status
                 if (this.sessionTabManager) {
                     this.sessionTabManager.updateTabStatus(message.sessionId, message.active ? 'active' : 'idle');
+                    if (message.agent) {
+                        this.sessionTabManager.setTabToolType(message.sessionId, message.agent);
+                    }
                 }
                 
                 // Notify split container of session change
@@ -2099,7 +2207,15 @@ class ClaudeCodeWebInterface {
             case 'session_activity':
                 if (this.sessionTabManager && message.sessionId &&
                     message.sessionId !== this.currentClaudeSessionId) {
-                    this.sessionTabManager.markSessionActivity(message.sessionId, true, '');
+                    if (message.agent) {
+                        this.sessionTabManager.setTabToolType(message.sessionId, message.agent);
+                    }
+                    this.sessionTabManager.markSessionActivity(message.sessionId, true, message.snippet || '', {
+                        workCycleId: message.workCycleId,
+                        completion: message.completion || null,
+                        snippet: message.snippet || '',
+                        agent: message.agent || null,
+                    });
                 }
                 break;
 
@@ -2125,6 +2241,9 @@ class ClaudeCodeWebInterface {
                 if (this.sessionTabManager && message.sessionId &&
                     message.sessionId !== this.currentClaudeSessionId) {
                     this.sessionTabManager.updateTabStatus(message.sessionId, 'active');
+                    if (message.agent) {
+                        this.sessionTabManager.setTabToolType(message.sessionId, message.agent);
+                    }
                 }
                 this.loadSessions();
                 break;
@@ -2529,7 +2648,16 @@ class ClaudeCodeWebInterface {
             this.tools = config.tools || {};
             this.voiceInputConfig = config.voiceInput || null;
             this._configPrerequisites = config.prerequisites || null;
+            if (config.aliases && typeof config.aliases === 'object') {
+                this.aliases = {
+                    ...this.aliases,
+                    ...config.aliases,
+                };
+                this.applyAliasesToUI();
+            }
+            this.hostname = config.hostname || this.hostname;
             this.renderToolCards();
+            this._updateInstallSettingsVisibility();
         } catch {
             // Silently fail — config will refresh on next page load
         }
@@ -3123,6 +3251,7 @@ class ClaudeCodeWebInterface {
         }
 
         this._populateSettingsForm(this.loadSettings());
+        this._updateInstallSettingsVisibility();
         if (window.focusTrap) window.focusTrap.activate(modal);
     }
 
@@ -3158,9 +3287,9 @@ class ClaudeCodeWebInterface {
         const notifSound = document.getElementById('notifSound');
         if (notifSound) notifSound.checked = settings.notifSound ?? true;
         const notifVolume = document.getElementById('notifVolume');
-        if (notifVolume) notifVolume.value = String(settings.notifVolume ?? 30);
+        if (notifVolume) notifVolume.value = String(settings.notifVolume ?? 70);
         const notifVolumeValue = document.getElementById('notifVolumeValue');
-        if (notifVolumeValue) notifVolumeValue.textContent = (settings.notifVolume ?? 30) + '%';
+        if (notifVolumeValue) notifVolumeValue.textContent = (settings.notifVolume ?? 70) + '%';
         const notifDesktop = document.getElementById('notifDesktop');
         if (notifDesktop) notifDesktop.checked = settings.notifDesktop ?? true;
     }
@@ -3189,7 +3318,7 @@ class ClaudeCodeWebInterface {
             voiceMethod: 'auto',
             micSounds: true,
             notifSound: true,
-            notifVolume: 30,
+            notifVolume: 70,
             notifDesktop: true
         };
     }
@@ -3230,7 +3359,7 @@ class ClaudeCodeWebInterface {
             voiceMethod: document.getElementById('voiceMethod')?.value || 'auto',
             micSounds: document.getElementById('micSounds')?.checked ?? true,
             notifSound: document.getElementById('notifSound')?.checked ?? true,
-            notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
+            notifVolume: parseInt(document.getElementById('notifVolume')?.value || '70'),
             notifDesktop: document.getElementById('notifDesktop')?.checked ?? true
         };
 
@@ -4692,9 +4821,10 @@ class ClaudeCodeWebInterface {
     _playMicChime(type) {
         const settings = this.loadSettings();
         if (!settings.micSounds) return;
-        const volume = typeof settings.notifVolume === 'number'
-            ? (settings.notifVolume / 100) * 0.3
-            : 0.3;
+        const notifVolume = typeof settings.notifVolume === 'number'
+            ? settings.notifVolume
+            : this._getDefaultSettings().notifVolume;
+        const volume = (notifVolume / 100) * 0.3;
         if (volume <= 0) return;
 
         try {

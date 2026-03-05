@@ -422,12 +422,16 @@
                             </div>
                             <div class="setting-group">
                                 <label for="notifVolume">Volume:</label>
-                                <input type="range" id="notifVolume" min="0" max="100" value="30">
-                                <span id="notifVolumeValue">30%</span>
+                                <input type="range" id="notifVolume" min="0" max="100" value="70">
+                                <span id="notifVolumeValue">70%</span>
                             </div>
                             <div class="setting-group">
                                 <label for="notifDesktop">Desktop Alerts:</label>
                                 <input type="checkbox" id="notifDesktop" checked>
+                            </div>
+                            <div class="setting-group" id="installAppSetting" style="display: none;">
+                                <label for="installAppBtn">Install App:</label>
+                                <button type="button" class="btn btn-secondary btn-small" id="installAppBtn">Install</button>
                             </div>
                         </div>
                     </div>
@@ -766,42 +770,78 @@
         }
         
         // Handle app install prompt
-        let deferredPrompt;
-        window.addEventListener('beforeinstallprompt', (e) => {
-            // Prevent Chrome 67 and earlier from automatically showing the prompt
-            e.preventDefault();
-            // Stash the event so it can be triggered later
-            deferredPrompt = e;
-            
-            // Create install button if it doesn't exist
-            if (!document.getElementById('installBtn')) {
+        (() => {
+            let deferredPrompt = null;
+            let isInstalled = window.matchMedia('(display-mode: standalone)').matches ||
+                window.matchMedia('(display-mode: window-controls-overlay)').matches ||
+                window.navigator.standalone === true;
+
+            const INSTALL_BUTTON_HTML = '<span class="icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg></span> Install App';
+
+            const removeInstallButton = () => {
+                const installBtn = document.getElementById('installBtn');
+                if (installBtn) installBtn.remove();
+            };
+
+            const emitInstallAvailability = () => {
+                const canInstall = !!deferredPrompt && !isInstalled;
+                window.dispatchEvent(new CustomEvent('aod-install-availability', {
+                    detail: { canInstall, installed: isInstalled }
+                }));
+            };
+
+            const ensureInstallButton = () => {
+                if (!window.aodCanInstall()) {
+                    removeInstallButton();
+                    return;
+                }
+                if (document.getElementById('installBtn')) return;
+
                 const installBtn = document.createElement('button');
                 installBtn.id = 'installBtn';
                 installBtn.className = 'install-btn';
-                installBtn.innerHTML = '<span class="icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg></span> Install App';
-                
+                installBtn.innerHTML = INSTALL_BUTTON_HTML;
                 installBtn.addEventListener('click', async () => {
-                    if (deferredPrompt) {
-                        deferredPrompt.prompt();
-                        const { outcome } = await deferredPrompt.userChoice;
-                        console.log(`User response to install prompt: ${outcome}`);
-                        deferredPrompt = null;
-                        installBtn.remove();
-                    }
+                    await window.aodInstallApp();
                 });
-                
                 document.body.appendChild(installBtn);
-            }
-        });
-        
-        // Handle successful installation
-        window.addEventListener('appinstalled', () => {
-            console.log('PWA was installed');
-            const installBtn = document.getElementById('installBtn');
-            if (installBtn) {
-                installBtn.remove();
-            }
-        });
+            };
+
+            window.aodCanInstall = () => !!deferredPrompt && !isInstalled;
+
+            window.aodInstallApp = async () => {
+                if (!window.aodCanInstall()) {
+                    return { outcome: 'unavailable' };
+                }
+
+                deferredPrompt.prompt();
+                const { outcome } = await deferredPrompt.userChoice;
+                console.log(`User response to install prompt: ${outcome}`);
+                deferredPrompt = null;
+                removeInstallButton();
+                emitInstallAvailability();
+                return { outcome };
+            };
+
+            window.addEventListener('beforeinstallprompt', (e) => {
+                e.preventDefault();
+                deferredPrompt = e;
+                ensureInstallButton();
+                emitInstallAvailability();
+            });
+
+            window.addEventListener('appinstalled', () => {
+                console.log('PWA was installed');
+                isInstalled = true;
+                deferredPrompt = null;
+                removeInstallButton();
+                emitInstallAvailability();
+            });
+
+            emitInstallAvailability();
+        })();
     </script>
 </body>
 </html>
+
+
