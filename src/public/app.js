@@ -253,10 +253,12 @@ class ClaudeCodeWebInterface {
 
         // Network change handlers
         window.addEventListener('online', () => {
+            if (window.feedback) window.feedback.success('Back online — reconnecting...');
             if (this.socket?.readyState !== WebSocket.OPEN) this.reconnect();
         });
         window.addEventListener('offline', () => {
             this.updateStatus('Offline');
+            if (window.feedback) window.feedback.warning('Connection lost — you are offline', { duration: 0 });
         });
 
         window.addEventListener('resize', () => {
