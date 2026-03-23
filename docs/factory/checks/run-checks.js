@@ -53,11 +53,14 @@ function parseArgs() {
 function runCheck(scriptName, env = {}) {
   return new Promise((resolve) => {
     const scriptPath = path.join(CHECKS_DIR, scriptName);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 300000); // 5 min max per check
+
     const child = spawn(process.execPath, [scriptPath], {
       cwd: REPO_ROOT,
       env: { ...process.env, ...env, FACTORY_REPO_ROOT: REPO_ROOT },
       stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 300000, // 5 min max per check
+      signal: controller.signal,
     });
 
     let stdout = '';
@@ -66,6 +69,7 @@ function runCheck(scriptName, env = {}) {
     child.stderr.on('data', (d) => { stderr += d; });
 
     child.on('close', (code) => {
+      clearTimeout(timer);
       try {
         const result = JSON.parse(stdout.trim().split('\n').pop());
         resolve(result);
@@ -79,10 +83,13 @@ function runCheck(scriptName, env = {}) {
     });
 
     child.on('error', (err) => {
+      clearTimeout(timer);
       resolve({
         check: scriptName,
-        status: 'error',
-        details: err.message,
+        status: err.name === 'AbortError' ? 'timeout' : 'error',
+        details: err.name === 'AbortError'
+          ? 'Check timed out after 5 minutes'
+          : err.message,
       });
     });
   });
