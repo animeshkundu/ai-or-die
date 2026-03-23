@@ -69,6 +69,12 @@ class ExtraKeys {
 
     this._resizeHandler = () => this._updateRow2Visibility();
     window.addEventListener('resize', this._resizeHandler);
+    window.addEventListener('orientationchange', () => {
+      setTimeout(() => this._updateRow2Visibility(), 300);
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => this._updateRow2Visibility());
+    }
   }
 
   _buildRow(keys) {
@@ -242,9 +248,12 @@ class ExtraKeys {
 
   _updateRow2Visibility() {
     if (!this._row2 || !this._visible) return;
-    const termEl = document.getElementById('terminal');
-    const height = termEl ? termEl.offsetHeight : window.innerHeight;
-    if (height > 400) {
+    const vpHeight = window.visualViewport
+      ? window.visualViewport.height
+      : window.innerHeight;
+    const isLandscape = window.innerWidth > window.innerHeight;
+    const threshold = isLandscape ? 280 : 400;
+    if (vpHeight > threshold) {
       this._row2.classList.remove('extra-keys-row-hidden');
     } else {
       this._row2.classList.add('extra-keys-row-hidden');
