@@ -4267,7 +4267,14 @@ class ClaudeCodeWebInterface {
             });
             html += '</ul>';
         }
-        return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
+        if (typeof DOMPurify !== 'undefined') {
+            return DOMPurify.sanitize(html);
+        } else {
+            // Safe fallback: strip all HTML, render as plain text
+            const temp = document.createElement('div');
+            temp.textContent = html;
+            return temp.innerHTML;
+        }
     }
 
     async _loadPlanLibraries() {
