@@ -70,6 +70,20 @@
     opacity: 0.8;
 }
 
+.extra-key-clipboard {
+    background: var(--surface-tertiary);
+    border-color: var(--accent-default);
+    border-width: 1.5px;
+    color: var(--accent-default);
+    font-weight: 600;
+}
+
+.extra-key-clipboard:active {
+    background: var(--accent-soft);
+    border-color: var(--accent-default);
+    color: var(--text-inverse, var(--text-primary));
+}
+
 .extra-key-dismiss:active {
     background: var(--accent-soft);
     border-color: var(--accent-default);
