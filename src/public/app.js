@@ -16,7 +16,10 @@ class ClaudeCodeWebInterface {
         this.currentFolderPath = null;
         this.claudeSessions = [];
         this.isCreatingNewSession = false;
-        this.isMobile = this.detectMobile();
+        Object.defineProperty(this, 'isMobile', {
+            get: () => this.detectMobile(),
+            configurable: true
+        });
         this.currentMode = 'chat';
         this._overlayExplicitlyHidden = false;
         this.planDetector = null;
@@ -2839,10 +2842,7 @@ class ClaudeCodeWebInterface {
             activeSocket = resolved.socket;
 
             // Position menu: bottom sheet on mobile, cursor-anchored on desktop
-            // Use current viewport width instead of constructor-time isMobile
-            // so tablet rotation is handled correctly (820px matches CSS breakpoint)
-            const isMobileViewport = window.innerWidth <= 820;
-            if (isMobileViewport) {
+            if (this.isMobile) {
                 menu.style.left = '';
                 menu.style.top = '';
                 menu.style.display = 'block';
@@ -4501,7 +4501,7 @@ class ClaudeCodeWebInterface {
         // Container is already visible by default
         
         // Check if mobile screen
-        const isMobile = window.innerWidth <= 820;
+        const isMobile = this.isMobile;
         const isSmallMobile = window.innerWidth <= 480;
         
         // Format tokens (K/M notation)
@@ -4641,8 +4641,8 @@ class ClaudeCodeWebInterface {
                 if (totalTokens > 0) {
                     const opusPercent = (opusTokens / totalTokens) * 100;
                     const sonnetPercent = (sonnetTokens / totalTokens) * 100;
-                    const isMobile = window.innerWidth <= 820;
-                    
+                    const isMobile = this.isMobile;
+
                     // Use short names on mobile, full names on desktop
                     const opusName = isMobile ? 'O' : 'Opus';
                     const sonnetName = isMobile ? 'S' : 'Sonnet';
@@ -4664,7 +4664,7 @@ class ClaudeCodeWebInterface {
             }
         } else {
             // No active session or expired session - show zeros
-            const isMobile = window.innerWidth <= 820;
+            const isMobile = this.isMobile;
             
             document.getElementById('usageTitle').textContent = '0h 0m';
             document.getElementById('usageTokens').textContent = isMobile ? '0%' : '0';
