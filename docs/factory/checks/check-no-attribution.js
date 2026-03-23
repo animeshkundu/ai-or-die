@@ -24,29 +24,47 @@ const PATTERNS = [
 function run() {
   const violations = [];
 
+  // Fetch raw data once (no shell pipes, works on Windows and Linux)
+  let stagedDiff = '';
+  try {
+    stagedDiff = execSync('git diff --cached --unified=0', {
+      cwd: REPO_ROOT, encoding: 'utf-8', timeout: 30000,
+    });
+  } catch (err) {
+    // status 1 = no staged changes or no diff, which is normal
+    if (err.status !== 1) {
+      console.error('check-no-attribution: unexpected error reading staged diff:', err.message);
+    }
+  }
+
+  let commitMessages = '';
+  try {
+    commitMessages = execSync('git log -3 --format=%B', {
+      cwd: REPO_ROOT, encoding: 'utf-8', timeout: 30000,
+    });
+  } catch (err) {
+    // status 1 = no commits yet (new repo), which is normal
+    if (err.status !== 1) {
+      console.error('check-no-attribution: unexpected error reading commit log:', err.message);
+    }
+  }
+
+  // Match each pattern using native RegExp instead of grep
   for (const pattern of PATTERNS) {
-    try {
-      // Check staged files
-      const staged = execSync(
-        `git diff --cached --unified=0 | grep -iE "${pattern}" || true`,
-        { cwd: REPO_ROOT, encoding: 'utf-8', timeout: 30000 }
-      ).trim();
+    const re = new RegExp(pattern, 'i');
 
-      if (staged) {
-        violations.push({ pattern, location: 'staged', match: staged.slice(0, 200) });
+    if (stagedDiff) {
+      const match = stagedDiff.match(re);
+      if (match) {
+        violations.push({ pattern, location: 'staged', match: match[0].slice(0, 200) });
       }
+    }
 
-      // Check last 3 commit messages
-      const commits = execSync(
-        `git log -3 --format="%B" | grep -iE "${pattern}" || true`,
-        { cwd: REPO_ROOT, encoding: 'utf-8', timeout: 30000 }
-      ).trim();
-
-      if (commits) {
-        violations.push({ pattern, location: 'recent-commits', match: commits.slice(0, 200) });
+    if (commitMessages) {
+      const match = commitMessages.match(re);
+      if (match) {
+        violations.push({ pattern, location: 'recent-commits', match: match[0].slice(0, 200) });
       }
-    } catch {
-      // grep returns non-zero on no match, which is fine
     }
   }
 
