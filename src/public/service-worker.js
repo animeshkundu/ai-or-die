@@ -1,6 +1,6 @@
 // Bump this version when urlsToCache entries are added or removed.
 // Content changes to existing files are handled by the network-first fetch strategy.
-const CACHE_NAME = 'ai-or-die-v8';
+const CACHE_NAME = 'ai-or-die-v9';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -31,7 +31,19 @@ const urlsToCache = [
   '/splits.js',
   '/icons.js',
   '/components/extra-keys.css',
-  '/extra-keys.js'
+  '/components/file-browser.css',
+  '/components/banner-base.css',
+  '/components/vscode-tunnel.css',
+  '/components/feedback.css',
+  '/components/voice-input.css',
+  '/components/input-overlay.css',
+  '/extra-keys.js',
+  '/file-browser.js',
+  '/file-editor.js',
+  '/voice-handler.js',
+  '/image-handler.js',
+  '/input-overlay.js',
+  '/feedback-manager.js'
 ];
 
 // Install event - cache resources
@@ -88,6 +100,24 @@ self.addEventListener('fetch', event => {
             }
           );
         })
+    );
+    return;
+  }
+
+  // Cache-first for versioned CDN assets (immutable, pinned to specific versions)
+  const knownCDNs = ['unpkg.com', 'cdnjs.cloudflare.com', 'cdn.jsdelivr.net', 'fonts.googleapis.com', 'fonts.gstatic.com'];
+  if (knownCDNs.some(cdn => url.hostname.includes(cdn))) {
+    event.respondWith(
+      caches.match(request).then(cached => {
+        if (cached) return cached;
+        return fetch(request).then(response => {
+          if (response && response.status === 200) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
+          }
+          return response;
+        });
+      })
     );
     return;
   }
