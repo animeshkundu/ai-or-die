@@ -1675,6 +1675,14 @@ class ClaudeCodeWebInterface {
             clearInterval(this._safariPollInterval);
             this._safariPollInterval = null;
         }
+        if (this._heartbeatTimer) {
+            clearInterval(this._heartbeatTimer);
+            this._heartbeatTimer = null;
+        }
+        if (this.usageUpdateTimer) {
+            clearInterval(this.usageUpdateTimer);
+            this.usageUpdateTimer = null;
+        }
     }
 
     reconnect() {
@@ -3322,7 +3330,8 @@ class ClaudeCodeWebInterface {
     }
 
     startHeartbeat() {
-        setInterval(() => {
+        if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
+        this._heartbeatTimer = setInterval(() => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                 this.send({ type: 'ping' });
             }
