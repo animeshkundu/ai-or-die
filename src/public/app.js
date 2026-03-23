@@ -347,7 +347,7 @@ class ClaudeCodeWebInterface {
 
             // Skip preventDefault for scrollable containers that handle their own scroll
             const target = e.target;
-            if (target && (target.closest('.xterm-viewport') || target.closest('.modal-body') || target.closest('.extra-keys-bar'))) {
+            if (target && (target.closest('.xterm-viewport') || target.closest('.modal-body') || target.closest('.extra-keys-bar') || target.closest('.fb-file-list') || target.closest('.fb-content') || target.closest('.fb-preview-container'))) {
                 lastY = y;
                 return;
             }
