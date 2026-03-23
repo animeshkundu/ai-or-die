@@ -100,6 +100,9 @@ async function main() {
   const checks = STAGES[stage];
 
   const env = { FACTORY_CYCLE: String(cycle) };
+  if (stage === 'verify') {
+    env.FACTORY_DIFF_MODE = 'committed';
+  }
   const results = await Promise.all(checks.map((c) => runCheck(c, env)));
 
   const summary = {

@@ -7,6 +7,10 @@ const path = require('path');
 
 const REPO_ROOT = process.env.FACTORY_REPO_ROOT || process.cwd();
 
+const diffBase = process.env.FACTORY_DIFF_MODE === 'committed'
+  ? 'git diff HEAD~1..HEAD'
+  : 'git diff --cached';
+
 // Map source files to their specs
 const SOURCE_TO_SPEC = {
   'src/server.js': 'docs/specs/server.md',
@@ -31,7 +35,7 @@ const SOURCE_TO_SPEC = {
 function run() {
   try {
     // Get staged source files
-    const staged = execSync('git diff --cached --name-only -- "src/**/*.js"', {
+    const staged = execSync(`${diffBase} --name-only -- "src/**/*.js"`, {
       cwd: REPO_ROOT,
       encoding: 'utf-8',
       timeout: 10000,
@@ -48,7 +52,7 @@ function run() {
 
     // Check which staged source files have specs
     const missingSpecUpdates = [];
-    const stagedAll = execSync('git diff --cached --name-only', {
+    const stagedAll = execSync(`${diffBase} --name-only`, {
       cwd: REPO_ROOT,
       encoding: 'utf-8',
       timeout: 10000,

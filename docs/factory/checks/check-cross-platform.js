@@ -6,6 +6,10 @@ const path = require('path');
 
 const REPO_ROOT = process.env.FACTORY_REPO_ROOT || process.cwd();
 
+const diffBase = process.env.FACTORY_DIFF_MODE === 'committed'
+  ? 'git diff HEAD~1..HEAD'
+  : 'git diff --cached';
+
 const PATTERNS = [
   {
     name: 'hardcoded-home-dir',
@@ -41,7 +45,7 @@ function run() {
 
   for (const p of PATTERNS) {
     try {
-      let cmd = `git diff --cached --unified=0 -S "${p.regex}" -- "*.js"`;
+      let cmd = `${diffBase} --unified=0 -S "${p.regex}" -- "*.js"`;
       const output = execSync(cmd, {
         cwd: REPO_ROOT,
         encoding: 'utf-8',

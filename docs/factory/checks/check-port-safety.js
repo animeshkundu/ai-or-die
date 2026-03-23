@@ -5,6 +5,11 @@ const { execSync } = require('child_process');
 const net = require('net');
 
 const REPO_ROOT = process.env.FACTORY_REPO_ROOT || process.cwd();
+
+const diffBase = process.env.FACTORY_DIFF_MODE === 'committed'
+  ? 'git diff HEAD~1..HEAD'
+  : 'git diff --cached';
+
 const PROTECTED_PORT = 7777;
 const MIN_TEST_PORT = 11000;
 
@@ -26,7 +31,7 @@ async function run() {
   // 1. Check staged test files for hardcoded low ports
   try {
     const staged = execSync(
-      'git diff --cached --unified=0 -- "test/**/*.js" "e2e/**/*.js" "docs/factory/**/*.js"',
+      `${diffBase} --unified=0 -- "test/**/*.js" "e2e/**/*.js" "docs/factory/**/*.js"`,
       { cwd: REPO_ROOT, encoding: 'utf-8', timeout: 10000 }
     );
 
