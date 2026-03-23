@@ -1639,12 +1639,12 @@ class ClaudeCodeWebInterface {
                 // but still use backoff to avoid thundering herd
                 if (this._serverRestarting) {
                     this.updateStatus('Restarting \u2014 reconnecting\u2026');
-                    const restartBackoff = Math.min(2000 * Math.pow(1.5, this._restartReconnectAttempts || 0), 15000);
+                    const restartBackoff = Math.min(2000 * Math.pow(1.5, this._restartReconnectAttempts || 0), 15000) * (0.7 + Math.random() * 0.6);
                     this._restartReconnectAttempts = (this._restartReconnectAttempts || 0) + 1;
                     setTimeout(() => this.reconnect(), restartBackoff);
                 } else if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
-                    this.updateStatus('Reconnecting...');
-                    setTimeout(() => this.reconnect(), Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000));
+                    this.updateStatus('Reconnecting (' + (this.reconnectAttempts + 1) + '/' + this.maxReconnectAttempts + ')...');
+                    setTimeout(() => this.reconnect(), Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000) * (0.7 + Math.random() * 0.6));
                     this.reconnectAttempts++;
                 } else {
                     this.updateStatus('Disconnected');
