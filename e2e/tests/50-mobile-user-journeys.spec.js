@@ -484,7 +484,7 @@ test('extra key Tab dispatches to running terminal via app.send', async ({ page 
   // Use evaluate to click — overlay is hidden after joinSession, but extra-keys
   // might still be behind terminal area
   await page.evaluate(() => {
-    const btn = document.querySelector('.extra-key');
+    const btn = [...document.querySelectorAll('.extra-key')].find(el => el.textContent.trim() === 'Tab');
     if (btn) btn.click();
   });
 

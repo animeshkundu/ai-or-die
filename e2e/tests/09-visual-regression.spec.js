@@ -18,8 +18,12 @@ const {
  * Baselines are platform-specific (linux/win32) and stored in
  * 09-visual-regression.spec.js-snapshots/. Update with:
  *   npx playwright test --update-snapshots --project visual-regression
+ *
+ * SKIP on Windows CI: runner image updates cause baseline drift that is
+ * unrelated to code changes. Re-enable after baselines are regenerated.
  */
 test.describe('Visual regression', () => {
+  test.skip(process.platform === 'win32' && !!process.env.CI, 'Skipped on Windows CI — screenshot baselines need regeneration');
   let server, port, url;
 
   test.beforeAll(async () => {

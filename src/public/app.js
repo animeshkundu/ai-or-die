@@ -16,7 +16,10 @@ class ClaudeCodeWebInterface {
         this.currentFolderPath = null;
         this.claudeSessions = [];
         this.isCreatingNewSession = false;
-        this.isMobile = this.detectMobile();
+        Object.defineProperty(this, 'isMobile', {
+            get: () => this.detectMobile(),
+            configurable: true
+        });
         this.currentMode = 'chat';
         this._overlayExplicitlyHidden = false;
         this.planDetector = null;
@@ -250,10 +253,12 @@ class ClaudeCodeWebInterface {
 
         // Network change handlers
         window.addEventListener('online', () => {
+            if (window.feedback) window.feedback.success('Back online — reconnecting...');
             if (this.socket?.readyState !== WebSocket.OPEN) this.reconnect();
         });
         window.addEventListener('offline', () => {
             this.updateStatus('Offline');
+            if (window.feedback) window.feedback.warning('Connection lost — you are offline', { duration: 0 });
         });
 
         window.addEventListener('resize', () => {
@@ -344,7 +349,7 @@ class ClaudeCodeWebInterface {
 
             // Skip preventDefault for scrollable containers that handle their own scroll
             const target = e.target;
-            if (target && (target.closest('.xterm-viewport') || target.closest('.modal-body') || target.closest('.extra-keys-bar'))) {
+            if (target && (target.closest('.xterm-viewport') || target.closest('.modal-body') || target.closest('.extra-keys-bar') || target.closest('.fb-file-list') || target.closest('.fb-content') || target.closest('.fb-preview-container'))) {
                 lastY = y;
                 return;
             }
@@ -725,19 +730,13 @@ class ClaudeCodeWebInterface {
 
             if (heightDiff > threshold && !this._keyboardOpen) {
                 this._keyboardOpen = true;
+                // Apply class immediately — CSS transitions handle visual smoothing
+                document.body.classList.add('keyboard-open');
                 this._adjustTerminalForKeyboard(currentHeight);
-                // Debounce body class to prevent flicker during keyboard animation
-                clearTimeout(classDebounceTimer);
-                classDebounceTimer = setTimeout(() => {
-                    document.body.classList.add('keyboard-open');
-                }, 300);
             } else if (heightDiff <= threshold && this._keyboardOpen) {
                 this._keyboardOpen = false;
+                document.body.classList.remove('keyboard-open');
                 this._restoreTerminalFromKeyboard();
-                clearTimeout(classDebounceTimer);
-                classDebounceTimer = setTimeout(() => {
-                    document.body.classList.remove('keyboard-open');
-                }, 300);
             }
         };
 
@@ -817,8 +816,10 @@ class ClaudeCodeWebInterface {
         document.documentElement.style.setProperty('--visual-viewport-height', availableHeight + 'px');
         const termEl = document.getElementById('terminal');
         if (termEl) {
+            // Force reflow after show() so offsetHeight is accurate
             const extraKeysHeight = this.extraKeys?.container?.offsetHeight || 44;
-            termEl.style.height = (availableHeight - extraKeysHeight) + 'px';
+            void extraKeysHeight; // ensure reflow read is not optimized away
+            termEl.style.height = (availableHeight - (this.extraKeys?.container?.offsetHeight || 44)) + 'px';
             if (this.fitAddon) this.fitAddon.fit();
         }
     }
@@ -1639,12 +1640,12 @@ class ClaudeCodeWebInterface {
                 // but still use backoff to avoid thundering herd
                 if (this._serverRestarting) {
                     this.updateStatus('Restarting \u2014 reconnecting\u2026');
-                    const restartBackoff = Math.min(2000 * Math.pow(1.5, this._restartReconnectAttempts || 0), 15000);
+                    const restartBackoff = Math.min(2000 * Math.pow(1.5, this._restartReconnectAttempts || 0), 15000) * (0.7 + Math.random() * 0.6);
                     this._restartReconnectAttempts = (this._restartReconnectAttempts || 0) + 1;
                     setTimeout(() => this.reconnect(), restartBackoff);
                 } else if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
-                    this.updateStatus('Reconnecting...');
-                    setTimeout(() => this.reconnect(), Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000));
+                    this.updateStatus('Reconnecting (' + (this.reconnectAttempts + 1) + '/' + this.maxReconnectAttempts + ')...');
+                    setTimeout(() => this.reconnect(), Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000) * (0.7 + Math.random() * 0.6));
                     this.reconnectAttempts++;
                 } else {
                     this.updateStatus('Disconnected');
@@ -1674,6 +1675,14 @@ class ClaudeCodeWebInterface {
         if (this._safariPollInterval) {
             clearInterval(this._safariPollInterval);
             this._safariPollInterval = null;
+        }
+        if (this._heartbeatTimer) {
+            clearInterval(this._heartbeatTimer);
+            this._heartbeatTimer = null;
+        }
+        if (this.usageUpdateTimer) {
+            clearInterval(this.usageUpdateTimer);
+            this.usageUpdateTimer = null;
         }
     }
 
@@ -2831,10 +2840,7 @@ class ClaudeCodeWebInterface {
             activeSocket = resolved.socket;
 
             // Position menu: bottom sheet on mobile, cursor-anchored on desktop
-            // Use current viewport width instead of constructor-time isMobile
-            // so tablet rotation is handled correctly (820px matches CSS breakpoint)
-            const isMobileViewport = window.innerWidth <= 820;
-            if (isMobileViewport) {
+            if (this.isMobile) {
                 menu.style.left = '';
                 menu.style.top = '';
                 menu.style.display = 'block';
@@ -3322,7 +3328,8 @@ class ClaudeCodeWebInterface {
     }
 
     startHeartbeat() {
-        setInterval(() => {
+        if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
+        this._heartbeatTimer = setInterval(() => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                 this.send({ type: 'ping' });
             }
@@ -4258,7 +4265,14 @@ class ClaudeCodeWebInterface {
             });
             html += '</ul>';
         }
-        return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
+        if (typeof DOMPurify !== 'undefined') {
+            return DOMPurify.sanitize(html);
+        } else {
+            // Safe fallback: strip all HTML, render as plain text
+            const temp = document.createElement('div');
+            temp.textContent = html;
+            return temp.innerHTML;
+        }
     }
 
     async _loadPlanLibraries() {
@@ -4492,7 +4506,7 @@ class ClaudeCodeWebInterface {
         // Container is already visible by default
         
         // Check if mobile screen
-        const isMobile = window.innerWidth <= 820;
+        const isMobile = this.isMobile;
         const isSmallMobile = window.innerWidth <= 480;
         
         // Format tokens (K/M notation)
@@ -4632,8 +4646,8 @@ class ClaudeCodeWebInterface {
                 if (totalTokens > 0) {
                     const opusPercent = (opusTokens / totalTokens) * 100;
                     const sonnetPercent = (sonnetTokens / totalTokens) * 100;
-                    const isMobile = window.innerWidth <= 820;
-                    
+                    const isMobile = this.isMobile;
+
                     // Use short names on mobile, full names on desktop
                     const opusName = isMobile ? 'O' : 'Opus';
                     const sonnetName = isMobile ? 'S' : 'Sonnet';
@@ -4655,7 +4669,7 @@ class ClaudeCodeWebInterface {
             }
         } else {
             // No active session or expired session - show zeros
-            const isMobile = window.innerWidth <= 820;
+            const isMobile = this.isMobile;
             
             document.getElementById('usageTitle').textContent = '0h 0m';
             document.getElementById('usageTokens').textContent = isMobile ? '0%' : '0';

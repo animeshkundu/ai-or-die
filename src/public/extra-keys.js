@@ -18,6 +18,8 @@ class ExtraKeys {
     this.container.setAttribute('aria-label', 'Terminal modifier keys');
 
     const row1Keys = [
+      { label: 'Cp', title: 'Copy selection', handler: 'copy' },
+      { label: 'Pst', title: 'Paste clipboard', handler: 'paste' },
       { label: 'Tab', data: '\t' },
       { label: 'Ctrl', modifier: 'ctrl' },
       { label: 'Alt', modifier: 'alt' },
@@ -67,6 +69,12 @@ class ExtraKeys {
 
     this._resizeHandler = () => this._updateRow2Visibility();
     window.addEventListener('resize', this._resizeHandler);
+    window.addEventListener('orientationchange', () => {
+      setTimeout(() => this._updateRow2Visibility(), 300);
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => this._updateRow2Visibility());
+    }
   }
 
   _buildRow(keys) {
@@ -82,6 +90,16 @@ class ExtraKeys {
       if (key.dismiss) {
         btn.classList.add('extra-key-dismiss');
         btn.addEventListener('click', () => this._dismiss());
+      } else if (key.handler) {
+        btn.classList.add('extra-key-clipboard');
+        if (key.title) btn.setAttribute('title', key.title);
+        btn.addEventListener('click', () => {
+          if (key.handler === 'copy') {
+            this._handleCopy();
+          } else if (key.handler === 'paste') {
+            this._handlePaste();
+          }
+        });
       } else if (key.modifier) {
         btn.classList.add('extra-key-modifier');
         btn.dataset.modifier = key.modifier;
@@ -101,6 +119,34 @@ class ExtraKeys {
   _dismiss() {
     if (this.app && this.app.terminal && this.app.terminal.textarea) {
       this.app.terminal.textarea.blur();
+    }
+  }
+
+  async _handleCopy() {
+    if ('vibrate' in navigator) try { navigator.vibrate(10); } catch (_) {}
+    const selection = this.app && this.app.terminal ? this.app.terminal.getSelection() : '';
+    if (!selection) {
+      if (window.feedback) window.feedback.warning('No text selected');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(selection);
+      if (window.feedback) window.feedback.success('Copied');
+    } catch (err) {
+      if (window.feedback) window.feedback.warning('Clipboard access denied');
+    }
+  }
+
+  async _handlePaste() {
+    if ('vibrate' in navigator) try { navigator.vibrate(10); } catch (_) {}
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && this.app && this.app.send) {
+        this.app.send({ type: 'input', data: text });
+        if (window.feedback) window.feedback.success('Pasted');
+      }
+    } catch (err) {
+      if (window.feedback) window.feedback.warning('Clipboard access denied');
     }
   }
 
@@ -202,9 +248,12 @@ class ExtraKeys {
 
   _updateRow2Visibility() {
     if (!this._row2 || !this._visible) return;
-    const termEl = document.getElementById('terminal');
-    const height = termEl ? termEl.offsetHeight : window.innerHeight;
-    if (height > 400) {
+    const vpHeight = window.visualViewport
+      ? window.visualViewport.height
+      : window.innerHeight;
+    const isLandscape = window.innerWidth > window.innerHeight;
+    const threshold = isLandscape ? 280 : 400;
+    if (vpHeight > threshold) {
       this._row2.classList.remove('extra-keys-row-hidden');
     } else {
       this._row2.classList.add('extra-keys-row-hidden');

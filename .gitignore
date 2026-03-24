@@ -15,3 +15,6 @@ node_modules/
 *~
 .claude/
 test-*.js
+
+# Factory operational state (ephemeral, tracked on factory branch only)
+docs/factory/state/
