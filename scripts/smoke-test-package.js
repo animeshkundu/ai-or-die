@@ -168,6 +168,11 @@ async function run() {
   const tarballPath = path.join(PROJECT_ROOT, tarballName);
   assert(fileExists(tarballPath), `Tarball created: ${tarballName}`);
 
+  // Verify tarball file count — regression guard for the npm @latest arborist bug
+  // (v0.1.49 had 101 files and worked; v0.1.51 had 206 files and broke npx @latest)
+  const entryCount = entry.entryCount || 0;
+  assert(entryCount > 0 && entryCount <= 100, `Tarball file count ${entryCount} <= 100`);
+
   // Step 2: Install in temp directory
   console.log('\nStep 2: Installing tarball in temp directory');
   installDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-or-die-pkg-test-'));

@@ -29,7 +29,16 @@ if (os.platform() === 'win32') {
 }
 
 // Now safe to require sherpa-onnx-node
-const { OfflineRecognizer } = require('sherpa-onnx-node');
+let OfflineRecognizer;
+try {
+  ({ OfflineRecognizer } = require('sherpa-onnx-node'));
+} catch (err) {
+  parentPort.postMessage({
+    type: 'error',
+    message: `sherpa-onnx-node is not installed. Install it with: npm install sherpa-onnx-node\n(Original error: ${err.message})`
+  });
+  process.exit(1);
+}
 
 const modelDir = workerData.modelDir;
 const numThreads = workerData.numThreads || Math.min(4, os.cpus().length);

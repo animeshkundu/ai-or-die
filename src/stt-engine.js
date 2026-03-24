@@ -21,6 +21,7 @@ class SttEngine {
     this._currentRequest = null;
     this._requestIdCounter = 0;
     this._restartAttempts = 0;
+    this._lastSpawnError = null;
     this._initPromise = null;
     this._modelManager = new ModelManager({
       modelsDir: options.modelsDir
@@ -116,7 +117,10 @@ class SttEngine {
     }
 
     if (msg.type === 'error') {
-      console.error('[stt-engine] Worker model load error:', msg.message);
+      console.error('[stt-engine] Worker error:', msg.message);
+      if (msg.message && msg.message.includes('sherpa-onnx-node')) {
+        this._lastSpawnError = 'MODULE_NOT_FOUND';
+      }
       this._status = 'unavailable';
       return;
     }
@@ -153,6 +157,13 @@ class SttEngine {
     this._currentRequest = null;
 
     this._worker = null;
+
+    // Don't retry if the dependency is fundamentally missing
+    if (this._lastSpawnError === 'MODULE_NOT_FOUND') {
+      console.error('[stt-engine] sherpa-onnx-node not installed — STT unavailable. Install with: npm install sherpa-onnx-node');
+      this._status = 'unavailable';
+      return;
+    }
 
     // Give up after too many consecutive failures
     if (this._restartAttempts >= MAX_RESTART_ATTEMPTS) {
@@ -201,6 +212,7 @@ class SttEngine {
           this._worker = worker;
           this._status = 'ready';
           this._restartAttempts = 0;
+          this._lastSpawnError = null;
 
           worker.on('message', (m) => this._onWorkerMessage(m));
           worker.on('exit', (c) => this._onWorkerExit(c));
@@ -218,6 +230,10 @@ class SttEngine {
       const onError = (err) => {
         worker.off('message', onReady);
         worker.off('error', onError);
+        // Tag dependency errors so _onWorkerExit can skip futile retries
+        if (err.code === 'MODULE_NOT_FOUND' || (err.message && err.message.includes('sherpa-onnx-node'))) {
+          this._lastSpawnError = 'MODULE_NOT_FOUND';
+        }
         reject(err);
       };
 
