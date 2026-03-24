@@ -870,7 +870,11 @@ Missing: [what would need to change for a STOP verdict]
 
 ### After Termination
 
-1. Final full E2E suite run (all projects, not rotation subset)
+1. **MANDATORY: Full E2E suite gate** — Run the FULL E2E suite locally before creating any PR:
+   ```
+   npx playwright test --config e2e/playwright.config.js --workers=2
+   ```
+   All projects except visual-regression must pass. This is a BLOCKING gate — the PR is NOT created if any test fails. The rotation subset used during cycles is insufficient for merge validation.
 2. Update all docs (FACTORY_METRICS, VERIFY_STATUS)
 3. Write `docs/factory/state/SHIP_REPORT.md`:
    - Expert verdicts and key findings

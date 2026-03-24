@@ -50,12 +50,19 @@ const urlsToCache = [
 self.addEventListener('install', event => {
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => {
+      .then(async cache => {
         console.log('Opened cache');
-        return cache.addAll(urlsToCache);
+        // Use individual cache.add() calls so one failure doesn't block the rest
+        const results = await Promise.allSettled(
+          urlsToCache.map(url => cache.add(url))
+        );
+        const failed = results.filter(r => r.status === 'rejected');
+        if (failed.length > 0) {
+          console.warn(`Failed to cache ${failed.length} of ${urlsToCache.length} resources`);
+        }
       })
       .catch(err => {
-        console.error('Failed to cache resources:', err);
+        console.error('Failed to open cache:', err);
       })
   );
 });

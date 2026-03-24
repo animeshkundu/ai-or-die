@@ -1,5 +1,5 @@
 .extra-keys-bar {
-    display: none;
+    display: flex;
     flex-direction: column;
     position: fixed;
     bottom: 0;
@@ -8,10 +8,18 @@
     background: var(--surface-secondary);
     border-top: 1px solid var(--border-default);
     z-index: var(--z-sticky);
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    transition: max-height 0.15s ease-out, opacity 0.15s ease-out;
+    pointer-events: none;
 }
 
 .extra-keys-bar.visible {
-    display: flex;
+    max-height: 120px;
+    opacity: 1;
+    overflow: visible;
+    pointer-events: auto;
 }
 
 .extra-keys-row {
@@ -23,12 +31,19 @@
     padding: 2px 8px;
     align-items: center;
     -webkit-overflow-scrolling: touch;
+    max-height: 60px;
+    opacity: 1;
+    transition: max-height 0.15s ease-out, opacity 0.15s ease-out, padding 0.15s ease-out;
 }
 
 .extra-keys-row::-webkit-scrollbar { display: none; }
 
 .extra-keys-row-hidden {
-    display: none;
+    max-height: 0;
+    opacity: 0;
+    overflow: hidden;
+    padding: 0;
+    transition: max-height 0.15s ease-out, opacity 0.15s ease-out, padding 0.15s ease-out;
 }
 
 .extra-key {

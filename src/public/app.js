@@ -730,19 +730,13 @@ class ClaudeCodeWebInterface {
 
             if (heightDiff > threshold && !this._keyboardOpen) {
                 this._keyboardOpen = true;
+                // Apply class immediately — CSS transitions handle visual smoothing
+                document.body.classList.add('keyboard-open');
                 this._adjustTerminalForKeyboard(currentHeight);
-                // Debounce body class to prevent flicker during keyboard animation
-                clearTimeout(classDebounceTimer);
-                classDebounceTimer = setTimeout(() => {
-                    document.body.classList.add('keyboard-open');
-                }, 300);
             } else if (heightDiff <= threshold && this._keyboardOpen) {
                 this._keyboardOpen = false;
+                document.body.classList.remove('keyboard-open');
                 this._restoreTerminalFromKeyboard();
-                clearTimeout(classDebounceTimer);
-                classDebounceTimer = setTimeout(() => {
-                    document.body.classList.remove('keyboard-open');
-                }, 300);
             }
         };
 
@@ -822,8 +816,10 @@ class ClaudeCodeWebInterface {
         document.documentElement.style.setProperty('--visual-viewport-height', availableHeight + 'px');
         const termEl = document.getElementById('terminal');
         if (termEl) {
+            // Force reflow after show() so offsetHeight is accurate
             const extraKeysHeight = this.extraKeys?.container?.offsetHeight || 44;
-            termEl.style.height = (availableHeight - extraKeysHeight) + 'px';
+            void extraKeysHeight; // ensure reflow read is not optimized away
+            termEl.style.height = (availableHeight - (this.extraKeys?.container?.offsetHeight || 44)) + 'px';
             if (this.fitAddon) this.fitAddon.fit();
         }
     }
