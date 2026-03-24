@@ -291,14 +291,17 @@ test.describe('Type-ahead input overlay', () => {
     // Type multi-line text
     await page.locator('#inputOverlayText').fill('line one\nline two\nline three');
 
-    const insertSent = page.evaluate(() => {
+    const insertResult = page.evaluate(() => {
       return new Promise((resolve) => {
         const origSend = window.app.socket.send.bind(window.app.socket);
         window.app.socket.send = function(data) {
           origSend(data);
           try {
             const parsed = JSON.parse(data);
-            if (parsed.type === 'input') resolve(parsed.data);
+            if (parsed.type === 'input') {
+              const bpm = window.app.terminal && window.app.terminal.modes && window.app.terminal.modes.bracketedPasteMode;
+              resolve({ data: parsed.data, bracketedPaste: !!bpm });
+            }
           } catch(e) {}
         };
         setTimeout(() => resolve(null), 5000);
@@ -306,13 +309,20 @@ test.describe('Type-ahead input overlay', () => {
     });
 
     await page.locator('.input-overlay-insert').click();
-    const sentData = await insertSent;
-    expect(sentData).toBeTruthy();
-    // Insert should collapse newlines to spaces (no \n or \r in output)
-    expect(sentData).not.toContain('\n');
-    expect(sentData).not.toContain('\r');
-    expect(sentData).toContain('line one');
-    expect(sentData).toContain('line two');
+    const result = await insertResult;
+    expect(result).toBeTruthy();
+    if (result.bracketedPaste) {
+      // Bracketed paste mode: text is wrapped with escape sequences, newlines normalized to \r
+      expect(result.data).toContain('\x1b[200~');
+      expect(result.data).toContain('line one');
+      expect(result.data).toContain('line two');
+    } else {
+      // Raw mode: newlines collapsed to spaces
+      expect(result.data).not.toContain('\n');
+      expect(result.data).not.toContain('\r');
+      expect(result.data).toContain('line one');
+      expect(result.data).toContain('line two');
+    }
   });
 
   test('Send preserves multi-line text with carriage returns', async ({ page }) => {
