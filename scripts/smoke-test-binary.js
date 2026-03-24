@@ -163,13 +163,13 @@ async function run() {
   const started = await startedPromise;
   assert(started.type === 'terminal_started', 'Terminal started');
 
-  // Drain initial output
-  await collectMessages(ws, 'output', 3000);
+  // Drain initial output (PowerShell startup on Windows CI can take 3-5s)
+  await collectMessages(ws, 'output', 5000);
 
   // Send echo with unique marker
   const marker = `SMOKE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   wsSend(ws, { type: 'input', data: `echo ${marker}\n` });
-  const outputs = await collectMessages(ws, 'output', 5000);
+  const outputs = await collectMessages(ws, 'output', 8000);
   const combined = outputs.map((m) => m.data).join('');
   assert(combined.includes(marker), `Terminal echoed marker "${marker}"`);
 
