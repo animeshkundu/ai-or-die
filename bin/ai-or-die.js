@@ -18,7 +18,7 @@ const program = new Command();
 program
   .name('ai-or-die')
   .description('ai-or-die — Universal AI coding terminal')
-  .version(require(path.join(__dirname, '..', 'package.json')).version)
+  .version(require('../package.json').version)
   .option('-p, --port <number>', 'port to run the server on', '7777')
   .option('--no-open', 'do not automatically open browser')
   .option('--auth <token>', 'authentication token for secure access')
