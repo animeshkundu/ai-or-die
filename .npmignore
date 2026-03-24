@@ -12,8 +12,28 @@ test/
 tests/
 *.test.js
 *.spec.js
+test-results/
+e2e/
+poc/
 
 # Build artifacts
 dist/
 build/
 *.tmp
+
+# CI & tooling
+.github/
+.claude/
+.cursor/
+.prompts/
+
+# Documentation (README.md and LICENSE always included by npm)
+docs/
+site/
+AGENTS.md
+CLAUDE.md
+CHANGELOG.md
+CONTRIBUTING.md
+
+# Build & release scripts
+scripts/
