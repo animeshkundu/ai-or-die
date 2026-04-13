@@ -23,7 +23,7 @@ program
   .option('--no-open', 'do not automatically open browser')
   .option('--auth <token>', 'authentication token for secure access')
   .option('--disable-auth', 'disable authentication (not recommended for production)')
-  .option('--https', 'enable HTTPS (requires cert files)')
+  .option('--https', 'enable HTTPS (auto-generates self-signed cert if --cert/--key not provided)')
   .option('--cert <path>', 'path to SSL certificate file')
   .option('--key <path>', 'path to SSL private key file')
   .option('--dev', 'development mode with additional logging')
@@ -123,6 +123,12 @@ async function main() {
     console.log(`\n🚀 ai-or-die is running at: \x1b[1m\x1b[4m${url}\x1b[0m`);
     if (authToken) {
       console.log(`   Auth token: \x1b[1m\x1b[33m${authToken}\x1b[0m`);
+    }
+
+    // Warn if STT is enabled without HTTPS or tunnel
+    if ((serverOptions.stt || serverOptions.sttEndpoint) && !options.https && !options.tunnel) {
+      console.log('\n\x1b[33m⚠  STT enabled over plain HTTP \u2014 microphone only works on localhost.\x1b[0m');
+      console.log('   For LAN access, restart with \x1b[1m--https\x1b[0m or \x1b[1m--tunnel\x1b[0m.');
     }
 
     // Dev tunnel or browser open

@@ -1339,12 +1339,25 @@ class ClaudeCodeWebServer {
     let server;
 
     if (this.useHttps) {
-      if (!this.certFile || !this.keyFile) {
-        throw new Error('HTTPS requires both --cert and --key options');
+      let cert, key;
+      if (this.certFile && this.keyFile) {
+        // User-provided certs
+        cert = fs.readFileSync(this.certFile);
+        key = fs.readFileSync(this.keyFile);
+      } else {
+        // Auto-generate self-signed cert for LAN use
+        const { ensureCert } = require('./utils/self-signed-cert');
+        const certInfo = ensureCert();
+        cert = certInfo.cert;
+        key = certInfo.key;
+        const action = certInfo.generated ? 'Generated' : 'Using cached';
+        console.log(`\n[HTTPS] ${action} self-signed certificate`);
+        if (certInfo.ips.length > 0) {
+          console.log(`        Covers: localhost, ${certInfo.ips.join(', ')}`);
+        }
+        console.log(`        Cached at: ${certInfo.certPath}`);
+        console.log('        Browsers will show a security warning on first visit.');
       }
-      
-      const cert = fs.readFileSync(this.certFile);
-      const key = fs.readFileSync(this.keyFile);
       server = https.createServer({ cert, key }, this.app);
     } else {
       server = http.createServer(this.app);
@@ -1400,7 +1413,8 @@ class ClaudeCodeWebServer {
       id: wsId,
       ws,
       claudeSessionId: null,
-      created: new Date()
+      created: new Date(),
+      secure: !!req.connection.encrypted
     };
     this.webSocketConnections.set(wsId, wsInfo);
 
@@ -1995,6 +2009,16 @@ class ClaudeCodeWebServer {
     }
   }
 
+  _isLocalhostConnection(ws) {
+    try {
+      const addr = ws._socket && ws._socket.remoteAddress;
+      if (!addr) return false;
+      return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+    } catch (_) {
+      return false;
+    }
+  }
+
   broadcastToSession(claudeSessionId, data) {
     const session = this.claudeSessions.get(claudeSessionId);
     if (!session) return;
@@ -2471,6 +2495,15 @@ class ClaudeCodeWebServer {
   async handleVoiceUpload(wsId, data) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
+
+    // Reject voice uploads over HTTP from non-localhost origins (defense-in-depth)
+    if (!wsInfo.secure && !this._isLocalhostConnection(wsInfo.ws)) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription_error',
+        message: 'Voice input requires a secure connection (HTTPS). Restart with --https or --tunnel.'
+      });
+      return;
+    }
 
     if (!wsInfo.claudeSessionId) {
       this.sendToWebSocket(wsInfo.ws, {

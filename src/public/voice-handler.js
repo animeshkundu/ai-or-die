@@ -22,6 +22,16 @@ var MAX_RECORDING_SECONDS = 120;
 var MIN_RECORDING_SECONDS = 0.5;
 var PUSH_TO_TALK_THRESHOLD_MS = 300;
 var TARGET_SAMPLE_RATE = 16000;
+
+/**
+ * Whether the page is in a secure context (HTTPS, localhost, file://).
+ * Required for getUserMedia, AudioWorklet, and SpeechRecognition.
+ * @returns {boolean}
+ */
+function isSecureContext() {
+  if (typeof window === 'undefined') return false;
+  return !!window.isSecureContext;
+}
 // ---------------------------------------------------------------------------
 // Utility: Float32 → Int16 conversion
 // ---------------------------------------------------------------------------
@@ -97,11 +107,13 @@ function SpeechRecognitionRecorder() {
 
 /**
  * Whether the SpeechRecognition API is available in this browser.
+ * Requires a secure context (HTTPS or localhost) for microphone access.
  * @returns {boolean}
  */
 SpeechRecognitionRecorder.isSupported = function () {
-  return !!(typeof window !== 'undefined' &&
-    (window.SpeechRecognition || window.webkitSpeechRecognition));
+  if (typeof window === 'undefined') return false;
+  if (!window.isSecureContext) return false;
+  return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 };
 
 /**
@@ -285,6 +297,20 @@ LocalVoiceRecorder.prototype.start = function () {
   var self = this;
   if (self._recording) {
     return Promise.reject(new Error('Already recording'));
+  }
+
+  // Secure context required for getUserMedia (HTTPS or localhost)
+  if (typeof window !== 'undefined' && !window.isSecureContext) {
+    return Promise.reject(new Error(
+      'Microphone requires a secure connection (HTTPS). ' +
+      'Restart the server with --https or --tunnel for LAN access.'
+    ));
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    return Promise.reject(new Error(
+      'Microphone access is not available. ' +
+      'This page must be served over HTTPS or accessed via localhost.'
+    ));
   }
 
   return navigator.mediaDevices.getUserMedia({
@@ -842,6 +868,7 @@ var voiceHandlerExports = {
   // Utilities
   float32ToInt16: float32ToInt16,
   resample: resample,
+  isSecureContext: isSecureContext,
 
   // Recorders
   SpeechRecognitionRecorder: SpeechRecognitionRecorder,

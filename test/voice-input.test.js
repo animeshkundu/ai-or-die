@@ -388,6 +388,22 @@ describe('voice: voice-handler.js pure functions', function () {
       assert.strictEqual(ctrl.isRecording, false);
     });
   });
+
+  describe('isSecureContext', function () {
+    it('is exported as a function', function () {
+      assert.strictEqual(typeof VoiceHandler.isSecureContext, 'function');
+    });
+
+    it('returns false in Node.js (no window)', function () {
+      assert.strictEqual(VoiceHandler.isSecureContext(), false);
+    });
+  });
+
+  describe('SpeechRecognitionRecorder.isSupported', function () {
+    it('returns false in Node.js (no window/secure context)', function () {
+      assert.strictEqual(VoiceHandler.SpeechRecognitionRecorder.isSupported(), false);
+    });
+  });
 });
 
 
@@ -440,5 +456,23 @@ describe('voice: config endpoint', function () {
 
     // Without --stt flag, status should be 'unavailable'
     assert.strictEqual(res.voiceInput.localStatus, 'unavailable');
+  });
+});
+
+
+describe('voice: self-signed-cert utility', function () {
+  const { getLocalIPs } = require('../src/utils/self-signed-cert');
+
+  it('getLocalIPs returns an array', function () {
+    const ips = getLocalIPs();
+    assert(Array.isArray(ips), 'Expected array of IPs');
+  });
+
+  it('getLocalIPs returns only valid IPv4 addresses', function () {
+    const ips = getLocalIPs();
+    for (const ip of ips) {
+      assert(/^\d+\.\d+\.\d+\.\d+$/.test(ip), `Expected valid IPv4: ${ip}`);
+      assert(ip !== '127.0.0.1', 'Should not include loopback');
+    }
   });
 });

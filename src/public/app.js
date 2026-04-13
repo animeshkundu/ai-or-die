@@ -1061,6 +1061,15 @@ class ClaudeCodeWebInterface {
         const btn = document.getElementById('voiceInputBtn');
         if (!btn) return;
 
+        // Microphone APIs require a secure context (HTTPS or localhost)
+        if (typeof window !== 'undefined' && !window.isSecureContext) {
+            btn.style.display = '';
+            btn.disabled = true;
+            btn.title = 'Microphone unavailable \u2014 this page must be served over HTTPS';
+            btn.setAttribute('aria-disabled', 'true');
+            return;
+        }
+
         // Determine mode: prefer local if ready, fall back to cloud
         const localReady = voiceCfg.localStatus === 'ready';
         const cloudAvailable = typeof window !== 'undefined' &&
@@ -1180,7 +1189,9 @@ class ClaudeCodeWebInterface {
                 }
                 // Show error toast (reuse existing toast pattern)
                 var toastMsg = errorMessage;
-                if (errorMessage.indexOf('not-allowed') !== -1 || errorMessage.indexOf('Permission') !== -1 || errorMessage.indexOf('permission') !== -1) {
+                if (errorMessage.indexOf('HTTPS') !== -1 || errorMessage.indexOf('secure connection') !== -1 || errorMessage.indexOf('Secure context') !== -1) {
+                    toastMsg = 'Microphone requires HTTPS. Restart server with --https or --tunnel.';
+                } else if (errorMessage.indexOf('not-allowed') !== -1 || errorMessage.indexOf('Permission') !== -1 || errorMessage.indexOf('permission') !== -1) {
                     toastMsg = errorMessage + '. Check browser permissions';
                 }
                 if (window.feedback) {
@@ -1370,6 +1381,15 @@ class ClaudeCodeWebInterface {
                 // Update voice input config status and show/hide mic button
                 if (message.voiceInput) {
                     this.voiceInputConfig = message.voiceInput;
+                }
+                // On insecure context, keep button disabled regardless of backend status
+                if (typeof window !== 'undefined' && !window.isSecureContext) {
+                    if (btn) {
+                        btn.style.display = '';
+                        btn.disabled = true;
+                        btn.title = 'Microphone unavailable \u2014 this page must be served over HTTPS';
+                    }
+                    break;
                 }
                 var localReady = this.voiceInputConfig && this.voiceInputConfig.localStatus === 'ready';
                 var cloudAvailable = typeof window !== 'undefined' &&
