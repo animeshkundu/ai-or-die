@@ -118,7 +118,8 @@ jobs:
 
       - name: Publish to npm
         run: |
-          # Remove token auth from npmrc so npm uses OIDC trusted publishing
+          # Unset token auth entirely so npm uses OIDC trusted publishing
+          unset NODE_AUTH_TOKEN
           sed -i '/_authToken/d' "$NPM_CONFIG_USERCONFIG"
           npm publish --access public --provenance
 
