@@ -27,9 +27,26 @@ See `06-ci-first-testing.md` for the full CI job map, artifact details, and debu
 The release pipeline (`.github/workflows/release-on-main.yml`) triggers on push to main:
 
 1. Read version from `package.json`
-2. Check if git tag already exists
-3. Create GitHub Release with tag
-4. Publish to npm
+2. Check if git tag already exists; auto-bump patch if it does
+3. Generate release notes from conventional commit log
+4. Create GitHub Release with tag
+5. `npm ci` then publish to npm via OIDC trusted publishing
+6. Publish to GitHub Packages (scoped `@animeshkundu/ai-or-die`)
+7. Build and attach SEA binaries (Linux x64, Windows x64)
+
+#### npm OIDC Trusted Publishing
+
+The pipeline publishes to npm **without an NPM_TOKEN secret** — it uses OIDC trusted publishing. Key requirements:
+
+- **npm v11.5.1+** is required (Node 22 ships v10, which can't do OIDC). The workflow uses `npx --yes npm@11 publish` to bypass the bundled npm.
+- **`id-token: write`** permission must be set on the job.
+- **`NODE_AUTH_TOKEN` must be unset** before publishing — `actions/setup-node` injects `GITHUB_TOKEN` which npmjs.org rejects.
+- **`_authToken` must be removed** from the `.npmrc` that `setup-node` generates.
+- **`--provenance`** flag enables SLSA attestation via sigstore.
+
+See `docs/history/npm-oidc-publish-fix.md` for the full debugging story and failed approaches.
+
+**Do not** add `npm install -g npm@latest` or any global npm upgrade — the bundled npm v10 on Node 22 runners has a broken arborist that crashes on self-upgrade.
 
 ## Tool Creation Guidelines
 
