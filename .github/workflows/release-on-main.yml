@@ -32,6 +32,12 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
+      # npm v11.5.1+ required for OIDC trusted publishing (token exchange).
+      # Node 22 ships npm v10.x which can't do OIDC auth. Pin to v11 to avoid
+      # the npm@latest install bug (MODULE_NOT_FOUND: promise-retry).
+      - name: Upgrade npm for OIDC support
+        run: npm install -g npm@11
+
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
