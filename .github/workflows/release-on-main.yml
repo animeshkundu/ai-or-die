@@ -118,8 +118,8 @@ jobs:
 
       - name: Publish to npm
         run: |
-          # Clear token-based auth so npm uses OIDC trusted publishing
-          npm config delete //registry.npmjs.org/:_authToken 2>/dev/null || true
+          # Remove token auth from npmrc so npm uses OIDC trusted publishing
+          sed -i '/_authToken/d' "$NPM_CONFIG_USERCONFIG"
           npm publish --access public --provenance
 
       - name: Setup Node.js (GitHub Packages)
