@@ -184,6 +184,34 @@ Non-blocking banner at top of terminal (`.app-tunnel-banner` pattern):
 
 ---
 
+## Secure Context Requirement
+
+Voice input APIs (`getUserMedia`, `AudioWorklet`, `SpeechRecognition`) require a
+[secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts)
+(HTTPS, localhost, or file://).
+
+| Access Method | Secure Context | Voice Works |
+|--------------|---------------|-------------|
+| `localhost:7777` | Yes | Yes |
+| `127.0.0.1:7777` | Yes | Yes |
+| `http://192.168.x.x:7777` | No | No |
+| `--tunnel` (HTTPS) | Yes | Yes |
+| `--https` (self-signed) | Yes (after trust) | Yes |
+| `--https --cert --key` | Yes | Yes |
+
+When the page is in an insecure context:
+- The mic button appears disabled (opacity 0.35, cursor not-allowed)
+- Tooltip: "Microphone unavailable -- this page must be served over HTTPS"
+- `LocalVoiceRecorder.start()` rejects with an actionable error message
+- Server console prints a warning at startup when `--stt` is used without HTTPS/tunnel
+- Server rejects `voice_upload` messages from non-HTTPS non-localhost connections
+
+When `--https` is used without `--cert`/`--key`, a self-signed certificate is auto-generated
+and cached at `~/.ai-or-die/certs/`. SANs include localhost and all detected LAN IPs.
+The cert is regenerated if IPs change or it expires (365 days).
+
+---
+
 ## Testing
 
 Three-tier CI strategy (all on GitHub Actions, no local testing):
@@ -207,5 +235,6 @@ The 670MB Parakeet V3 model is cached across CI runs via `actions/cache`.
 | `src/public/voice-processor.js` | AudioWorklet processor |
 | `src/public/components/voice-input.css` | All voice UI states and animations |
 | `src/server.js` | WebSocket handlers, binary frames, STT init |
+| `src/utils/self-signed-cert.js` | Auto-generate and cache self-signed HTTPS certs |
 | `src/public/app.js` | Voice UI, mode selection, keyboard shortcuts |
 | `bin/ai-or-die.js` | CLI flags (--stt, --stt-endpoint, etc.) |
