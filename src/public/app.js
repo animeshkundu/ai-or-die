@@ -88,6 +88,42 @@ class ClaudeCodeWebInterface {
         this._planDetectTimer = null;
         this._planTextDecoder = new TextDecoder();
 
+        // PWA install state machine
+        this._installState = 'checking'; // checking | available | prompting | installed | unavailable-https | unavailable-ios | unavailable-browser | unavailable
+        this._deferredPrompt = null;
+
+        // Register beforeinstallprompt early — it fires once and can't be recaptured
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            this._deferredPrompt = e;
+            this._setInstallState('available');
+        });
+
+        window.addEventListener('appinstalled', () => {
+            this._deferredPrompt = null;
+            this._setInstallState('installed');
+        });
+
+        // Resolve initial install state after a short delay (give beforeinstallprompt time to fire)
+        this._isInstalled = this._isInstalledPWA();
+        if (this._isInstalled) {
+            this._installState = 'installed';
+        } else {
+            this._installCheckTimer = setTimeout(() => {
+                if (this._installState === 'checking') {
+                    if (this._isIOS()) {
+                        this._setInstallState('unavailable-ios');
+                    } else if (!this._isSecureContext()) {
+                        this._setInstallState('unavailable-https');
+                    } else if (this._isFirefox() || this._isSamsungInternet()) {
+                        this._setInstallState('unavailable-browser');
+                    } else {
+                        this._setInstallState('unavailable');
+                    }
+                }
+            }, 3000);
+        }
+
         this.init();
     }
 
@@ -3189,6 +3225,142 @@ class ClaudeCodeWebInterface {
         if (notifVolumeValue) notifVolumeValue.textContent = (settings.notifVolume ?? 30) + '%';
         const notifDesktop = document.getElementById('notifDesktop');
         if (notifDesktop) notifDesktop.checked = settings.notifDesktop ?? true;
+
+        // Update install section
+        this._updateInstallSection();
+    }
+
+    // --- PWA Install State Machine ---
+
+    _isInstalledPWA() {
+        return window.matchMedia('(display-mode: standalone)').matches
+            || window.matchMedia('(display-mode: window-controls-overlay)').matches
+            || window.matchMedia('(display-mode: minimal-ui)').matches
+            || window.matchMedia('(display-mode: fullscreen)').matches
+            || navigator.standalone === true;
+    }
+
+    _isIOS() {
+        return /iPad|iPhone|iPod/.test(navigator.userAgent)
+            || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+
+    _isSecureContext() {
+        return window.isSecureContext;
+    }
+
+    _isFirefox() {
+        return /Firefox/.test(navigator.userAgent) && !/Seamonkey/.test(navigator.userAgent);
+    }
+
+    _isSamsungInternet() {
+        return /SamsungBrowser/.test(navigator.userAgent);
+    }
+
+    _setInstallState(state) {
+        this._installState = state;
+
+        // Update floating button
+        const existingBtn = document.getElementById('installBtn');
+        if (state === 'available') {
+            if (!existingBtn) {
+                const installBtn = document.createElement('button');
+                installBtn.id = 'installBtn';
+                installBtn.className = 'install-btn';
+                installBtn.innerHTML = '<span class="icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg></span> Install App';
+                installBtn.addEventListener('click', () => this._triggerInstall());
+                document.body.appendChild(installBtn);
+            }
+        } else if (existingBtn) {
+            existingBtn.remove();
+        }
+
+        // Update settings section (idempotent — safe to call whether settings is open or not)
+        this._updateInstallSection();
+    }
+
+    _updateInstallSection() {
+        const statusText = document.getElementById('installStatusText');
+        const installBtn = document.getElementById('settingsInstallBtn');
+        const iosInstructions = document.getElementById('installIOSInstructions');
+
+        if (!statusText) return; // settings DOM not ready
+
+        // Bind click handler once
+        if (installBtn && !installBtn._installBound) {
+            installBtn.addEventListener('click', () => this._triggerInstall());
+            installBtn._installBound = true;
+        }
+
+        // Hide all optional elements by default
+        if (installBtn) installBtn.style.display = 'none';
+        if (iosInstructions) iosInstructions.style.display = 'none';
+
+        // If running inside installed PWA, hide the entire section
+        const section = document.querySelector('[data-section="install"]');
+        if (section) {
+            section.style.display = this._isInstalled ? 'none' : '';
+        }
+
+        switch (this._installState) {
+            case 'checking':
+                statusText.textContent = 'Checking install availability...';
+                break;
+            case 'available':
+                statusText.textContent = 'Ready to install as a standalone app.';
+                if (installBtn) {
+                    installBtn.style.display = '';
+                    installBtn.disabled = false;
+                }
+                break;
+            case 'prompting':
+                statusText.textContent = 'Installing...';
+                if (installBtn) {
+                    installBtn.style.display = '';
+                    installBtn.disabled = true;
+                }
+                break;
+            case 'installed':
+                statusText.textContent = 'Already installed.';
+                break;
+            case 'unavailable-ios':
+                statusText.textContent = '';
+                if (iosInstructions) iosInstructions.style.display = '';
+                break;
+            case 'unavailable-https':
+                statusText.textContent = 'Requires a secure connection. Use localhost or restart with --https.';
+                break;
+            case 'unavailable-browser':
+                statusText.textContent = 'Use your browser\'s menu to add this app to your home screen.';
+                break;
+            case 'dismissed':
+                statusText.textContent = 'Install was cancelled. Reload the page to try again.';
+                break;
+            default:
+                statusText.textContent = 'Not available in this browser.';
+                break;
+        }
+    }
+
+    async _triggerInstall() {
+        if (!this._deferredPrompt) return;
+
+        this._setInstallState('prompting');
+        const prompt = this._deferredPrompt;
+        this._deferredPrompt = null; // null out BEFORE calling to prevent double-invoke
+
+        try {
+            prompt.prompt();
+            const { outcome } = await prompt.userChoice;
+            if (outcome === 'dismissed') {
+                // Prompt is consumed — can't re-prompt without a page reload
+                this._setInstallState('dismissed');
+            }
+            // If accepted, appinstalled event will fire and set state to 'installed'
+        } catch (err) {
+            console.error('Install prompt error:', err);
+            this._setInstallState('unavailable');
+        }
     }
 
     hideSettings() {

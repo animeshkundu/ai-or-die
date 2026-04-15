@@ -23,6 +23,38 @@ const SttEngine = require('./stt-engine');
 const CircularBuffer = require('./utils/circular-buffer');
 const RestartManager = require('./restart-manager');
 
+// Pre-built PWA screenshot SVG buffers (served at /screenshot-wide.png and /screenshot-narrow.png)
+const SCREENSHOT_WIDE_BUF = Buffer.from(`
+  <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1280" height="720" fill="#161b22"/>
+    <rect x="0" y="0" width="1280" height="36" fill="#0d1117"/>
+    <circle cx="20" cy="18" r="6" fill="#ff5f57" opacity="0.8"/>
+    <circle cx="40" cy="18" r="6" fill="#febc2e" opacity="0.8"/>
+    <circle cx="60" cy="18" r="6" fill="#28c840" opacity="0.8"/>
+    <text x="640" y="22" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#8b949e">ai-or-die</text>
+    <rect x="24" y="56" width="1232" height="640" rx="8" fill="#0d1117" opacity="0.6"/>
+    <text x="48" y="90" font-family="'JetBrains Mono',monospace" font-size="14" fill="#8b949e">~  ai-or-die</text>
+    <text x="48" y="130" font-family="'JetBrains Mono',monospace" font-size="20" fill="#ff6b00">&gt;_</text>
+    <text x="88" y="130" font-family="'JetBrains Mono',monospace" font-size="16" fill="#c9d1d9">Ready for input...</text>
+    <rect x="48" y="140" width="2" height="18" fill="#ff6b00" opacity="0.8"/>
+    <text x="48" y="640" font-family="system-ui,sans-serif" font-size="12" fill="#484f58">Universal AI coding terminal</text>
+  </svg>
+`);
+
+const SCREENSHOT_NARROW_BUF = Buffer.from(`
+  <svg width="540" height="720" viewBox="0 0 540 720" xmlns="http://www.w3.org/2000/svg">
+    <rect width="540" height="720" fill="#161b22"/>
+    <rect x="0" y="0" width="540" height="36" fill="#0d1117"/>
+    <text x="270" y="22" text-anchor="middle" font-family="system-ui,sans-serif" font-size="13" fill="#8b949e">ai-or-die</text>
+    <rect x="12" y="48" width="516" height="660" rx="8" fill="#0d1117" opacity="0.6"/>
+    <text x="28" y="80" font-family="'JetBrains Mono',monospace" font-size="13" fill="#8b949e">~  ai-or-die</text>
+    <text x="28" y="116" font-family="'JetBrains Mono',monospace" font-size="18" fill="#ff6b00">&gt;_</text>
+    <text x="62" y="116" font-family="'JetBrains Mono',monospace" font-size="14" fill="#c9d1d9">Ready for input...</text>
+    <rect x="28" y="126" width="2" height="16" fill="#ff6b00" opacity="0.8"/>
+    <text x="28" y="660" font-family="system-ui,sans-serif" font-size="11" fill="#484f58">Universal AI coding terminal</text>
+  </svg>
+`);
+
 /** Foreground/background session priority constants */
 const COALESCE_MS_FG = 16;       // 60 flushes/sec for active session
 const COALESCE_MS_BG = 200;      // 5 flushes/sec for background sessions
@@ -257,6 +289,7 @@ class ClaudeCodeWebServer {
     // Serve manifest.json with correct MIME type
     this.app.get('/manifest.json', (req, res) => {
       res.setHeader('Content-Type', 'application/manifest+json');
+      res.setHeader('Cache-Control', 'no-cache');
       if (global.__SEA_MODE__) {
         this._sendSeaAsset(res, 'public/manifest.json');
       } else {
@@ -301,6 +334,19 @@ class ClaudeCodeWebServer {
         res.setHeader('Cache-Control', 'public, max-age=31536000');
         res.send(svgBuffer);
       });
+    });
+
+    // PWA Screenshot routes - serve pre-built branded screenshots
+    this.app.get('/screenshot-wide.png', (req, res) => {
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      res.send(SCREENSHOT_WIDE_BUF);
+    });
+
+    this.app.get('/screenshot-narrow.png', (req, res) => {
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'public, max-age=31536000');
+      res.send(SCREENSHOT_NARROW_BUF);
     });
 
     // Auth status endpoint - always accessible
