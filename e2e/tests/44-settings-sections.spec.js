@@ -25,7 +25,7 @@ test.afterEach(async ({ page }, testInfo) => {
 
 test.describe('Settings Grouped Sections', () => {
 
-  test('settings modal has 5 section headers', async ({ page }) => {
+  test('settings modal has 6 section headers', async ({ page }) => {
     setupPageCapture(page);
     const sessionId = await createSessionViaApi(port, 'settings-sections');
     await page.goto(url);
@@ -37,17 +37,17 @@ test.describe('Settings Grouped Sections', () => {
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
 
-    // Verify 5 section headers exist
     const sections = await page.evaluate(() => {
       const headers = document.querySelectorAll('.setting-section-header');
       return Array.from(headers).map(h => h.textContent.trim());
     });
-    expect(sections).toHaveLength(5);
+    expect(sections).toHaveLength(6);
     expect(sections).toContain('Terminal');
     expect(sections).toContain('Voice Input');
     expect(sections).toContain('Notifications');
     expect(sections).toContain('Display');
     expect(sections).toContain('Advanced');
+    expect(sections).toContain('Install');
   });
 
   test('clicking section header collapses the section', async ({ page }) => {
