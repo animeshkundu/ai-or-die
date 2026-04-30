@@ -400,25 +400,59 @@ See the [Authentication Specification](authentication.md) for full details. Key 
 
 Source: `src/public/service-worker.js`
 
-- **Cache name:** `claude-code-web-v1`
-- **Precached resources:** `/`, `/index.html`, `/style.css`, `/app.js`, `/session-manager.js`, `/plan-detector.js`
-- **Strategy for API/WebSocket routes:** Network only, with a 503 offline fallback.
-- **Strategy for static assets:** Network first, cache on success, fall back to cache when offline.
+- **Cache name:** `ai-or-die-v9` (bump on every cache-shape change).
+- **Precached resources:** root paths (`/`, `/index.html`), all stylesheets (tokens, base, components, mobile, main), JS modules (app, command-palette, clipboard-handler, session-manager, plan-detector, splits, icons, voice-handler, image-handler, input-overlay, feedback-manager, file-browser, file-editor, extra-keys), and the MesloLGS Nerd Font WOFF2 variants (other Nerd Font families are cached on demand).
+- **Strategy for API/WebSocket routes:** Network only, with a 503 offline fallback for `/api/*`.
+- **Strategy for versioned CDN assets** (unpkg, cdnjs, jsdelivr, Google Fonts): Cache-first.
+- **Strategy for static assets:** Network first, cache on success, fall back to cache when offline. Navigations fall back to `/index.html` when offline.
 - Activates immediately via `skipWaiting()` + `clients.claim()`.
 - Cleans up old caches on activation.
+- Handles `SKIP_WAITING` postMessage from the client to roll out new versions without waiting.
+- Routes notification clicks to existing windows or opens a new tab with session context.
 
 ### Manifest
 
 Source: `src/public/manifest.json`
 
-Provides installable PWA metadata. Icons are dynamically generated SVGs served by the Express server at `/icon-{size}.png`.
+Provides installable PWA metadata. Served at `/manifest.json` with `Cache-Control: no-cache` so manifest changes propagate on the next visit.
 
-### Dynamic Icon Generation
+Icons are currently served by dynamic Express routes at `/icon-{size}.png` (sizes 16, 32, 144, 180, 192, 512). The manifest declares `"type": "image/png"` for icon entries; the routes return SVG bytes with `Content-Type: image/svg+xml`. Chromium 145 tolerates this MIME mismatch but it is a wire-protocol contract violation — Safari iOS Add-to-Home-Screen and Firefox Android may reject it. See [docs/history/pwa-install-lan-self-signed-cert.md](../history/pwa-install-lan-self-signed-cert.md) for context; a follow-up is tracked but not yet shipped.
 
-The server generates SVG icons at sizes 16, 32, 144, 180, 192, and 512 pixels:
-- Dark background (`#1a1a1a`) with rounded corners.
-- Monospace "CC" text in orange (`#ff6b00`).
-- Served as `image/svg+xml` with a 1-year `Cache-Control`.
+Screenshots at `/screenshot-wide.png` and `/screenshot-narrow.png` similarly serve SVG bytes despite the `.png` URL.
+
+### Installability requirements
+
+PWA install is gated by the browser, not by the server. Chrome / Edge / Samsung Internet require **all** of:
+
+- A web app manifest with `name`, `short_name` / `name`, `start_url`, `display`, and an icon ≥ 192×192.
+- A registered service worker with a `fetch` handler (covered above).
+- A **secure context**. This means one of:
+  - `http://localhost` / `http://127.0.0.1` / `http://[::1]` (treated as secure regardless of cert)
+  - HTTPS with a certificate signed by a CA in the device's trust store
+
+The `--https` flag generates a self-signed certificate. **Connections from another device on the LAN to that cert (e.g. `https://10.0.0.9:7777`) are not considered a secure context for installability**, even after the user clicks through Chrome's interstitial. `window.isSecureContext` still returns `true`, but Chromium internally rejects the origin with `not-from-secure-origin` and refuses to register the service worker or fire `beforeinstallprompt`.
+
+Workarounds for LAN testing: use `--tunnel` (Microsoft Dev Tunnels supplies a CA-signed cert), trust the self-signed cert manually on each device, or supply a real cert via `--cert`/`--key`. See [docs/history/pwa-install-lan-self-signed-cert.md](../history/pwa-install-lan-self-signed-cert.md) for the device-by-device procedure.
+
+### Install state machine
+
+Source: `src/public/app.js` (`_installState`, `_setInstallState`, `_updateInstallSection`, `_triggerInstall`, lines 92-125 and 3260-3370).
+
+Single `_installState` property drives both the floating Install button and the Settings → Install panel. States:
+
+| State | Trigger | UI |
+|---|---|---|
+| `checking` | Initial; resolves within 3s | "Checking install availability..." |
+| `available` | `beforeinstallprompt` fired and was preventDefault'd | "Ready to install as a standalone app." + button |
+| `prompting` | User clicked install; awaiting `userChoice` | "Installing..." (button disabled) |
+| `installed` | `appinstalled` fired or `_isInstalledPWA()` returns true on init | Section hidden |
+| `unavailable-ios` | iOS device detected | iOS Share/Add-to-Home instructions |
+| `unavailable-https` | `window.isSecureContext === false` | "Requires a secure connection. Use localhost or restart with --https." |
+| `unavailable-browser` | Firefox or Samsung Internet | "Use your browser's menu to add this app to your home screen." |
+| `unavailable` | 3-second timer expired with no other condition matching | "Not available in this browser." (catch-all; in practice often a cert-trust failure on LAN — see history doc) |
+| `dismissed` | User rejected the install prompt | "Install was cancelled. Reload the page to try again." |
+
+The 3-second fallback timer is a heuristic — `beforeinstallprompt` typically fires within a few hundred ms of page load on real hardware once criteria are met. The listener overrides the late-arriving event if the timer fires first.
 
 ---
 

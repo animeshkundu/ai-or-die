@@ -456,6 +456,24 @@
                             </div>
                         </div>
                     </div>
+
+                    <div class="setting-section" data-section="install">
+                        <div class="setting-section-header" tabindex="0" role="button" aria-expanded="true">Install</div>
+                        <div class="setting-section-content">
+                            <div class="setting-group" id="installStatusGroup">
+                                <div id="installStatus" aria-live="polite">
+                                    <span id="installStatusText">Checking...</span>
+                                </div>
+                                <button class="btn btn-primary" id="settingsInstallBtn" style="display:none; margin-top: 8px;">
+                                    <span class="icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg></span>
+                                    Install App
+                                </button>
+                                <div id="installIOSInstructions" style="display:none;">
+                                    <small>Tap the <strong>Share</strong> button <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align: middle;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> then <strong>Add to Home Screen</strong></small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn btn-secondary" id="resetSettingsBtn">Reset to Defaults</button>
@@ -768,44 +786,6 @@
                     });
             });
         }
-        
-        // Handle app install prompt
-        let deferredPrompt;
-        window.addEventListener('beforeinstallprompt', (e) => {
-            // Prevent Chrome 67 and earlier from automatically showing the prompt
-            e.preventDefault();
-            // Stash the event so it can be triggered later
-            deferredPrompt = e;
-            
-            // Create install button if it doesn't exist
-            if (!document.getElementById('installBtn')) {
-                const installBtn = document.createElement('button');
-                installBtn.id = 'installBtn';
-                installBtn.className = 'install-btn';
-                installBtn.innerHTML = '<span class="icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg></span> Install App';
-                
-                installBtn.addEventListener('click', async () => {
-                    if (deferredPrompt) {
-                        deferredPrompt.prompt();
-                        const { outcome } = await deferredPrompt.userChoice;
-                        console.log(`User response to install prompt: ${outcome}`);
-                        deferredPrompt = null;
-                        installBtn.remove();
-                    }
-                });
-                
-                document.body.appendChild(installBtn);
-            }
-        });
-        
-        // Handle successful installation
-        window.addEventListener('appinstalled', () => {
-            console.log('PWA was installed');
-            const installBtn = document.getElementById('installBtn');
-            if (installBtn) {
-                installBtn.remove();
-            }
-        });
     </script>
 </body>
 </html>

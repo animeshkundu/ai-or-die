@@ -184,6 +184,20 @@ ai-or-die --tunnel
 
 When `--tunnel` is active, auth is disabled — the tunnel itself controls access.
 
+## Install as a PWA
+
+ai-or-die is an installable progressive web app. Open Settings → Install in the app, or use the install icon in your browser's address bar. The installed app runs in its own window with offline-capable shell caching.
+
+**Browser support**: Chrome / Edge / Samsung Internet support one-tap install. Firefox desktop does not have native install — use the browser menu to pin the tab. Safari iOS uses Share → Add to Home Screen.
+
+**Installing on LAN devices**: Browsers refuse to install PWAs over an HTTPS origin whose certificate isn't trusted by the device. The auto-generated cert from `--https` is self-signed, so a phone or tablet connecting to `https://<your-mac-ip>:7777` will see the in-app Install panel say *"Not available in this browser."* even though the browser supports install. Three ways around this:
+
+1. **Use `--tunnel`** *(easiest)* — Microsoft Dev Tunnels gives you a public URL with a real Let's Encrypt cert. Devices install via the public URL with no setup.
+2. **Trust the self-signed cert** on each device — copy `~/.ai-or-die/certs/server.cert` to the device and install it as a trusted root in the OS certificate store.
+3. **Provide a CA-signed cert** via `--cert` / `--key`. [mkcert](https://github.com/FiloSottile/mkcert) is a low-friction option for development.
+
+See [docs/history/pwa-install-lan-self-signed-cert.md](docs/history/pwa-install-lan-self-signed-cert.md) for the device-by-device procedure and the underlying browser-policy reasoning.
+
 ## Architecture
 
 ```
