@@ -47,11 +47,16 @@
             this._pingInterval = opts.pingIntervalMs || DEFAULT_PING_INTERVAL_MS;
             this._pongTimeout = opts.pongTimeoutMs || DEFAULT_PONG_TIMEOUT_MS;
             this._log = opts.log || function () {};
+            // Browser setTimeout/setInterval throw "Illegal invocation" if called
+            // with `this` not bound to `window`. Wrap in arrow functions so the
+            // global timer functions are invoked at the global scope. (Node's
+            // timers don't care about `this`, which is why the unit tests with
+            // fake timers passed but the real browser failed.)
             const t = opts.timers || {};
-            this._setInterval = t.setInterval || setInterval;
-            this._clearInterval = t.clearInterval || clearInterval;
-            this._setTimeout = t.setTimeout || setTimeout;
-            this._clearTimeout = t.clearTimeout || clearTimeout;
+            this._setInterval = t.setInterval || ((fn, ms) => setInterval(fn, ms));
+            this._clearInterval = t.clearInterval || ((id) => clearInterval(id));
+            this._setTimeout = t.setTimeout || ((fn, ms) => setTimeout(fn, ms));
+            this._clearTimeout = t.clearTimeout || ((id) => clearTimeout(id));
             this._heartbeatTimer = null;
             this._pongTimer = null;
         }

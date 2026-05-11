@@ -319,5 +319,34 @@ describe('HeartbeatWatchdog', () => {
             assert.strictEqual(typeof HeartbeatWatchdog, 'function');
             assert.strictEqual(HeartbeatWatchdog.name, 'HeartbeatWatchdog');
         });
+
+        it('default timer functions are invocable as instance methods (no Illegal invocation)', (done) => {
+            // Regression: previously stored `this._setTimeout = setTimeout` directly.
+            // In a browser that throws "Illegal invocation" because setTimeout
+            // requires `this === window`. Wrap in arrow functions to invoke at
+            // global scope. Node's setTimeout doesn't enforce this (which is why
+            // the other tests with injected timers couldn't catch the bug), but
+            // we can still verify the call SUCCEEDS without throwing.
+            const ws = createFakeSocket();
+            // No timers override → uses the production defaults.
+            const wd = new HeartbeatWatchdog({
+                socket: ws,
+                generation: 1,
+                currentGeneration: () => 1,
+                currentSocket: () => ws,
+                pingIntervalMs: 5,
+                pongTimeoutMs: 1000,
+            });
+            // start() calls the default _setInterval and _setTimeout.
+            // If either is stored as a bare reference and the browser-style
+            // strict-mode binding rules applied, this would throw.
+            assert.doesNotThrow(() => wd.start());
+            // Give the recurring ping one tick to validate _setInterval works too.
+            setTimeout(() => {
+                assert.ok(ws.sent.length >= 1, 'at least one ping sent');
+                wd.stop();
+                done();
+            }, 25);
+        });
     });
 });
