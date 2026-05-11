@@ -70,12 +70,14 @@ The main application controller. Instantiated once on page load.
 | `fitAddon` | FitAddon | Auto-resize addon |
 | `webLinksAddon` | WebLinksAddon | Clickable URL addon |
 | `socket` | WebSocket | Active WebSocket connection |
+| `_socketGeneration` | number | Monotonic counter incremented each `connect()` call. Used to fence stale callbacks (heartbeat ticks, pong-timers, onclose handlers) from prior sockets so they cannot affect the current socket. |
+| `_heartbeat` | HeartbeatWatchdog | Active heartbeat watchdog instance (see `heartbeat-watchdog.js`). |
 | `connectionId` | string | Server-assigned connection UUID |
 | `currentClaudeSessionId` | string | Currently joined session ID |
 | `currentClaudeSessionName` | string | Currently joined session name |
 | `reconnectAttempts` | number | Counter for exponential backoff |
-| `maxReconnectAttempts` | number | 5 |
-| `reconnectDelay` | number | 1000ms base delay |
+| `maxReconnectAttempts` | number | 10 |
+| `reconnectDelay` | number | 1000ms base delay (used in exponential formula for attempts ≥ 1; first attempt is a fixed 250ms) |
 | `folderMode` | boolean | Always `true` |
 | `currentFolderPath` | string | Current path in folder browser |
 | `claudeSessions` | Array | Cached session list from server |
@@ -114,6 +116,20 @@ The main application controller. Instantiated once on page load.
 - **Message handling:** Routes incoming messages by `type` field to appropriate handlers (output rendering, session state updates, usage updates, etc.).
 - **Output rendering:** Writes raw terminal data directly to xterm.js via `terminal.write(data)`. Also feeds data to `planDetector.processOutput(data)` and `sessionTabManager.markSessionActivity()`.
 - **Background session events:** Handles `session_activity`, `session_exit`, `session_error`, `session_started`, and `session_stopped` messages for sessions the client is not actively joined to. These update tab status indicators and feed the notification idle timer. These handlers never modify the terminal or show overlays — they only interact with `SessionTabManager`.
+
+### Reconnection & Liveness
+
+The client treats a "fast reconnect" as a hard requirement. The relevant pieces:
+
+- **Heartbeat watchdog** (`src/public/heartbeat-watchdog.js`, shared with `splits.js`): every 25s sends `{type:'ping'}`; if no `{type:'pong'}` arrives within 10s, force-closes the socket with code 4000/`pong-timeout`, which in turn triggers the normal reconnect path. Detects silently-dead connections (NAT rebind, mobile sleep, captive portal) within ~10s instead of waiting for the browser TCP timeout (often 30+ seconds on cellular).
+- **Per-socket fencing:** every `connect()` increments `_socketGeneration`. The watchdog and `connect()`'s on{open,message,close,error} handlers each capture `(ws, gen)` at construction and bail if those no longer match `this.socket` / `this._socketGeneration`. This is required because `clearInterval`/`clearTimeout` do NOT cancel an already-queued callback — without the fence, a stale tick from an old socket can close the freshly-opened new one.
+- **Heartbeat is restarted on every (re)connect:** `startHeartbeat()` is called at the top of `socket.onopen` (before `loadSessions()` or any other await). Previously the heartbeat was started once at init and died after the first reconnect.
+- **First-attempt backoff is 250ms** (covers a server-process restart window without being user-perceptible). Attempts ≥ 1 use the existing exponential-with-jitter formula. The 1000ms fixed wait inside `reconnect()` was removed.
+- **Trigger-driven reconnect:**
+  - `online` event → reconnect if socket not OPEN.
+  - `pageshow` event (bfcache restore on mobile back/forward) → reconnect if `e.persisted` or socket not OPEN.
+  - `visibilitychange→visible` → if socket is `CLOSED`, reconnect; if `OPEN`, restart the heartbeat so a ping fires immediately (proves liveness within ~10s instead of waiting up to 25s for the next interval). A separate, tighter probe-window was deliberately rejected — cellular radio wake-up is 1.5–3s, and a separate timer races with any in-flight pong from before tab-hide.
+- **Splits** (`src/public/splits.js`) maintain their own watchdog and reconnect logic with the same parameters (mirrors main pane). A `_closing` flag on `Split` distinguishes user-initiated `disconnect()` from an unexpected drop, so re-targeting a split to a new session does not trigger an auto-reconnect to the old one.
 
 ### Terminal Configuration
 

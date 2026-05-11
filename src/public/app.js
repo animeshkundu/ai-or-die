@@ -11,6 +11,10 @@ class ClaudeCodeWebInterface {
         this.maxReconnectAttempts = 10;
         this.reconnectDelay = 1000;
         this._reconnecting = false;
+        this._socketGeneration = 0;
+        this._pongTimer = null;
+        this._heartbeatTimer = null;
+        this._reconnectTimer = null;
         this._fitting = false;
         this.folderMode = true; // Always use folder mode
         this.currentFolderPath = null;
@@ -283,6 +287,14 @@ class ClaudeCodeWebInterface {
                 // Reconnect if the socket dropped while the tab was hidden
                 if (this.socket && this.socket.readyState === WebSocket.CLOSED) {
                     this.reconnect();
+                } else if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    // Socket appears OPEN but may be a zombie (NAT rebind during
+                    // hidden tab). Re-arm the heartbeat so we ping immediately —
+                    // the standard 10s pong window will catch a dead socket.
+                    // Do NOT use a tighter probe window: cellular radio wake-up
+                    // is 1.5–3s, and a separate timer races with any in-flight
+                    // pong from before the tab was hidden.
+                    this.startHeartbeat();
                 }
             }
         });
@@ -295,6 +307,14 @@ class ClaudeCodeWebInterface {
         window.addEventListener('offline', () => {
             this.updateStatus('Offline');
             if (window.feedback) window.feedback.warning('Connection lost — you are offline', { duration: 0 });
+        });
+
+        // bfcache restore (mobile back/forward swipe). The page may have been
+        // frozen with a stale socket; force a reconnect when restored.
+        window.addEventListener('pageshow', (e) => {
+            if (e.persisted || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+                this.reconnect();
+            }
         });
 
         window.addEventListener('resize', () => {
@@ -1644,10 +1664,18 @@ class ClaudeCodeWebInterface {
             }
             
             try {
-                this.socket = new WebSocket(wsUrl);
-                this.socket.binaryType = 'arraybuffer';
+                this._socketGeneration += 1;
+                const gen = this._socketGeneration;
+                const ws = new WebSocket(wsUrl);
+                ws.binaryType = 'arraybuffer';
+                this.socket = ws;
+                const isCurrent = () => ws === this.socket && gen === this._socketGeneration;
 
-                this.socket.onopen = () => {
+                ws.onopen = () => {
+                    if (!isCurrent()) return;
+                    // Arm heartbeat BEFORE any awaited work so liveness detection
+                    // is in place even if loadSessions stalls.
+                    this.startHeartbeat();
                     this.reconnectAttempts = 0;
                     // Clear server restart state if we were reconnecting after a restart
                     if (this._serverRestarting) {
@@ -1681,7 +1709,8 @@ class ClaudeCodeWebInterface {
                     resolve();
                 };
             
-            this.socket.onmessage = (event) => {
+            ws.onmessage = (event) => {
+                if (!isCurrent()) return;
                 if (event.data instanceof ArrayBuffer) {
                     // Binary frame — pass raw ArrayBuffer to handleBinaryOutput
                     this.handleBinaryOutput(event.data);
@@ -1691,17 +1720,45 @@ class ClaudeCodeWebInterface {
                 }
             };
             
-            this.socket.onclose = (event) => {
+            ws.onclose = (event) => {
+                // Stale-socket fence: an old socket's onclose firing after we've
+                // already moved on must NOT schedule another reconnect.
+                if (!isCurrent()) return;
+                if (this._heartbeat) { this._heartbeat.stop(); this._heartbeat = null; }
+                if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
+                if (this._pongTimer) { clearTimeout(this._pongTimer); this._pongTimer = null; }
                 // During server restart, don't count failures against reconnect budget
                 // but still use backoff to avoid thundering herd
                 if (this._serverRestarting) {
                     this.updateStatus('Restarting \u2014 reconnecting\u2026');
                     const restartBackoff = Math.min(2000 * Math.pow(1.5, this._restartReconnectAttempts || 0), 15000) * (0.7 + Math.random() * 0.6);
                     this._restartReconnectAttempts = (this._restartReconnectAttempts || 0) + 1;
-                    setTimeout(() => this.reconnect(), restartBackoff);
+                    if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+                    const restartGen = this._socketGeneration;
+                    this._reconnectTimer = setTimeout(() => {
+                        this._reconnectTimer = null;
+                        if (restartGen !== this._socketGeneration) return;
+                        this.reconnect();
+                    }, restartBackoff);
                 } else if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
                     this.updateStatus('Reconnecting (' + (this.reconnectAttempts + 1) + '/' + this.maxReconnectAttempts + ')...');
-                    setTimeout(() => this.reconnect(), Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000) * (0.7 + Math.random() * 0.6));
+                    // First attempt is fast (250ms covers a server-process restart window);
+                    // subsequent attempts use exponential backoff with jitter.
+                    const delay = this.reconnectAttempts === 0
+                        ? 250
+                        : Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000) * (0.7 + Math.random() * 0.6);
+                    if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+                    // Fence the deferred reconnect with the current generation: a
+                    // user-initiated connect (setSession etc.) will increment the
+                    // generation, so a stale timer firing later must be a no-op
+                    // \u2014 otherwise it spawns a parallel WebSocket and orphans the
+                    // active one. (Caught by gemini-3.1-pro-preview review.)
+                    const onCloseGen = this._socketGeneration;
+                    this._reconnectTimer = setTimeout(() => {
+                        this._reconnectTimer = null;
+                        if (onCloseGen !== this._socketGeneration) return;
+                        this.reconnect();
+                    }, delay);
                     this.reconnectAttempts++;
                 } else {
                     this.updateStatus('Disconnected');
@@ -1709,7 +1766,8 @@ class ClaudeCodeWebInterface {
                 }
             };
             
-            this.socket.onerror = (error) => {
+            ws.onerror = (error) => {
+                if (!isCurrent()) return;
                 console.error('WebSocket error:', error);
                 this.showError('Failed to connect to the server.\n\n\u2022 Check that the server is running\n\u2022 Verify your network connection\n\u2022 Try refreshing the page');
                 reject(error);
@@ -1724,6 +1782,17 @@ class ClaudeCodeWebInterface {
     }
 
     disconnect() {
+        // Cancel any deferred reconnect from a prior onclose so it cannot fire
+        // after a user-initiated reconnect/setSession (which advances the
+        // socket generation) and spawn a parallel socket.
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
+        if (this._heartbeat) {
+            this._heartbeat.stop();
+            this._heartbeat = null;
+        }
         if (this.socket) {
             this.socket.close();
             this.socket = null;
@@ -1735,6 +1804,10 @@ class ClaudeCodeWebInterface {
         if (this._heartbeatTimer) {
             clearInterval(this._heartbeatTimer);
             this._heartbeatTimer = null;
+        }
+        if (this._pongTimer) {
+            clearTimeout(this._pongTimer);
+            this._pongTimer = null;
         }
         if (this.usageUpdateTimer) {
             clearInterval(this.usageUpdateTimer);
@@ -1776,7 +1849,7 @@ class ClaudeCodeWebInterface {
                 console.error('Reconnection failed synchronously:', err);
                 this._reconnecting = false;
             }
-        }, 1000);
+        }, 0);
     }
 
     send(data) {
@@ -2117,6 +2190,7 @@ class ClaudeCodeWebInterface {
             }
                 
             case 'pong':
+                if (this._heartbeat) this._heartbeat.onPong();
                 break;
 
             case 'image_upload_complete': {
@@ -3520,12 +3594,24 @@ class ClaudeCodeWebInterface {
     }
 
     startHeartbeat() {
-        if (this._heartbeatTimer) clearInterval(this._heartbeatTimer);
-        this._heartbeatTimer = setInterval(() => {
-            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.send({ type: 'ping' });
-            }
-        }, 30000);
+        // Delegate to HeartbeatWatchdog (loaded via index.html before app.js).
+        // The watchdog encapsulates ping cadence, pong-timeout, per-socket
+        // fencing, and idempotent restart — see src/public/heartbeat-watchdog.js.
+        if (this._heartbeat) this._heartbeat.stop();
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+        this._heartbeat = new HeartbeatWatchdog({
+            socket: this.socket,
+            generation: this._socketGeneration,
+            currentGeneration: () => this._socketGeneration,
+            currentSocket: () => this.socket,
+            log: (m) => console.warn('[heartbeat]', m),
+        });
+        this._heartbeat.start();
+        // Keep _heartbeatTimer/_pongTimer references in sync for legacy code
+        // (disconnect() still nulls them defensively); the watchdog owns the
+        // real timer lifecycle via stop().
+        this._heartbeatTimer = null;
+        this._pongTimer = null;
     }
 
     // File Browser Methods
