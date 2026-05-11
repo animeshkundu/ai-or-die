@@ -415,6 +415,83 @@ describe('E2E: Session management', function () {
     await closeWs(ws);
   });
 
+  it('should NOT emit session_left when re-joining the SAME session (idempotent)', async function () {
+    // Regression: previously, joinClaudeSession unconditionally called
+    // leaveClaudeSession first, which emitted a spurious `session_left`
+    // followed by `session_joined`. The client's `session_left` handler
+    // nulls currentClaudeSessionId and clears the terminal, causing a
+    // visible flicker. Same-session re-joins should now be silent and
+    // idempotent.
+    const createRes = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {
+      body: { name: 'Idempotent Rejoin' }
+    });
+    const sessionId = createRes.body.sessionId;
+
+    const { ws } = await connectWs(port);
+
+    // First join — primes the wsInfo.claudeSessionId.
+    wsSend(ws, { type: 'join_session', sessionId });
+    const first = await waitForMessage(ws, 'session_joined');
+    assert.strictEqual(first.sessionId, sessionId);
+
+    // Collect every message that arrives in the next 500ms after a
+    // SECOND join_session for the same session. There must be NO
+    // `session_left` in there.
+    const seenTypes = [];
+    const onMessage = (raw, isBinary) => {
+      if (isBinary) return;
+      try { seenTypes.push(JSON.parse(raw.toString()).type); } catch {}
+    };
+    ws.on('message', onMessage);
+
+    wsSend(ws, { type: 'join_session', sessionId });
+    await waitForMessage(ws, 'session_joined'); // expect another session_joined
+    await new Promise((r) => setTimeout(r, 100)); // small grace for any trailing frames
+
+    ws.removeListener('message', onMessage);
+
+    assert.ok(!seenTypes.includes('session_left'),
+      `Expected NO session_left frame on same-session re-join, got types: ${seenTypes.join(', ')}`);
+    assert.ok(seenTypes.includes('session_joined'),
+      `Expected session_joined on re-join, got types: ${seenTypes.join(', ')}`);
+
+    await closeWs(ws);
+  });
+
+  it('SHOULD emit session_left when switching to a DIFFERENT session', async function () {
+    // Pair with the idempotent-rejoin test above: the conditional in
+    // joinClaudeSession must still fire `leaveClaudeSession` when
+    // genuinely switching sessions.
+    const a = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {
+      body: { name: 'Switch From' }
+    });
+    const b = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {
+      body: { name: 'Switch To' }
+    });
+
+    const { ws } = await connectWs(port);
+    wsSend(ws, { type: 'join_session', sessionId: a.body.sessionId });
+    await waitForMessage(ws, 'session_joined');
+
+    const seenTypes = [];
+    const onMessage = (raw, isBinary) => {
+      if (isBinary) return;
+      try { seenTypes.push(JSON.parse(raw.toString()).type); } catch {}
+    };
+    ws.on('message', onMessage);
+
+    wsSend(ws, { type: 'join_session', sessionId: b.body.sessionId });
+    await waitForMessage(ws, 'session_joined');
+    await new Promise((r) => setTimeout(r, 100));
+
+    ws.removeListener('message', onMessage);
+
+    assert.ok(seenTypes.includes('session_left'),
+      `Expected session_left when switching to a different session, got: ${seenTypes.join(', ')}`);
+
+    await closeWs(ws);
+  });
+
   it('should delete a session via REST', async function () {
     // Create a session to delete
     const createRes = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {

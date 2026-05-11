@@ -1711,6 +1711,18 @@ class ClaudeCodeWebInterface {
                     // Request app tunnel status
                     this.send({ type: 'app_tunnel_status' });
 
+                    // Auto-rejoin the previously active session. After a
+                    // reconnect the new WebSocket is alive but server-side
+                    // it isn't joined to anything — without this the
+                    // terminal sits frozen until the user manually clicks a
+                    // tab. On the very first connect, currentClaudeSessionId
+                    // is null (it's set later by session_joined arriving
+                    // from the explicit init-time join), so this only fires
+                    // on RE-connects.
+                    if (this.currentClaudeSessionId) {
+                        this.send({ type: 'join_session', sessionId: this.currentClaudeSessionId });
+                    }
+
                     resolve();
                 };
             

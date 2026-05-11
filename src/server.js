@@ -1827,8 +1827,14 @@ class ClaudeCodeWebServer {
       return;
     }
 
-    // Leave current session if any
-    if (wsInfo.claudeSessionId) {
+    // Leave current session only if switching to a DIFFERENT one.
+    // Same-session re-joins (post-reconnect auto-rejoin, in-app same-tab
+    // click) used to emit a spurious `session_left` followed immediately
+    // by `session_joined`, which causes the client to briefly null
+    // currentClaudeSessionId, clear the terminal, and flicker the tab
+    // status to "disconnected" — only to be restored ms later. Skipping
+    // the leave makes the re-join silent and idempotent.
+    if (wsInfo.claudeSessionId && wsInfo.claudeSessionId !== claudeSessionId) {
       await this.leaveClaudeSession(wsId);
     }
 
