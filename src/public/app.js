@@ -311,8 +311,13 @@ class ClaudeCodeWebInterface {
 
         // bfcache restore (mobile back/forward swipe). The page may have been
         // frozen with a stale socket; force a reconnect when restored.
+        // IMPORTANT: only act on `e.persisted === true`. `pageshow` ALSO fires
+        // on every normal page load with `e.persisted === false`, and in that
+        // case init() is already establishing the WebSocket — calling
+        // reconnect() here would race with init's connect and tear down the
+        // in-flight socket before it opens (caught by CI golden-path test).
         window.addEventListener('pageshow', (e) => {
-            if (e.persisted || !this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            if (e.persisted) {
                 this.reconnect();
             }
         });
