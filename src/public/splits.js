@@ -10,13 +10,20 @@ class Split {
         this.app = app;
         this.sessionId = null;
         this.isActive = false;
-        
+
         // Create independent terminal instance for this split
         this.terminal = null;
         this.fitAddon = null;
         this.webLinksAddon = null;
         this.socket = null;
-        
+        this._socketGeneration = 0;
+        this._heartbeatTimer = null;
+        this._pongTimer = null;
+        this._reconnectTimer = null;
+        this._reconnectAttempts = 0;
+        this._maxReconnectAttempts = 10;
+        this._closing = false;
+
         this.createTerminal();
     }
 
@@ -177,23 +184,33 @@ class Split {
     async connect(sessionId) {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         let wsUrl = `${protocol}//${location.host}?sessionId=${encodeURIComponent(sessionId)}`;
-        
+
         // Add auth token if needed
         if (window.authManager) {
             wsUrl = window.authManager.getWebSocketUrl(wsUrl);
         }
-        
-        this.socket = new WebSocket(wsUrl);
-        this.socket.binaryType = 'arraybuffer';
 
-        this.socket.onopen = () => {
+        // Reset closing flag when (re)connecting — disconnect() may have set it.
+        this._closing = false;
+        this._socketGeneration += 1;
+        const gen = this._socketGeneration;
+        const ws = new WebSocket(wsUrl);
+        ws.binaryType = 'arraybuffer';
+        this.socket = ws;
+        const isCurrent = () => ws === this.socket && gen === this._socketGeneration;
+
+        ws.onopen = () => {
+            if (!isCurrent()) return;
+            this._reconnectAttempts = 0;
+            this._startHeartbeat();
             console.log(`[Split ${this.index}] Connected to session ${sessionId}`);
             // Send initial resize
             const { cols, rows } = this.terminal;
-            this.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+            try { ws.send(JSON.stringify({ type: 'resize', cols, rows })); } catch (_) {}
         };
-        
-        this.socket.onmessage = (event) => {
+
+        ws.onmessage = (event) => {
+            if (!isCurrent()) return;
             if (event.data instanceof ArrayBuffer) {
                 // Binary frame = raw terminal output (Uint8Array direct write)
                 this.terminal.write(new Uint8Array(event.data));
@@ -206,14 +223,63 @@ class Split {
                 }
             }
         };
-        
-        this.socket.onclose = () => {
-            console.log(`[Split ${this.index}] Disconnected from session ${sessionId}`);
+
+        ws.onclose = () => {
+            // Stale-socket fence: ignore close events from prior sockets.
+            if (!isCurrent()) return;
+            if (this._heartbeat) { this._heartbeat.stop(); this._heartbeat = null; }
+            if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
+            if (this._pongTimer) { clearTimeout(this._pongTimer); this._pongTimer = null; }
+            if (this._closing || this._reconnectAttempts >= this._maxReconnectAttempts) {
+                console.log(`[Split ${this.index}] Disconnected from session ${sessionId}`);
+                return;
+            }
+            // Mirror main pane: 250ms first attempt, exponential+jitter after.
+            const n = this._reconnectAttempts;
+            const delay = n === 0
+                ? 250
+                : Math.min(1000 * Math.pow(2, n), 30000) * (0.7 + Math.random() * 0.6);
+            this._reconnectAttempts++;
+            console.log(`[Split ${this.index}] Reconnecting (attempt ${this._reconnectAttempts}/${this._maxReconnectAttempts}) in ${Math.round(delay)}ms`);
+            // Fence the deferred reconnect with the current generation so a
+            // user-initiated setSession() (which calls disconnect→connect and
+            // advances the generation) cannot have an old timer fire later and
+            // spawn a parallel socket. (Caught by gemini-3.1-pro-preview review.)
+            if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+            const onCloseGen = this._socketGeneration;
+            this._reconnectTimer = setTimeout(() => {
+                this._reconnectTimer = null;
+                if (this._closing) return;
+                if (onCloseGen !== this._socketGeneration) return;
+                this.connect(this.sessionId).catch(err =>
+                    console.error(`[Split ${this.index}] Reconnect failed:`, err));
+            }, delay);
         };
-        
-        this.socket.onerror = (error) => {
+
+        ws.onerror = (error) => {
+            if (!isCurrent()) return;
             console.error(`[Split ${this.index}] WebSocket error:`, error);
         };
+    }
+
+    _startHeartbeat() {
+        // Splits maintain their own heartbeat — main socket's heartbeat is not
+        // a substitute, since an idle split socket can silently die from NAT
+        // timeout while the main socket stays alive on user traffic.
+        // Delegates to HeartbeatWatchdog (loaded via index.html before splits.js).
+        if (this._heartbeat) this._heartbeat.stop();
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+        this._heartbeat = new HeartbeatWatchdog({
+            socket: this.socket,
+            generation: this._socketGeneration,
+            currentGeneration: () => this._socketGeneration,
+            currentSocket: () => this.socket,
+            log: (m) => console.warn(`[Split ${this.index}] heartbeat:`, m),
+        });
+        this._heartbeat.start();
+        // Legacy refs — the watchdog owns the actual timers via stop().
+        this._heartbeatTimer = null;
+        this._pongTimer = null;
     }
 
     handleMessage(msg) {
@@ -221,7 +287,11 @@ class Split {
             case 'output':
                 this.terminal.write(msg.data);
                 break;
-                
+
+            case 'pong':
+                if (this._heartbeat) this._heartbeat.onPong();
+                break;
+
             case 'session_joined':
                 // Replay output buffer
                 if (msg.outputBuffer && msg.outputBuffer.length > 0) {
@@ -275,6 +345,26 @@ class Split {
     }
 
     disconnect() {
+        // Mark as user-initiated close so onclose's reconnect logic bails out.
+        this._closing = true;
+        // Cancel any deferred reconnect from a prior onclose so it cannot fire
+        // after a user-initiated setSession() and spawn a parallel socket.
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
+        if (this._heartbeat) {
+            this._heartbeat.stop();
+            this._heartbeat = null;
+        }
+        if (this._heartbeatTimer) {
+            clearInterval(this._heartbeatTimer);
+            this._heartbeatTimer = null;
+        }
+        if (this._pongTimer) {
+            clearTimeout(this._pongTimer);
+            this._pongTimer = null;
+        }
         if (this.socket) {
             try {
                 this.socket.close();
