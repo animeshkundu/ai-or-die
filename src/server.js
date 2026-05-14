@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
+const search = require('./utils/search');
 const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -1273,7 +1274,131 @@ class ClaudeCodeWebServer {
       });
     });
 
-    // PUT /api/files/content — Save edited file with hash conflict detection
+    // GET /api/search — SSE-streamed cross-file search via ripgrep (or grep
+    // fallback on Linux). One match per SSE event; capped at 500 matches per
+    // request and 50 matches per file. Rate-limited per IP at 10/minute.
+    //
+    // Query params (all optional except q):
+    //   q             string, required — search query
+    //   regex         '0' | '1' (default '0') — interpret q as regex
+    //   caseSensitive '0' | '1' (default '0') — case-sensitive match
+    //   glob          string — file glob filter (e.g. "*.{ts,tsx}");
+    //                          rejected if it contains shell metachars
+    //   path          string — root directory to search; defaults to baseFolder.
+    //                          Must pass validatePath() (no traversal).
+    //
+    // SSE event shapes (newline-terminated, two-newline-separated):
+    //   data: {"type":"start","backend":"rg"|"grep"}\n\n
+    //   data: {"type":"match","path":"src/foo.js","line":42,"col":5,"text":"..."}\n\n
+    //   data: {"type":"end","matches":7,"truncated":false}\n\n
+    //   data: {"type":"error","message":"..."}\n\n
+    this.app.get('/api/search', (req, res) => {
+      const q = req.query.q;
+      if (!q || typeof q !== 'string') {
+        return res.status(400).json({ error: 'q (query) is required' });
+      }
+      if (q.length > 1024) {
+        return res.status(400).json({ error: 'q is too long (max 1024 chars)' });
+      }
+
+      const useRegex = req.query.regex === '1';
+      const caseSensitive = req.query.caseSensitive === '1';
+      const glob = req.query.glob ? String(req.query.glob) : null;
+
+      // Glob validation: allow letters/digits, wildcard chars (* ? [ ]),
+      // braces ({} ,), dots, slashes, hyphens, underscores. Reject any
+      // shell metachar that might be misinterpreted by a future code
+      // path. Cap at 256 chars. Reject leading '!' (grep --include doesn't
+      // negate; ripgrep --glob does, but we keep semantics consistent).
+      if (glob !== null) {
+        if (glob.length > 256 || !/^[\w./*?[\]{},\-]+$/.test(glob) || glob.startsWith('!')) {
+          return res.status(400).json({ error: 'Invalid glob pattern' });
+        }
+      }
+
+      // Per-IP rate limit: 10 searches/minute. Lazy in-process state.
+      const ip = (req.ip || (req.connection && req.connection.remoteAddress) || 'unknown').toString();
+      if (!this._searchRateLimit) this._searchRateLimit = new Map();
+      const now = Date.now();
+      const windowMs = 60_000;
+      const maxPerWindow = 10;
+      const recent = (this._searchRateLimit.get(ip) || []).filter((t) => now - t < windowMs);
+      if (recent.length >= maxPerWindow) {
+        return res.status(429).json({
+          error: 'Too many searches',
+          retryAfterMs: windowMs - (now - recent[0]),
+        });
+      }
+      recent.push(now);
+      this._searchRateLimit.set(ip, recent);
+      // Bound map size — drop the oldest entry if we somehow accumulate
+      // 10000 IPs (DoS hardening).
+      if (this._searchRateLimit.size > 10_000) {
+        const firstKey = this._searchRateLimit.keys().next().value;
+        if (firstKey) this._searchRateLimit.delete(firstKey);
+      }
+
+      // Resolve and validate the search root.
+      const rawPath = req.query.path ? String(req.query.path) : this.baseFolder;
+      const validation = this.validatePath(rawPath);
+      if (!validation.valid) {
+        return res.status(403).json({ error: validation.error });
+      }
+      const cwd = validation.path;
+
+      // SSE response headers — NEVER buffered.
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');     // hint for proxies
+      // Flush headers immediately so the client EventSource opens.
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+      function send(obj) {
+        // SSE frame. Keep it terse — per-match overhead matters for big
+        // result sets. We don't escape `\n` in `text`; we strip CR/LF in
+        // the search util before this point.
+        try { res.write('data: ' + JSON.stringify(obj) + '\n\n'); } catch (_) {}
+      }
+
+      const handle = search.searchStream(q, {
+        cwd: cwd,
+        regex: useRegex,
+        caseSensitive: caseSensitive,
+        glob: glob,
+        maxPerFile: 50,
+        maxTotal: 500,
+        maxFilesize: '10M',
+        onMatch: (m) => {
+          // Make path relative to cwd so the client can resolve consistently.
+          const relPath = path.relative(cwd, m.path) || m.path;
+          send({
+            type: 'match',
+            path: relPath,
+            absPath: m.path,
+            line: m.line,
+            col: m.col,
+            text: m.text,
+          });
+        },
+        onError: (err) => {
+          send({ type: 'error', message: err && err.message ? String(err.message).slice(0, 300) : 'search error' });
+        },
+        onEnd: ({ matches, truncated, backend }) => {
+          send({ type: 'end', matches: matches, truncated: truncated, backend: backend });
+          try { res.end(); } catch (_) {}
+        },
+      });
+
+      send({ type: 'start', backend: handle.backend });
+
+      // Client disconnect → kill the child immediately so we don't keep
+      // ripgrep running after the user navigated away.
+      req.on('close', () => { handle.kill(); });
+    });
+
+
     this.app.put('/api/files/content', async (req, res) => {
       const { path: filePath, content, hash } = req.body;
       if (!filePath) return res.status(400).json({ error: 'Path is required' });

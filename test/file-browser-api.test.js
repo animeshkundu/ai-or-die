@@ -820,4 +820,154 @@ function encodeParam(val) {
       assert.strictEqual(res.status, 400);
     });
   });
+
+  // ===========================================================================
+  // GET /api/search — SSE-streamed cross-file search
+  // ===========================================================================
+  describe('GET /api/search', function () {
+    const search = require('../src/utils/search');
+    const searchAvailable = !!search.detectBackend();
+
+    /**
+     * Open an EventSource-style SSE connection and collect events until
+     * the server closes the stream or `timeoutMs` elapses.
+     */
+    function consumeSse(port, urlPath, timeoutMs) {
+      timeoutMs = timeoutMs || 10_000;
+      return new Promise((resolve, reject) => {
+        const opts = {
+          hostname: '127.0.0.1', port: port, path: urlPath, method: 'GET',
+          headers: { 'Accept': 'text/event-stream' },
+        };
+        const req = http.request(opts, (res) => {
+          if (res.statusCode !== 200) {
+            // Drain body, then resolve with error indicator so the test
+            // can assert on the status code (e.g. 429, 400, 403).
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+              const raw = Buffer.concat(chunks).toString('utf-8');
+              let body;
+              try { body = JSON.parse(raw); } catch (_) { body = raw; }
+              resolve({ status: res.statusCode, headers: res.headers, body: body, events: [] });
+            });
+            return;
+          }
+          let buf = '';
+          const events = [];
+          const t = setTimeout(() => {
+            try { req.destroy(); } catch (_) {}
+            resolve({ status: 200, headers: res.headers, events: events, timedOut: true });
+          }, timeoutMs);
+          res.setEncoding('utf-8');
+          res.on('data', (chunk) => {
+            buf += chunk;
+            // SSE frames are separated by \n\n. Each frame is one or more
+            // "data: ..." lines we concatenate.
+            let sep;
+            while ((sep = buf.indexOf('\n\n')) !== -1) {
+              const frame = buf.slice(0, sep);
+              buf = buf.slice(sep + 2);
+              const lines = frame.split('\n');
+              const dataLines = lines
+                .filter((l) => l.startsWith('data:'))
+                .map((l) => l.replace(/^data:\s?/, ''));
+              if (!dataLines.length) continue;
+              try {
+                events.push(JSON.parse(dataLines.join('\n')));
+              } catch (_) { /* ignore malformed */ }
+            }
+          });
+          res.on('end', () => {
+            clearTimeout(t);
+            resolve({ status: 200, headers: res.headers, events: events });
+          });
+          res.on('error', (err) => { clearTimeout(t); reject(err); });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
+    function realTmpDirS() {
+      try { return fs.realpathSync(tmpDir); } catch (_) { return tmpDir; }
+    }
+
+    (searchAvailable ? it : it.skip)('returns 400 when q is missing', async function () {
+      const r = await consumeSse(port, '/api/search');
+      assert.strictEqual(r.status, 400);
+    });
+
+    (searchAvailable ? it : it.skip)('returns 400 for an invalid glob (shell metachar)', async function () {
+      const r = await consumeSse(port, '/api/search?q=foo&glob=' + encodeParam(';rm -rf /'));
+      assert.strictEqual(r.status, 400);
+    });
+
+    (searchAvailable ? it : it.skip)('returns 403 when ?path escapes baseFolder', async function () {
+      const escape = path.resolve(realTmpDirS(), '..', 'outside-search');
+      const r = await consumeSse(port, '/api/search?q=foo&path=' + encodeParam(escape));
+      assert.strictEqual(r.status, 403);
+    });
+
+    (searchAvailable ? it : it.skip)('streams matches via SSE for fixed-string query', async function () {
+      const subDir = path.join(realTmpDirS(), 'searchcorpus');
+      fs.mkdirSync(subDir, { recursive: true });
+      fs.writeFileSync(path.join(subDir, 'a.txt'), 'alpha\nNEEDLE-MARK in line two\nbeta\n');
+      fs.writeFileSync(path.join(subDir, 'b.txt'), 'gamma\ndelta NEEDLE-MARK\n');
+      fs.writeFileSync(path.join(subDir, 'noisy.txt'), 'unrelated content here\n');
+
+      const r = await consumeSse(port,
+        '/api/search?q=' + encodeParam('NEEDLE-MARK') + '&path=' + encodeParam(subDir));
+      assert.strictEqual(r.status, 200);
+
+      const start = r.events.find((e) => e.type === 'start');
+      const matches = r.events.filter((e) => e.type === 'match');
+      const end = r.events.find((e) => e.type === 'end');
+
+      assert.ok(start, 'expected a start event');
+      assert.ok(end, 'expected an end event');
+      assert.ok(matches.length >= 2, 'expected at least 2 matches, got ' + matches.length);
+
+      // Verify shape of one match.
+      const m = matches[0];
+      assert.ok(typeof m.path === 'string');
+      assert.ok(typeof m.line === 'number');
+      assert.ok(typeof m.col === 'number');
+      assert.match(m.text, /NEEDLE-MARK/);
+
+      // Cleanup
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    (searchAvailable ? it : it.skip)('case-insensitive by default', async function () {
+      const subDir = path.join(realTmpDirS(), 'searchcase');
+      fs.mkdirSync(subDir, { recursive: true });
+      fs.writeFileSync(path.join(subDir, 'mixed.txt'), 'CamelCase needle here\n');
+
+      const r = await consumeSse(port,
+        '/api/search?q=' + encodeParam('camelcase') + '&path=' + encodeParam(subDir));
+      assert.strictEqual(r.status, 200);
+      const matches = r.events.filter((e) => e.type === 'match');
+      assert.ok(matches.length >= 1, 'expected at least 1 case-insensitive match');
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    (searchAvailable ? it : it.skip)('rate-limits at 10 requests per minute per IP', async function () {
+      // Fire 11 cheap requests sequentially. The 11th should 429.
+      const subDir = path.join(realTmpDirS(), 'ratelimit');
+      fs.mkdirSync(subDir, { recursive: true });
+      fs.writeFileSync(path.join(subDir, 'r.txt'), 'aaa\n');
+      let lastStatus;
+      for (let i = 0; i < 11; i++) {
+        const r = await consumeSse(port,
+          '/api/search?q=aaa&path=' + encodeParam(subDir), 5000);
+        lastStatus = r.status;
+        if (r.status === 429) break;
+      }
+      assert.strictEqual(lastStatus, 429, 'expected 429 within 11 requests');
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+  });
 });
