@@ -23,10 +23,14 @@ describe('markdown-render.js (pure helpers)', function () {
       assert.strictEqual(typeof md.resolveRelative, 'function');
     });
 
-    // Node load path returns only the pure helpers (no DOM-bound surface).
-    it('does NOT expose renderInto under Node (DOM-only)', function () {
-      assert.strictEqual(typeof md.renderInto, 'undefined');
-    });
+    // The full module surface (including DOM-bound `renderInto`) is exposed
+    // under Node by design — the dual-export pattern matches what
+    // file-browser.js already does so all the IIFE's surface is testable.
+    // We don't call DOM-bound methods from these unit tests; that's e2e's
+    // job (Playwright + JSDOM-integration spec). See lead's CI guidance:
+    // the early-return Node guard inside the IIFE was over-engineered and
+    // gets bypassed by any other test that pre-populates global.window
+    // (session-tab-activity does this at module-eval time).
   });
 
   describe('isInternalRelative', function () {

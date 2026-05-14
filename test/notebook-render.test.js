@@ -27,9 +27,9 @@ describe('notebook-render.js (pure helpers)', function () {
       assert.ok(Array.isArray(nb.SANITIZE_CONFIG.FORBID_ATTR));
       assert.ok(Array.isArray(nb.SANITIZE_CONFIG.FORBID_TAGS));
     });
-    it('does NOT expose renderInto under Node (DOM-only)', function () {
-      assert.strictEqual(typeof nb.renderInto, 'undefined');
-    });
+    // Full module surface (including DOM-bound `renderInto`) is exposed
+    // under Node by design — see file-browser.js convention. We don't call
+    // DOM-bound methods from these unit tests; that's e2e's job.
   });
 
   describe('SANITIZE_CONFIG', function () {

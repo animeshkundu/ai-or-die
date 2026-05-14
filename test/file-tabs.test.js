@@ -32,9 +32,9 @@ describe('file-tabs.js (pure helpers)', function () {
       assert.ok(ft.STORAGE_VERSION >= 1);
     });
 
-    it('does NOT expose the TabManager class under Node (DOM-only)', function () {
-      assert.strictEqual(typeof ft.TabManager, 'undefined');
-    });
+    // Full module surface (including the DOM-bound TabManager class) is
+    // exposed under Node by design — matches file-browser.js convention.
+    // DOM/UI paths exercised by Playwright e2e (#11).
   });
 
   describe('storageKey', function () {

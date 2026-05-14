@@ -23,9 +23,9 @@ describe('file-search.js (pure helpers)', function () {
       assert.strictEqual(typeof fs.SEARCH_ENDPOINT, 'string');
       assert.strictEqual(fs.SEARCH_ENDPOINT, '/api/search');
     });
-    it('does NOT expose SearchPanel under Node (DOM-only)', function () {
-      assert.strictEqual(typeof fs.SearchPanel, 'undefined');
-    });
+    // Full module surface (including DOM-bound SearchPanel) is exposed
+    // under Node by design — matches file-browser.js convention. DOM/SSE
+    // paths exercised by Playwright e2e (#11).
   });
 
   describe('buildSearchUrl', function () {
@@ -58,8 +58,12 @@ describe('file-search.js (pure helpers)', function () {
     });
 
     it('appends glob param URL-encoded', function () {
+      // encodeURIComponent leaves `*` unencoded per ECMA-262 (it's in the
+      // "unreserved" set per RFC 3986). The server's glob validator accepts
+      // raw `*`, so this is correct — assert what the spec'd behaviour
+      // actually produces.
       var u = fs.buildSearchUrl('foo', { glob: '*.{ts,tsx}' });
-      assert.ok(u.indexOf('glob=%2A.%7Bts%2Ctsx%7D') !== -1, 'glob encoded: ' + u);
+      assert.ok(u.indexOf('glob=*.%7Bts%2Ctsx%7D') !== -1, 'glob encoded: ' + u);
     });
 
     it('appends path param URL-encoded', function () {
@@ -78,8 +82,9 @@ describe('file-search.js (pure helpers)', function () {
         path: '/p', token: 't',
       });
       // Order is: q, regex, caseSensitive, glob, path, token.
+      // `*` stays unencoded per encodeURIComponent (ECMA-262 unreserved).
       assert.strictEqual(u,
-        '/api/search?q=foo&regex=1&caseSensitive=1&glob=%2A.ts&path=%2Fp&token=t');
+        '/api/search?q=foo&regex=1&caseSensitive=1&glob=*.ts&path=%2Fp&token=t');
     });
 
     it('returns empty string for falsy query', function () {
@@ -109,12 +114,15 @@ describe('file-search.js (pure helpers)', function () {
       assert.strictEqual(fs.formatLocation('src/foo.js', null, 5), 'src/foo.js');
     });
 
-    it('handles zero values (line/col 0 is technically valid)', function () {
-      // 0 is a falsy line; current impl treats it as missing. Document
-      // this so a future change is intentional.
-      assert.strictEqual(fs.formatLocation('src/foo.js', 0), 'src/foo.js');
-      // col 0 is preserved as ':0'.
+    it('handles zero values verbatim (line/col 0 is preserved as-is)', function () {
+      // formatLocation only treats null/undefined/'' as "missing" — a
+      // numeric 0 is preserved. ripgrep emits 1-based line numbers in
+      // practice so a real-world line 0 shouldn't occur, but if a future
+      // search backend ever yields 0-indexed positions we render them
+      // faithfully rather than silently dropping them.
+      assert.strictEqual(fs.formatLocation('src/foo.js', 0), 'src/foo.js:0');
       assert.strictEqual(fs.formatLocation('src/foo.js', 1, 0), 'src/foo.js:1:0');
+      assert.strictEqual(fs.formatLocation('src/foo.js', 0, 0), 'src/foo.js:0:0');
     });
 
     it('handles empty/null path defensively', function () {

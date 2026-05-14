@@ -22,9 +22,9 @@ describe('file-diff.js (pure helpers)', function () {
       assert.strictEqual(typeof fd.buildContentUrl, 'function');
       assert.strictEqual(typeof fd.parseGitShowError, 'function');
     });
-    it('does NOT expose DiffViewerPanel under Node (DOM-only)', function () {
-      assert.strictEqual(typeof fd.DiffViewerPanel, 'undefined');
-    });
+    // Full module surface (including DOM-bound DiffViewerPanel) is exposed
+    // under Node by design — matches file-browser.js convention. DOM/Monaco
+    // paths exercised by Playwright e2e (#11).
   });
 
   describe('buildGitShowUrl', function () {

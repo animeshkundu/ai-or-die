@@ -1975,9 +1975,14 @@
     }
 
     // Monaco needs a host element with non-zero dimensions; .fb-code-monaco
-    // gives it a flex/min-height contract via file-browser.css.
+    // gives it a flex/min-height contract via file-browser.css. The legacy
+    // .fb-code-content class is preserved as an alias so e2e/tests/14-
+    // file-browser.spec.js's "code preview is reachable" locator continues
+    // to find this surface — the contract that spec covers (a code file
+    // opened in the file browser shows its content) still holds; only the
+    // renderer changed (#17). Both classes intentionally on the same node.
     var host = document.createElement('div');
-    host.className = 'fb-code-monaco';
+    host.className = 'fb-code-monaco fb-code-content';
     container.appendChild(host);
 
     var loading = document.createElement('div');
