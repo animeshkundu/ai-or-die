@@ -469,6 +469,90 @@
   border-radius: var(--radius-md);
 }
 
+/* ---- Multi-file Tabs (file-tabs.js) ----
+   The tab strip sits above the content area inside .fb-preview-container.
+   Active tab uses --accent-soft as a subtle highlight; dirty dot mirrors the
+   editor-toolbar dirty indicator pattern. */
+.fb-tabs-host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fb-tabs-strip {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-secondary);
+  flex-shrink: 0;
+  /* No gap so adjacent tabs share their right-borders cleanly. */
+}
+.fb-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  border-right: 1px solid var(--border-default);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  user-select: none;
+  white-space: nowrap;
+  max-width: 200px;
+  position: relative;
+}
+.fb-tab:hover { background: var(--surface-tertiary); }
+.fb-tab.active {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  border-bottom: 2px solid var(--accent-default);
+  margin-bottom: -1px;
+}
+.fb-tab.dragging { opacity: 0.5; }
+.fb-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fb-tab-dirty-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-warning, #e5c07b);
+  flex-shrink: 0;
+}
+.fb-tab-close {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 2px;
+  color: var(--text-muted);
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.fb-tab-close:hover {
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+}
+.fb-tabs-content {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.fb-tab-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
 /* ---- CSV Preview ---- */
 .fb-csv-wrapper {
   overflow-x: auto;

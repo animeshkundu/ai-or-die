@@ -245,6 +245,7 @@ Stream a file for download or inline preview.
 | `file-editor.js` | `src/public/file-editor.js` | FileEditorPanel (Monaco Editor integration; ADR-0016) |
 | `file-viewer-monaco.js` | `src/public/file-viewer-monaco.js` | Monaco AMD loader, theme map, `createCodeViewer` factory (ADR-0016) |
 | `monaco-worker-shim.js` | `src/public/vendor/monaco-worker-shim.js` | Same-origin Web Worker that bootstraps Monaco language workers from CDN |
+| `file-tabs.js` | `src/public/file-tabs.js` | TabManager — multi-file tabs above the preview/editor area; per-tab FilePreviewPanel/FileEditorPanel instances; localStorage persistence keyed by Claude session id |
 | `file-browser.css` | `src/public/components/file-browser.css` | Panel layout, file list, preview, editor styles |
 
 ### FileBrowserPanel

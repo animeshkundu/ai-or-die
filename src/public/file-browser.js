@@ -239,6 +239,7 @@
     this._panelEl = null;
     this._backdropEl = null;
     this._previewPanel = null;
+    this._tabManager = null; // Lazy-initialized on first preview/editor open.
 
     this._buildDOM();
   }
@@ -826,7 +827,14 @@
     // different file doesn't inherit a stale target line.
     var jumpTo = this._pendingJumpTo || null;
     this._pendingJumpTo = null;
-    this._previewPanel.showPreview(item, this._currentPath, { jumpTo: jumpTo });
+    var tm = this._ensureTabManager();
+    if (tm) {
+      tm.openFile(item.path, 'preview', { item: item, jumpTo: jumpTo });
+    } else {
+      // TabManager unavailable — fall through to the legacy single-pane path
+      // so previewing still works in degraded environments.
+      this._previewPanel.showPreview(item, this._currentPath, { jumpTo: jumpTo });
+    }
     this._renderBreadcrumbs();
     this._announceToScreenReader('Previewing ' + item.name);
   };
@@ -867,7 +875,19 @@
     this._previewContainer.style.display = '';
     this._panelEl.classList.add('editor-active');
 
-    // Clear preview container and render editor
+    var tm = this._ensureTabManager();
+    if (tm) {
+      var tab = tm.openFile(item.path, 'editor', { item: item, content: content, hash: hash });
+      // Track the active editor panel so the existing back-button + Escape
+      // flows that reference _editorPanel keep working unchanged.
+      if (tab && tab.panel) self._editorPanel = tab.panel;
+      this._announceToScreenReader('Editing ' + item.name);
+      this._renderBreadcrumbs();
+      this._adjustTerminal();
+      return;
+    }
+
+    // Legacy single-pane fallback (TabManager unavailable).
     this._previewContainer.innerHTML = '';
 
     if (window.fileEditor && window.fileEditor.FileEditorPanel) {
@@ -885,11 +905,50 @@
       this._editorPanel.openEditor(item.path, content, hash);
       this._announceToScreenReader('Editing ' + item.name);
     } else {
-      this._previewContainer.innerHTML = '<div class="fb-preview-error">Editor not available. Ace Editor may not have loaded.</div>';
+      this._previewContainer.innerHTML = '<div class="fb-preview-error">Editor not available.</div>';
     }
 
     this._renderBreadcrumbs();
     this._adjustTerminal();
+  };
+
+  // TabManager (file-tabs.js) is created lazily on the first preview/editor
+  // open so panels with no tab activity never pay the construction cost.
+  // Returns null if window.fileTabs hasn't loaded — caller falls back to the
+  // legacy single-pane flow.
+  FileBrowserPanel.prototype._ensureTabManager = function () {
+    if (this._tabManager) return this._tabManager;
+    if (!window.fileTabs || typeof window.fileTabs.TabManager !== 'function') return null;
+    var self = this;
+    var sessionKey = (this.app && this.app.currentClaudeSessionId) ?
+      this.app.currentClaudeSessionId : 'default';
+    try {
+      this._tabManager = new window.fileTabs.TabManager({
+        containerEl: this._previewContainer,
+        authFetch: this.authFetch,
+        sessionKey: sessionKey,
+        iconSet: window.icons || null,
+        onActiveChange: function (info) {
+          // Surface the active editor panel so legacy back-button flows
+          // (which call self._editorPanel.close()) still work.
+          if (info && info.tab && info.tab.mode === 'editor' && info.tab.panel) {
+            self._editorPanel = info.tab.panel;
+          } else {
+            self._editorPanel = null;
+          }
+        },
+        onAllClosed: function () {
+          self._editorPanel = null;
+          self._showBrowseView();
+        },
+      });
+    } catch (e) {
+      // Construction error (e.g. localStorage broken in private mode) — log
+      // once and fall through to legacy single-pane behaviour.
+      if (typeof console !== 'undefined') console.warn('TabManager init failed:', e);
+      return null;
+    }
+    return this._tabManager;
   };
 
   FileBrowserPanel.prototype._handleBack = function () {
