@@ -1108,6 +1108,221 @@ function encodeParam(val) {
       fs.rmSync(subDir, { recursive: true, force: true });
     });
   });
+
+  // ===========================================================================
+  // GET /api/files/watch — SSE-streamed fs-watcher events (ADR-0017 / #100)
+  // ===========================================================================
+  describe('GET /api/files/watch', function () {
+    function realTmpDirW() {
+      try { return fs.realpathSync(tmpDir); } catch (_) { return tmpDir; }
+    }
+
+    /**
+     * Open an SSE connection that stays open until `predicate(events)` returns
+     * truthy or `timeoutMs` elapses, then closes the connection and resolves
+     * with { status, events }. Used by tests that need to wait for specific
+     * events from the watcher (which are async and arrive after the fs-write).
+     */
+    function consumeSseUntil(port, urlPath, predicate, timeoutMs) {
+      timeoutMs = timeoutMs || 5000;
+      return new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.0.0.1', port: port, path: urlPath, method: 'GET',
+          headers: { 'Accept': 'text/event-stream' },
+        }, (res) => {
+          if (res.statusCode !== 200) {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+              const raw = Buffer.concat(chunks).toString('utf-8');
+              let body;
+              try { body = JSON.parse(raw); } catch (_) { body = raw; }
+              resolve({ status: res.statusCode, events: [], body, request: req });
+            });
+            return;
+          }
+          let buf = '';
+          const events = [];
+          let resolved = false;
+          const t = setTimeout(() => {
+            if (resolved) return;
+            resolved = true;
+            try { req.destroy(); } catch (_) {}
+            resolve({ status: 200, events, timedOut: true, request: req });
+          }, timeoutMs);
+          res.setEncoding('utf-8');
+          res.on('data', (chunk) => {
+            buf += chunk;
+            let sep;
+            while ((sep = buf.indexOf('\n\n')) !== -1) {
+              const frame = buf.slice(0, sep);
+              buf = buf.slice(sep + 2);
+              const dataLines = frame.split('\n')
+                .filter((l) => l.startsWith('data:'))
+                .map((l) => l.replace(/^data:\s?/, ''));
+              if (!dataLines.length) continue;
+              try {
+                const evt = JSON.parse(dataLines.join('\n'));
+                events.push(evt);
+                if (predicate(events) && !resolved) {
+                  resolved = true;
+                  clearTimeout(t);
+                  try { req.destroy(); } catch (_) {}
+                  resolve({ status: 200, events, request: req });
+                }
+              } catch (_) {}
+            }
+          });
+          res.on('end', () => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(t);
+            resolve({ status: 200, events, request: req });
+          });
+          res.on('error', (err) => {
+            if (resolved) return;
+            resolved = true;
+            clearTimeout(t);
+            reject(err);
+          });
+        });
+        req.on('error', (err) => { if (!resolved) reject(err); });
+        req.end();
+      });
+    }
+
+    /** Open an SSE connection without waiting — caller closes it. */
+    function openSse(port, urlPath) {
+      return new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.0.0.1', port: port, path: urlPath, method: 'GET',
+          headers: { 'Accept': 'text/event-stream' },
+        }, (res) => {
+          resolve({ status: res.statusCode, request: req, response: res });
+          // Drain so the connection stays alive (no backpressure trigger).
+          res.on('data', () => {});
+          res.on('error', () => {});
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
+    it('returns 400 when path is missing', async function () {
+      const r = await consumeSseUntil(port, '/api/files/watch', () => true, 1000);
+      assert.strictEqual(r.status, 400);
+    });
+
+    it('returns 403 when path escapes baseFolder', async function () {
+      const escape = path.resolve(realTmpDirW(), '..', 'outside-watch');
+      const r = await consumeSseUntil(port, '/api/files/watch?path=' + encodeParam(escape), () => true, 1000);
+      assert.strictEqual(r.status, 403);
+    });
+
+    it('returns 404 when path does not exist', async function () {
+      const missing = path.join(realTmpDirW(), 'definitely-not-here-' + Date.now());
+      const r = await consumeSseUntil(port, '/api/files/watch?path=' + encodeParam(missing), () => true, 1000);
+      assert.strictEqual(r.status, 404);
+    });
+
+    it('returns 400 when path is a file, not a directory', async function () {
+      const f = path.join(realTmpDirW(), 'watch-not-a-dir.txt');
+      fs.writeFileSync(f, 'x');
+      const r = await consumeSseUntil(port, '/api/files/watch?path=' + encodeParam(f), () => true, 1000);
+      assert.strictEqual(r.status, 400);
+      try { fs.unlinkSync(f); } catch (_) {}
+    });
+
+    it('streams add → change → unlink for files in the watched dir', async function () {
+      const subDir = path.join(realTmpDirW(), 'watchcorpus-evt');
+      fs.mkdirSync(subDir, { recursive: true });
+
+      // Start the SSE consumer first; once we see {type:'start'} we know
+      // chokidar's initial scan finished and any subsequent fs writes
+      // will surface as events.
+      const consumer = consumeSseUntil(
+        port,
+        '/api/files/watch?path=' + encodeParam(subDir),
+        (events) => events.some((e) => e.type === 'unlink'),
+        5000
+      );
+
+      // Wait briefly so the watcher has a chance to start before we write.
+      // (chokidar's 'ready' fires before our test would send the first
+      // write, but we add a tiny buffer to be safe across CI flake.)
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      const target = path.join(subDir, 'changeling.txt');
+      fs.writeFileSync(target, 'first');
+      // Wait > debounce window before mutating again.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      fs.writeFileSync(target, 'second');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      fs.unlinkSync(target);
+
+      const r = await consumer;
+      assert.strictEqual(r.status, 200, 'expected 200 SSE');
+      const types = r.events.map((e) => e.type);
+
+      // The start event must appear before any fs events.
+      assert.ok(types.includes('start'), 'expected start event');
+      // chokidar may emit one 'add' OR one 'add' + one 'change' depending on
+      // platform / write-finish timing. Assert that we saw at least the
+      // canonical lifecycle endpoints.
+      assert.ok(types.includes('add'), 'expected add event for new file');
+      assert.ok(types.includes('change'), 'expected change event for second write');
+      assert.ok(types.includes('unlink'), 'expected unlink event');
+
+      // Validate event-payload shape on a non-unlink sample.
+      const change = r.events.find((e) => e.type === 'change');
+      assert.ok(change, 'change event must exist');
+      assert.ok(change.path && change.path.endsWith('/changeling.txt'),
+        'change event path must end with the file basename, got ' + change.path);
+      assert.strictEqual(typeof change.mtime, 'number',
+        'change event must include numeric mtime; got ' + JSON.stringify(change));
+      assert.ok(typeof change.hash === 'string' && /^[0-9a-f]{32}$/.test(change.hash),
+        'change event must include md5 hash; got ' + change.hash);
+
+      // unlink should NOT include mtime/hash (file is gone).
+      const unlink = r.events.find((e) => e.type === 'unlink');
+      assert.strictEqual(unlink.mtime, null, 'unlink mtime must be null');
+      assert.strictEqual(unlink.hash, undefined, 'unlink must not include hash');
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    it('rate-limits at 5 concurrent watchers per IP (returns 429 on 6th)', async function () {
+      const subDir = path.join(realTmpDirW(), 'watchcorpus-rl');
+      fs.mkdirSync(subDir, { recursive: true });
+
+      // Open 5 watchers and HOLD them open. The 6th must 429.
+      const open5 = [];
+      for (let i = 0; i < 5; i++) {
+        open5.push(await openSse(port, '/api/files/watch?path=' + encodeParam(subDir)));
+      }
+      // All 5 should be accepted.
+      for (let i = 0; i < 5; i++) {
+        assert.strictEqual(open5[i].status, 200,
+          `slot ${i + 1} expected 200, got ${open5[i].status}`);
+      }
+
+      // 6th attempt → 429.
+      const sixth = await consumeSseUntil(port,
+        '/api/files/watch?path=' + encodeParam(subDir), () => true, 1000);
+      assert.strictEqual(sixth.status, 429,
+        'expected 429 on 6th concurrent watcher, got ' + sixth.status);
+
+      // Close the 5 holders so the counter decrements + later tests aren't
+      // blocked.
+      for (const h of open5) {
+        try { h.request.destroy(); } catch (_) {}
+      }
+      // Give the close handlers a tick to decrement.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+  });
 });
 
 // ===========================================================================
@@ -1186,5 +1401,42 @@ function encodeParam(val) {
     const res200 = await request(port, 'GET',
       `/api/files/stat?path=${encodeParam(target)}&token=${encodeParam(TOKEN)}`);
     assert.strictEqual(res200.status, 200);
+  });
+
+  // ADR-0017 explicitly says /api/files/watch uses the same ?token= auth
+  // pattern as PDF.js / image / iframe-fallback URLs (EventSource cannot
+  // carry custom Authorization headers, same constraint as those).
+  it('rejects /api/files/watch without auth (401)', async function () {
+    const watchDir = realTmpDir();
+    const res = await request(port, 'GET',
+      `/api/files/watch?path=${encodeParam(watchDir)}`);
+    assert.strictEqual(res.status, 401);
+  });
+
+  it('accepts /api/files/watch with valid ?token= (200 SSE start)', async function () {
+    // Open the connection just long enough to confirm we get past auth
+    // and into the SSE stream, then close.
+    const watchDir = realTmpDir();
+    const reqOpts = {
+      hostname: '127.0.0.1', port: port,
+      path: `/api/files/watch?path=${encodeParam(watchDir)}&token=${encodeParam(TOKEN)}`,
+      method: 'GET', headers: { 'Accept': 'text/event-stream' },
+    };
+    const status = await new Promise((resolve, reject) => {
+      const req = http.request(reqOpts, (res) => {
+        // Drain so we don't trigger backpressure.
+        res.on('data', () => {});
+        // Close immediately after we've seen the status line; the
+        // server's req.on('close') handler will release the watcher.
+        setImmediate(() => {
+          try { req.destroy(); } catch (_) {}
+          resolve(res.statusCode);
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
+    assert.strictEqual(status, 200,
+      'expected 200 SSE with valid token, got ' + status);
   });
 });

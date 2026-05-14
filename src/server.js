@@ -7,6 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { execFile } = require('child_process');
 const search = require('./utils/search');
+const FileWatcher = require('./utils/file-watcher');
 const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -1499,6 +1500,162 @@ class ClaudeCodeWebServer {
       // Client disconnect → kill the child immediately so we don't keep
       // ripgrep running after the user navigated away.
       req.on('close', () => { handle.kill(); });
+    });
+
+    // GET /api/files/watch — SSE-streamed file-system change notifications
+    // via chokidar. Per ADR-0017 (#100): proactive sync between agent edits
+    // and user-open Monaco tabs / file-browser listings, complementing the
+    // hash-based 409-Conflict-on-save backstop from ADR-0012.
+    //
+    // Query params:
+    //   path   string, required — directory to watch (typically session
+    //                             cwd). Funneled through validatePath().
+    //
+    // Auth: ?token= (EventSource cannot carry custom headers; same
+    // constraint as PDF.js worker / `<img src>` / `<iframe src>` per #96).
+    //
+    // Concurrent-watcher cap: 5 per IP. New mechanic vs the per-min
+    // sliding-window in /api/search and /api/files/git-show — chokidar
+    // watchers consume kernel-level resources (FSEvents on macOS, inotify
+    // on Linux, RDC on Windows) that don't decay over time, so the right
+    // bound is "open at once" not "opens per minute". Tracked via
+    // _activeWatchersByIp Map<ip, count>; decremented on disconnect.
+    //
+    // Per-session emission cap: 100 events/min/session via the existing
+    // _perIpRateLimit helper, applied at SSE emit time. Coalescing inside
+    // FileWatcher (100ms per-path debounce) is the first line of defense;
+    // this cap catches pathological cases per ADR-0017 §Rate limiting.
+    //
+    // SSE event shapes (newline-terminated, two-newline-separated):
+    //   data: {"type":"start"}\n\n
+    //   data: {"type":"add"|"change"|"unlink","path":"...","mtime":<ms>,"hash"?:"..."}\n\n
+    //   data: {"type":"error","message":"..."}\n\n
+    //   data: {"type":"end","reason":"client-disconnect"|"error"|"watcher-error"}\n\n
+    this.app.get('/api/files/watch', async (req, res) => {
+      const rawPath = req.query.path;
+      if (!rawPath || typeof rawPath !== 'string') {
+        return res.status(400).json({ error: 'path is required' });
+      }
+
+      // Concurrent-watcher cap (5/IP) — must be enforced BEFORE we open
+      // the chokidar watcher, otherwise an attacker could exhaust kernel
+      // file-watch resources by opening 1000 connections faster than they
+      // close.
+      const ip = (req.ip || (req.connection && req.connection.remoteAddress) || 'unknown').toString();
+      if (!this._activeWatchersByIp) this._activeWatchersByIp = new Map();
+      const currentCount = this._activeWatchersByIp.get(ip) || 0;
+      const MAX_CONCURRENT_WATCHERS = 5;
+      if (currentCount >= MAX_CONCURRENT_WATCHERS) {
+        return res.status(429).json({
+          error: 'Too many concurrent file watchers',
+          activeWatchers: currentCount,
+          maxAllowed: MAX_CONCURRENT_WATCHERS,
+        });
+      }
+
+      // Path validation — same realpath canonicalization as every other
+      // /api/files/* endpoint (commit 158c1c2). Symlinks resolved before
+      // the within-base check; rejects traversal + symlink-escape.
+      const validation = this.validatePath(rawPath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+      const watchRoot = validation.path;
+
+      // Stat the resolved path — must be a directory.
+      try {
+        const st = fs.statSync(watchRoot);
+        if (!st.isDirectory()) {
+          return res.status(400).json({ error: 'path must be a directory' });
+        }
+      } catch (err) {
+        if (err.code === 'ENOENT') return res.status(404).json({ error: 'path not found' });
+        return res.status(500).json({ error: 'stat failed', message: err.message });
+      }
+
+      // Increment the concurrent-watcher counter BEFORE async work so a
+      // burst of simultaneous requests can't all pass the cap check
+      // before any of them increment.
+      this._activeWatchersByIp.set(ip, currentCount + 1);
+
+      // SSE response headers — flush immediately so the client EventSource
+      // resolves its onopen handler.
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform, no-store');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+      function send(obj) {
+        try { res.write('data: ' + JSON.stringify(obj) + '\n\n'); } catch (_) {}
+      }
+
+      let watcher;
+      let watcherClosed = false;
+      let emittedEvents = 0;
+      const debounceMs = parseInt(process.env.FS_WATCHER_DEBOUNCE_MS, 10) || 100;
+      const self = this;
+
+      function decrementWatcherCount() {
+        if (!self._activeWatchersByIp) return;
+        const c = self._activeWatchersByIp.get(ip) || 0;
+        if (c <= 1) self._activeWatchersByIp.delete(ip);
+        else self._activeWatchersByIp.set(ip, c - 1);
+      }
+
+      function cleanup(reason) {
+        if (watcherClosed) return;
+        watcherClosed = true;
+        decrementWatcherCount();
+        if (watcher) {
+          watcher.close().catch(() => {});
+        }
+        try {
+          send({ type: 'end', reason: reason });
+          res.end();
+        } catch (_) {}
+      }
+
+      try {
+        watcher = new FileWatcher(watchRoot, { debounceMs: debounceMs });
+
+        watcher.on('event', (evt) => {
+          if (watcherClosed) return;
+          // Per-session emission cap (100/min). The shared limiter is
+          // bucketed by IP; this is good enough since each watcher is
+          // 1 EventSource and we already cap at 5/IP. Pathological case
+          // (find -exec touch over 10k files) is bounded.
+          const rl = self._perIpRateLimit(req, 'watch-emit', 100, 60_000);
+          if (rl) {
+            // Drop the event silently — we don't want to fill the SSE
+            // channel with rate-limit errors during a legitimate burst.
+            // Client will catch the missing change via the existing
+            // mtime-drift / 409-Conflict-on-save backstop.
+            return;
+          }
+          emittedEvents += 1;
+          send(evt);
+        });
+
+        watcher.on('error', (err) => {
+          send({ type: 'error', message: (err && err.message) || String(err) });
+          // Don't terminate on transient chokidar errors (perm-denied on
+          // walk, etc.) — surface them but keep the channel open. Only
+          // terminate on req close or unrecoverable.
+        });
+
+        await watcher.start();
+        send({ type: 'start' });
+      } catch (err) {
+        cleanup('watcher-error');
+        // Headers already sent; we surfaced via SSE error+end. Don't try
+        // to write a JSON body now.
+        return;
+      }
+
+      // Client disconnect → close the watcher, decrement the per-IP
+      // counter, and free kernel watch resources immediately.
+      req.on('close', () => cleanup('client-disconnect'));
     });
 
 
