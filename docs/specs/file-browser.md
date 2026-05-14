@@ -241,12 +241,16 @@ Stream a file for download or inline preview.
 
 | File | Source | Description |
 |------|--------|-------------|
-| `file-browser.js` | `src/public/file-browser.js` | FileBrowserPanel, FilePreviewPanel, TerminalPathDetector |
-| `file-editor.js` | `src/public/file-editor.js` | FileEditorPanel (Monaco Editor integration; ADR-0016) |
-| `file-viewer-monaco.js` | `src/public/file-viewer-monaco.js` | Monaco AMD loader, theme map, `createCodeViewer` factory (ADR-0016) |
-| `monaco-worker-shim.js` | `src/public/vendor/monaco-worker-shim.js` | Same-origin Web Worker that bootstraps Monaco language workers from CDN |
-| `file-tabs.js` | `src/public/file-tabs.js` | TabManager — multi-file tabs above the preview/editor area; per-tab FilePreviewPanel/FileEditorPanel instances; localStorage persistence keyed by Claude session id |
-| `file-browser.css` | `src/public/components/file-browser.css` | Panel layout, file list, preview, editor styles |
+| `file-browser.js` | `src/public/file-browser.js` | `FileBrowserPanel`, `FilePreviewPanel`, `TerminalPathDetector`, `attachLinkProvider` |
+| `file-editor.js` | `src/public/file-editor.js` | `FileEditorPanel` (Monaco-based; ADR-0016) |
+| `file-viewer-monaco.js` | `src/public/file-viewer-monaco.js` | `loadMonaco()`, `createCodeViewer()`, `getMonacoLanguage()`, `resolveMonacoTheme()`, `applyThemeToAll()`, `renderPlainTextFallback()` |
+| `markdown-render.js` | `src/public/markdown-render.js` | `marked` + `DOMPurify` hook + lazy mermaid + lazy KaTeX |
+| `file-tabs.js` | `src/public/file-tabs.js` | `TabManager` — multi-file tab strip, per-tab Monaco models, localStorage persistence keyed by session id |
+| `file-pdf-viewer.js` | `src/public/file-pdf-viewer.js` | PDF.js wrapper with thin viewer chrome (prev/next/zoom/fit) |
+| `monaco-worker-shim.js` | `src/public/vendor/monaco-worker-shim.js` | Same-origin Web Worker; bootstraps Monaco's CDN worker via `importScripts` (gated by exact-prefix base-URL allowlist; ADR-0016) |
+| `panzoom.min.js` | `src/public/vendor/panzoom.min.js` | Vendored `@panzoom/panzoom` 4.6.0 (~10 KB MIT) |
+| `pdfjs/` | `src/public/vendor/pdfjs/` | Vendored PDF.js 4.x distribution (~600 KB gz) |
+| `file-browser.css` | `src/public/components/file-browser.css` | Panel layout, file list, preview, editor, tabs, viewers |
 
 ### FileBrowserPanel
 
@@ -311,30 +315,86 @@ Renders file previews based on MIME category. Displayed within the file browser 
 |--------|-------------|
 | `showPreview(fileInfo)` | Dispatch to the appropriate renderer based on `mimeCategory` |
 
-### TerminalPathDetector
+### TerminalPathDetector and xterm Link Provider
 
-Hooks into the xterm.js right-click event to detect file paths in terminal output.
+Two parallel mechanisms surface file paths inside terminal output as actionable affordances. They share the same regex and click handler so behaviour is consistent.
 
-- Regex patterns match Unix paths (`/home/user/file.js`), Windows paths (`C:\Users\file.js`), and relative paths (`./src/index.js`).
-- On right-click, the context menu appears immediately with grayed-out file items. An async `GET /api/files/stat` call enables the items once the path is validated.
+**`TerminalPathDetector` — right-click on selected text.**
+- Hooks the xterm.js `contextmenu` event. On right-click, the context menu appears immediately with grayed-out file items; an async `GET /api/files/stat` enables them once the path is validated.
+- Regex matches Unix paths (`/home/user/file.js`), Windows paths (`C:\Users\file.js`), relative paths (`./src/index.js`), and bare relative paths with a known extension (`src/foo.js`). `path:line` and `path:line:col` suffixes (Claude/Codex emit these) are captured separately and used for cursor placement.
 - Context menu items: "Open in File Browser", "Open in Editor", "Download".
 - Reuses the existing `#termContextMenu` and `.ctx-item` CSS patterns.
+
+**`attachLinkProvider` — hover-and-click on every emitted line.**
+- Wires `xterm.registerLinkProvider({ provideLinks(bufferLineNumber, callback) { ... } })`. **No network I/O happens inside `provideLinks`** — every visible line gets scanned on every render. Validation against `/api/files/stat` is deferred to the click handler. Without this, an `npm install` log scrolling hundreds of lines per second would saturate the browser's six-connection-per-host cap and freeze the terminal (peer-review HIGH-1).
+- Same regex as `TerminalPathDetector` plus an extension allowlist precondition that excludes version-shaped tokens (`1.2.3`), npm specifiers without an extension (`react/jsx-runtime`), and CLI flags (`--foo=bar/baz`).
+- `WebLinksAddon` continues to handle URL detection; this provider is additive (paths only).
+- Click handler: resolve relatives against the active session cwd, call `/api/files/stat`; on 200 → `app.openFileInViewer(path, line, col)`; on 404 → small toast.
 
 ---
 
 ## Preview Types
 
+Renderer dispatch is by `mimeCategory` inside `FilePreviewPanel.showPreview()`. Each renderer that wires document-level event listeners (Panzoom, Monaco, PDF.js, mermaid containers) registers a teardown function on `FilePreviewPanel._activeDisposers[]`; `showPreview()` drains them on every preview switch so listeners do not accumulate.
+
 | Category | File Extensions | Rendering Method |
 |----------|----------------|------------------|
-| Image | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`, `.ico` | `<img>` element via `/api/files/download?path=...&inline=1` |
+| Image | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`, `.ico` | `<img>` inside `.fb-img-viewport`, with [Panzoom](https://timmywil.com/panzoom/) (~10 KB, vendored at `/vendor/panzoom.min.js`, lazy-loaded) wired for pan + wheel-zoom + pinch. Header buttons: Fit, 100%, Reset. Native browser image-drag is suppressed so the pan gesture wins. Panzoom failure degrades to a static `<img>` with no controls. |
+| Markdown | `.md`, `.mdx`, `.markdown` | `marked` + `DOMPurify` (both already vendored). Source/Rendered toggle in the preview header. The DOMPurify `afterSanitizeAttributes` hook rewrites relative `<img src="./...">` to `/api/files/download?path=<resolved>&inline=1` and tags relative `<a href="./...">` with `data-fb-internal-path` for click-to-open inside the panel. **Mermaid** code fences trigger a lazy import of mermaid from CDN (~500 KB, only on detect). **KaTeX** math (`$...$` / `$$...$$`) triggers a lazy import of KaTeX (~70 KB, only on detect). Both gracefully badge "preview unavailable" if the import fails. |
 | HTML | `.html`, `.htm`, `.xhtml` | Sandboxed `<iframe sandbox="" referrerpolicy="no-referrer">` with srcdoc, plus a CSP `<meta>` (`default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:;`). `<base>` and `<meta http-equiv="refresh">` tags are stripped before render. Header offers a Source⇄Rendered toggle backed by Monaco read-only. Files > 1 MB disable rendered view and show source only. |
-| Text / Code | `.js`, `.ts`, `.py`, `.go`, `.rs`, `.java`, `.css`, `.html`, `.sh`, `.yml`, `.toml`, etc. | Read-only Monaco editor (line numbers, syntax highlighting, find/replace, virtualised) via `window.fileViewerMonaco.createCodeViewer({ readOnly: true })`. Falls back to a monospace `<pre>` with line numbers when Monaco is unreachable. |
-| JSON | `.json` | Pretty-printed `<pre>` with indentation |
-| CSV | `.csv`, `.tsv` | HTML `<table>`, max 100 rows displayed |
-| PDF | `.pdf` | `<iframe>` embed via `/api/files/download?path=...&inline=1` |
-| Binary | All other / detected binary | File metadata (name, size, modified date) + download button |
+| Code / Text | `.js`, `.ts`, `.py`, `.go`, `.rs`, `.java`, `.css`, `.sh`, `.yml`, `.toml`, `Dockerfile`, `Makefile`, etc. | Read-only Monaco editor (line numbers, syntax highlighting, find/replace with regex, minimap-on-hover, virtualised) via `window.fileViewerMonaco.createCodeViewer({ readOnly: true })`. Built-in language services for JS/TS/JSON/CSS/HTML/Markdown; tokenisation for the rest of the supported extensions. Falls back to a monospace `<pre>` with line numbers when Monaco is unreachable (`renderPlainTextFallback`). |
+| JSON | `.json`, `.json5`, `.jsonc` | Same Monaco read-only viewer; language id `json` enables the JSON language service (hover, validation). |
+| CSV | `.csv`, `.tsv` | HTML `<table>`, max 100 rows displayed (virtualised window + column-sort raise the cap to 1000 once #5 lands). |
+| PDF | `.pdf` | [PDF.js](https://mozilla.github.io/pdf.js/) v4 (vendored at `/vendor/pdfjs/`, ~600 KB gz worker + core, lazy-loaded). Custom thin viewer chrome: prev/next, zoom in/out, fit-to-width, page N of M. Replaces the iOS-Safari-broken `<iframe>` PDF preview. |
+| Notebook | `.ipynb` | (TBD — task #3 still pending — currently falls through to JSON viewer.) |
+| Binary | All other / detected binary | File metadata (name, size, modified date) + download button. |
 
-Text/code files are fetched via `GET /api/files/content` (JSON envelope). Binary-category files (images, PDFs) are served via `GET /api/files/download?inline=1` (raw stream).
+Text/code/markdown files are fetched via `GET /api/files/content` (JSON envelope). Binary-category files (images, PDFs) are served via `GET /api/files/download?inline=1` (raw stream).
+
+### Code Preview Pane
+
+`FilePreviewPanel._renderCode` calls `window.fileViewerMonaco.createCodeViewer(container, { content, language: getMonacoLanguage(ext), readOnly: true })`. The factory:
+
+1. Lazily loads Monaco from CDN on first call (promise-memoised).
+2. Sweeps any prior Monaco editor mounted in the container before re-creating, disposing model + editor + ResizeObserver. Without this the dominant flow ("user clicks file A then file B") would leak an editor per click.
+3. Resolves the current theme via `resolveMonacoTheme()`.
+4. Returns `{ editor, monaco, dispose }`. The caller registers `dispose` on the preview panel's `_activeDisposers[]`.
+
+The preview header shows the file's resolved Monaco language id alongside an "Edit" button (for editable files) and a "Copy" button.
+
+---
+
+## Multi-File Tabs
+
+Source: `src/public/file-tabs.js` -- class `TabManager`. A horizontal tab strip above the preview/editor area lets multiple files stay open simultaneously.
+
+| Method | Description |
+|--------|-------------|
+| `openFile(path, mode)` | `mode` ∈ `'preview' \| 'editor'`. If file is already open, switch to its tab. Otherwise create a new tab with its own `monaco.editor.createModel(content, language, uri)`. |
+| `closeTab(id)` | Tear down the tab's model + editor; warn on unsaved dirty state. |
+| `switchTo(id)` | Activate a tab. Cursor / scroll / undo history are preserved across switches because each tab owns its model. |
+| `reorder(fromIdx, toIdx)` | HTML5 drag-reorder. |
+
+**Persistence**: open tabs are saved to `localStorage` keyed by session id; restored on reload (closed tabs are forgotten). Dirty state survives a refresh via the existing `localStorage` draft mechanism in `FileEditorPanel`.
+
+**Keyboard shortcuts** (active when the file browser panel is focused):
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl/Cmd + 1..9` | Switch to tab N |
+| `Ctrl/Cmd + W` | Close current tab |
+| `Ctrl/Cmd + Tab` | Next tab |
+| `Ctrl/Cmd + Shift + Tab` | Previous tab |
+
+`FileBrowserPanel.openToFile(path)` becomes `tabManager.openFile(path, 'preview')`. The right-click "Edit in Editor" path becomes `tabManager.openFile(path, 'editor')`.
+
+---
+
+## Cross-File Search
+
+Server: `GET /api/search?q=<term>&regex=0|1&caseSensitive=0|1&glob=<pattern>` (SSE-streamed) shells out to `rg --json --max-count 50 --max-filesize 10M`, falling back to `grep -rIn` on systems without ripgrep. Respects `.gitignore`. Rate-limited 10 searches/min/IP. Path-validated to baseFolder; rejects globs that escape.
+
+Client: `src/public/file-search.js` (TBD — task #9 still pending). Plan: `Cmd/Ctrl + Shift + F` opens a panel above the tab strip; consumes the SSE stream via `EventSource`; each result row is `path:line` + matched-line context; click opens the file in a tab and jumps via `editor.revealLineInCenter` + `setSelection`. Cancels the previous EventSource on each new query.
 
 ---
 
@@ -396,20 +456,29 @@ On save, the server compares the submitted hash with the current file hash:
 ### Theme Mapping
 
 Application themes (`data-theme` on the document element) are mapped to
-Monaco themes by `resolveMonacoTheme()` in `file-viewer-monaco.js`. The
-custom palettes are registered against `monaco.editor.defineTheme(...)` the
-first time `loadMonaco()` resolves; built-ins (`vs`, `vs-dark`) need no
-registration.
+Monaco themes by `resolveMonacoTheme()` in `file-viewer-monaco.js`. v1
+maps every app accent theme onto Monaco's two built-in themes — the
+chrome (panel surface, terminal, sidebar) stays themed via `tokens.css`,
+and only Monaco's editor surface uses its built-in palette. Real
+Monaco token-rule data per accent theme (~200 LOC of vendored data via
+`monaco-themes`) is a deferred follow-up; see
+[ADR-0016](../adrs/0016-monaco-based-file-browser-editor.md)
+Consequences→Negative for the rationale.
 
 | App Theme | Monaco Theme |
 |-----------|--------------|
 | Midnight (default) | `vs-dark` |
 | Classic Dark | `vs-dark` |
 | Classic Light | `vs` |
-| Monokai | `aod-monokai` (custom) |
-| Nord | `aod-nord` (custom) |
-| Solarized Dark | `aod-solarized-dark` (custom) |
-| Solarized Light | `aod-solarized-light` (custom) |
+| Monokai | `vs-dark` |
+| Nord | `vs-dark` |
+| Solarized Dark | `vs-dark` |
+| Solarized Light | `vs` |
+
+When the user switches themes via the settings UI, the
+`MutationObserver` on `<html>[data-theme]` calls
+`window.fileViewerMonaco.applyThemeToAll()` which re-themes every live
+Monaco instance via `monaco.editor.setTheme(resolveMonacoTheme())`.
 
 ### Editor Toolbar
 
@@ -495,6 +564,11 @@ Write operations (`PUT /api/files/content`, `POST /api/files/upload`) are rate-l
 | `Ctrl+B` | Global | Toggle file browser panel |
 | `Ctrl+S` | Editor open | Save file |
 | `Ctrl+Shift+O` | Global | Open file by path (prompt) |
+| `Ctrl+Shift+F` | File browser focused | Open cross-file search panel (TBD — task #9) |
+| `Ctrl/Cmd+1..9` | File browser focused | Switch to tab N |
+| `Ctrl/Cmd+W` | File browser focused | Close current tab |
+| `Ctrl/Cmd+Tab` | File browser focused | Next tab |
+| `Ctrl/Cmd+Shift+Tab` | File browser focused | Previous tab |
 | `Escape` | Editor popups | Close Monaco find/replace widget first |
 | `Escape` | Editor | Close editor (prompts for unsaved changes) |
 | `Escape` | Preview | Close preview, return to file list |
@@ -559,13 +633,17 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 
 ## Testing
 
-### Unit Tests (`test/file-browser.test.js`)
+### Unit Tests
 
-- `getFileInfo()` returns correct MIME category and flags for known extensions.
-- `sanitizeFileName()` strips dangerous characters, enforces length limit.
-- `isBinaryFile()` detects null bytes in first 512 bytes.
-- `computeFileHash()` returns consistent MD5 for the same file content.
-- `TerminalPathDetector` regex matches Unix, Windows, and relative paths.
+| File | Coverage |
+|------|----------|
+| `test/file-browser.test.js` | `getFileInfo()` MIME categorisation, `sanitizeFileName()`, `isBinaryFile()` (null-byte sniff), `computeFileHash()`, link regex precision (`path:line:col`, version-token exclusion, extension allowlist), `extractPathFromText()` |
+| `test/file-browser-getcwd.test.js` | `FileBrowserPanel.open()` resolution order (`startPath > getCwd() > initialPath > null`); `getCwd` invoked per-`open()` (not memoised); throwing-callback fallthrough |
+| `test/file-viewer-monaco.test.js` | Monaco language map (extensions + extensionless filenames + case folding + path input); theme map covers every app theme; CDN base alignment with the worker shim's `ALLOWED_BASES` (drift breaks the test); SRI hash format + script-tag wiring guard |
+| `test/monaco-worker-shim.test.js` | Shim source evaluated in a sandboxed Node `vm`; positive (canonical base, trailing-slash normalisation) + 8 negative attack vectors covering HIGH-1 (attacker npm pkg, look-alike package, downgraded version, root path, cdnjs/unpkg, attacker origin, userinfo bypass) |
+| `test/file-tabs.test.js` | TabManager open/close/switch/reorder; localStorage persistence; dirty-state propagation |
+| `test/markdown-render.test.js` | `marked` GFM features; DOMPurify hook rewrites relative `<img>`/`<a>` to internal paths; mermaid/KaTeX detection-driven lazy-load (mocked) |
+| `test/file-editor.test.js` | Editor migration smoke: autosave, conflict 409 flow, draft restore, dirty dot, language map |
 
 ### Server Integration Tests (`test/file-browser-api.test.js`)
 
@@ -576,24 +654,32 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 - Path traversal attempts (`../../`, `%2e%2e%2f`, null bytes, symlinks, Windows junctions) return 403.
 - Executable extension upload returns 422.
 - ENOSPC conditions return 507.
+- `GET /api/files/git-show?path=&ref=` returns content for known refs; 404 outside a git repo; arg-injection rejected.
+- `GET /api/search` SSE roundtrip; `q` validation; `glob` validation refuses traversal; rate-limit observed.
 
 ### E2E Playwright Tests (`e2e/tests/file-browser.spec.js`)
 
-- Panel opens with `Ctrl+B`, directory listing renders.
-- Navigate directories via clicks, breadcrumbs function.
-- Click image file: preview renders inline.
-- Click text file: monospace preview with line numbers.
-- Click Edit: Ace Editor loads with spinner.
-- Edit and auto-save: content persists.
-- Upload via file picker: file appears in listing.
-- Download: file received by browser.
+- Panel opens with `Ctrl+B`; defaults to active session's cwd; switching session and reopening picks up new cwd.
+- Terminal click on `src/public/app.js:42` opens viewer at line 42 in Monaco.
+- Markdown file with mermaid fence renders the diagram (lazy-load triggers).
+- Markdown file with `$x^2$` renders KaTeX (or shows fallback badge).
+- HTML file renders inside sandboxed iframe; scripts are blocked.
+- Image preview: pan, wheel-zoom, Fit/100%/Reset controls work.
+- PDF preview: PDF.js viewer renders page 1; page nav works on iOS Safari emulation.
+- Open three files in tabs → switch via `Cmd+1/2/3` → modify one → dirty dot appears → save → dot clears.
+- "Compare with HEAD" opens diff editor with intra-line highlights.
+- `Ctrl+Shift+F` cross-file search streams results; click opens file at matched line.
+- Mobile viewport: panel auto-overlays; Monaco loads; tabs collapse to dropdown.
 
 ---
 
 ## Limitations
 
 - **No real-time file watching.** Directory listings are point-in-time snapshots. Manual refresh is required to see external changes. File watching via WebSocket is deferred to Phase 2.
-- **No delete or rename.** Destructive operations are excluded from the initial release to limit security exposure. Users can use the terminal for these operations.
+- **No delete or rename.** Destructive operations are excluded to limit security exposure. Users can use the terminal for these operations.
 - **10 MB upload limit.** Chunked upload for larger files is deferred to Phase 2.
-- **Monaco Editor requires CDN.** If the CDN is unreachable, editing falls back to an actionable error inside the editor pane. Browsing and previewing still work; the Compare-Changes diff falls back to a twin-`<pre>` view.
-- **No syntax highlighting in preview.** Preview shows monospace text without highlighting. Syntax-highlighted preview (via highlight.js) is deferred to Phase 2.
+- **Monaco Editor requires CDN.** If `cdn.jsdelivr.net` is unreachable, code preview falls back to a monospace `<pre>` with line numbers (`renderPlainTextFallback`); the editor pane shows an actionable error inside its toolbar; the Compare-Changes diff falls back to a twin-`<pre>` view. Browsing and previewing of non-code files still works.
+- **Monaco custom theme palettes deferred.** v1 maps every accent theme onto Monaco's built-in `vs` / `vs-dark`. Real syntax-token rules per theme (~200 LOC of vendored data via the `monaco-themes` package) is a follow-up; the chrome stays themed via `tokens.css`. See [ADR-0016](../adrs/0016-monaco-based-file-browser-editor.md) Consequences→Negative.
+- **No LSP-style IntelliSense for non-built-in languages.** Monaco ships hovers/completions/diagnostics for JS/TS/JSON/CSS/HTML/Markdown out of the box. Python/Go/Rust IntelliSense would need a real language server.
+- **CSV cap is 100 rows.** Virtualised window + column sort raise the cap to 1000 once task #5 lands.
+- **Notebook (`.ipynb`) preview** falls through to JSON until `nbviewer.js` integration lands (task #3).

@@ -847,3 +847,168 @@
   gap: var(--space-2);
   flex-wrap: wrap;
 }
+
+/* ============================================================
+   Markdown render (markdown-render.js)
+   ============================================================ */
+.fb-markdown-rendered {
+  /* Tight typography for the in-panel markdown viewer; design is reading-
+     centric, not document-centric (the editor is for that). */
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+  padding: var(--space-3);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+.fb-markdown-rendered h1,
+.fb-markdown-rendered h2,
+.fb-markdown-rendered h3,
+.fb-markdown-rendered h4 {
+  margin: var(--space-4) 0 var(--space-2);
+  line-height: var(--leading-tight);
+  font-weight: var(--weight-semibold);
+}
+.fb-markdown-rendered h1 { font-size: var(--text-2xl); border-bottom: 1px solid var(--border-default); padding-bottom: var(--space-1); }
+.fb-markdown-rendered h2 { font-size: var(--text-xl); border-bottom: 1px solid var(--border-default); padding-bottom: var(--space-1); }
+.fb-markdown-rendered h3 { font-size: var(--text-lg); }
+.fb-markdown-rendered h4 { font-size: var(--text-md); }
+.fb-markdown-rendered p { margin: 0 0 var(--space-3); }
+.fb-markdown-rendered a {
+  color: var(--accent-default);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--duration-fast);
+}
+.fb-markdown-rendered a:hover { border-bottom-color: var(--accent-default); }
+.fb-markdown-rendered code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-tertiary);
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-sm);
+}
+.fb-markdown-rendered pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--surface-tertiary);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+}
+.fb-markdown-rendered pre code {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+}
+.fb-markdown-rendered blockquote {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border-left: 3px solid var(--accent-default);
+  color: var(--text-secondary);
+  background: var(--accent-soft);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.fb-markdown-rendered ul,
+.fb-markdown-rendered ol { margin: 0 0 var(--space-3); padding-left: var(--space-6); }
+.fb-markdown-rendered li { margin-bottom: var(--space-1); }
+.fb-markdown-rendered table {
+  border-collapse: collapse;
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  width: 100%;
+}
+.fb-markdown-rendered th,
+.fb-markdown-rendered td {
+  border: 1px solid var(--border-default);
+  padding: var(--space-1-5) var(--space-2);
+  text-align: left;
+}
+.fb-markdown-rendered th { background: var(--surface-tertiary); font-weight: var(--weight-semibold); }
+.fb-markdown-rendered img {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+.fb-markdown-rendered hr {
+  border: 0;
+  border-top: 1px solid var(--border-default);
+  margin: var(--space-4) 0;
+}
+.fb-markdown-rendered input[type="checkbox"] {
+  /* Markdown task-list checkboxes — visible but read-only */
+  margin-right: var(--space-1);
+  pointer-events: none;
+}
+
+/* Mermaid diagram blocks — wrapper sized by mermaid SVG */
+.fb-mermaid-block {
+  display: block;
+  margin: var(--space-3) 0;
+  text-align: center;
+}
+.fb-mermaid-block svg { max-width: 100%; height: auto; }
+.fb-mermaid-error {
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--surface-tertiary);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--status-error);
+}
+
+/* "Feature unavailable" inline badge — used by the markdown render's KaTeX
+   and Mermaid lazy loaders when the CDN import fails. Tells the user the
+   raw source is still being shown so the page is not silently broken. */
+.fb-md-feature-unavailable {
+  display: inline-block;
+  margin: var(--space-1) 0;
+  padding: var(--space-0-5) var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--surface-tertiary);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.fb-md-loading {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  padding: var(--space-3);
+  text-align: center;
+}
+
+.fb-md-fallback {
+  /* Markdown failed to render entirely — show source as <pre>. */
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  padding: var(--space-3);
+}
+
+/* ============================================================
+   Monaco loader fallback (file-viewer-monaco.js → renderPlainTextFallback)
+   ============================================================ */
+.fb-monaco-fallback {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.fb-monaco-fallback-notice {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--surface-tertiary);
+  padding: var(--space-1-5) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+}
+.fb-monaco-fallback-pre {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
