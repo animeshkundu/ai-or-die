@@ -10,11 +10,22 @@
 // actually previews a PDF. Memoized after first load.
 //
 // Public API (window.fbPdfViewer):
-//   render(container, { url, fileName }) -> Promise<viewer>
-//     Mounts a PDF viewer into `container`. Returns a viewer handle
-//     with .destroy() for tab/preview teardown.
 //
-//   isAvailable() -> boolean — quick env check.
+//   render(container, { url, fileName }) -> viewer            (synchronous)
+//     Mounts loading-state chrome IMMEDIATELY and returns a viewer handle.
+//     The async load runs in the background; observe completion via
+//     `viewer.ready` (a Promise resolving to the same viewer). The viewer
+//     handle exposes:
+//       .destroy()             — abort + tear down (works at every stage)
+//       .goToPage(n)           — page navigation
+//       .ready                 — Promise<viewer> resolved when page 1 paints
+//       .currentPage / .numPages
+//
+//   canAttemptDynamicImport() -> boolean
+//     Best-effort: returns true if dynamic-import SYNTAX is supported in
+//     the current document (i.e., a `<script type="module">` shim was
+//     installable). Does NOT guarantee that the import will actually
+//     resolve at runtime — that depends on the network + worker policy.
 
 (function () {
   'use strict';
@@ -25,45 +36,144 @@
   var PDFJS_URL = '/vendor/pdfjs/pdf.min.mjs';
   var PDFJS_WORKER_URL = '/vendor/pdfjs/pdf.worker.min.mjs';
 
+  // -------------------------------------------------------------------------
+  // CSP-safe dynamic importer (peer-review MEDIUM-1 on 913bfdd)
+  //
+  // The previous implementation used `new Function('u','return import(u)')`
+  // to defer the parse of `import(...)` past legacy browsers that would
+  // otherwise crash this whole IIFE at parse time. That works, but the
+  // Function constructor is treated as `eval` by CSP — adding a future
+  // host-page `script-src` policy without `'unsafe-eval'` would silently
+  // break PDF preview AND fall through to the iframe path that doesn't
+  // work on iOS Safari, defeating the point of this whole module.
+  //
+  // Replacement: install a `<script type="module">` shim once, lazily, that
+  // assigns a real `import(u)` thunk onto a known global. Module scripts
+  // legally use top-level `import` without eval. Memoized so we install
+  // exactly one shim per page-load even if many PDFs are previewed.
+  // -------------------------------------------------------------------------
+  var IMPORTER_GLOBAL = '__fbPdfjsImporter';
+  var _importerPromise = null;
+  var _importerInstallTried = false;
+
+  function _ensureImporter() {
+    if (window[IMPORTER_GLOBAL]) return Promise.resolve(window[IMPORTER_GLOBAL]);
+    if (_importerPromise) return _importerPromise;
+    if (_importerInstallTried) {
+      // Earlier install failed (e.g., CSP rejected the inline module).
+      // Don't retry — return a rejected promise so the caller can fall
+      // back to the iframe path.
+      return Promise.reject(new Error('PDF.js importer shim unavailable (CSP?)'));
+    }
+    _importerInstallTried = true;
+
+    _importerPromise = new Promise(function (resolve, reject) {
+      var script;
+      var settled = false;
+      function settle(fn, value) {
+        if (settled) return;
+        settled = true;
+        fn(value);
+      }
+
+      // Inline `<script type="module">` so the browser parses `import()`
+      // as a module-level expression (no eval). On all browsers that
+      // support modules at all (≥2018 evergreen + iOS Safari ≥ 11),
+      // dynamic import is available.
+      try {
+        script = document.createElement('script');
+        script.type = 'module';
+        script.textContent =
+          "window['" + IMPORTER_GLOBAL + "']=function(u){return import(u)};" +
+          "window.dispatchEvent(new Event('" + IMPORTER_GLOBAL + "-ready'));";
+
+        function onReady() {
+          window.removeEventListener(IMPORTER_GLOBAL + '-ready', onReady);
+          if (window[IMPORTER_GLOBAL]) settle(resolve, window[IMPORTER_GLOBAL]);
+          else settle(reject, new Error('importer shim did not assign global'));
+        }
+        window.addEventListener(IMPORTER_GLOBAL + '-ready', onReady);
+
+        script.onerror = function () {
+          settle(reject, new Error('importer shim script element errored'));
+        };
+        document.head.appendChild(script);
+
+        // Belt-and-braces: if the event listener never fires (some CSP
+        // configurations block inline module execution silently), poll
+        // for the global with a short bounded timeout.
+        var deadline = Date.now() + 3000;
+        function poll() {
+          if (settled) return;
+          if (window[IMPORTER_GLOBAL]) return settle(resolve, window[IMPORTER_GLOBAL]);
+          if (Date.now() > deadline) return settle(reject, new Error('importer shim install timed out'));
+          setTimeout(poll, 50);
+        }
+        setTimeout(poll, 50);
+      } catch (err) {
+        settle(reject, err);
+      }
+    }).catch(function (err) {
+      // Reset memoization so a future call can retry (e.g., after CSP
+      // is relaxed at runtime, or as a "user navigated to PDF, then
+      // reloaded the app" recovery).
+      _importerPromise = null;
+      throw err;
+    });
+
+    return _importerPromise;
+  }
+
+  /**
+   * Best-effort: returns true if dynamic-import SYNTAX is supported in
+   * this document (i.e., a `<script type="module">` shim is installable).
+   * Does NOT guarantee that the import will actually resolve at runtime —
+   * that depends on the network + worker policy. Used by callers as a
+   * pre-flight check before mounting the viewer.
+   *
+   * (Renamed from `isAvailable()` for honesty per peer-review LOW.)
+   */
+  function canAttemptDynamicImport() {
+    // Modules are supported in every evergreen browser since ~2018 plus
+    // iOS Safari ≥ 11. Test for HTMLScriptElement.supports if available
+    // (a 2021+ method), otherwise feature-detect noModule (a stable
+    // proxy for module-script support).
+    try {
+      if (typeof HTMLScriptElement !== 'undefined' &&
+          typeof HTMLScriptElement.supports === 'function') {
+        return HTMLScriptElement.supports('module');
+      }
+      return 'noModule' in document.createElement('script');
+    } catch (_) {
+      return false;
+    }
+  }
+
   // Memoized PDF.js library load. The first viewer to mount pays the
   // cost; subsequent viewers reuse the same module instance.
   var _pdfjsPromise = null;
 
   function loadPdfJs() {
     if (_pdfjsPromise) return _pdfjsPromise;
-    if (typeof window.import === 'function' || true) {
-      // Use dynamic import. In modern browsers this resolves to the
-      // ES module exports. We wrap in a function so syntax errors on
-      // legacy browsers don't blow up at script-parse time.
-      _pdfjsPromise = (new Function('u', 'return import(u)'))(PDFJS_URL)
-        .then(function (mod) {
-          // pdfjs-dist exports as either default-namespace or named.
-          var lib = mod && (mod.default || mod);
-          if (!lib || typeof lib.getDocument !== 'function') {
-            throw new Error('pdf.min.mjs missing getDocument export');
-          }
-          if (lib.GlobalWorkerOptions) {
-            lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
-          }
-          return lib;
-        })
-        .catch(function (err) {
-          // Reset so a future render() retries (e.g., transient network).
-          _pdfjsPromise = null;
-          throw err;
-        });
-    }
+    _pdfjsPromise = _ensureImporter()
+      .then(function (importer) { return importer(PDFJS_URL); })
+      .then(function (mod) {
+        // pdfjs-dist exports as either default-namespace or named.
+        var lib = mod && (mod.default || mod);
+        if (!lib || typeof lib.getDocument !== 'function') {
+          throw new Error('pdf.min.mjs missing getDocument export');
+        }
+        if (lib.GlobalWorkerOptions) {
+          lib.GlobalWorkerOptions.workerSrc = PDFJS_WORKER_URL;
+        }
+        return lib;
+      })
+      .catch(function (err) {
+        // Reset so a future render() retries (e.g., transient network).
+        _pdfjsPromise = null;
+        throw err;
+      });
     return _pdfjsPromise;
-  }
-
-  function isAvailable() {
-    // Dynamic import is required. Modern browsers all support it.
-    try {
-      // eslint-disable-next-line no-new-func
-      return typeof (new Function('return import')) === 'function';
-    } catch (_) {
-      return false;
-    }
   }
 
   /**
@@ -147,28 +257,40 @@
     container.appendChild(msg);
   }
 
+  /**
+   * Mount a PDF viewer into `container`. SYNCHRONOUS return so the
+   * caller can attach a disposer immediately and have it cancel the
+   * in-flight load if the user navigates away before page 1 paints
+   * (peer-review MEDIUM-2 on 913bfdd: the previous Promise-return
+   * meant disposers couldn't reach the viewer until AFTER the full
+   * download + parse + page-1 render had completed, wasting bandwidth
+   * and CPU on rapid clicks).
+   */
   function render(container, options) {
     options = options || {};
     var url = options.url;
     var fileName = options.fileName || '';
     if (!container || !url) {
-      return Promise.reject(new Error('container and url required'));
+      var bad = { destroy: function () {}, ready: Promise.reject(new Error('container and url required')) };
+      // Swallow unhandled-rejection warning if the caller doesn't await ready.
+      bad.ready.catch(function () {});
+      return bad;
     }
 
     // Mount loading-state chrome immediately so the user sees feedback.
     var chrome = buildChrome(container, fileName);
 
     var pdfDoc = null;
+    var loadingTask = null;        // PDF.js LoadingTask (cancellable mid-flight)
     var currentPage = 1;
-    // Scale state. `fit` recomputes scale from viewport width on each render.
     var scaleMode = 'fit';   // 'fit' | 'manual'
     var manualScale = 1.0;
-    // Cap manual zoom so users can't accidentally allocate huge canvases.
     var MIN_SCALE = 0.25;
     var MAX_SCALE = 4.0;
 
     var renderTask = null;     // current PDF.js RenderTask, for cancellation
     var disposed = false;
+    var resizeObs = null;
 
     function updateUi() {
       if (!pdfDoc) return;
@@ -181,10 +303,8 @@
 
     function effectiveScale(page) {
       if (scaleMode === 'manual') return manualScale;
-      // Fit-to-width: scale so that page width == viewport width.
       var unscaled = page.getViewport({ scale: 1 });
       var avail = chrome.viewport.clientWidth || 600;
-      // Subtract a small padding so scrollbar doesn't clip.
       var target = Math.max(120, avail - 16);
       return target / unscaled.width;
     }
@@ -195,7 +315,6 @@
       if (num > pdfDoc.numPages) num = pdfDoc.numPages;
       currentPage = num;
 
-      // Cancel an in-flight render before starting a new one.
       if (renderTask && typeof renderTask.cancel === 'function') {
         try { renderTask.cancel(); } catch (_) {}
         renderTask = null;
@@ -207,8 +326,6 @@
       return pdfDoc.getPage(num).then(function (page) {
         if (disposed) return;
         var scale = effectiveScale(page);
-        // Account for device pixel ratio so the canvas isn't blurry on
-        // HiDPI screens; cap DPR contribution to keep memory bounded.
         var dpr = Math.min(window.devicePixelRatio || 1, 2);
         var viewport = page.getViewport({ scale: scale * dpr });
         var canvas = chrome.canvas;
@@ -248,7 +365,6 @@
       renderPage(currentPage);
     });
 
-    // Keyboard nav inside the viewport.
     chrome.viewport.addEventListener('keydown', function (e) {
       if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
         e.preventDefault();
@@ -265,8 +381,6 @@
       }
     });
 
-    // Re-fit on container resize when in 'fit' mode.
-    var resizeObs = null;
     if (typeof ResizeObserver !== 'undefined') {
       var resizeT = null;
       resizeObs = new ResizeObserver(function () {
@@ -279,11 +393,22 @@
       resizeObs.observe(chrome.viewport);
     }
 
+    // Build the viewer handle SYNCHRONOUSLY so the caller's disposer
+    // can reach it before any async work completes (peer-review MEDIUM-2).
     var viewer = {
       destroy: function () {
+        if (disposed) return;
         disposed = true;
+        // Cancel render task (page-1 in flight, page-N in flight).
         if (renderTask && typeof renderTask.cancel === 'function') {
           try { renderTask.cancel(); } catch (_) {}
+        }
+        // Cancel mid-load: PDF.js LoadingTask exposes .destroy() which
+        // aborts the in-flight network fetch + parse. Without this,
+        // closing the panel during the initial download still incurs
+        // the full download cost.
+        if (loadingTask && typeof loadingTask.destroy === 'function') {
+          try { loadingTask.destroy(); } catch (_) {}
         }
         if (resizeObs) {
           try { resizeObs.disconnect(); } catch (_) {}
@@ -292,18 +417,23 @@
           try { pdfDoc.destroy(); } catch (_) {}
         }
         pdfDoc = null;
+        loadingTask = null;
       },
       goToPage: function (n) { return renderPage(n); },
       get currentPage() { return currentPage; },
       get numPages() { return pdfDoc ? pdfDoc.numPages : 0; },
+      ready: null,        // assigned below
     };
 
-    return loadPdfJs().then(function (pdfjs) {
+    // Kick off the async load. `viewer.ready` resolves to `viewer` when
+    // page 1 has rendered (or rejects with a load/render error). Returns
+    // the same handle for chaining convenience.
+    viewer.ready = loadPdfJs().then(function (pdfjs) {
       if (disposed) return viewer;
       // PDF.js v4 accepts either a string URL or an object with `url`/`data`.
-      // We pass `{ url, withCredentials: true }` so the browser sends the
-      // session cookie if any (no-op for our token-based auth, but safer).
-      var loadingTask = pdfjs.getDocument({ url: url, withCredentials: true });
+      // We pass `withCredentials: true` so the browser sends cookies if any
+      // (no-op for our token-based auth, but safer for future deployments).
+      loadingTask = pdfjs.getDocument({ url: url, withCredentials: true });
       return loadingTask.promise.then(function (doc) {
         if (disposed) {
           try { doc.destroy(); } catch (_) {}
@@ -315,10 +445,29 @@
         return renderPage(1).then(function () { return viewer; });
       });
     }).catch(function (err) {
+      // Distinguish "user cancelled mid-load" (PDF.js raises errors with
+      // names like 'AbortError' / 'WorkerTransport.destroy') from real
+      // failures. If we destroyed the loadingTask, surface nothing — the
+      // user's already gone.
+      if (disposed) return viewer;
       renderError(container, err && err.message || String(err));
       throw err;
     });
+
+    // Swallow unhandled-rejection warnings if the caller doesn't await
+    // ready (most callers attach their own .catch via _activeDisposers).
+    if (viewer.ready && typeof viewer.ready.catch === 'function') {
+      viewer.ready.catch(function () {});
+    }
+
+    return viewer;
   }
 
-  window.fbPdfViewer = { render: render, isAvailable: isAvailable };
+  window.fbPdfViewer = {
+    render: render,
+    canAttemptDynamicImport: canAttemptDynamicImport,
+    // Back-compat alias — `isAvailable` was the previous name; kept so
+    // any third-party / test code still works while we migrate callers.
+    isAvailable: canAttemptDynamicImport,
+  };
 })();

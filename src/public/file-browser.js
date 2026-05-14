@@ -1782,32 +1782,41 @@
     // bundle (~344KB core + 1.3MB worker) is fetched same-origin only on
     // first PDF preview, then memoized.
     if (window.fbPdfViewer && typeof window.fbPdfViewer.render === 'function') {
+      var disposerPushed = false;
       try {
-        // Hold the viewer in a closure so the registered disposer can find
-        // it even if render() is still pending when the user navigates away.
-        var viewerRef = { current: null, cancelled: false };
+        // render() now returns SYNCHRONOUSLY (peer-review MEDIUM-2 on
+        // 913bfdd) — the viewer handle is available immediately and its
+        // .destroy() correctly cancels the in-flight LoadingTask, the
+        // current RenderTask, and disconnects observers. So a disposer
+        // can act mid-load without waiting for page-1 to paint.
+        var viewer = window.fbPdfViewer.render(container, { url: url, fileName: item.name });
 
-        // Register disposal BEFORE render() to cover the
-        // "user closes panel before getDocument() resolves" case.
+        // Push the disposer ONLY AFTER render() returned successfully
+        // (peer-review MEDIUM-3). Pushing before would leave a stale
+        // disposer in the queue if render() threw and execution fell
+        // through to the iframe path.
         this._activeDisposers.push(function () {
-          viewerRef.cancelled = true;
-          var v = viewerRef.current;
-          if (v && typeof v.destroy === 'function') {
-            try { v.destroy(); } catch (_) {}
+          if (viewer && typeof viewer.destroy === 'function') {
+            try { viewer.destroy(); } catch (_) {}
           }
         });
+        disposerPushed = true;
 
-        window.fbPdfViewer.render(container, { url: url, fileName: item.name })
-          .then(function (viewer) {
-            if (viewerRef.cancelled && viewer && typeof viewer.destroy === 'function') {
-              try { viewer.destroy(); } catch (_) {}
-              return;
-            }
-            viewerRef.current = viewer;
-          })
-          .catch(function () { /* error already rendered into container */ });
+        // The error UI is rendered into the container by render() itself
+        // on load failure; swallow the rejection here so the unhandled-
+        // rejection warning doesn't fire.
+        if (viewer && viewer.ready && typeof viewer.ready.catch === 'function') {
+          viewer.ready.catch(function () { /* surfaced inline */ });
+        }
         return;
       } catch (_err) {
+        // Defensive: if render() threw synchronously AND we already pushed
+        // a disposer (shouldn't happen given the order above, but cheap
+        // insurance against future refactors), pop it back off so a stale
+        // closure doesn't leak into _disposeActive.
+        if (disposerPushed) {
+          this._activeDisposers.pop();
+        }
         // Fall through to iframe fallback.
       }
     }
