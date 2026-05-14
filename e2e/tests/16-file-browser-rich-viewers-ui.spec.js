@@ -38,6 +38,7 @@ test.describe('File browser — rich viewers + tabs (UI-side, #11)', () => {
   const altDir = path.join(fixtureDir, 'alt-cwd');     // for (a) session-switch
   const mdMermaid = path.join(fixtureDir, 'mermaid.md');
   const mdKatex = path.join(fixtureDir, 'katex.md');
+  const mdVanilla = path.join(fixtureDir, 'vanilla.md');
   const htmlFile = path.join(fixtureDir, 'sample.html');
   const imgFile = path.join(fixtureDir, 'pixel.png');
   const tabA = path.join(fixtureDir, 'tab-a.txt');
@@ -69,6 +70,31 @@ test.describe('File browser — rich viewers + tabs (UI-side, #11)', () => {
       'Block:',
       '',
       '$$\\int_0^1 x \\, dx = \\frac{1}{2}$$',
+      '',
+    ].join('\n'));
+
+    // (c-base) vanilla markdown — no mermaid, no KaTeX, exercises the
+    // pure marked + DOMPurify pipeline. This is the regression net the
+    // markdown CRITICAL (3e9319c DOMPurify config crash) would have
+    // tripped directly: if the renderer fails to mount the wrapper
+    // OR DOMPurify's config rejects normal block content, the asserts
+    // here fire. Suggested by reviewer in fa35745 follow-up.
+    fs.writeFileSync(mdVanilla, [
+      '# Vanilla heading',
+      '',
+      'A paragraph with **bold**, *italic*, `inline code`, and a',
+      '[link](https://example.com).',
+      '',
+      '## Subheading',
+      '',
+      '- list item one',
+      '- list item two',
+      '',
+      '> A blockquote.',
+      '',
+      '```js',
+      'console.log("plain fenced code");',
+      '```',
       '',
     ].join('\n'));
 
@@ -189,6 +215,48 @@ test.describe('File browser — rich viewers + tabs (UI-side, #11)', () => {
     expect(observed.length).toBe(2);
     expect(observed[0]).toBe(fix);
     expect(observed[1]).toBe(alt);
+  });
+
+  // ──────────────────────────────────────────────────────────────────────
+  // (c-base) Vanilla markdown render — exercises the pure marked +
+  //          DOMPurify pipeline with no extras (no mermaid, no KaTeX).
+  //          This is the regression net the markdown CRITICAL (3e9319c
+  //          DOMPurify config crash) would have tripped directly. If the
+  //          renderer fails to mount the wrapper OR DOMPurify rejects
+  //          normal block content, the asserts here fire. Per reviewer's
+  //          fa35745 follow-up suggestion.
+  // ──────────────────────────────────────────────────────────────────────
+  test('(c-base) vanilla markdown renders into .fb-markdown-rendered', async ({ page }) => {
+    await setupPage(page);
+    await openFixturePanel(page);
+    await clickFile(page, 'vanilla.md');
+
+    // Wrapper class must mount — proves marked + DOMPurify + the
+    // hookified anchor/img rewriter all completed without crashing.
+    var wrapper = page.locator('.fb-markdown-rendered');
+    await expect(wrapper).toBeVisible({ timeout: 15000 });
+
+    // The first heading must render as a real <h1>. If marked failed,
+    // we'd see literal "# Vanilla heading" inside a <pre> instead.
+    await expect(wrapper.locator('h1')).toContainText('Vanilla heading');
+    await expect(wrapper.locator('h2')).toContainText('Subheading');
+
+    // Inline emphasis + code + links — exercises DOMPurify's allowlist
+    // for the most common inline tags. Specifically catches a config
+    // that strips <strong>/<em>/<code>/<a> overzealously.
+    await expect(wrapper.locator('strong')).toContainText('bold');
+    await expect(wrapper.locator('em')).toContainText('italic');
+    await expect(wrapper.locator('code', { hasText: 'inline code' })).toBeVisible();
+
+    // Anchor: href preserved (DOMPurify shouldn't strip http(s) scheme).
+    var anchor = wrapper.locator('a[href="https://example.com"]');
+    await expect(anchor).toBeVisible();
+    await expect(anchor).toContainText('link');
+
+    // List items + blockquote + fenced code block — block-level structure.
+    await expect(wrapper.locator('li')).toHaveCount(2);
+    await expect(wrapper.locator('blockquote')).toBeVisible();
+    await expect(wrapper.locator('pre code')).toContainText('console.log');
   });
 
   // ──────────────────────────────────────────────────────────────────────
