@@ -939,6 +939,24 @@
     this._adjustTerminal();
   };
 
+  // Display-only preview-mode transition. Used by TabManager.onActiveChange
+  // when openFile is called programmatically (terminal-link click, search
+  // result, diff button, markdown internal-link delegate) — _showPreviewView
+  // would re-render the preview panel and race with TabManager's own
+  // renderer. This helper just swaps the visibility (file-list out,
+  // preview-container in) so the tab strip + content TabManager already
+  // mounted become visible to the user. No-op if the view is already
+  // preview/editor (caller's branch already gated that, but defensive).
+  FileBrowserPanel.prototype._makePreviewVisible = function (mode) {
+    if (this._currentView === 'editor' || this._currentView === 'preview') return;
+    this._currentView = mode === 'editor' ? 'editor' : 'preview';
+    this._fileListEl.style.display = 'none';
+    this._previewContainer.style.display = '';
+    if (mode === 'editor') this._panelEl.classList.add('editor-active');
+    this._renderBreadcrumbs();
+    this._adjustTerminal();
+  };
+
   FileBrowserPanel.prototype._showPreviewView = function (item) {
     this._currentView = 'preview';
     this._selectedItem = item;
@@ -1057,6 +1075,21 @@
             self._editorPanel = info.tab.panel;
           } else {
             self._editorPanel = null;
+          }
+          // Make sure the preview container (which hosts TabManager's DOM)
+          // is actually visible. Programmatic openFile entry points —
+          // app.openFileInViewer (terminal-link clicks, search-result
+          // clicks), the diff button, the markdown internal-link delegate
+          // — all eventually call tm.openFile directly without going
+          // through _showPreviewView. Without this, the strip + content
+          // are correctly built in the DOM but display:none on
+          // _previewContainer leaves them invisible to the user. Caught
+          // by 16-spec scenario (k) at mobile viewport, but the bug was
+          // present at every viewport — just less visually obvious on
+          // desktop where the panel often opened straight to preview
+          // mode after a click.
+          if (info && info.tab && self._currentView === 'browse') {
+            self._makePreviewVisible(info.tab.mode);
           }
         },
         onAllClosed: function () {
