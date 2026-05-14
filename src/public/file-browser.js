@@ -1427,9 +1427,49 @@
   };
 
   FilePreviewPanel.prototype._renderPdf = function (container, item) {
+    var url = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    var self = this;
+
+    // Lazy PDF.js viewer (canvas-based) for cross-browser support — iOS
+    // Safari refuses inline iframe PDFs and forces a download. PDF.js
+    // bundle (~344KB core + 1.3MB worker) is fetched same-origin only on
+    // first PDF preview, then memoized.
+    if (window.fbPdfViewer && typeof window.fbPdfViewer.render === 'function') {
+      try {
+        // Hold the viewer in a closure so the registered disposer can find
+        // it even if render() is still pending when the user navigates away.
+        var viewerRef = { current: null, cancelled: false };
+
+        // Register disposal BEFORE render() to cover the
+        // "user closes panel before getDocument() resolves" case.
+        this._activeDisposers.push(function () {
+          viewerRef.cancelled = true;
+          var v = viewerRef.current;
+          if (v && typeof v.destroy === 'function') {
+            try { v.destroy(); } catch (_) {}
+          }
+        });
+
+        window.fbPdfViewer.render(container, { url: url, fileName: item.name })
+          .then(function (viewer) {
+            if (viewerRef.cancelled && viewer && typeof viewer.destroy === 'function') {
+              try { viewer.destroy(); } catch (_) {}
+              return;
+            }
+            viewerRef.current = viewer;
+          })
+          .catch(function () { /* error already rendered into container */ });
+        return;
+      } catch (_err) {
+        // Fall through to iframe fallback.
+      }
+    }
+
+    // Fallback: legacy iframe path (works on desktop Chrome/Firefox/Safari
+    // but NOT iOS Safari). Better than nothing if PDF.js failed to load.
     var iframe = document.createElement('iframe');
     iframe.className = 'fb-preview-pdf';
-    iframe.src = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    iframe.src = url;
     iframe.title = item.name;
     container.appendChild(iframe);
   };
