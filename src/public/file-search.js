@@ -407,6 +407,18 @@
         msg += ' (truncated; refine query)';
         this._truncated = true;
       }
+      // `droppedLines` arrived in the SSE end-event in d84f7e2 (#13 DoS
+      // fix-up). Counts stdout lines skipped because they exceeded the
+      // 256 KB per-line cap — typically minified-JS / packed-JSON files
+      // that would otherwise stall the event loop. Surface non-zero
+      // values so users know results may be incomplete and can narrow
+      // their query / add a glob filter. Defensive number-coerce: a
+      // missing field (older servers) reads as undefined → !( > 0).
+      if (typeof data.droppedLines === 'number' && data.droppedLines > 0) {
+        msg += ' — ' + data.droppedLines + ' line' +
+          (data.droppedLines === 1 ? '' : 's') +
+          ' too long to scan (refine query / add glob filter)';
+      }
       this._setStatus(msg, false);
       return;
     }
