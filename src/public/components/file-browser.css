@@ -1086,6 +1086,53 @@
   min-height: 0;
 }
 
+/* ---- Notebook viewer (notebook-render.js, .ipynb files) ---- */
+.fb-notebook-host {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface-secondary);
+  border-radius: var(--radius-md);
+}
+.fb-nb-loading {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.fb-notebook-rendered {
+  padding: var(--space-3);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+.fb-notebook-rendered img {
+  max-width: 100%;
+  height: auto;
+}
+.fb-notebook-rendered pre {
+  background: var(--surface-tertiary);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.fb-notebook-rendered table {
+  border-collapse: collapse;
+  margin: var(--space-2) 0;
+}
+.fb-notebook-rendered td,
+.fb-notebook-rendered th {
+  border: 1px solid var(--border-default);
+  padding: var(--space-1) var(--space-2);
+}
+.fb-nb-fallback {
+  padding: var(--space-2);
+}
+
 /* ---- Diff dropdown menu in the preview header ---- */
 .fb-diff-menu-wrap { position: relative; display: inline-block; }
 .fb-diff-menu {

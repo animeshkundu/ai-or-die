@@ -232,6 +232,11 @@
     return n.endsWith('.html') || n.endsWith('.htm') || n.endsWith('.xhtml');
   }
 
+  function isIpynbExtension(nameOrPath) {
+    if (!nameOrPath) return false;
+    return String(nameOrPath).toLowerCase().endsWith('.ipynb');
+  }
+
   // ---------------------------------------------------------------------------
   // Lazy script loader — used by image panzoom (vendored at /vendor/panzoom.min.js).
   // Returns a Promise that resolves when window[globalCheck] becomes truthy
@@ -1610,7 +1615,14 @@
     dlBtn.className = 'btn btn-secondary btn-small';
     dlBtn.textContent = 'Download';
     dlBtn.addEventListener('click', function () {
-      window.open('/api/files/download?path=' + encodeURIComponent(item.path), '_blank');
+      // Same auth thread-through as inline previews: window.open() spawns
+      // a fresh navigation that can't carry an Authorization header, so
+      // we append `?token=` if --auth is on.
+      var dlUrl = '/api/files/download?path=' + encodeURIComponent(item.path);
+      if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+        dlUrl = window.authManager.appendAuthToUrl(dlUrl);
+      }
+      window.open(dlUrl, '_blank');
     });
     actions.appendChild(dlBtn);
 
@@ -1660,7 +1672,14 @@
     img.className = 'fb-preview-image';
     img.alt = item.name;
     img.draggable = false; // browser native drag-image conflicts with pan gesture
-    img.src = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    // Inline asset URL — `<img src>` can't carry custom headers, so the
+    // Bearer token is threaded via `?token=` (auth middleware accepts both,
+    // see appendAuthToUrl). Without this, image preview 401s in --auth mode.
+    var imgUrl = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+      imgUrl = window.authManager.appendAuthToUrl(imgUrl);
+    }
+    img.src = imgUrl;
     viewport.appendChild(img);
     container.appendChild(viewport);
 
@@ -1747,7 +1766,15 @@
   };
 
   FilePreviewPanel.prototype._renderPdf = function (container, item) {
+    // Inline asset URL — PDF.js issues fetch() from the worker module
+    // pipeline and `<iframe src>` (the fallback) can't carry custom
+    // headers, so the Bearer token is threaded via `?token=` (auth
+    // middleware accepts both, see appendAuthToUrl). Without this, PDF
+    // preview 401s in --auth mode.
     var url = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+      url = window.authManager.appendAuthToUrl(url);
+    }
     var self = this;
 
     // Lazy PDF.js viewer (canvas-based) for cross-browser support — iOS
@@ -1815,7 +1842,12 @@
       .then(function (data) {
         container.innerHTML = '';
 
-        if (item.mimeCategory === 'json') {
+        if (isIpynbExtension(item.name) || isIpynbExtension(item.path)) {
+          // .ipynb takes precedence over the json mimeCategory the server
+          // assigns — a notebook is JSON shape but the user wants the
+          // rendered cells, not pretty-printed source.
+          self._renderNotebook(container, data.content, item);
+        } else if (item.mimeCategory === 'json') {
           self._renderJson(container, data.content, item);
         } else if (item.mimeCategory === 'csv') {
           self._renderCsv(container, data.content);
@@ -1984,6 +2016,53 @@
   //   - <base> + <meta refresh> stripping — closes navigation-shaped tricks.
   //   - 1 MB cap — beyond which we disable rendering and show source only,
   //     because srcdoc balloons memory and can hang the renderer.
+  // Notebook (.ipynb) preview (#3) — delegates to notebook-render.js
+  // which lazy-loads kokes/nbviewer.js + DOMPurify on first use, parses
+  // the notebook JSON, renders into a scratch DIV via nbv.render(), then
+  // sanitises the resulting HTML before inserting into the live DOM
+  // (output cells can carry arbitrary HTML).
+  FilePreviewPanel.prototype._renderNotebook = function (container, content, item) {
+    var self = this;
+    if (!window.notebookRender || typeof window.notebookRender.renderInto !== 'function') {
+      // Module never loaded — fall back to JSON-pretty preview so the user
+      // can still inspect the notebook source.
+      this._renderJson(container, content, item);
+      return;
+    }
+
+    var host = document.createElement('div');
+    host.className = 'fb-notebook-host';
+    container.appendChild(host);
+
+    // Track the renderer's teardown so showPreview() drains it on
+    // file-switch (matches the Panzoom / PDF.js / Monaco pattern).
+    var disposed = false;
+    var teardownFn = null;
+    self._activeDisposers.push(function () {
+      disposed = true;
+      if (teardownFn) {
+        try { teardownFn(); } catch (_) { /* ignore */ }
+        teardownFn = null;
+      }
+    });
+
+    window.notebookRender.renderInto(host, content, {}).then(function (result) {
+      if (disposed) {
+        // Race: showPreview() switched files while nbviewer was loading.
+        if (result && typeof result.teardown === 'function') {
+          try { result.teardown(); } catch (_) { /* ignore */ }
+        }
+        return;
+      }
+      if (result && typeof result.teardown === 'function') {
+        teardownFn = result.teardown;
+      }
+    }).catch(function () {
+      // notebook-render.js already renders its own fallback inside `host`.
+      // Nothing to do here.
+    });
+  };
+
   FilePreviewPanel.prototype._renderHtml = function (container, content, item) {
     var self = this;
     var src = String(content == null ? '' : content);
@@ -2655,7 +2734,13 @@
         };
         self._downloadItem.onclick = function () {
           self._hideMenu();
-          window.open('/api/files/download?path=' + encodeURIComponent(filePath), '_blank');
+          // window.open spawns a fresh navigation; thread the Bearer
+          // token via ?token= so --auth mode doesn't 401 the new tab.
+          var dlUrl = '/api/files/download?path=' + encodeURIComponent(filePath);
+          if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+            dlUrl = window.authManager.appendAuthToUrl(dlUrl);
+          }
+          window.open(dlUrl, '_blank');
         };
 
         // Hide edit for non-editable files
@@ -2925,6 +3010,7 @@
     isPreviewable: isPreviewable,
     isEditable: isEditable,
     isHtmlExtension: isHtmlExtension,
+    isIpynbExtension: isIpynbExtension,
     // CSV parsing — exposed for unit tests (task #5)
     parseCsvLine: parseCsvLine,
     detectColumnIsNumeric: detectColumnIsNumeric,
