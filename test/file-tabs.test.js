@@ -172,5 +172,44 @@ describe('file-tabs.js (pure helpers)', function () {
       assert.deepStrictEqual(ft.deserializeState({ version: ft.STORAGE_VERSION, tabs: 'x' }),
         { tabs: [], activeIndex: -1 });
     });
+
+    // Codex review #1: restoreFromStorage was dropping the diff target on
+    // reload because _createTab(t.path, t.mode, {}) ignored the persisted
+    // compareWithRef / compareWithPath. The schema HAS always preserved
+    // them — the consumer just wasn't threading them through. This test
+    // pins the schema half (the fix is in restoreFromStorage's call site).
+    it('round-trips diff-mode compareWithRef + compareWithPath', function () {
+      var src = ft.serializeState([
+        { path: '/repo/src/foo.js', mode: 'diff', compareWithRef: 'main' },
+        { path: '/repo/src/bar.js', mode: 'diff', compareWithPath: '/repo/old/bar.js' },
+        { path: '/repo/src/baz.js', mode: 'diff' }, // no target → defaults to HEAD on render
+      ], 0);
+      var out = ft.deserializeState(src);
+      assert.deepStrictEqual(out.tabs[0],
+        { path: '/repo/src/foo.js', mode: 'diff', compareWithRef: 'main' });
+      assert.deepStrictEqual(out.tabs[1],
+        { path: '/repo/src/bar.js', mode: 'diff', compareWithPath: '/repo/old/bar.js' });
+      assert.deepStrictEqual(out.tabs[2],
+        { path: '/repo/src/baz.js', mode: 'diff' });
+    });
+
+    it('truncates over-long diff target strings (defensive, prevents storage bloat)', function () {
+      var longRef = 'x'.repeat(500);   // exceeds the 200-char cap
+      var longPath = 'p'.repeat(5000); // exceeds the 4096-char cap
+      var out = ft.deserializeState({
+        version: ft.STORAGE_VERSION,
+        tabs: [
+          { path: '/x', mode: 'diff', compareWithRef: longRef },
+          { path: '/y', mode: 'diff', compareWithPath: longPath },
+        ],
+        activeIndex: 0,
+      });
+      // Both bad fields should be dropped (not silently truncated to a
+      // partial value that happened to validate elsewhere).
+      assert.strictEqual(out.tabs[0].compareWithRef, undefined,
+        'over-long ref should be dropped, not truncated');
+      assert.strictEqual(out.tabs[1].compareWithPath, undefined,
+        'over-long path should be dropped');
+    });
   });
 });

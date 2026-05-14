@@ -292,7 +292,20 @@
       if (evict) this.closeTab(evict.id, { silent: true });
     }
     if (this._tabs.length >= this.maxTabs) {
-      // All tabs are dirty — refuse rather than silently lose work.
+      // All tabs are dirty — refuse rather than silently lose work. Show a
+      // visible toast so the user knows why their click had no effect
+      // (search-result / terminal-link / markdown-link entry points all
+      // call openFile in fire-and-forget mode and have nowhere else to
+      // surface the rejection). Codex review #2 caught the silent no-op.
+      if (typeof window !== 'undefined' && window.feedback &&
+          typeof window.feedback.warning === 'function') {
+        try {
+          window.feedback.warning(
+            'Tab limit reached (' + this.maxTabs +
+            '); close a tab to open this file.'
+          );
+        } catch (_) { /* feedback infra missing — silent is unavoidable */ }
+      }
       return null;
     }
 
@@ -677,7 +690,17 @@
     for (var i = 0; i < state.tabs.length; i++) {
       var t = state.tabs[i];
       // Lazy: don't fetch content yet — let activate() trigger render.
-      this._createTab(t.path, t.mode, {});
+      // Diff tabs need the persisted compare-target threaded through to
+      // _createTab so they restore as the SAME diff (foo.js vs ref X)
+      // rather than collapsing to the default HEAD-vs-working diff. Codex
+      // review #1 caught the lost context — `_createTab(path, mode, {})`
+      // dropped both compareWithRef and compareWithPath silently.
+      var initOpts = {};
+      if (t.mode === 'diff') {
+        if (t.compareWithRef)  initOpts.compareWithRef  = t.compareWithRef;
+        if (t.compareWithPath) initOpts.compareWithPath = t.compareWithPath;
+      }
+      this._createTab(t.path, t.mode, initOpts);
     }
     this._renderStrip();
     var idx = state.activeIndex >= 0 ? state.activeIndex : 0;
