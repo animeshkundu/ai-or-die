@@ -345,6 +345,51 @@
       });
   };
 
+  // Compare an in-memory buffer against the on-disk version of the same
+  // file. Used by the fs-watcher integration (#41) when an external write
+  // arrives for a tab the user has unsaved edits in: the toast offers a
+  // "Compare" action that opens this diff so the user can see exactly what
+  // the agent changed before deciding to discard their buffer or keep it.
+  //
+  // Asymmetric to openFileVsFile: only `diskPath` is fetched; `memoryContent`
+  // is the live editor buffer the caller already has in hand. Saves a
+  // round-trip vs. round-tripping the buffer through a temp endpoint.
+  //
+  // Labels default to "<basename> (disk)" / "<basename> (your edits)" since
+  // the canonical user mental model is "what does my unsaved buffer differ
+  // from on disk RIGHT NOW". Caller can override via `opts.diskLabel` /
+  // `opts.memoryLabel` if a different framing is desired.
+  DiffViewerPanel.prototype.openMemoryVsFile = function (memoryContent, diskPath, opts) {
+    var self = this;
+    if (typeof memoryContent !== 'string' || !diskPath) {
+      return Promise.reject(new Error('openMemoryVsFile: memoryContent (string) + diskPath required'));
+    }
+    opts = opts || {};
+    var diskLabel = opts.diskLabel || (_basename(diskPath) + ' (disk)');
+    var memLabel = opts.memoryLabel || (_basename(diskPath) + ' (your edits)');
+
+    this._buildShell(diskLabel, memLabel);
+    this._showLoading('Fetching disk version...');
+
+    return this.authFetch(buildContentUrl(diskPath)).then(function (resp) {
+      if (!resp.ok) throw new Error('HTTP ' + resp.status + ' loading ' + _basename(diskPath));
+      return resp.json();
+    }).then(function (data) {
+      if (self._destroyed) return null;
+      return self.openDiff({
+        originalSource: data.content || '',
+        modifiedSource: memoryContent,
+        originalLabel: diskLabel,
+        modifiedLabel: memLabel,
+        path: diskPath, // language hint
+      });
+    }).catch(function (err) {
+      if (self._destroyed) return null;
+      self._showError(err && err.message ? err.message : 'Compare with disk failed.');
+      return null;
+    });
+  };
+
   // ---------------------------------------------------------------------------
   // Exports
   // ---------------------------------------------------------------------------

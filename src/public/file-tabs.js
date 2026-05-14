@@ -233,6 +233,254 @@
     });
   };
 
+  // fs-watcher integration (#41 / ADR-0017). Receives events from
+  // FileBrowserPanel's WatcherClient and routes them to the matching
+  // open tab(s). Per the ADR's client-side reaction lifecycle:
+  //   - change on a clean editor tab: silent reload preserving cursor +
+  //     scroll + selection via FileEditorPanel.applyDiskContent.
+  //   - change on a dirty editor tab: non-blocking toast with three
+  //     escape hatches (Reload-discard / Compare / Keep mine).
+  //   - change on a preview tab: re-render preview silently (preview is
+  //     always "clean" — no buffer to lose).
+  //   - unlink on any open tab: close the tab and surface a toast so the
+  //     user knows the file is gone.
+  // No-op for events whose path doesn't match any open tab.
+  //
+  // Hash short-circuit: if the event carries a `hash` and matches the
+  // tab's currently-saved hash, the disk content didn't actually change
+  // (chokidar fires `change` on metadata-only writes too) — skip the
+  // round-trip entirely.
+  TabManager.prototype.handleExternalEvent = function (evt) {
+    if (!evt || !evt.path) return;
+    var matches = this._tabsForPath(evt.path);
+    if (!matches.length) return;
+
+    if (evt.type === 'unlink') {
+      for (var u = 0; u < matches.length; u++) this._handleExternalUnlink(matches[u]);
+      return;
+    }
+    if (evt.type === 'change' || evt.type === 'add') {
+      for (var c = 0; c < matches.length; c++) this._handleExternalChange(matches[c], evt);
+      return;
+    }
+  };
+
+  TabManager.prototype._tabsForPath = function (path) {
+    if (!path) return [];
+    var norm = String(path).replace(/\\/g, '/');
+    var hits = [];
+    for (var i = 0; i < this._tabs.length; i++) {
+      var tabPath = String(this._tabs[i].path).replace(/\\/g, '/');
+      if (tabPath === norm) hits.push(this._tabs[i]);
+    }
+    return hits;
+  };
+
+  TabManager.prototype._handleExternalChange = function (tab, evt) {
+    if (!tab || !tab.panel) return;
+    var panel = tab.panel;
+
+    // Hash short-circuit — disk hash matches what we already have, no
+    // refresh needed. This catches the chokidar "metadata-only write"
+    // case (touch foo.js etc.) without bothering Monaco.
+    if (evt.hash && panel._fileHash && evt.hash === panel._fileHash) {
+      return;
+    }
+
+    var self = this;
+
+    // Editor tab: branch on dirty/clean.
+    if (tab.mode === 'editor') {
+      var isDirty = typeof panel.isDirty === 'function' ? panel.isDirty() : !!panel._dirty;
+      if (isDirty) {
+        // Don't auto-reload — the user has unsaved work. Show a
+        // non-blocking toast with three escape hatches. The 409-on-save
+        // backstop catches anything they ignore.
+        this._showExternalChangeToast(tab);
+        return;
+      }
+      // Clean tab — fetch + apply silently, preserving cursor / scroll /
+      // selection via FileEditorPanel.applyDiskContent (extracted from
+      // _reloadFile specifically for this path).
+      this._silentReloadEditorTab(tab);
+      return;
+    }
+
+    // Preview tab: always "clean" (no buffer). Re-render via the
+    // preview panel's own dispatch. Cheap because preview content is
+    // already cached server-side and the network call is small.
+    if (tab.mode === 'preview' && typeof panel.showPreview === 'function') {
+      // Use the same item shape the panel saw on first render. Recreate
+      // a minimal item from the tab; the panel's _renderTextContent
+      // re-fetches fresh content on each call.
+      var item = tab._initialItem || {
+        path: tab.path, name: tab.name,
+        mimeCategory: 'code', previewable: true, editable: true,
+      };
+      try { panel.showPreview(item, undefined, {}); } catch (_) { /* swallow */ }
+      return;
+    }
+
+    // Diff tab: leave alone — diff is a snapshot comparison; refreshing
+    // would discard the intentional snapshot the user is examining.
+  };
+
+  TabManager.prototype._silentReloadEditorTab = function (tab) {
+    if (!tab || !tab.panel) return;
+    var panel = tab.panel;
+    var path = tab.path;
+    if (typeof panel.applyDiskContent !== 'function' || !this.authFetch) return;
+
+    this.authFetch('/api/files/content?path=' + encodeURIComponent(path))
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        try { panel.applyDiskContent({ content: data.content, hash: data.hash }); } catch (_) {}
+      })
+      .catch(function () { /* best-effort silent refresh; failure leaves the existing buffer */ });
+  };
+
+  TabManager.prototype._handleExternalUnlink = function (tab) {
+    if (!tab) return;
+    var name = tab.name || (tab.path || 'file');
+    if (typeof window !== 'undefined' && window.feedback &&
+        typeof window.feedback.warning === 'function') {
+      try {
+        window.feedback.warning(name + ' was deleted on disk; closing the tab.');
+      } catch (_) { /* feedback infra missing — silent is unavoidable */ }
+    }
+    // closeTab handles the dirty-prompt for us; if the user chose to keep
+    // their dirty buffer, the tab survives but the path no longer points
+    // at a live file. The next save will create the file fresh, which
+    // matches user intent ("I want to keep my work").
+    try { this.closeTab(tab.id); } catch (_) { /* ignore */ }
+  };
+
+  // Non-blocking inline toast for the dirty-tab external-change case.
+  // Mounted INSIDE the tab's content host so it scrolls with the editor
+  // and is visually bound to the file the agent touched. Three escape
+  // hatches per ADR-0017:
+  //   - Reload (discard): forfeit the buffer; apply disk content.
+  //   - Compare: open the diff viewer (memory-vs-disk via DiffViewerPanel).
+  //   - Keep mine: dismiss the toast; the existing 409 conflict flow
+  //     handles the next save attempt.
+  TabManager.prototype._showExternalChangeToast = function (tab) {
+    if (!tab || !tab.contentEl) return;
+    // Replace any prior toast on this tab so repeated change events
+    // don't stack into a column of identical banners.
+    var prior = tab.contentEl.querySelector('.fb-tab-external-change-toast');
+    if (prior && prior.parentNode) prior.parentNode.removeChild(prior);
+
+    var self = this;
+    var toast = document.createElement('div');
+    toast.className = 'fb-tab-external-change-toast';
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+
+    var msg = document.createElement('span');
+    msg.className = 'fb-tab-external-change-msg';
+    msg.textContent = 'agent modified ' + (tab.name || 'this file') + ' on disk';
+    toast.appendChild(msg);
+
+    var actions = document.createElement('div');
+    actions.className = 'fb-tab-external-change-actions';
+
+    function mkBtn(label, handler) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-secondary btn-small';
+      b.textContent = label;
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        try { handler(); } catch (_) { /* ignore */ }
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+      });
+      return b;
+    }
+
+    actions.appendChild(mkBtn('Reload (discard)', function () {
+      self._silentReloadEditorTab(tab);
+    }));
+    actions.appendChild(mkBtn('Compare', function () {
+      var panel = tab.panel;
+      var memContent = panel && panel._editor &&
+        typeof panel._editor.getValue === 'function' ? panel._editor.getValue() : '';
+      // Use a transient DiffViewerPanel mounted inside a scratch container
+      // overlay'd above the tab. Keep it modal-shaped via _createModal-
+      // style positioning. For v1 simplicity, route through TabManager's
+      // openFile diff mode with the new openMemoryVsFile entry point.
+      if (window.fileDiff && typeof window.fileDiff.DiffViewerPanel === 'function') {
+        try {
+          // Mount a transient diff overlay in a temp container appended
+          // to body — matches the existing modal shell pattern. The
+          // overlay closes itself on Esc / click-outside via the
+          // inline-built handlers below.
+          self._showInlineDiffOverlay(memContent, tab.path);
+        } catch (_) { /* ignore; user can re-open via tab strip if needed */ }
+      }
+    }));
+    actions.appendChild(mkBtn('Keep mine', function () { /* dismiss only */ }));
+
+    toast.appendChild(actions);
+    tab.contentEl.appendChild(toast);
+  };
+
+  // Render a transient overlay that hosts a DiffViewerPanel showing the
+  // editor's in-memory buffer vs disk. Lighter-weight than promoting it
+  // to a full diff tab — the user just wants a quick "what did the agent
+  // change vs my buffer" peek before deciding Reload / Keep mine.
+  TabManager.prototype._showInlineDiffOverlay = function (memContent, diskPath) {
+    if (!window.fileDiff || typeof window.fileDiff.DiffViewerPanel !== 'function') return;
+    var overlay = document.createElement('div');
+    overlay.className = 'image-preview-modal active fb-watch-diff-overlay';
+    overlay.style.zIndex = '10000';
+    var box = document.createElement('div');
+    box.className = 'modal-content';
+    box.style.cssText = 'max-width:90vw;max-height:80vh;display:flex;flex-direction:column';
+    overlay.appendChild(box);
+
+    var hdr = document.createElement('div');
+    hdr.className = 'modal-header';
+    var title = document.createElement('h2');
+    title.textContent = 'Compare with disk';
+    hdr.appendChild(title);
+    var close = document.createElement('button');
+    close.className = 'close-btn';
+    close.innerHTML = '&times;';
+    close.addEventListener('click', function () { dismiss(); });
+    hdr.appendChild(close);
+    box.appendChild(hdr);
+
+    var diffHost = document.createElement('div');
+    diffHost.style.cssText = 'flex:1;min-height:400px;min-width:0;padding:8px';
+    box.appendChild(diffHost);
+
+    var diff = new window.fileDiff.DiffViewerPanel({
+      authFetch: this.authFetch,
+      containerEl: diffHost,
+      onClose: function () { /* user-driven via overlay close */ },
+    });
+
+    var dismissed = false;
+    function dismiss() {
+      if (dismissed) return;
+      dismissed = true;
+      try { diff.destroy(); } catch (_) {}
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onEsc, true);
+    }
+    function onEsc(e) { if (e.key === 'Escape') { e.stopPropagation(); dismiss(); } }
+    overlay.addEventListener('mousedown', function (e) {
+      if (e.target === overlay) dismiss();
+    });
+    document.addEventListener('keydown', onEsc, true);
+
+    document.body.appendChild(overlay);
+    diff.openMemoryVsFile(memContent, diskPath);
+  };
+
   TabManager.prototype.getActiveTab = function () {
     return this._findTab(this._activeId);
   };

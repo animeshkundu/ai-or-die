@@ -552,6 +552,36 @@
   min-width: 0;
 }
 
+/* fs-watcher external-change toast (#41 / ADR-0017) — non-blocking
+   informational banner the TabManager emits when an external `change`
+   event arrives for a dirty editor tab. Three escape hatches:
+   Reload-discard / Compare / Keep-mine. Sits at the top of the tab
+   content so it's visible without scrolling but doesn't intercept
+   typing in the editor below. */
+.fb-tab-external-change-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-elevated);
+  border-bottom: 1px solid var(--border-default);
+  border-left: 3px solid var(--status-warning, #e5c07b);
+  font-size: var(--text-sm);
+  flex-shrink: 0;
+}
+.fb-tab-external-change-msg {
+  flex: 1;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fb-tab-external-change-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
 /* ---- CSV Preview ---- */
 .fb-csv-wrapper {
   /* Scrolls horizontally for wide CSVs and vertically for the

@@ -513,37 +513,71 @@
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function (d) {
         if (self._destroyed) return;
-        self._fileHash = d.hash || null;
-        self._lastSavedContent = d.content;
-        self._dirty = false;
-        self._dirtyDot.classList.remove('visible');
-        if (self._editor) {
-          // Preserve cursor position across the reload where feasible.
-          var pos = null;
-          try { pos = self._editor.getPosition(); } catch (_) { /* ignore */ }
-          // Suppress draft writes during the synchronous setValue —
-          // Monaco fires onDidChangeModelContent INSIDE setValue, which
-          // would otherwise re-write the just-loaded server content into
-          // the localStorage draft slot. Reordering the removeItem to
-          // AFTER setValue isn't enough because the change handler also
-          // sets _dirty=true; the suppress flag covers both paths.
-          self._suppressContentChange = true;
-          try {
-            self._editor.setValue(d.content);
-          } finally {
-            self._suppressContentChange = false;
-          }
-          if (pos) {
-            try { self._editor.setPosition(pos); } catch (_) { /* line may no longer exist */ }
-          }
-        }
-        // Now that the editor is settled, drop any stale draft. Doing this
-        // AFTER the setValue + suppress block guarantees no draft slot
-        // races back in via a synchronous onDidChangeModelContent.
-        try { localStorage.removeItem('fb-draft-' + self._filePath); } catch (_) { /* ignore */ }
+        self.applyDiskContent({ content: d.content, hash: d.hash });
         self._updateStatus('Reloaded', getMonacoLanguage(getExtension(self._filePath)));
       })
       .catch(function (e) { self._updateStatus('Reload failed: ' + e.message, '', true); });
+  };
+
+  // Apply already-fetched disk content into the live Monaco model with
+  // cursor + scroll preserved. Public surface used by both the explicit
+  // "Reload File" button (via _reloadFile, which fetches first) AND the
+  // fs-watcher integration (#41) — when an external `change` event arrives
+  // for a clean tab, the SSE handler can call applyDiskContent directly
+  // with the content it already has from the server payload (or a
+  // fresh fetch if `hash` doesn't match `_fileHash`), no need to
+  // re-implement the cursor-preservation pattern at the call site.
+  //
+  // Inputs: { content: string, hash?: string }. Both required for the
+  // optimistic-concurrency invariant — `_fileHash` MUST be advanced or
+  // the next user save will trip a 409 against the new on-disk hash.
+  FileEditorPanel.prototype.applyDiskContent = function (data) {
+    if (this._destroyed || !data) return false;
+    this._fileHash = data.hash || null;
+    this._lastSavedContent = data.content == null ? '' : String(data.content);
+    this._dirty = false;
+    if (this._dirtyDot) this._dirtyDot.classList.remove('visible');
+    if (this._editor) {
+      // Preserve cursor position + selection + scroll across the reload
+      // where feasible. Cursor + selection survive setValue if we re-apply
+      // them; scroll is tracked via the editor's view state.
+      var pos = null;
+      var selection = null;
+      var viewState = null;
+      try { pos = this._editor.getPosition(); } catch (_) { /* ignore */ }
+      try { selection = this._editor.getSelection(); } catch (_) { /* ignore */ }
+      try { viewState = this._editor.saveViewState(); } catch (_) { /* ignore */ }
+      // Suppress draft writes during the synchronous setValue — Monaco
+      // fires onDidChangeModelContent INSIDE setValue, which would
+      // otherwise re-write the just-loaded server content into the
+      // localStorage draft slot AND set _dirty=true. The suppress flag
+      // covers both paths in _onContentChange.
+      this._suppressContentChange = true;
+      try {
+        this._editor.setValue(this._lastSavedContent);
+      } finally {
+        this._suppressContentChange = false;
+      }
+      // Restore view state first (it includes scroll) then position +
+      // selection on top — restoring viewState alone may stomp the
+      // explicit cursor we just captured if Monaco's saveViewState chose
+      // a different anchor.
+      if (viewState) {
+        try { this._editor.restoreViewState(viewState); } catch (_) { /* ignore */ }
+      }
+      if (selection) {
+        try { this._editor.setSelection(selection); } catch (_) { /* line may no longer exist */ }
+      } else if (pos) {
+        try { this._editor.setPosition(pos); } catch (_) { /* line may no longer exist */ }
+      }
+    }
+    // Drop any stale draft AFTER the setValue + suppress block — this
+    // ordering guarantees no draft slot races back in via a synchronous
+    // onDidChangeModelContent.
+    if (this._filePath) {
+      try { localStorage.removeItem('fb-draft-' + this._filePath); } catch (_) { /* ignore */ }
+    }
+    return true;
   };
 
   FileEditorPanel.prototype._showCompare = function () {

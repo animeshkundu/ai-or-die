@@ -353,6 +353,8 @@
     this._backdropEl = null;
     this._previewPanel = null;
     this._tabManager = null; // Lazy-initialized on first preview/editor open.
+    this._fileWatcher = null; // Lazy-initialized on first navigateTo() (#41 / ADR-0017).
+    this._unbindFileWatcher = null; // off() returned by WatcherClient.onEvent
 
     this._buildDOM();
   }
@@ -700,6 +702,18 @@
     this._open = false;
     this._panelEl.classList.remove('open');
     this._backdropEl.classList.remove('active');
+    // Drop the fs-watcher when the panel closes — the SSE consumes a
+    // server-side chokidar watcher (kernel resource) per the
+    // MAX_CONCURRENT_WATCHERS=5/IP cap. Re-opens the next time the
+    // panel is opened + navigateTo fires. Also unbinds the dispatch
+    // handler so it doesn't fire against a stale tabManager reference.
+    if (this._unbindFileWatcher) {
+      try { this._unbindFileWatcher(); } catch (_) { /* ignore */ }
+      this._unbindFileWatcher = null;
+    }
+    if (this._fileWatcher && typeof this._fileWatcher.disconnect === 'function') {
+      try { this._fileWatcher.disconnect(); } catch (_) { /* ignore */ }
+    }
     this._announceToScreenReader('File browser closed');
     this._adjustTerminal();
   };
@@ -814,6 +828,17 @@
         self._renderItems();
         self._showBrowseView();
         self._statusBar.textContent = data.totalCount + ' item' + (data.totalCount !== 1 ? 's' : '');
+
+        // fs-watcher (#41 / ADR-0017): point the single per-panel watcher
+        // at the directory we just navigated to. The chokidar subscription
+        // is recursive, so this watcher catches events for ALL open tabs
+        // that live anywhere under this dir AND for direct children of
+        // the dir (the listing itself). Switching dirs swaps the
+        // subscription; opening tabs above this dir leaves them in the
+        // "outside the watcher root" gap (known v1 limitation —
+        // subscribe/unsubscribe control channel from ADR-0017 amendment
+        // would close it; tracked as a follow-up).
+        self._ensureFileWatcher().switchRoot(self._currentPath);
 
         // Auto-select pending file
         if (self._pendingSelectFile) {
@@ -1140,6 +1165,89 @@
       return null;
     }
     return this._tabManager;
+  };
+
+  // Single fs-watcher per panel (#41 / ADR-0017) — opens an EventSource
+  // against /api/files/watch?path=<currentPath> and dispatches add /
+  // change / unlink events to:
+  //   - TabManager (per-tab dirty/clean reaction; routed through
+  //     TabManager.handleExternalEvent if defined).
+  //   - The directory listing (refresh on add/unlink matching _currentPath).
+  //
+  // Lazy: not created until first navigateTo() so the EventSource only
+  // exists once the user has opened the panel. switchRoot is called from
+  // navigateTo when the dir changes; the watcher follows the panel's view
+  // of the world.
+  //
+  // Returns the WatcherClient instance, or a no-op stub if
+  // window.fileWatcherClient never loaded (CSP / vendor-script missing).
+  // Stub keeps callers from null-checking on every navigateTo.
+  FileBrowserPanel.prototype._ensureFileWatcher = function () {
+    if (this._fileWatcher) return this._fileWatcher;
+    if (!window.fileWatcherClient ||
+        typeof window.fileWatcherClient.WatcherClient !== 'function') {
+      // Module missing — return a no-op stub so callers don't have to
+      // null-check switchRoot / disconnect / etc on every navigateTo.
+      var stub = {
+        connect: function () { return false; },
+        disconnect: function () {},
+        switchRoot: function () {},
+        currentRoot: function () { return null; },
+        isConnected: function () { return false; },
+        onEvent: function () { return function () {}; },
+        destroy: function () {},
+      };
+      this._fileWatcher = stub;
+      return stub;
+    }
+    var self = this;
+    try {
+      this._fileWatcher = new window.fileWatcherClient.WatcherClient({});
+    } catch (e) {
+      if (typeof console !== 'undefined') console.warn('WatcherClient init failed:', e);
+      this._fileWatcher = null;
+      return null;
+    }
+    // Single fan-out handler: fork to TabManager + the dir listing.
+    this._unbindFileWatcher = this._fileWatcher.onEvent(function (evt) {
+      try { self._dispatchWatcherEvent(evt); } catch (_) { /* swallow handler-side errors */ }
+    });
+    return this._fileWatcher;
+  };
+
+  // Routes an SSE event to the right surface. Per ADR-0017 §Client-side
+  // reaction lifecycle:
+  //   - change matching open tab → TabManager.handleExternalChange.
+  //   - unlink matching open tab → TabManager.handleExternalUnlink.
+  //   - add / unlink matching this._currentPath direct child → list refresh.
+  //   - rename event would be split server-side into unlink+add (current
+  //     v1 endpoint doesn't emit rename; the dual-event handling here
+  //     covers it implicitly).
+  FileBrowserPanel.prototype._dispatchWatcherEvent = function (evt) {
+    if (!evt || !evt.type) return;
+    if (evt.type === 'start' || evt.type === 'end' || evt.type === 'error') return;
+
+    var path = evt.path;
+    if (!path) return;
+
+    // Route to TabManager if any open tab matches this path.
+    var tm = this._tabManager;
+    if (tm && typeof tm.handleExternalEvent === 'function') {
+      try { tm.handleExternalEvent(evt); } catch (_) { /* swallow */ }
+    }
+
+    // Listing refresh: fire only when the changed path is a DIRECT child of
+    // the panel's current dir (chokidar emits recursively but the listing
+    // only shows direct children; deep changes don't affect what we render).
+    if (this._currentPath && (evt.type === 'add' || evt.type === 'unlink')) {
+      var parent = path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+      var here = String(this._currentPath).replace(/\\/g, '/').replace(/\/+$/, '');
+      if (parent === here) {
+        // Cheap re-fetch — debounced naturally because chokidar already
+        // coalesces 100ms per path on the server side.
+        this._refresh();
+      }
+    }
   };
 
   // Cross-file search panel (#9) — lazily mounted on first Cmd/Ctrl+Shift+F
