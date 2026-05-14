@@ -647,12 +647,20 @@ function encodeParam(val) {
       // are removed) and the file should be inside tmpDir.
       if (res.status === 200) {
         assert.ok(!res.body.path.includes('..'), 'Path should not contain ..');
-        // Verify the saved file is inside tmpDir
+        // Verify the saved file is inside tmpDir. Compare against the
+        // REALPATH of tmpDir because the server canonicalizes paths via
+        // realpath (so on macOS the response path is /private/var/...
+        // while the bare tmpDir is /var/...). Using realpath on both
+        // sides keeps the comparison working on darwin tmp-symlink and
+        // on linux where realpath is a no-op.
         const normalizedPath = res.body.path.replace(/\//g, path.sep);
         const resolvedTarget = path.resolve(normalizedPath);
-        const resolvedBase = path.resolve(tmpDir);
+        let resolvedBase;
+        try { resolvedBase = fs.realpathSync(tmpDir); }
+        catch (_) { resolvedBase = path.resolve(tmpDir); }
         assert.ok(resolvedTarget.startsWith(resolvedBase),
-          'File should be within base directory');
+          'File should be within base directory; got ' + resolvedTarget +
+          ' vs base ' + resolvedBase);
         removeIfExists(res.body.name);
       } else {
         // If the server rejected it outright, that's also acceptable security behavior

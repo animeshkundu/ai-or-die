@@ -261,27 +261,43 @@ class ClaudeCodeWebServer {
       return { valid: false, error: 'Path is required' };
     }
 
-    const resolvedPath = path.resolve(targetPath);
+    let canonicalPath = path.resolve(targetPath);
 
-    if (!this.isPathWithinBase(resolvedPath)) {
+    // Canonicalize symlinks BEFORE the within-base check. Otherwise an input
+    // passed in its pre-symlink form (e.g. `/var/folders/x` where `/var ->
+    // /private/var` on macOS) won't match a baseFolder that came from
+    // `process.cwd()` — which returns the realpath form. Without this,
+    // EVERY /api/files/* request hitting a symlinked tmp dir returns 403
+    // even when the realpath would be inside baseFolder. (This was the
+    // root cause of 28 file-browser-api.test.js failures on macOS; the
+    // tests had effectively never been run end-to-end on a symlinked tmp.)
+    //
+    // For non-existent inputs (new uploads, files about to be created),
+    // canonicalize the parent so a symlinked parent dir doesn't leak past
+    // the within-base check either.
+    //
+    // The post-canonicalize within-base check still defends against the
+    // "user-planted symlink escapes baseFolder" case: realpath follows
+    // the symlink, then we compare the FOLLOWED path against base.
+    try {
+      if (fs.existsSync(canonicalPath)) {
+        canonicalPath = fs.realpathSync(canonicalPath);
+      } else {
+        const parent = path.dirname(canonicalPath);
+        if (parent && parent !== canonicalPath && fs.existsSync(parent)) {
+          canonicalPath = path.join(fs.realpathSync(parent), path.basename(canonicalPath));
+        }
+      }
+    } catch (_) { /* keep the lexical form on realpath failure */ }
+
+    if (!this.isPathWithinBase(canonicalPath)) {
       return {
         valid: false,
         error: 'Access denied: Path is outside the allowed directory'
       };
     }
 
-    // Resolve symlinks to prevent TOCTOU attacks
-    try {
-      if (fs.existsSync(resolvedPath)) {
-        const realPath = fs.realpathSync(resolvedPath);
-        if (!this.isPathWithinBase(realPath)) {
-          return { valid: false, error: 'Access denied: symlink escapes allowed directory' };
-        }
-        return { valid: true, path: realPath };
-      }
-    } catch (e) { /* If realpath fails, fall through to using resolved path */ }
-
-    return { valid: true, path: resolvedPath };
+    return { valid: true, path: canonicalPath };
   }
 
   /**
