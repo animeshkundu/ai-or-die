@@ -1545,23 +1545,132 @@
   };
 
   // ---------------------------------------------------------------------------
-  // TerminalPathDetector — right-click context menu for file paths in terminal
+  // Terminal path linking — TerminalPathDetector (right-click selection menu)
+  // and attachLinkProvider (xterm registerLinkProvider for clickable links).
+  //
+  // Both share the same regex/extraction logic. CRITICAL: the link provider
+  // performs ZERO network I/O inside provideLinks (it scans every visible
+  // line on every render — synchronous regex only). Validation against the
+  // server (/api/files/stat) happens lazily in the click handler.
   // ---------------------------------------------------------------------------
 
-  // Regex patterns for file paths
-  var PATH_PATTERNS = [
-    /(?:^|\s)(\/[\w./-]+\.\w+)/,                         // Unix absolute: /path/to/file.ext
-    /(?:^|\s)(\.\/[\w./-]+)/,                              // Unix relative: ./path/to/file
-    /(?:^|\s)([A-Z]:\\[\w.\\ -]+\.\w+)/i,                 // Windows: C:\path\file.ext
-    /(?:^|\s)([\w-]+\/[\w./-]+\.\w+)/,                    // Bare relative: src/file.ext
+  // Known file-extension allowlist. Used as a precondition so that path-shaped
+  // tokens like `react/jsx-runtime` (npm specifier with no extension) and
+  // `1.2.3` (version) are not flagged as links.
+  var KNOWN_FILE_EXTENSIONS = [
+    // Code
+    'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'd.ts',
+    'py', 'rb', 'go', 'rs', 'java', 'kt', 'kts', 'scala', 'swift',
+    'c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'hh', 'hxx', 'm', 'mm',
+    'cs', 'fs', 'php', 'pl', 'pm', 'r', 'lua', 'dart', 'ex', 'exs',
+    'erl', 'hs', 'elm', 'clj', 'cljs', 'edn', 'jl', 'nim', 'zig', 'v',
+    // Shell / config
+    'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
+    'env', 'ini', 'cfg', 'conf', 'properties', 'toml',
+    'yaml', 'yml', 'json', 'json5', 'jsonc',
+    // Web
+    'html', 'htm', 'xhtml', 'xml', 'svg',
+    'css', 'scss', 'sass', 'less', 'styl',
+    // Markup / docs
+    'md', 'mdx', 'markdown', 'rst', 'tex', 'org', 'adoc',
+    // Data / DB
+    'csv', 'tsv', 'sql', 'graphql', 'gql', 'proto', 'avsc',
+    // Logs / text
+    'txt', 'log', 'patch', 'diff', 'lock',
+    // Build files
+    'gradle', 'cmake', 'mk', 'make', 'ninja', 'bazel', 'bzl',
+    // Binary previews
+    'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'avif',
+    // Notebooks
+    'ipynb',
   ];
 
+  var EXT_ALT = KNOWN_FILE_EXTENSIONS
+    .map(function (e) { return e.replace(/\./g, '\\.'); })
+    .join('|');
+
+  // Single canonical pattern: a path-shaped token that ends with a known
+  // extension and may have an optional ":line" or ":line:col" suffix.
+  //
+  // Left and right boundaries are matched as separate groups so we can
+  // recover the precise start column of the captured path inside the line.
+  //
+  // Group 1 = leading boundary (single char or empty at line start)
+  // Group 2 = the path text
+  // Group 3 = optional line number
+  // Group 4 = optional column number
+  //
+  // Note: the path body intentionally does NOT permit spaces. Terminal
+  // copy/paste of paths with spaces is uncommon; supporting them would
+  // require quote-aware parsing and isn't worth the false-positive cost.
+  var LINK_BODY = '(?:[A-Za-z]:[\\\\/]|~[\\\\/]|\\.{0,2}[\\\\/])?[\\w./\\\\-]*?\\.(?:' + EXT_ALT + ')';
+  var LINK_TAIL = '(?::(\\d+)(?::(\\d+))?)?';
+  var LINK_LEFT = '(^|[\\s\'"`(\\[<,;])';
+  var LINK_RIGHT = '(?=[\\s\'"`)\\]>,;]|[.:](?:\\s|$)|$)';
+
+  // Single-match version (for the right-click selection extractor).
+  var LINK_RE_SINGLE = new RegExp(LINK_LEFT + '(' + LINK_BODY + ')' + LINK_TAIL + LINK_RIGHT, 'i');
+  // Global version (for the link provider). Each provideLinks call gets a
+  // fresh lastIndex via String.prototype.matchAll for correctness.
+  var LINK_RE_GLOBAL = new RegExp(LINK_LEFT + '(' + LINK_BODY + ')' + LINK_TAIL + LINK_RIGHT, 'gi');
+
+  // Tokens that look like a path but should NEVER be treated as a file link.
+  // (Belt-and-braces: the regex already excludes most via extension allowlist,
+  // but version-like strings ending in digits-with-dots can otherwise sneak
+  // through if a digit happens to match an extension via case insensitivity.)
+  var VERSION_RE = /^v?\d+\.\d+(?:\.\d+)+$/;
+
+  // Legacy export — kept so any existing callers (and tests) still resolve
+  // a usable pattern. Now produces a single tightened pattern.
+  var PATH_PATTERNS = [LINK_RE_SINGLE];
+
+  /**
+   * Extract a file path (and optional line/col) from a free-form string.
+   * Returns null if no match.
+   *
+   * @param {string} text
+   * @returns {{path: string, line: ?number, col: ?number}|null}
+   */
+  function extractPathFromText(text) {
+    if (!text || !text.trim()) return null;
+    var trimmed = text.trim();
+
+    // Strip surrounding matched quotes (single, double, backtick).
+    if ((trimmed[0] === '"' || trimmed[0] === "'" || trimmed[0] === '`') &&
+        trimmed[trimmed.length - 1] === trimmed[0]) {
+      trimmed = trimmed.slice(1, -1);
+    }
+
+    var m = trimmed.match(LINK_RE_SINGLE);
+    if (!m) return null;
+    var pathOnly = m[2];
+    if (VERSION_RE.test(pathOnly)) return null;
+
+    return {
+      path: pathOnly,
+      line: m[3] ? parseInt(m[3], 10) : null,
+      col: m[4] ? parseInt(m[4], 10) : null,
+    };
+  }
+
   function TerminalPathDetector(options) {
-    this.fileBrowserPanel = options.fileBrowserPanel;
+    // Either pass `fileBrowserPanel` (eager) or `getFileBrowserPanel`
+    // (lazy — preferred so we don't create the panel until first use).
+    this._panel = options.fileBrowserPanel || null;
+    this._getPanel = options.getFileBrowserPanel || null;
     this.authFetch = options.authFetch;
     this.terminal = options.terminal;
+    this.app = options.app || null;       // optional, for cwd resolution
     this._menuEl = null;
   }
+
+  TerminalPathDetector.prototype._resolvePanel = function () {
+    if (this._panel) return this._panel;
+    if (typeof this._getPanel === 'function') {
+      this._panel = this._getPanel();
+    }
+    return this._panel;
+  };
 
   TerminalPathDetector.prototype.init = function () {
     if (!this.terminal) return;
@@ -1600,19 +1709,27 @@
     document.body.appendChild(menu);
     this._menuEl = menu;
 
-    // Right-click handler on the terminal element
+    // Right-click handler on the terminal element. We must run BEFORE the
+    // generic terminal context menu (`setupTerminalContextMenu` in app.js,
+    // which is delegated on <main>). When we recognize a path-shaped
+    // selection, stopImmediatePropagation prevents the generic menu from
+    // ALSO appearing on top of ours.
     var termEl = this.terminal.element;
     if (!termEl) return;
 
     termEl.addEventListener('contextmenu', function (e) {
       var selection = self.terminal.getSelection();
-      var detectedPath = self._extractPath(selection);
+      var detected = extractPathFromText(selection);
 
-      if (detectedPath) {
+      if (detected) {
         e.preventDefault();
-        self._showMenu(e.clientX, e.clientY, detectedPath);
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') {
+          e.stopImmediatePropagation();
+        }
+        self._showMenu(e.clientX, e.clientY, detected);
       }
-    });
+    }, true /* capture, so we run before main bubble handlers */);
 
     // Dismiss menu on click elsewhere
     document.addEventListener('click', function () {
@@ -1623,32 +1740,19 @@
     });
   };
 
+  // Kept for backward compatibility with any external callers / tests.
+  // Returns the path string only (no line/col).
   TerminalPathDetector.prototype._extractPath = function (text) {
-    if (!text || !text.trim()) return null;
-    var trimmed = text.trim();
-
-    // Strip surrounding quotes
-    if ((trimmed[0] === '"' || trimmed[0] === "'") && trimmed[trimmed.length - 1] === trimmed[0]) {
-      trimmed = trimmed.slice(1, -1);
-    }
-
-    // Check against path patterns
-    for (var i = 0; i < PATH_PATTERNS.length; i++) {
-      var match = trimmed.match(PATH_PATTERNS[i]);
-      if (match) return match[1] || match[0];
-    }
-
-    // Fallback: if it looks like a path (contains / or \ and has an extension)
-    if (/[/\\]/.test(trimmed) && /\.\w{1,10}$/.test(trimmed)) {
-      return trimmed;
-    }
-
-    return null;
+    var d = extractPathFromText(text);
+    return d ? d.path : null;
   };
 
-  TerminalPathDetector.prototype._showMenu = function (x, y, filePath) {
+  TerminalPathDetector.prototype._showMenu = function (x, y, detected) {
     var self = this;
     var menu = this._menuEl;
+    // Tolerate legacy callers that pass a bare string.
+    if (typeof detected === 'string') detected = { path: detected, line: null, col: null };
+    var filePath = detected.path;
 
     // Position the menu
     menu.style.left = x + 'px';
@@ -1676,12 +1780,14 @@
         // Wire click handlers
         self._viewItem.onclick = function () {
           self._hideMenu();
-          if (self.fileBrowserPanel) self.fileBrowserPanel.openToFile(filePath);
+          var panel = self._resolvePanel();
+          if (panel) panel.openToFile(filePath);
         };
         self._editItem.onclick = function () {
           self._hideMenu();
-          if (self.fileBrowserPanel) {
-            self.fileBrowserPanel.openToFile(filePath);
+          var panel = self._resolvePanel();
+          if (panel) {
+            panel.openToFile(filePath);
             // The edit will be triggered after preview loads
           }
         };
@@ -1723,6 +1829,163 @@
   };
 
   // ---------------------------------------------------------------------------
+  // attachLinkProvider — register an xterm link provider for clickable paths
+  // ---------------------------------------------------------------------------
+  //
+  // Behavior:
+  //  - Scans each visible terminal line synchronously with LINK_RE_GLOBAL.
+  //  - Returns ILink objects with start/end columns. NO network I/O here —
+  //    if we hit /api/files/stat per match, a scrolling `npm install`
+  //    log would self-DDoS the browser's 6-connection cap (peer-review HIGH-1).
+  //  - On click (`activate`), validates lazily via /api/files/stat, then
+  //    calls `openInViewer(path, line, col)`. On 404 → toast.
+  //
+  // Required options:
+  //   terminal       xterm Terminal instance
+  //   authFetch      (url, opts?) => Promise<Response>
+  //   openInViewer   (path, line?, col?) => void
+  //   getCwd         () => string|null   (for resolving relatives)
+  //   feedback       optional { error(msg), info(msg) } notifier
+  //
+  // Returns a disposable: { dispose() }
+  // ---------------------------------------------------------------------------
+  function attachLinkProvider(options) {
+    var terminal = options.terminal;
+    var authFetch = options.authFetch;
+    var openInViewer = options.openInViewer;
+    var getCwd = options.getCwd || function () { return null; };
+    var feedback = options.feedback || (typeof window !== 'undefined' ? window.feedback : null);
+
+    if (!terminal || typeof terminal.registerLinkProvider !== 'function') return null;
+    if (typeof authFetch !== 'function' || typeof openInViewer !== 'function') return null;
+
+    function findLinksInText(text) {
+      // Returns an array of { startCol, endCol, path, line, col } for the line.
+      // Cols are 0-based against the input string; the caller adds +1 for xterm.
+      var matches = [];
+      // Reset lastIndex for safety; we re-execute in a loop below.
+      LINK_RE_GLOBAL.lastIndex = 0;
+      var m;
+      while ((m = LINK_RE_GLOBAL.exec(text)) !== null) {
+        var leadLen = m[1] ? m[1].length : 0;
+        var pathOnly = m[2];
+        if (!pathOnly || VERSION_RE.test(pathOnly)) continue;
+
+        var pathStart = m.index + leadLen;
+        var pathEnd = pathStart + pathOnly.length;       // exclusive
+        var line = m[3] ? parseInt(m[3], 10) : null;
+        var col = m[4] ? parseInt(m[4], 10) : null;
+
+        // Extend the link region to cover the trailing :line[:col] suffix
+        // so the user clicks the whole "path:42:5" rather than just the path.
+        var fullEnd = pathEnd;
+        if (m[3]) {
+          fullEnd += 1 /* ':' */ + m[3].length;
+          if (m[4]) fullEnd += 1 + m[4].length;
+        }
+
+        matches.push({
+          startCol: pathStart,
+          endCol: fullEnd,        // exclusive
+          path: pathOnly,
+          line: line,
+          col: col,
+        });
+
+        // Guard: degenerate empty match could loop forever.
+        if (m.index === LINK_RE_GLOBAL.lastIndex) LINK_RE_GLOBAL.lastIndex++;
+      }
+      return matches;
+    }
+
+    function activate(_event, _text, detected) {
+      var p = detected.path;
+      // Resolve relative paths against the terminal's cwd.
+      var resolved = p;
+      var cwd = getCwd();
+      if (cwd && !/^([A-Za-z]:[\\/]|[\\/]|~[\\/])/.test(p)) {
+        // Relative — join with cwd. Use forward slashes uniformly; the
+        // server normalizes both.
+        var sep = cwd.indexOf('\\') !== -1 && cwd.indexOf('/') === -1 ? '\\' : '/';
+        var trimmedCwd = cwd.replace(/[\\/]+$/, '');
+        var stripped = p.replace(/^\.[\\/]/, '');
+        resolved = trimmedCwd + sep + stripped;
+      }
+
+      authFetch('/api/files/stat?path=' + encodeURIComponent(resolved))
+        .then(function (resp) {
+          if (resp.status === 404) {
+            if (feedback && typeof feedback.error === 'function') {
+              feedback.error('File not found: ' + p);
+            }
+            return null;
+          }
+          if (!resp.ok) throw new Error('stat failed: ' + resp.status);
+          return resp.json();
+        })
+        .then(function (stat) {
+          if (!stat) return;
+          openInViewer(resolved, detected.line, detected.col);
+        })
+        .catch(function (err) {
+          if (feedback && typeof feedback.error === 'function') {
+            feedback.error('Could not open ' + p + ': ' + (err && err.message ? err.message : err));
+          }
+        });
+    }
+
+    var provider = {
+      provideLinks: function (bufferLineNumber, callback) {
+        try {
+          // xterm: bufferLineNumber is 1-based row index in the active buffer.
+          var buf = terminal.buffer && terminal.buffer.active;
+          if (!buf || typeof buf.getLine !== 'function') {
+            callback(undefined);
+            return;
+          }
+          var line = buf.getLine(bufferLineNumber - 1);
+          if (!line) {
+            callback(undefined);
+            return;
+          }
+          var text = line.translateToString(false);
+          if (!text) {
+            callback(undefined);
+            return;
+          }
+
+          var found = findLinksInText(text);
+          if (!found.length) {
+            callback(undefined);
+            return;
+          }
+
+          var links = found.map(function (m) {
+            var displayText = text.substring(m.startCol, m.endCol);
+            return {
+              // xterm uses 1-based, inclusive column ranges.
+              range: {
+                start: { x: m.startCol + 1, y: bufferLineNumber },
+                end: { x: m.endCol, y: bufferLineNumber },
+              },
+              text: displayText,
+              decorations: { underline: true, pointerCursor: true },
+              activate: function (e, t) { activate(e, t, m); },
+            };
+          });
+          callback(links);
+        } catch (_err) {
+          // Never let the link provider throw — would disable terminal rendering.
+          callback(undefined);
+        }
+      },
+    };
+
+    var disposable = terminal.registerLinkProvider(provider);
+    return disposable;
+  }
+
+  // ---------------------------------------------------------------------------
   // Exports
   // ---------------------------------------------------------------------------
 
@@ -1730,6 +1993,8 @@
     FileBrowserPanel: FileBrowserPanel,
     FilePreviewPanel: FilePreviewPanel,
     TerminalPathDetector: TerminalPathDetector,
+    attachLinkProvider: attachLinkProvider,
+    extractPathFromText: extractPathFromText,
     // Utilities (for testing)
     getFileIcon: getFileIcon,
     getAceMode: getAceMode,
@@ -1737,6 +2002,9 @@
     buildBreadcrumbs: buildBreadcrumbs,
     isPreviewable: isPreviewable,
     isEditable: isEditable,
+    KNOWN_FILE_EXTENSIONS: KNOWN_FILE_EXTENSIONS,
+    LINK_RE_SINGLE: LINK_RE_SINGLE,
+    LINK_RE_GLOBAL: LINK_RE_GLOBAL,
   };
 
   if (typeof window !== 'undefined') {

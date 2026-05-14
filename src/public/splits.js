@@ -124,6 +124,12 @@ class Split {
             }
         });
 
+        // Wire clickable file paths (xterm registerLinkProvider) +
+        // right-click selection-based file menu, same as the main terminal.
+        if (this.app && typeof this.app._setupTerminalLinking === 'function') {
+            try { this.app._setupTerminalLinking(this.terminal); } catch (_) {}
+        }
+
         // Attach image handler to split terminal
         const terminalContainer = wrapper;
         if (window.imageHandler) {

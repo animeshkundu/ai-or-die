@@ -672,6 +672,7 @@ class ClaudeCodeWebInterface {
 
         this.setupTerminalSearch();
         this.setupTerminalContextMenu();
+        this._setupTerminalLinking(this.terminal);
 
         this.terminal.onData((data) => {
             if (this._ctrlModifierPending) {
@@ -2914,6 +2915,54 @@ class ClaudeCodeWebInterface {
         });
     }
 
+    /**
+     * Wire up clickable file paths in a terminal:
+     *   1. xterm registerLinkProvider for hover-underline + click-to-open
+     *      (synchronous regex only — NO network I/O on render).
+     *   2. TerminalPathDetector for the right-click "Open in File Viewer /
+     *      Edit / Download" context menu (selection-driven).
+     *
+     * Safe to call multiple times for the same terminal — each call returns a
+     * disposable that we track on the terminal object so we can clean up if
+     * the terminal is destroyed.
+     */
+    _setupTerminalLinking(terminal) {
+        if (!terminal || !window.fileBrowser) return;
+
+        // 1) Link provider — clickable links for paths/filenames in output.
+        if (typeof window.fileBrowser.attachLinkProvider === 'function' &&
+            typeof terminal.registerLinkProvider === 'function' &&
+            !terminal._fbLinkProvider) {
+            try {
+                terminal._fbLinkProvider = window.fileBrowser.attachLinkProvider({
+                    terminal: terminal,
+                    authFetch: (url, opts) => this.authFetch(url, opts),
+                    openInViewer: (path, line, col) => this.openFileInViewer(path, line, col),
+                    getCwd: () => this.getCurrentWorkingDir(),
+                    feedback: window.feedback,
+                });
+            } catch (err) {
+                console.warn('[file-browser] link provider attach failed:', err);
+            }
+        }
+
+        // 2) Right-click selection-based context menu (lazy panel via getter).
+        if (typeof window.fileBrowser.TerminalPathDetector === 'function' &&
+            !terminal._fbPathDetector) {
+            try {
+                terminal._fbPathDetector = new window.fileBrowser.TerminalPathDetector({
+                    getFileBrowserPanel: () => this._ensureFileBrowser(),
+                    authFetch: (url, opts) => this.authFetch(url, opts),
+                    terminal: terminal,
+                    app: this,
+                });
+                terminal._fbPathDetector.init();
+            } catch (err) {
+                console.warn('[file-browser] path detector init failed:', err);
+            }
+        }
+    }
+
     setupTerminalContextMenu() {
         const menu = document.getElementById('termContextMenu');
         if (!menu) return;
@@ -3632,7 +3681,7 @@ class ClaudeCodeWebInterface {
     }
 
     // File Browser Methods
-    toggleFileBrowser() {
+    _ensureFileBrowser() {
         if (!this._fileBrowserPanel && window.fileBrowser) {
             this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({
                 app: this,
@@ -3644,9 +3693,12 @@ class ClaudeCodeWebInterface {
                 getCwd: () => this.getCurrentWorkingDir(),
             });
         }
-        if (this._fileBrowserPanel) {
-            this._fileBrowserPanel.toggle();
-        }
+        return this._fileBrowserPanel;
+    }
+
+    toggleFileBrowser() {
+        const panel = this._ensureFileBrowser();
+        if (panel) panel.toggle();
     }
 
     // VS Code Tunnel Methods
@@ -3690,20 +3742,15 @@ class ClaudeCodeWebInterface {
         }
     }
 
-    openFileInViewer(filePath) {
-        if (!this._fileBrowserPanel && window.fileBrowser) {
-            this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({
-                app: this,
-                authFetch: (url, opts) => this.authFetch(url, opts),
-                // initialPath kept as a back-compat fallback; getCwd is the
-                // source of truth on each open() so a session switch between
-                // opens picks up the new cwd (per ADR-0016 / task #14).
-                initialPath: this.getCurrentWorkingDir(),
-                getCwd: () => this.getCurrentWorkingDir(),
-            });
-        }
-        if (this._fileBrowserPanel) {
-            this._fileBrowserPanel.openToFile(filePath);
+    openFileInViewer(filePath, line, col) {
+        const panel = this._ensureFileBrowser();
+        if (panel) {
+            panel.openToFile(filePath);
+            // Future: pass {line, col} to Monaco viewer for cursor placement
+            // (Stage 1.5 work — for now we just open the file).
+            if (line && this._fileBrowserPanel) {
+                this._fileBrowserPanel._pendingJumpTo = { line: line, col: col || 1 };
+            }
         }
     }
 
