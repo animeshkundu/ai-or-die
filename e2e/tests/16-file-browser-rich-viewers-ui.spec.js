@@ -96,6 +96,16 @@ test.describe('File browser — rich viewers + tabs (UI-side, #11)', () => {
       'console.log("plain fenced code");',
       '```',
       '',
+      // Markdown table (GFM) — exercises marked's table extension AND
+      // DOMPurify's allowlist for <table>/<thead>/<tbody>/<tr>/<th>/<td>.
+      // Per team-lead's fa35745 follow-up: closes the assertion gap so
+      // a future ALLOWED_ATTR-style DOMPurify regression that strips
+      // table tags would fail this test loudly.
+      '| col-a | col-b |',
+      '|-------|-------|',
+      '| cell-1a | cell-1b |',
+      '| cell-2a | cell-2b |',
+      '',
     ].join('\n'));
 
     // (e) HTML file with a script that sets a window flag — must NOT execute
@@ -236,6 +246,16 @@ test.describe('File browser — rich viewers + tabs (UI-side, #11)', () => {
     var wrapper = page.locator('.fb-markdown-rendered');
     await expect(wrapper).toBeVisible({ timeout: 15000 });
 
+    // Per team-lead's follow-up: explicitly assert the renderer did NOT
+    // fall back to .fb-md-fallback (raw <pre> source view). The markdown
+    // CRITICAL between 5494cab and 3e9319c (ALLOWED_ATTR: undefined
+    // crash inside DOMPurify) silently fell into the fallback path for
+    // every preview — observably "preview rendered" without any error
+    // surface. This assertion is the regression net for that exact
+    // failure mode at the e2e layer (engineer's
+    // test/markdown-render-dom.test.js covers it at JSDOM).
+    await expect(page.locator('.fb-md-fallback')).toHaveCount(0);
+
     // The first heading must render as a real <h1>. If marked failed,
     // we'd see literal "# Vanilla heading" inside a <pre> instead.
     await expect(wrapper.locator('h1')).toContainText('Vanilla heading');
@@ -257,6 +277,18 @@ test.describe('File browser — rich viewers + tabs (UI-side, #11)', () => {
     await expect(wrapper.locator('li')).toHaveCount(2);
     await expect(wrapper.locator('blockquote')).toBeVisible();
     await expect(wrapper.locator('pre code')).toContainText('console.log');
+
+    // GFM table — the fixture's | col-a | col-b | ... block must render
+    // as a real <table> with <thead>/<tbody>/<tr>/<th>/<td>. This catches
+    // a DOMPurify config that strips table tags, AND a marked config
+    // that disables the GFM tables extension. Per team-lead's follow-up.
+    var table = wrapper.locator('table');
+    await expect(table).toBeVisible();
+    await expect(table.locator('thead th').nth(0)).toContainText('col-a');
+    await expect(table.locator('thead th').nth(1)).toContainText('col-b');
+    await expect(table.locator('tbody tr')).toHaveCount(2);
+    await expect(table.locator('tbody tr').nth(0).locator('td').nth(0)).toContainText('cell-1a');
+    await expect(table.locator('tbody tr').nth(1).locator('td').nth(1)).toContainText('cell-2b');
   });
 
   // ──────────────────────────────────────────────────────────────────────
