@@ -378,6 +378,11 @@
 
   FileEditorPanel.prototype._onContentChange = function () {
     if (this._destroyed) return;
+    // Suppress writes triggered by our own setValue (e.g. _reloadFile,
+    // future programmatic updates). Without this, Monaco's synchronous
+    // onDidChangeModelContent re-creates the draft we just removed and
+    // sets _dirty=true even though no user input occurred.
+    if (this._suppressContentChange) return;
     this._dirty = true;
     this._dirtyDot.classList.add('visible');
     if (this._editor) {
@@ -504,16 +509,30 @@
         self._lastSavedContent = d.content;
         self._dirty = false;
         self._dirtyDot.classList.remove('visible');
-        try { localStorage.removeItem('fb-draft-' + self._filePath); } catch (_) { /* ignore */ }
         if (self._editor) {
           // Preserve cursor position across the reload where feasible.
           var pos = null;
           try { pos = self._editor.getPosition(); } catch (_) { /* ignore */ }
-          self._editor.setValue(d.content);
+          // Suppress draft writes during the synchronous setValue —
+          // Monaco fires onDidChangeModelContent INSIDE setValue, which
+          // would otherwise re-write the just-loaded server content into
+          // the localStorage draft slot. Reordering the removeItem to
+          // AFTER setValue isn't enough because the change handler also
+          // sets _dirty=true; the suppress flag covers both paths.
+          self._suppressContentChange = true;
+          try {
+            self._editor.setValue(d.content);
+          } finally {
+            self._suppressContentChange = false;
+          }
           if (pos) {
             try { self._editor.setPosition(pos); } catch (_) { /* line may no longer exist */ }
           }
         }
+        // Now that the editor is settled, drop any stale draft. Doing this
+        // AFTER the setValue + suppress block guarantees no draft slot
+        // races back in via a synchronous onDidChangeModelContent.
+        try { localStorage.removeItem('fb-draft-' + self._filePath); } catch (_) { /* ignore */ }
         self._updateStatus('Reloaded', getMonacoLanguage(getExtension(self._filePath)));
       })
       .catch(function (e) { self._updateStatus('Reload failed: ' + e.message, '', true); });
@@ -537,12 +556,21 @@
     var diffEditor = null;
     var originalModel = null;
     var modifiedModel = null;
+    // Explicit lifecycle flag — replaces the prior `loading.parentNode`
+    // DOM-attachment proxy that the modal-close path used to detect a
+    // bail. The proxy worked today but coupled the async-completion check
+    // to a specific child node; if the spinner UI is ever refactored, the
+    // bail path silently breaks and leaks the diff editor + 2 models per
+    // close. Flag is set inside the onClose hook so every dismiss path
+    // (overlay click, Escape, X button) goes through it.
+    var modalClosed = false;
 
     var m = _createModal({
       maxWidth: '90vw',
       maxHeight: '80vh',
       flex: true,
       onClose: function () {
+        modalClosed = true;
         if (diffEditor) { try { diffEditor.dispose(); } catch (_) { /* ignore */ } }
         if (originalModel) { try { originalModel.dispose(); } catch (_) { /* ignore */ } }
         if (modifiedModel) { try { modifiedModel.dispose(); } catch (_) { /* ignore */ } }
@@ -581,7 +609,7 @@
 
     window.fileViewerMonaco.loadMonaco().then(function (monaco) {
       // Modal could have been closed before Monaco resolved; bail gracefully.
-      if (!loading.parentNode) return;
+      if (modalClosed) return;
       while (diffContainer.firstChild) diffContainer.removeChild(diffContainer.firstChild);
 
       diffEditor = monaco.editor.createDiffEditor(diffContainer, {
@@ -601,7 +629,7 @@
       modifiedModel = monaco.editor.createModel(mine, language);
       diffEditor.setModel({ original: originalModel, modified: modifiedModel });
     }).catch(function () {
-      if (!loading.parentNode) return;
+      if (modalClosed) return;
       while (diffContainer.firstChild) diffContainer.removeChild(diffContainer.firstChild);
       self._renderFallbackCompare(diffContainer, mine, theirs);
     });
@@ -666,8 +694,15 @@
     btn('btn btn-secondary btn-small', 'Cancel').addEventListener('click', m.close);
     btn('btn btn-secondary btn-small', 'Discard').addEventListener('click', function () {
       m.close();
+      // Clear the draft slot before destroy() so any future programmatic
+      // re-open of this same path doesn't see stale draft content. destroy()
+      // already removes it, but doing it here too is cheap and explicit.
       try { localStorage.removeItem('fb-draft-' + self._filePath); } catch (_) { /* ignore */ }
-      self._dirty = false;
+      // Note: previously also set `self._dirty = false` here. destroy()
+      // doesn't read _dirty (it unconditionally tears down), so the
+      // assignment was a dead store. Removed to keep the intent obvious
+      // — if a future destroy() variant gates on _dirty, the discard
+      // path must NOT silently mask that gate.
       self.destroy();
     });
     btn('btn btn-primary btn-small', 'Save & Close').addEventListener('click', function () {
