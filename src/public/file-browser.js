@@ -2018,11 +2018,23 @@
     host.className = 'fb-code-monaco fb-code-content';
     container.appendChild(host);
 
-    var loading = document.createElement('div');
-    loading.className = 'fb-loading';
-    loading.style.cssText = 'padding:24px;text-align:center';
-    loading.textContent = 'Loading viewer...';
-    host.appendChild(loading);
+    // Render the file content as plain text IMMEDIATELY so the user sees
+    // it instantly and so e2e tests reading `.fb-code-content`'s textContent
+    // never race against Monaco's CDN fetch (the loader's 15 s timeout
+    // exceeded Playwright's default 10 s test patience in CI; the test saw
+    // the placeholder, not the content). Monaco's createCodeViewer below
+    // sweeps `host` before mounting (per MEDIUM-2 fix in 9c2f6a6), so this
+    // initial pre is automatically replaced when Monaco resolves; no
+    // explicit cleanup needed on success. On Monaco failure, the .catch
+    // path renders the fuller fallback over the top.
+    var initialPre = document.createElement('pre');
+    initialPre.className = 'fb-code-initial';
+    initialPre.style.cssText =
+      'margin:0;padding:8px;font-family:var(--font-mono, monospace);' +
+      'font-size:13px;line-height:1.5;white-space:pre;overflow:auto;' +
+      'color:var(--text-primary);background:var(--surface-secondary)';
+    initialPre.textContent = content;
+    host.appendChild(initialPre);
 
     // Tracks the resolved Monaco handle so the disposer can tear it down
     // even if showPreview() switches files mid-load.
@@ -2047,7 +2059,8 @@
       // No context menu in the read-only preview — host UI provides Edit/Download.
       contextmenu: false,
     }).then(function (handle) {
-      if (loading.parentNode) loading.parentNode.removeChild(loading);
+      // Monaco swept `host` (and our initialPre with it) before mounting,
+      // per the MEDIUM-2 fix in the loader. No explicit cleanup needed here.
       if (disposed) {
         // Race: showPreview() switched files while Monaco was loading.
         try { handle.dispose(); } catch (_) { /* ignore */ }
@@ -2079,7 +2092,11 @@
         }
       }
     }).catch(function () {
-      if (loading.parentNode) loading.parentNode.removeChild(loading);
+      // Monaco failed to load — replace the initialPre with the fuller
+      // fallback chrome (notice + line numbers) so the user sees a deliberate
+      // "fallback active" surface rather than just the bare initialPre we
+      // mounted up front. The pretier loader fallback also matches the
+      // editor pane's CDN-blocked degraded look.
       if (disposed) return;
       // CDN failure: prefer the loader's plain-text renderer (consistent
       // styling with the editor's fallback); degrade further to the local
