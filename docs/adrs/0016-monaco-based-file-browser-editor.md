@@ -209,6 +209,7 @@ the explicit "Compare with..." feature.
 - **Inline-preview asset auth (v1: query-param `?token=` fallback)** — `<img src=>`, `<iframe src=>`, and PDF.js worker `getDocument({url})` cannot carry custom Authorization headers, so they pass the Bearer token via `?token=` query param via `AuthManager#appendAuthToUrl`. Mitigated by `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`. v2 will replace with short-lived HMAC-signed file-scoped tokens. Tracked in [#96](https://github.com/animeshkundu/ai-or-die/issues/96).
 - **SRI hardening for CDN/vendored scripts** — Monaco's loader.js gained SHA-384 SRI in this PR, but xterm + 6 addons + Google Fonts + Mermaid/KaTeX (lazy CDN), and the vendored marked/purify/panzoom/PDF.js still lack `integrity=` or an integrity manifest. Tracked in [#97](https://github.com/animeshkundu/ai-or-die/issues/97).
 - **Custom Monaco theme rules (monokai, nord, solarized)** — demoted to `vs`/`vs-dark` in this PR (5 LOC); custom token data via `monaco-themes` library deferred. Reversible via follow-up PR.
+- **Agent-vs-user concurrent file edits — proactive sync** (current PR ships reactive 409-Conflict-on-save protection; v2 will add a chokidar→SSE push channel so open tabs auto-refresh on agent writes and dirty tabs surface a non-blocking conflict toast). Adversarial review (gemini-3.1-pro 2/5, codex-critic 3/5) called this out as the central gap for an agent-driven coding UI. Tracked in [#100](https://github.com/animeshkundu/ai-or-die/issues/100).
 
 ## Notes
 
