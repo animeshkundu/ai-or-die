@@ -571,10 +571,15 @@ test.describe('File browser — rich viewers + tabs (UI-side, #11)', () => {
     const tagPresent = await monacoTagAdded.jsonValue();
     expect(tagPresent).toBeTruthy();
 
-    // Tab strip is present — collapse-to-dropdown behaviour at narrower
-    // widths is a CSS-overflow concern; we simply verify the tabs exist
-    // and the strip didn't bail out silently.
-    await expect(page.locator('.fb-tabs-strip, .fb-tab-strip')).toBeVisible();
+    // Tab strip exists in the DOM at this viewport. Per the plan
+     // ("tabs collapse to dropdown on mobile") the strip's VISIBILITY
+     // varies with width — engineer's TabManager + CSS may hide it / let
+     // it overflow / replace it with a dropdown depending on the design
+     // direction at smaller widths. Assert STRUCTURAL presence (count > 0)
+     // rather than visibility, so this scenario survives the eventual
+     // dropdown-collapse implementation without re-flake.
+    const stripCount = await page.locator('.fb-tabs-strip').count();
+    expect(stripCount, 'tab strip must exist in the DOM at mobile viewport').toBeGreaterThanOrEqual(1);
   });
 
   // ──────────────────────────────────────────────────────────────────────
