@@ -22,7 +22,7 @@ A web-based file manager that provides browsing, previewing, editing, uploading,
 Browse:   GET /api/files?path=<dir>                    -> file/folder listing
 Preview:  GET /api/files/content?path=<file>           -> text in JSON envelope with hash
 Serve:    GET /api/files/download?path=<file>&inline=1 -> stream binary (images, PDF) inline
-Edit:     GET content -> Ace Editor -> PUT /api/files/content -> save with hash
+Edit:     GET content -> Monaco Editor -> PUT /api/files/content -> save with hash
 Upload:   drag-drop / picker / paste -> POST /api/files/upload (base64 JSON, 10MB)
 Download: GET /api/files/download?path=<file>          -> Content-Disposition: attachment
 ```
@@ -242,7 +242,9 @@ Stream a file for download or inline preview.
 | File | Source | Description |
 |------|--------|-------------|
 | `file-browser.js` | `src/public/file-browser.js` | FileBrowserPanel, FilePreviewPanel, TerminalPathDetector |
-| `file-editor.js` | `src/public/file-editor.js` | FileEditorPanel (Ace Editor integration) |
+| `file-editor.js` | `src/public/file-editor.js` | FileEditorPanel (Monaco Editor integration; ADR-0016) |
+| `file-viewer-monaco.js` | `src/public/file-viewer-monaco.js` | Monaco AMD loader, theme map, `createCodeViewer` factory (ADR-0016) |
+| `monaco-worker-shim.js` | `src/public/vendor/monaco-worker-shim.js` | Same-origin Web Worker that bootstraps Monaco language workers from CDN |
 | `file-browser.css` | `src/public/components/file-browser.css` | Panel layout, file list, preview, editor styles |
 
 ### FileBrowserPanel
@@ -320,24 +322,39 @@ Text/code files are fetched via `GET /api/files/content` (JSON envelope). Binary
 
 ## Editor
 
-Source: `src/public/file-editor.js` -- class `FileEditorPanel`
+Source: `src/public/file-editor.js` -- class `FileEditorPanel`. Per ADR-0016
+the editor is built on Monaco Editor; the previous Ace-based implementation
+has been superseded.
 
-### Ace Editor Integration
+### Monaco Editor Integration
 
-- Loaded lazily from CDN (`cdnjs.cloudflare.com/ajax/libs/ace/1.36.5/ace.min.js`) on first editor open.
-- Loading spinner displayed during CDN fetch with a 5-second timeout and fallback error.
-- Language modes auto-loaded from CDN based on file extension.
-- `<link rel="preload">` in `index.html` for faster first-edit experience.
+- Loaded lazily via the shared `window.fileViewerMonaco.createCodeViewer(...)`
+  factory on first editor open. The factory in turn invokes `loadMonaco()`,
+  which fetches Monaco's AMD loader from `cdn.jsdelivr.net/npm/monaco-editor`
+  (version pinned in `file-viewer-monaco.js`).
+- Loading spinner displayed during CDN fetch; a 15-second loader timeout
+  produces an actionable error inside the editor pane ("Editor could not be
+  loaded ... use the terminal to edit this file"). The promise cache resets
+  on rejection so a transient CDN blip is recoverable on retry.
+- Built-in language services for JavaScript / TypeScript / JSON / CSS / HTML
+  / Markdown ship with the core; tokenization for the rest of the supported
+  extensions (Python, Go, Rust, Java, etc.) ships in the same bundle.
+- Workers are loaded from a same-origin shim
+  (`/vendor/monaco-worker-shim.js`) which `importScripts` the actual worker
+  from the CDN. The shim's `?label=` query parameter is constrained by an
+  allowlist in the loader so it cannot be coerced into loading code from an
+  arbitrary origin.
 
 ### Public API
 
 | Method | Description |
 |--------|-------------|
-| `openEditor(filePath, content, fileHash)` | Initialize Ace with content, store hash for conflict detection |
+| `openEditor(filePath, content, fileHash)` | Initialize Monaco with content, store hash for conflict detection |
 | `save()` | `PUT /api/files/content` with current content and stored hash |
 | `toggleAutoSave()` | Enable/disable auto-save (default: ON) |
-| `onClose()` | Prompt for unsaved changes, clean up |
-| `saveDraft()` | Backup to `localStorage` for crash recovery |
+| `isDirty()` | True when the editor's value diverges from the last saved content |
+| `close()` | Prompt for unsaved changes, then `destroy()` |
+| `destroy()` | Dispose Monaco editor + listeners, clear draft, fire `onClose` |
 
 ### Auto-Save
 
@@ -351,23 +368,30 @@ Source: `src/public/file-editor.js` -- class `FileEditorPanel`
 On save, the server compares the submitted hash with the current file hash:
 - **Match:** File saved, new hash returned.
 - **Mismatch (409):** Conflict dialog with three options:
-  - **Keep** -- discard server changes, force-save the editor content.
-  - **Reload** -- discard editor changes, reload from server.
-  - **Compare Changes** -- show both versions for manual resolution.
+  - **Keep My Changes** -- discard server changes, force-save the editor content.
+  - **Reload File** -- discard editor changes, reload from server.
+  - **Compare Changes** -- open a `monaco.editor.createDiffEditor` modal showing
+    server (original) vs editor (modified) side-by-side with intra-line
+    highlighting. Falls back to a hand-rolled twin-`<pre>` view when Monaco
+    is unreachable.
 
 ### Theme Mapping
 
-Ace Editor themes are mapped to the application's design token themes:
+Application themes (`data-theme` on the document element) are mapped to
+Monaco themes by `resolveMonacoTheme()` in `file-viewer-monaco.js`. The
+custom palettes are registered against `monaco.editor.defineTheme(...)` the
+first time `loadMonaco()` resolves; built-ins (`vs`, `vs-dark`) need no
+registration.
 
-| App Theme | Ace Theme |
-|-----------|-----------|
-| Midnight (default) | `tomorrow_night` |
-| Classic Dark | `tomorrow_night` |
-| Classic Light | `tomorrow` |
-| Monokai | `monokai` |
-| Nord | `nord_dark` |
-| Solarized Dark | `solarized_dark` |
-| Solarized Light | `solarized_light` |
+| App Theme | Monaco Theme |
+|-----------|--------------|
+| Midnight (default) | `vs-dark` |
+| Classic Dark | `vs-dark` |
+| Classic Light | `vs` |
+| Monokai | `aod-monokai` (custom) |
+| Nord | `aod-nord` (custom) |
+| Solarized Dark | `aod-solarized-dark` (custom) |
+| Solarized Light | `aod-solarized-light` (custom) |
 
 ### Editor Toolbar
 
@@ -453,7 +477,7 @@ Write operations (`PUT /api/files/content`, `POST /api/files/upload`) are rate-l
 | `Ctrl+B` | Global | Toggle file browser panel |
 | `Ctrl+S` | Editor open | Save file |
 | `Ctrl+Shift+O` | Global | Open file by path (prompt) |
-| `Escape` | Editor popups | Close Ace popups first |
+| `Escape` | Editor popups | Close Monaco find/replace widget first |
 | `Escape` | Editor | Close editor (prompts for unsaved changes) |
 | `Escape` | Preview | Close preview, return to file list |
 | `Escape` | File browser | Close panel |
@@ -463,7 +487,7 @@ Write operations (`PUT /api/files/content`, `POST /api/files/upload`) are rate-l
 | `Home` / `End` | File list | Jump to first / last item |
 | `Enter` | File list | Open selected item |
 
-Escape follows a cascade: Ace popups -> editor -> preview -> file list -> close panel.
+Escape follows a cascade: Monaco find/replace widget -> editor -> preview -> file list -> close panel.
 
 ---
 
@@ -553,5 +577,5 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 - **No real-time file watching.** Directory listings are point-in-time snapshots. Manual refresh is required to see external changes. File watching via WebSocket is deferred to Phase 2.
 - **No delete or rename.** Destructive operations are excluded from the initial release to limit security exposure. Users can use the terminal for these operations.
 - **10 MB upload limit.** Chunked upload for larger files is deferred to Phase 2.
-- **Ace Editor requires CDN.** If the CDN is unreachable, editing falls back to an error message. Browsing and previewing still work.
+- **Monaco Editor requires CDN.** If the CDN is unreachable, editing falls back to an actionable error inside the editor pane. Browsing and previewing still work; the Compare-Changes diff falls back to a twin-`<pre>` view.
 - **No syntax highlighting in preview.** Preview shows monospace text without highlighting. Syntax-highlighted preview (via highlight.js) is deferred to Phase 2.
