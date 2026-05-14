@@ -148,27 +148,37 @@ test.describe('File browser — rich viewers + search (#7, #19, #8, #13)', () =>
     // Trigger what `activate()` does: validate via /api/files/stat, then
     // call openFileInViewer(path, line, col). This is the user-observable
     // outcome of clicking an underlined link.
+    //
+    // We capture `_pendingJumpTo` synchronously inside the same evaluate
+    // because file-browser.js consumes the flag on the next event-loop
+    // tick when the auto-opened preview mounts (commit cef62bf wired the
+    // jump-to-line through to the Monaco viewer + cleared the flag on
+    // consume). Reading the flag from a separate `page.evaluate` after
+    // the panel opens would race the consume — pendingJumpTo would
+    // already be null.
     const result = await page.evaluate(async (target) => {
       const [pathPart, lineStr] = target.split(':');
       const line = parseInt(lineStr, 10);
       const stat = await window.app.authFetch('/api/files/stat?path=' + encodeURIComponent(pathPart));
       if (!stat.ok) return { ok: false, status: stat.status };
       window.app.openFileInViewer(pathPart, line, 1);
-      return { ok: true };
+      // Snapshot the field BEFORE the async preview-mount consumes it.
+      const panel = window.app._fileBrowserPanel;
+      const pj = panel && panel._pendingJumpTo;
+      return {
+        ok: true,
+        pendingJumpTo: pj ? { line: pj.line, col: pj.col } : null,
+      };
     }, targetWithLine);
 
     expect(result.ok, 'stat should succeed for fixture path').toBe(true);
+    expect(result.pendingJumpTo, 'pendingJumpTo should be set with line 42').toBeTruthy();
+    expect(result.pendingJumpTo.line).toBe(42);
 
     // Panel opens, navigates to the parent dir, and registers the pending
-    // file via openToFile. We assert the panel is open and the pending-jump
-    // hint we plumbed in #7 was recorded.
+    // file via openToFile. We assert the panel is open as a sanity check;
+    // the jump-to-line assertion above was the load-bearing one.
     await expect(page.locator('.file-browser-panel.open')).toBeVisible({ timeout: 10000 });
-    const pendingJump = await page.evaluate(() => {
-      const p = window.app._fileBrowserPanel;
-      return p && p._pendingJumpTo;
-    });
-    expect(pendingJump, 'pendingJumpTo should be set with line 42').toBeTruthy();
-    expect(pendingJump.line).toBe(42);
   });
 
   // ──────────────────────────────────────────────────────────────────────
@@ -207,11 +217,20 @@ test.describe('File browser — rich viewers + search (#7, #19, #8, #13)', () =>
     await expect(page.locator('.fb-pdf-btn[aria-label="Next page"]')).toBeVisible();
     await expect(page.locator('.fb-pdf-btn[aria-label="Fit to width"]')).toBeVisible();
 
-    // Wait for the canvas to acquire non-zero dimensions, indicating a
-    // page render completed (not just an empty placeholder).
+    // Wait for PDF.js to ACTUALLY render page 1, not just attach the canvas.
+    // Naive `canvas.width > 0` is a false-positive — `<canvas>` defaults to
+    // 300x150 the moment it's attached, before any drawing happens. Use two
+    // explicit "render finished" signals instead:
+    //   (a) page-info text populated by `updateUi()` once `pdfDoc` is set
+    //   (b) `.fb-pdf-status` hidden (display:none) once `renderPage(1)`'s
+    //       render-task promise resolves
+    // Either alone would be enough; together they make the failure mode
+    // unambiguous if PDF.js is hung.
     await page.waitForFunction(() => {
-      const c = document.querySelector('.fb-pdf-canvas');
-      return c && c.width > 0 && c.height > 0;
+      const info = document.querySelector('.fb-pdf-page-info');
+      const status = document.querySelector('.fb-pdf-status');
+      return info && info.textContent && info.textContent.trim().length > 0
+        && status && status.style.display === 'none';
     }, { timeout: 20000 });
 
     // Page-info text should match "1 / 1" for our 1-page PDF.
