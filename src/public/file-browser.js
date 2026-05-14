@@ -1069,6 +1069,12 @@
         getAuthToken: function () {
           // Server accepts ?token=… as alternative to Authorization header
           // (server.js:464). Read it from the same place authFetch does.
+          // NOTE: this duplicates AuthManager.appendAuthToUrl-style logic
+          // INTENTIONALLY — file-search.js loads BEFORE auth.js per the
+          // index.html script order, so window.authManager isn't bound at
+          // module-load time. If a future reorder makes authManager
+          // module-eval-safe (or if this getter becomes call-time-only with
+          // a defensive null-check on window.authManager), DRY this out.
           if (window.auth && window.auth.token) return window.auth.token;
           try { return window.sessionStorage && window.sessionStorage.getItem('cc-web-token'); }
           catch (_) { return null; }
