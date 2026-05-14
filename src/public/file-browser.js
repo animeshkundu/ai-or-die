@@ -2087,7 +2087,11 @@
     var termEl = this.terminal.element;
     if (!termEl) return;
 
-    termEl.addEventListener('contextmenu', function (e) {
+    // Hold named references for later removeEventListener — anonymous
+    // closures here would leak the terminal+detector graph forever
+    // (peer-review MEDIUM-1: long-lived sessions that create+destroy
+    // splits accumulate document-level listeners and orphaned menu nodes).
+    this._onContextMenu = function (e) {
       var selection = self.terminal.getSelection();
       var detected = extractPathFromText(selection);
 
@@ -2099,15 +2103,47 @@
         }
         self._showMenu(e.clientX, e.clientY, detected);
       }
-    }, true /* capture, so we run before main bubble handlers */);
+    };
+    this._onDocumentClick = function () { self._hideMenu(); };
+    this._onDocumentKeyDown = function (e) { if (e.key === 'Escape') self._hideMenu(); };
 
-    // Dismiss menu on click elsewhere
-    document.addEventListener('click', function () {
-      self._hideMenu();
-    });
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') self._hideMenu();
-    });
+    termEl.addEventListener('contextmenu', this._onContextMenu, true /* capture */);
+    document.addEventListener('click', this._onDocumentClick);
+    document.addEventListener('keydown', this._onDocumentKeyDown);
+    this._termEl = termEl;        // remember for symmetric removeEventListener
+  };
+
+  /**
+   * Tear down the path detector: removes the document-level listeners,
+   * removes the contextmenu listener from the terminal element, and
+   * removes the menu node from <body>. Safe to call multiple times.
+   *
+   * Hooked from app._setupTerminalLinking via terminal.onDispose so
+   * disposing a split or session doesn't leak handlers / DOM nodes
+   * (peer-review MEDIUM-1).
+   */
+  TerminalPathDetector.prototype.destroy = function () {
+    if (this._destroyed) return;
+    this._destroyed = true;
+    try {
+      if (this._termEl && this._onContextMenu) {
+        this._termEl.removeEventListener('contextmenu', this._onContextMenu, true);
+      }
+    } catch (_) {}
+    try {
+      if (this._onDocumentClick) document.removeEventListener('click', this._onDocumentClick);
+      if (this._onDocumentKeyDown) document.removeEventListener('keydown', this._onDocumentKeyDown);
+    } catch (_) {}
+    try {
+      if (this._menuEl && this._menuEl.parentNode) {
+        this._menuEl.parentNode.removeChild(this._menuEl);
+      }
+    } catch (_) {}
+    this._menuEl = null;
+    this._termEl = null;
+    this._onContextMenu = null;
+    this._onDocumentClick = null;
+    this._onDocumentKeyDown = null;
   };
 
   // Kept for backward compatibility with any external callers / tests.
@@ -2199,6 +2235,48 @@
   };
 
   // ---------------------------------------------------------------------------
+  // Path resolution helper (module scope so unit tests can call it directly).
+  // ---------------------------------------------------------------------------
+  // Used by attachLinkProvider's click handler to turn a regex-matched
+  // relative path (e.g. `./src/foo.ts:42`) into an absolute path against
+  // the active session's cwd.
+  //
+  //  - Absolute paths (Unix `/`, Windows `C:\` or `C:/`, `~/`) pass through.
+  //  - Relative paths are joined to cwd; `..` and `.` segments are
+  //    collapsed to avoid leaking ugly paths into the 404 toast/URL.
+  //  - The dominant separator in cwd is honored. When both `/` and `\`
+  //    appear (common for cygwin/git-bash-style cwds), whichever occurs
+  //    first wins. This avoids the MEDIUM-2 mixed-separator footgun
+  //    flagged in the #7 review.
+  function _resolveAgainstCwd(p, cwd) {
+    if (typeof p !== 'string' || !p) return p;
+    if (/^([A-Za-z]:[\\/]|[\\/]|~[\\/])/.test(p)) return p;
+    if (!cwd) return p;
+
+    var firstFwd = cwd.indexOf('/');
+    var firstBwd = cwd.indexOf('\\');
+    var sep = '/';
+    if (firstBwd !== -1 && (firstFwd === -1 || firstBwd < firstFwd)) sep = '\\';
+
+    var trimmedCwd = cwd.replace(/[\\/]+$/, '');
+    var cwdParts = trimmedCwd.split(/[\\/]+/);
+    var pParts = p.split(/[\\/]+/);
+    var stack = cwdParts.slice();
+    for (var i = 0; i < pParts.length; i++) {
+      var seg = pParts[i];
+      if (seg === '' || seg === '.') continue;
+      if (seg === '..') {
+        if (stack.length > 1) stack.pop();
+        continue;
+      }
+      stack.push(seg);
+    }
+    var joined = stack.join(sep);
+    if (sep === '/' && cwdParts[0] === '' && joined[0] !== '/') joined = '/' + joined;
+    return joined;
+  }
+
+  // ---------------------------------------------------------------------------
   // attachLinkProvider — register an xterm link provider for clickable paths
   // ---------------------------------------------------------------------------
   //
@@ -2232,14 +2310,29 @@
     function findLinksInText(text) {
       // Returns an array of { startCol, endCol, path, line, col } for the line.
       // Cols are 0-based against the input string; the caller adds +1 for xterm.
+      //
+      // Uses String.prototype.matchAll, which constructs a stateless iterator
+      // over the regex — `LINK_RE_GLOBAL` is module-scoped and shared, so a
+      // manual exec()+lastIndex loop has a latent re-entrancy hazard if any
+      // future async refactor allows two providers to interleave on the same
+      // regex (peer-review LOW-3). matchAll closes that hole.
       var matches = [];
-      // Reset lastIndex for safety; we re-execute in a loop below.
-      LINK_RE_GLOBAL.lastIndex = 0;
-      var m;
-      while ((m = LINK_RE_GLOBAL.exec(text)) !== null) {
+      var iter;
+      try {
+        iter = text.matchAll(LINK_RE_GLOBAL);
+      } catch (_) {
+        return matches;
+      }
+      for (var m of iter) {
         var leadLen = m[1] ? m[1].length : 0;
         var pathOnly = m[2];
         if (!pathOnly || VERSION_RE.test(pathOnly)) continue;
+
+        // Suppress git-diff pseudo-paths `a/<file>` and `b/<file>` that
+        // appear in `diff --git` headers. They never resolve to real files
+        // and the user gets two underlined-but-broken links per diff
+        // header otherwise (peer-review LOW-2).
+        if (/^[ab][\\/]/.test(pathOnly)) continue;
 
         var pathStart = m.index + leadLen;
         var pathEnd = pathStart + pathOnly.length;       // exclusive
@@ -2261,26 +2354,28 @@
           line: line,
           col: col,
         });
-
-        // Guard: degenerate empty match could loop forever.
-        if (m.index === LINK_RE_GLOBAL.lastIndex) LINK_RE_GLOBAL.lastIndex++;
       }
       return matches;
     }
 
+    /**
+     * Resolve a relative path against the terminal cwd, with consistent
+     * separators and `..` collapsing.
+     *
+     * Fixes peer-review MEDIUM-2 (mixed separators when cwd contains both
+     * `/` and `\` — common on Windows under tooling that normalizes one
+     * way) and LOW-1 (`./` was stripped but `../` was not, leaking
+     * un-collapsed paths into the 404 toast and the URL).
+     *
+     * (Defined at module scope as `_resolveAgainstCwd` for testability;
+     * this local alias exists only so the closure body reads naturally.)
+     */
+    var resolveAgainstCwd = _resolveAgainstCwd;
+
     function activate(_event, _text, detected) {
       var p = detected.path;
-      // Resolve relative paths against the terminal's cwd.
-      var resolved = p;
       var cwd = getCwd();
-      if (cwd && !/^([A-Za-z]:[\\/]|[\\/]|~[\\/])/.test(p)) {
-        // Relative — join with cwd. Use forward slashes uniformly; the
-        // server normalizes both.
-        var sep = cwd.indexOf('\\') !== -1 && cwd.indexOf('/') === -1 ? '\\' : '/';
-        var trimmedCwd = cwd.replace(/[\\/]+$/, '');
-        var stripped = p.replace(/^\.[\\/]/, '');
-        resolved = trimmedCwd + sep + stripped;
-      }
+      var resolved = resolveAgainstCwd(p, cwd);
 
       authFetch('/api/files/stat?path=' + encodeURIComponent(resolved))
         .then(function (resp) {
@@ -2380,6 +2475,7 @@
     KNOWN_FILE_EXTENSIONS: KNOWN_FILE_EXTENSIONS,
     LINK_RE_SINGLE: LINK_RE_SINGLE,
     LINK_RE_GLOBAL: LINK_RE_GLOBAL,
+    _resolveAgainstCwd: _resolveAgainstCwd,
   };
 
   if (typeof window !== 'undefined') {

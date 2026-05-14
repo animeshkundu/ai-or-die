@@ -2970,6 +2970,33 @@ class ClaudeCodeWebInterface {
                 console.warn('[file-browser] path detector init failed:', err);
             }
         }
+
+        // 3) Lifecycle: on terminal disposal, release the link provider, the
+        //    path-detector handlers, and the floating menu DOM node. Without
+        //    this, splitting + closing terminals leaks document-level
+        //    listeners and orphaned <div class="fb-terminal-context-menu">
+        //    nodes (peer-review MEDIUM-1 on commit 9a05963).
+        if (typeof terminal.onDispose === 'function' && !terminal._fbLinkingDisposeWired) {
+            terminal._fbLinkingDisposeWired = true;
+            try {
+                terminal.onDispose(() => {
+                    try {
+                        if (terminal._fbLinkProvider && typeof terminal._fbLinkProvider.dispose === 'function') {
+                            terminal._fbLinkProvider.dispose();
+                        }
+                    } catch (_) {}
+                    try {
+                        if (terminal._fbPathDetector && typeof terminal._fbPathDetector.destroy === 'function') {
+                            terminal._fbPathDetector.destroy();
+                        }
+                    } catch (_) {}
+                    terminal._fbLinkProvider = null;
+                    terminal._fbPathDetector = null;
+                });
+            } catch (err) {
+                console.warn('[file-browser] onDispose wiring failed:', err);
+            }
+        }
     }
 
     setupTerminalContextMenu() {

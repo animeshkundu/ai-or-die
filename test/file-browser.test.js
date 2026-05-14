@@ -585,4 +585,89 @@ describe('file-browser link detection', function () {
       assert.ok(matches[0].path.endsWith('file.txt'));
     });
   });
+
+  // -------------------------------------------------------------------------
+  // _resolveAgainstCwd — relative-path resolution + separator normalization
+  // (Reviewer fixes for #7: MEDIUM-2 mixed separators, LOW-1 ../ collapse.)
+  // -------------------------------------------------------------------------
+  describe('_resolveAgainstCwd', function () {
+    const { _resolveAgainstCwd: resolve } = fileBrowser;
+
+    it('passes Unix absolute paths through unchanged', function () {
+      assert.strictEqual(resolve('/abs/path/file.js', '/cwd'), '/abs/path/file.js');
+    });
+
+    it('passes Windows absolute paths through unchanged', function () {
+      assert.strictEqual(resolve('C:\\Users\\me\\file.js', 'C:\\Users'), 'C:\\Users\\me\\file.js');
+      assert.strictEqual(resolve('C:/Users/me/file.js', 'C:/Users'), 'C:/Users/me/file.js');
+    });
+
+    it('passes ~/ prefixed paths through unchanged', function () {
+      assert.strictEqual(resolve('~/foo.js', '/cwd'), '~/foo.js');
+    });
+
+    it('joins a relative path against a Unix cwd', function () {
+      assert.strictEqual(resolve('src/foo.js', '/Users/me/proj'), '/Users/me/proj/src/foo.js');
+    });
+
+    it('strips a leading ./ from the relative path', function () {
+      assert.strictEqual(resolve('./src/foo.js', '/Users/me/proj'), '/Users/me/proj/src/foo.js');
+    });
+
+    it('collapses ../ segments (LOW-1 fix)', function () {
+      assert.strictEqual(
+        resolve('../sibling/foo.js', '/Users/me/proj'),
+        '/Users/me/sibling/foo.js'
+      );
+    });
+
+    it('collapses multiple ../ segments', function () {
+      assert.strictEqual(
+        resolve('../../up/foo.js', '/a/b/c'),
+        '/a/up/foo.js'
+      );
+    });
+
+    it('does not pop past the leading slash on Unix', function () {
+      // /a + ../../foo.js: first pop removes "a", second pop is blocked
+      // (stack.length === 1), so we stay anchored at "/" and append foo.js.
+      assert.strictEqual(resolve('../../foo.js', '/a'), '/foo.js');
+    });
+
+    it('honors a Windows cwd separator (MEDIUM-2 fix)', function () {
+      // cwd uses backslash → joined path also uses backslash even when
+      // the user clicked a forward-slashed relative path like `src/foo.js`.
+      assert.strictEqual(
+        resolve('src/foo.js', 'C:\\Users\\me\\proj'),
+        'C:\\Users\\me\\proj\\src\\foo.js'
+      );
+    });
+
+    it('honors a forward-slash cwd separator on Windows-style cwds', function () {
+      // Cygwin / git-bash typically yields `/c/Users/me/proj` style.
+      assert.strictEqual(
+        resolve('src\\foo.js', '/c/Users/me/proj'),
+        '/c/Users/me/proj/src/foo.js'
+      );
+    });
+
+    it('picks the FIRST separator when cwd contains both (no mixing)', function () {
+      // `C:/Users\me` — backslash appears at index 8, forward slash at 2.
+      // First separator is `/`, so result uses `/`.
+      assert.strictEqual(
+        resolve('src/foo.js', 'C:/Users\\me'),
+        'C:/Users/me/src/foo.js'
+      );
+    });
+
+    it('returns the bare path when cwd is null/undefined', function () {
+      assert.strictEqual(resolve('src/foo.js', null), 'src/foo.js');
+      assert.strictEqual(resolve('src/foo.js', undefined), 'src/foo.js');
+    });
+
+    it('strips trailing separators from cwd', function () {
+      assert.strictEqual(resolve('foo.js', '/Users/me/proj/'), '/Users/me/proj/foo.js');
+      assert.strictEqual(resolve('foo.js', 'C:\\Users\\me\\'), 'C:\\Users\\me\\foo.js');
+    });
+  });
 });
