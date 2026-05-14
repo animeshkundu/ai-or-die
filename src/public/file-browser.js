@@ -237,6 +237,12 @@
     return String(nameOrPath).toLowerCase().endsWith('.ipynb');
   }
 
+  function isMarkdownExtension(nameOrPath) {
+    if (!nameOrPath) return false;
+    var n = String(nameOrPath).toLowerCase();
+    return n.endsWith('.md') || n.endsWith('.mdx') || n.endsWith('.markdown');
+  }
+
   // ---------------------------------------------------------------------------
   // Lazy script loader — used by image panzoom (vendored at /vendor/panzoom.min.js).
   // Returns a Promise that resolves when window[globalCheck] becomes truthy
@@ -540,6 +546,18 @@
       onEdit: this._onEditRequest.bind(this),
       onBack: this._showBrowseView.bind(this),
       onDiffRequest: this._onDiffRequest.bind(this),
+      onInternalLinkClick: function (resolvedPath) {
+        // Markdown's relative <a href> click delegate routes here. Open
+        // the resolved path in the file browser's preview tab via the
+        // app's openFileInViewer (same plumbing terminal-link clicks +
+        // search-result clicks use, so jumpTo + Monaco mount is
+        // consistent across surfaces).
+        if (self.app && typeof self.app.openFileInViewer === 'function') {
+          self.app.openFileInViewer(resolvedPath);
+        } else {
+          self.openToFile(resolvedPath);
+        }
+      },
     });
   };
 
@@ -1548,6 +1566,10 @@
     // Not wired in standalone preview-panel use; the Diff button is hidden
     // when this is missing.
     this.onDiffRequest = options.onDiffRequest || null;
+    // Markdown's onInternalLink relative-link click handler routes here.
+    // Set by FileBrowserPanel to app.openFileInViewer; null in standalone
+    // harness use (the markdown render still works, just no in-app navigation).
+    this.onInternalLinkClick = options.onInternalLinkClick || null;
     // Tear-down hooks for renderers that attach state outside the container
     // (Panzoom, Monaco, PDF.js etc. wire document-level event listeners that
     // innerHTML='' won't release). Each renderer pushes a function here;
@@ -1936,6 +1958,17 @@
           // assigns — a notebook is JSON shape but the user wants the
           // rendered cells, not pretty-printed source.
           self._renderNotebook(container, data.content, item);
+        } else if (item.mimeCategory === 'markdown' ||
+                   isMarkdownExtension(item.name) ||
+                   isMarkdownExtension(item.path)) {
+          // Markdown files render via window.markdownRender.renderInto
+          // (#1) — which produces the .fb-markdown-rendered wrapper the
+          // 16-spec asserts. Without this branch markdown would fall
+          // through to _renderCode (Monaco), making markdown previews
+          // transitively depend on Monaco loading. Branch checked
+          // BEFORE the json branch since some markdown files happen to
+          // be tagged as json by mime-type detectors.
+          self._renderMarkdown(container, data.content, item);
         } else if (item.mimeCategory === 'json') {
           self._renderJson(container, data.content, item);
         } else if (item.mimeCategory === 'csv') {
@@ -2115,6 +2148,80 @@
   // the notebook JSON, renders into a scratch DIV via nbv.render(), then
   // sanitises the resulting HTML before inserting into the live DOM
   // (output cells can carry arbitrary HTML).
+  // Markdown preview (#1) — delegates to markdown-render.js which lazy-
+  // loads marked + DOMPurify, parses + sanitises with the relative-link
+  // rewriting hook, then runs Mermaid + KaTeX enrichment passes. Renders
+  // into a `.fb-markdown-rendered` wrapper. ZERO Monaco dependency — the
+  // markdown viewer must continue to work even when the Monaco loader is
+  // unreachable / blocked / cold-starting (which is exactly the CI failure
+  // mode that surfaced this missing dispatch).
+  //
+  // Module-missing fallback: if window.markdownRender never loaded (script
+  // tag missing, CSP block, etc.), fall through to _renderCode so the user
+  // at least sees the source. Better than a blank pane.
+  FilePreviewPanel.prototype._renderMarkdown = function (container, content, item) {
+    var self = this;
+    if (!window.markdownRender || typeof window.markdownRender.renderInto !== 'function') {
+      this._renderCode(container, content, item);
+      return;
+    }
+
+    var host = document.createElement('div');
+    host.className = 'fb-markdown-host';
+    container.appendChild(host);
+
+    // Track teardown so file-switch drains it (matches Panzoom / PDF.js /
+    // Monaco / notebook patterns).
+    var disposed = false;
+    var teardownFn = null;
+    self._activeDisposers.push(function () {
+      disposed = true;
+      if (teardownFn) {
+        try { teardownFn(); } catch (_) { /* ignore */ }
+        teardownFn = null;
+      }
+    });
+
+    // basePath = directory of the source file. The markdown renderer's
+    // afterSanitizeAttributes hook resolves <img src="./foo.png"> against
+    // this and rewrites to /api/files/download?path=…&inline=1.
+    var basePath = null;
+    if (item && item.path) {
+      var n = String(item.path).replace(/\\/g, '/');
+      var i = n.lastIndexOf('/');
+      basePath = i === -1 ? '' : n.slice(0, i);
+    }
+
+    window.markdownRender.renderInto(host, content, {
+      basePath: basePath,
+      // Internal-link click delegation — relative-resolved <a> tags route
+      // through the host's openFileInViewer (proven path; same plumbing
+      // terminal-link clicks and search-result clicks use).
+      onInternalLink: function (resolvedPath) {
+        // Routed through the host's onInternalLinkClick callback (set by
+        // FileBrowserPanel to app.openFileInViewer). FilePreviewPanel
+        // doesn't hold a direct app reference; the callback pattern keeps
+        // the panel reusable in standalone harnesses.
+        if (resolvedPath && typeof self.onInternalLinkClick === 'function') {
+          try { self.onInternalLinkClick(resolvedPath); } catch (_) { /* ignore */ }
+        }
+      },
+    }).then(function (result) {
+      if (disposed) {
+        if (result && typeof result.teardown === 'function') {
+          try { result.teardown(); } catch (_) { /* ignore */ }
+        }
+        return;
+      }
+      if (result && typeof result.teardown === 'function') {
+        teardownFn = result.teardown;
+      }
+    }).catch(function () {
+      // markdown-render.js renders its own .fb-md-fallback inside `host`
+      // on hard-failure. Nothing to do here.
+    });
+  };
+
   FilePreviewPanel.prototype._renderNotebook = function (container, content, item) {
     var self = this;
     if (!window.notebookRender || typeof window.notebookRender.renderInto !== 'function') {
@@ -3105,6 +3212,7 @@
     isEditable: isEditable,
     isHtmlExtension: isHtmlExtension,
     isIpynbExtension: isIpynbExtension,
+    isMarkdownExtension: isMarkdownExtension,
     // CSV parsing — exposed for unit tests (task #5)
     parseCsvLine: parseCsvLine,
     detectColumnIsNumeric: detectColumnIsNumeric,

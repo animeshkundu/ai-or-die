@@ -1098,6 +1098,15 @@
   min-height: 0;
 }
 
+/* ---- Markdown viewer (markdown-render.js, .md / .mdx / .markdown files) ---- */
+.fb-markdown-host {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
 /* ---- Notebook viewer (notebook-render.js, .ipynb files) ---- */
 .fb-notebook-host {
   flex: 1;
