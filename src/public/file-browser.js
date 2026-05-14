@@ -243,6 +243,39 @@
     return n.endsWith('.md') || n.endsWith('.mdx') || n.endsWith('.markdown');
   }
 
+  // Build the legacy gutter+content code-preview DOM into `host`. Used in
+  // two places:
+  //   1. _renderCode's instant-paint pre-Monaco mount (architect's
+  //      7bfd634 idea — render content immediately, let Monaco's
+  //      host-sweep replace this DOM when it resolves). Uses the legacy
+  //      DOM shape so 14-spec's `.fb-code-gutter` + `.fb-code-content`
+  //      locators continue to find the same elements they always did.
+  //   2. _renderCodePlainFallback (CDN-blocked degraded path). The two
+  //      paths emit identical structure so the visual fallback feels
+  //      consistent regardless of how the user got there.
+  function _buildPlainCodePreview(host, content) {
+    var wrapper = document.createElement('div');
+    wrapper.className = 'fb-code-preview';
+
+    var lines = String(content == null ? '' : content).split('\n');
+    var gutter = document.createElement('div');
+    gutter.className = 'fb-code-gutter';
+    var code = document.createElement('pre');
+    code.className = 'fb-code-content';
+
+    for (var i = 0; i < lines.length; i++) {
+      var lineNum = document.createElement('div');
+      lineNum.className = 'fb-line-number';
+      lineNum.textContent = i + 1;
+      gutter.appendChild(lineNum);
+    }
+
+    code.textContent = content;
+    wrapper.appendChild(gutter);
+    wrapper.appendChild(code);
+    host.appendChild(wrapper);
+  }
+
   // ---------------------------------------------------------------------------
   // Lazy script loader — used by image panzoom (vendored at /vendor/panzoom.min.js).
   // Returns a Promise that resolves when window[globalCheck] becomes truthy
@@ -1017,10 +1050,13 @@
 
     var tm = this._ensureTabManager();
     if (tm) {
-      var tab = tm.openFile(item.path, 'editor', { item: item, content: content, hash: hash });
-      // Track the active editor panel so the existing back-button + Escape
-      // flows that reference _editorPanel keep working unchanged.
-      if (tab && tab.panel) self._editorPanel = tab.panel;
+      // openFile activates the new tab synchronously; getActiveTab() then
+      // hands us back the live tab so we can grab its FileEditorPanel
+      // instance for the legacy `_editorPanel` reference (back-button +
+      // Escape cascade still call `_editorPanel.close()`).
+      tm.openFile(item.path, 'editor', { item: item, content: content, hash: hash });
+      var activeTab = tm.getActiveTab();
+      if (activeTab && activeTab.panel) self._editorPanel = activeTab.panel;
       this._announceToScreenReader('Editing ' + item.name);
       this._renderBreadcrumbs();
       this._adjustTerminal();
@@ -2041,14 +2077,14 @@
     }
 
     // Monaco needs a host element with non-zero dimensions; .fb-code-monaco
-    // gives it a flex/min-height contract via file-browser.css. The legacy
-    // .fb-code-content class is preserved as an alias so e2e/tests/14-
-    // file-browser.spec.js's "code preview is reachable" locator continues
-    // to find this surface — the contract that spec covers (a code file
-    // opened in the file browser shows its content) still holds; only the
-    // renderer changed (#17). Both classes intentionally on the same node.
+    // gives it a flex/min-height contract via file-browser.css. The inner
+    // legacy gutter+pre DOM (built by _buildPlainCodePreview below) carries
+    // the `.fb-code-content` + `.fb-code-gutter` classes the 14-spec
+    // locators target — no need for an alias on the host itself, which
+    // would cause Playwright strict-mode "locator resolved to 2 elements"
+    // failures.
     var host = document.createElement('div');
-    host.className = 'fb-code-monaco fb-code-content';
+    host.className = 'fb-code-monaco';
     container.appendChild(host);
 
     // Render the file content as plain text IMMEDIATELY so the user sees
@@ -2057,17 +2093,17 @@
     // exceeded Playwright's default 10 s test patience in CI; the test saw
     // the placeholder, not the content). Monaco's createCodeViewer below
     // sweeps `host` before mounting (per MEDIUM-2 fix in 9c2f6a6), so this
-    // initial pre is automatically replaced when Monaco resolves; no
+    // initial DOM is automatically replaced when Monaco resolves; no
     // explicit cleanup needed on success. On Monaco failure, the .catch
     // path renders the fuller fallback over the top.
-    var initialPre = document.createElement('pre');
-    initialPre.className = 'fb-code-initial';
-    initialPre.style.cssText =
-      'margin:0;padding:8px;font-family:var(--font-mono, monospace);' +
-      'font-size:13px;line-height:1.5;white-space:pre;overflow:auto;' +
-      'color:var(--text-primary);background:var(--surface-secondary)';
-    initialPre.textContent = content;
-    host.appendChild(initialPre);
+    //
+    // Use the legacy gutter+content DOM shape (matches what
+    // _renderCodePlainFallback emits for the CDN-blocked case) so the
+    // legacy 14-spec `.fb-code-gutter` + `.fb-code-content` locators
+    // continue to find the same elements they always did. The host's
+    // `.fb-code-content` alias class still satisfies the older locator at
+    // the wrapper level too.
+    _buildPlainCodePreview(host, content);
 
     // Tracks the resolved Monaco handle so the disposer can tear it down
     // even if showPreview() switches files mid-load.
@@ -2147,26 +2183,7 @@
   };
 
   FilePreviewPanel.prototype._renderCodePlainFallback = function (container, content) {
-    var wrapper = document.createElement('div');
-    wrapper.className = 'fb-code-preview';
-
-    var lines = String(content || '').split('\n');
-    var gutter = document.createElement('div');
-    gutter.className = 'fb-code-gutter';
-    var code = document.createElement('pre');
-    code.className = 'fb-code-content';
-
-    for (var i = 0; i < lines.length; i++) {
-      var lineNum = document.createElement('div');
-      lineNum.className = 'fb-line-number';
-      lineNum.textContent = i + 1;
-      gutter.appendChild(lineNum);
-    }
-
-    code.textContent = content;
-    wrapper.appendChild(gutter);
-    wrapper.appendChild(code);
-    container.appendChild(wrapper);
+    _buildPlainCodePreview(container, content);
   };
 
   FilePreviewPanel.prototype._renderJson = function (container, content, item) {

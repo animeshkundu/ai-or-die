@@ -378,8 +378,10 @@ test.describe('File browser — rich viewers + tabs (UI-side, #11)', () => {
     const escaped = await page.evaluate(() => window.__sandboxEscaped === true);
     expect(escaped, 'parent window must not have __sandboxEscaped set').toBe(false);
 
-    // Visible content rendered inside the iframe.
-    const innerH1 = await iframeEl.contentFrame().then((f) => f && f.locator('#hdr').textContent());
+    // Visible content rendered inside the iframe. Modern Playwright's
+    // contentFrame() returns a FrameLocator synchronously (not a Promise);
+    // the locator chain is awaited only at .textContent().
+    const innerH1 = await iframeEl.contentFrame().locator('#hdr').textContent();
     expect(innerH1).toContain('Hello sandboxed world');
   });
 
@@ -409,33 +411,38 @@ test.describe('File browser — rich viewers + tabs (UI-side, #11)', () => {
     await expect(oneToOne).toBeVisible();
     await expect(reset).toBeVisible();
 
-    // Click 100% then Reset — the second click should bring transform back
-    // to the identity scale. We assert the inline transform changes (the
-    // exact matrix value depends on Panzoom internals; equality of two
-    // separate states is enough to prove the controls are wired live).
+    // Drive a real zoom-in via a wheel event on the viewport (the panzoom
+    // wheelHandler is attached to .fb-img-viewport in _renderImage). Then
+    // click Reset to verify the controls actually reach panzoom and revert
+    // the transform. Clicking 100% / Reset alone is a no-op at default
+    // state because Fit / 100% / Reset all map to scale 1; we need an
+    // explicit non-identity zoom in between to see the controls move the
+    // transform meaningfully.
     const img = page.locator('.fb-img-viewport img.fb-preview-image');
     const beforeTransform = await img.evaluate((el) => getComputedStyle(el).transform);
-    await oneToOne.click();
+
+    await page.locator('.fb-img-viewport').dispatchEvent('wheel', {
+      deltaY: -200, deltaMode: 0, clientX: 100, clientY: 100,
+    });
     await page.waitForTimeout(300);
     const afterZoomTransform = await img.evaluate((el) => getComputedStyle(el).transform);
+
     await reset.click();
     await page.waitForTimeout(300);
     const afterResetTransform = await img.evaluate((el) => getComputedStyle(el).transform);
 
     // Transform values are CSS strings. We don't assert specific matrices —
-    // only that the controls are responsive (any change confirms wiring).
-    // Reset bringing us back to a plausible identity state would be ideal
-    // but Panzoom's "identity" varies; we just verify transforms differ
-    // across the action sequence.
+    // only that the wheel zoom moved the transform AND Reset reverted it
+    // (or at least that the click sequence as a whole produced motion).
     expect(typeof beforeTransform).toBe('string');
     expect(typeof afterZoomTransform).toBe('string');
     expect(typeof afterResetTransform).toBe('string');
     // At least one of the transitions must produce a different transform —
-    // proves at least one of the buttons reached panzoom and updated CSS.
+    // proves either the wheel handler OR Reset reached panzoom and updated CSS.
     const allEqual = beforeTransform === afterZoomTransform &&
                      afterZoomTransform === afterResetTransform;
     expect(allEqual,
-      `transforms unchanged across click sequence: before=${beforeTransform}, ` +
+      `transforms unchanged across wheel+reset sequence: before=${beforeTransform}, ` +
       `afterZoom=${afterZoomTransform}, afterReset=${afterResetTransform}`
     ).toBe(false);
   });

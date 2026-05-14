@@ -237,6 +237,25 @@
     return this._findTab(this._activeId);
   };
 
+  // Convenience accessor — returns the active tab id (string) or null.
+  // Used by the e2e suite (16-spec scenario h) which keeps just the id
+  // around between page.evaluate calls (passing the full tab object
+  // through Playwright's JSON marshalling drops DOM refs and is awkward).
+  TabManager.prototype.getActiveId = function () {
+    return this._activeId || null;
+  };
+
+  // Friendly alias for activate(). Accepts either an id string OR a
+  // tab-shaped object (so callers can pass the openFile() return value
+  // verbatim — useful when that value has round-tripped through the
+  // Playwright bridge and arrives back as a plain object).
+  TabManager.prototype.switchTo = function (idOrTab) {
+    if (idOrTab && typeof idOrTab === 'object' && typeof idOrTab.id === 'string') {
+      return this.activate(idOrTab.id);
+    }
+    return this.activate(idOrTab);
+  };
+
   TabManager.prototype.openFile = function (path, mode, options) {
     if (!path) return null;
     mode = (mode === 'editor' || mode === 'diff') ? mode : 'preview';
@@ -261,7 +280,7 @@
         // Re-render preview if the panel doesn't expose a jump method yet.
         if (existing.mode === 'preview') this._renderPreviewIntoTab(existing);
       }
-      return existing;
+      return existing.id;
     }
 
     if (this._tabs.length >= this.maxTabs) {
@@ -281,7 +300,12 @@
     this._renderStrip();
     this.activate(tab.id);
     this._persist();
-    return tab;
+    // Return the id (string) — the test contract (16-spec scenario h)
+    // assumes openFile yields an id you can pass through Playwright's
+    // page.evaluate marshalling without losing DOM refs. Internal callers
+    // that need the live tab object use getActiveTab() right after
+    // openFile (the new tab is the active one immediately after activate).
+    return tab.id;
   };
 
   TabManager.prototype.closeTab = function (id, opts) {

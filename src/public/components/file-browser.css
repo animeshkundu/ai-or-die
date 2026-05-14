@@ -429,19 +429,6 @@
   flex: 1;
   min-height: 0;
 }
-/* The Monaco preview wrapper also carries the legacy `.fb-code-content`
-   class as a back-compat anchor for e2e/tests/14-file-browser.spec.js's
-   `.fb-code-content` locator (#17 replaced the plain <pre> renderer with
-   Monaco; the spec's "code preview is reachable" contract still holds).
-   The legacy padding / white-space / word-break rules would cascade into
-   Monaco's inner DOM and disrupt its layout, so neutralize them here.
-   Two-class selector beats single-class .fb-code-content specificity. */
-.fb-code-monaco.fb-code-content {
-  padding: 0;
-  white-space: normal;
-  word-break: normal;
-}
-
 /* ---- HTML Preview (sandboxed iframe + Source/Rendered toggle) ---- */
 .fb-html-preview {
   display: flex;

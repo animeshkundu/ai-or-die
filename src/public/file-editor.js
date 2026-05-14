@@ -99,6 +99,7 @@
     this._filePath = null;        this._fileHash = null;
     this._lastSavedContent = null;
     this._editor = null;          // Monaco IStandaloneCodeEditor instance
+    this._monacoEditor = null;    // alias of _editor; see _wireMonaco for rationale
     this._monacoHandle = null;    // { editor, monaco, dispose } from createCodeViewer
     this._monacoLoaded = false;
     this._disposables = [];       // Monaco IDisposable handles to dispose on teardown
@@ -166,6 +167,7 @@
       try { this._monacoHandle.dispose(); } catch (_) { /* ignore */ }
       this._monacoHandle = null;
       this._editor = null;
+      this._monacoEditor = null;
     }
     if (this._filePath) {
       try { localStorage.removeItem('fb-draft-' + this._filePath); } catch (_) { /* private mode */ }
@@ -324,6 +326,12 @@
     var self = this;
     this._monacoHandle = handle;
     this._editor = handle.editor;
+    // Friendly alias so e2e tests + future TabManager-side helpers can
+    // read the live Monaco IStandaloneCodeEditor without knowing that the
+    // panel renames it `_editor` internally. Matches the
+    // `_monacoEditor` name fa35745's #11 UI-half scenario (h) reaches
+    // for at `tab.panel._monacoEditor`.
+    this._monacoEditor = handle.editor;
     this._monacoLoaded = true;
 
     var monaco = handle.monaco;
