@@ -1009,6 +1009,38 @@ function encodeParam(val) {
       assert.strictEqual(r.status, 400);
     });
 
+    // codex review fix-up: Windows-shaped globs like `src\public\*.js` were
+    // rejected as "invalid glob" because the validation regex only accepted
+    // forward-slash separators. Server now normalizes `\` → `/` BEFORE the
+    // regex check (matches the canonical-input pattern in validatePath).
+    (searchAvailable ? it : it.skip)('accepts Windows-style backslash globs (codex review)', async function () {
+      // Use a temp corpus so we get a real 200 SSE flow, not a synthetic
+      // happy-path-only check.
+      const subDir = path.join(realTmpDirS(), 'searchcorpus-bs');
+      fs.mkdirSync(subDir, { recursive: true });
+      fs.mkdirSync(path.join(subDir, 'public'), { recursive: true });
+      fs.writeFileSync(path.join(subDir, 'public', 'foo.js'), 'NEEDLE-WIN-PATH found here\n');
+      fs.writeFileSync(path.join(subDir, 'other.txt'), 'NEEDLE-WIN-PATH should NOT match\n');
+
+      const r = await consumeSse(port,
+        '/api/search?q=' + encodeParam('NEEDLE-WIN-PATH') +
+        '&path=' + encodeParam(subDir) +
+        '&glob=' + encodeParam('public\\*.js'));   // <-- Windows-shaped
+      assert.strictEqual(r.status, 200,
+        'Windows-style backslash glob must NOT 400; got ' + r.status);
+
+      // Sanity: the glob filtered correctly after normalization — only the
+      // .js match in public/ should be in results, not the .txt match.
+      const matches = r.events.filter((e) => e.type === 'match');
+      assert.ok(matches.length >= 1, 'expected at least 1 match');
+      for (const m of matches) {
+        assert.match(m.path, /public.*foo\.js$/,
+          'all matches should be inside public/; got ' + m.path);
+      }
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
     (searchAvailable ? it : it.skip)('returns 403 when ?path escapes baseFolder', async function () {
       const escape = path.resolve(realTmpDirS(), '..', 'outside-search');
       const r = await consumeSse(port, '/api/search?q=foo&path=' + encodeParam(escape));

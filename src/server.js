@@ -1403,7 +1403,14 @@ class ClaudeCodeWebServer {
 
       const useRegex = req.query.regex === '1';
       const caseSensitive = req.query.caseSensitive === '1';
-      const glob = req.query.glob ? String(req.query.glob) : null;
+      // Normalize Windows-style backslash separators to forward slashes
+      // BEFORE the glob regex check (codex review). Windows users naturally
+      // write globs like `src\public\*.js`; ripgrep + grep both accept
+      // forward-slash globs on every platform, so canonicalizing here is
+      // the cross-platform-safe path. Matches the input-canonicalization
+      // pattern in validatePath() (commit 158c1c2).
+      let glob = req.query.glob ? String(req.query.glob) : null;
+      if (glob !== null) glob = glob.replace(/\\/g, '/');
 
       // Glob validation: allow letters/digits, wildcard chars (* ? [ ]),
       // braces ({} ,), dots, slashes, hyphens, underscores. Reject any
