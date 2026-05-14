@@ -370,22 +370,22 @@
     if (!tab || !tab.contentEl) return;
     // Replace any prior toast on this tab so repeated change events
     // don't stack into a column of identical banners.
-    var prior = tab.contentEl.querySelector('.fb-tab-external-change-toast');
+    var prior = tab.contentEl.querySelector('.fb-tab-toast');
     if (prior && prior.parentNode) prior.parentNode.removeChild(prior);
 
     var self = this;
     var toast = document.createElement('div');
-    toast.className = 'fb-tab-external-change-toast';
+    toast.className = 'fb-tab-toast';
     toast.setAttribute('role', 'status');
     toast.setAttribute('aria-live', 'polite');
 
     var msg = document.createElement('span');
-    msg.className = 'fb-tab-external-change-msg';
+    msg.className = 'fb-tab-toast-msg';
     msg.textContent = 'agent modified ' + (tab.name || 'this file') + ' on disk';
     toast.appendChild(msg);
 
     var actions = document.createElement('div');
-    actions.className = 'fb-tab-external-change-actions';
+    actions.className = 'fb-tab-toast-actions';
 
     function mkBtn(label, handler) {
       var b = document.createElement('button');

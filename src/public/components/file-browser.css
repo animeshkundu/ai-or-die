@@ -558,7 +558,7 @@
    Reload-discard / Compare / Keep-mine. Sits at the top of the tab
    content so it's visible without scrolling but doesn't intercept
    typing in the editor below. */
-.fb-tab-external-change-toast {
+.fb-tab-toast {
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -569,14 +569,14 @@
   font-size: var(--text-sm);
   flex-shrink: 0;
 }
-.fb-tab-external-change-msg {
+.fb-tab-toast-msg {
   flex: 1;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.fb-tab-external-change-actions {
+.fb-tab-toast-actions {
   display: flex;
   gap: var(--space-2);
   flex-shrink: 0;
