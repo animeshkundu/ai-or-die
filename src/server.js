@@ -1459,8 +1459,14 @@ class ClaudeCodeWebServer {
         onError: (err) => {
           send({ type: 'error', message: err && err.message ? String(err.message).slice(0, 300) : 'search error' });
         },
-        onEnd: ({ matches, truncated, backend }) => {
-          send({ type: 'end', matches: matches, truncated: truncated, backend: backend });
+        onEnd: ({ matches, truncated, backend, droppedLines }) => {
+          send({
+            type: 'end',
+            matches: matches,
+            truncated: truncated,
+            backend: backend,
+            droppedLines: droppedLines || 0,
+          });
           try { res.end(); } catch (_) {}
         },
       });
