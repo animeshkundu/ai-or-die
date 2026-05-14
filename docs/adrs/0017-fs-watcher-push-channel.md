@@ -130,43 +130,155 @@ One chokidar watcher per Claude session, rooted at `session.workingDir`.
 
 ```json
 {
-  "type": "change" | "add" | "unlink",
+  "type": "change" | "add" | "unlink" | "rename",
   "path": "<absolute, normalised>",
+  "relPath": "<relative to watch root>",
   "mtime": 1715692800123,
-  "hash": "<md5, optional>"
+  "hash": "<md5, optional>",
+  "prevPath": "<absolute, only on rename>"
 }
 ```
 
-- `mtime` lets clients quickly detect ordering / staleness without
-  re-fetching content.
-- `hash` is included for `change` events on text files ≤ 5 MB
+- `path` is the absolute, forward-slash-normalised path (matches the
+  `/api/files/*` convention).
+- `relPath` is always present, computed against the session's watch root
+  (`session.workingDir`). Lets the client render breadcrumbs / file-tree
+  UI without repeated string slicing on every event. Same forward-slash
+  normalisation.
+- `mtime` lets clients detect ordering / staleness without re-fetching
+  content.
+- `hash` (MD5) is included for `change` events on text files ≤ 5 MB
   (matches `/api/files/stat` behaviour). Omitted for binary / large
   files. Lets the client skip the round-trip if the new hash matches the
   in-buffer content (rare, but cheap).
-- Paths are normalised to forward slashes before emission (matches the
-  `/api/files/*` convention).
+- `prevPath` is included **only on `rename` events** (server-side
+  synthesis — see "Rename detection" below).
+
+### Rename detection (server-side coalescing)
+
+chokidar emits `unlink` then `add` for renames; the same inode appears on
+both events when chokidar runs with `alwaysStat: true`. The watcher
+wrapper coalesces same-inode `unlink` + `add` pairs within a 50 ms
+window into a single synthetic `{type: 'rename', prevPath, path, relPath, mtime}`
+event. Falls back to the separate `unlink` + `add` pair if the window
+misses (network filesystems with high-latency stat calls, very large
+files where the rename takes longer than 50 ms).
+
+Why server-side: the client would otherwise have to maintain its own
+inode-to-path map across two SSE events, which is error-prone and
+duplicates logic across every consumer (TabManager + FileBrowserPanel
+each need it). Centralising in the watcher keeps the wire contract
+clean.
+
+### Ignore patterns
+
+chokidar runs with `depth: undefined` (unbounded subtree) but with an
+explicit ignore list to avoid flooding from build-output and dependency
+directories:
+
+- `node_modules` / `.git` / `dist` / `build` / `target` / `.next` /
+  `.cache` / `__pycache__` / `.venv` / `venv` / `.tox` / `.gradle`
+- Mirrors the `EXCLUDE_DIRS` list `/api/search` already uses for
+  ripgrep, so user expectations transfer between Search and Watch.
+- chokidar does NOT natively respect `.gitignore` — adding that would
+  require parsing the file at every directory boundary; deferred to a
+  follow-up if user feedback warrants. The static ignore list catches
+  the 95% case (large dirs that produce thousands of events on a
+  `npm install` or `cargo build`).
+- Configurable via `FS_WATCHER_IGNORE` env var (comma-separated) for
+  unusual project structures.
+
+### Initial state — fetch separately, no synthetic initial event
+
+`chokidar` runs with `ignoreInitial: true`. The client is responsible
+for the initial directory listing via `GET /api/files?path=<dir>` (the
+same endpoint it already uses on panel mount). The watch endpoint emits
+ONLY changes, never an initial snapshot.
+
+Why: emitting a synthetic `{type:'initial', files:[...]}` event would
+duplicate `/api/files`'s response shape on the wire, force the client to
+handle two parallel listing surfaces (one paginated REST, one streamed
+SSE), and add server-side complexity for a problem the existing endpoint
+already solves cleanly. Two layers, one job each.
 
 ### Event coalescing
 
-A 100 ms debounce per file path. Save bursts (mid-edit autosaves,
-multi-write tools, agent batch edits, IDE-style "format on save" plus
-"save"} collapse into one SSE event per file per 100 ms. Without
-coalescing, a typical agent batch refactor (50 files, 200 events) would
-flood the SSE channel and force the client into a Monaco-thrash loop.
+Two layers:
 
-100 ms balances: small enough that the user perceives instant sync;
-large enough that file-write bursts collapse cleanly. Tunable via
-`FS_WATCHER_DEBOUNCE_MS` if real-world tuning shows it should change.
+**1. chokidar `awaitWriteFinish` — read-during-write protection.**
+The watcher runs with `awaitWriteFinish: { stabilityThreshold: 80, pollInterval: 30 }`.
+chokidar's defaults (300 ms / 100 ms) add ~400 ms of latency before any
+event is emitted; tuned-down to 80/30 gives ~110 ms latency while still
+collapsing the mid-write event flood that fires when an editor (vim,
+emacs's atomic save, VS Code, prettier) writes via temp-file + rename
+or via multiple `write()` syscalls. Without `awaitWriteFinish`, the
+client would receive a `change` event mid-write, fetch incomplete
+content, then receive a second `change` after the write completes —
+two unnecessary round-trips and a momentary UI flicker.
+
+systems-engineer's smoke-test confirmed 80/30 produces ~80-110 ms
+end-to-end latency on a real workload while suppressing all observed
+mid-write false positives. Tunable via `FS_WATCHER_STABILITY_MS` and
+`FS_WATCHER_POLL_MS`.
+
+**2. Per-path debounce — agent-batch protection.**
+Beyond chokidar's per-write coalescing, a 100 ms debounce per file path
+collapses agent batch operations (a 50-file `prettier --write` produces
+50 events in a single tick; without debounce the client gets 50 SSE
+messages and 50 Monaco model swaps). Tunable via
+`FS_WATCHER_DEBOUNCE_MS`.
+
+**3. Server-side `add` + `change` dedup.**
+On some filesystems (atomic-rename save: vim's `:w`, some editors'
+crash-safe save) chokidar emits `add` immediately followed by `change`
+for the same path within tens of milliseconds. The server collapses
+these within a 50 ms window into a single `change` event — the client
+treats them identically (re-fetch content + swap model) and seeing both
+just causes an extra round-trip.
+
+### Multiplexing — single EventSource per session with subscribe/unsubscribe control
+
+**One `EventSource` per session, NOT per open file.** Browsers cap SSE
+connections at 6 per origin in Chromium and similar in Firefox/Safari.
+A naïve "one EventSource per open tab" design would fail at the 7th
+open tab — a routine workflow.
+
+Wire shape:
+
+- `GET /api/files/watch?session=<id>` opens the SSE stream. The server
+  watches the session's `workingDir` and starts emitting events for any
+  path the client has subscribed to.
+- `POST /api/files/watch/subscribe?session=<id>&path=<absolute>` adds a
+  path to the active subscription set for that session. Server responds
+  204; subsequent SSE events for that path will arrive on the open
+  EventSource.
+- `POST /api/files/watch/unsubscribe?session=<id>&path=<absolute>`
+  removes a path. Server stops emitting events for it.
+
+The chokidar watcher itself watches the SUPERSET of all subscribed
+paths' parent directories — narrower than watching the entire
+`workingDir`, broader than watching individual files. This balances
+kernel-watch resource cost against subscription latency.
+
+`TabManager` is the canonical client subscriber: opens the EventSource
+on first tab, calls `/subscribe` on every `openFile()`, calls
+`/unsubscribe` on every `closeTab()`. `FileBrowserPanel` shares the
+same EventSource and adds the panel's current dir to the subscription
+set; on `navigateTo()` it `/unsubscribe`s the old dir + `/subscribe`s
+the new one.
 
 ### Client-side reaction lifecycle
 
 `TabManager` opens one `EventSource` per session at panel mount,
-subscribed to `session.workingDir`. Per event:
+multiplexed via the subscribe/unsubscribe control channel above. Per event:
 
 - **`change` event matching an open path**:
   - **Tab is clean** (Monaco model value === `_lastSavedContent`):
     silently `GET /api/files/content`, swap the new content into the
-    Monaco model, **preserve cursor position + scroll offset + selection**.
+    Monaco model, **preserve cursor position + scroll offset + selection**
+    (engineer's plan: `getPosition()` → `setValue()` → `setPosition(saved)`
+    with bounds-check for the line-may-no-longer-exist case; reuses the
+    `_suppressContentChange` flag from the existing `_reloadFile` path).
     Update `_lastSavedContent` to the new content.
   - **Tab is dirty**: surface a non-blocking toast on the tab strip:
     > `agent modified <path>`
@@ -176,10 +288,36 @@ subscribed to `session.workingDir`. Per event:
     informational + offers escape hatches.
 - **`add` / `unlink` event matching the panel's current dir**: refresh
   the directory listing without user F5.
-- **WebSocket reconnect**: assume the SSE may have dropped events
-  during the gap; mark all open tabs as needing a `mtime` re-check on
-  next focus. Don't re-fetch content speculatively (would thrash on
-  every reconnect); use mtime drift as the staleness signal.
+- **`rename` event** matching either case: treated as
+  unlink(prevPath) + add(path) for listing refresh; if `prevPath`
+  matches an open tab, the tab's path metadata updates in-place
+  (subsequent saves go to `path`, not `prevPath`).
+- **WebSocket reconnect** (or EventSource drop + auto-reconnect):
+  assume some events were missed during the gap; mark all open tabs as
+  needing a `mtime` re-check on next focus. Don't re-fetch content
+  speculatively (would thrash on every reconnect); use mtime drift as
+  the staleness signal.
+
+### Compare-with-memory action (dirty-tab toast → Compare)
+
+The dirty-tab toast's "Compare" button needs to diff the user's
+in-memory buffer against the new on-disk content — both inputs are
+already known to the client. The existing `DiffViewerPanel` (#6) takes
+two paths and fetches both via `/api/files/content`; we extend it with
+a new entry point:
+
+```js
+DiffViewerPanel.openMemoryVsFile(memContent, diskPath)
+```
+
+- `memContent`: the user's current Monaco buffer value (string).
+- `diskPath`: the absolute path on disk; the panel fetches via
+  `/api/files/content` and diffs the response against `memContent`.
+- Renders in the same diff-tab surface as `openFileVsFile()`, with a
+  visible label distinguishing "memory" vs "disk" sides.
+
+Engineer owns this entry point on the diff component; `TabManager`
+calls it from the toast's Compare handler.
 
 ### Auth
 
@@ -195,11 +333,24 @@ for the watch endpoint.
 
 ### Rate limiting
 
-Per-session limit on event emission. Coalescing at 100 ms already serves
-as natural backpressure for normal file-write bursts; an explicit cap
-(e.g. 100 events/min/session) protects against pathological cases like
-a user running `find /large-dir -exec touch {} \;` in the working tree.
-Reuses the existing per-IP rate-limiter pattern from `/api/search`.
+Two complementary limits, both via the existing `_perIpRateLimit`
+middleware:
+
+**1. Concurrent-watcher cap (state-based): 5 open watchers per IP.**
+The 6th `GET /api/files/watch?session=<id>` opens with a different
+session id is rejected with 429. Cleanest mechanic for SSE — open count
+directly maps to active server load (one chokidar watcher + one open
+TCP connection per concurrent watcher). Tracked via a per-IP counter
+that decrements on `req.on('close')`.
+
+**2. Per-session event-emission cap (rate-based): ~100 events/min.**
+On top of `awaitWriteFinish` + the 100 ms per-path debounce + the 50 ms
+add+change dedup, this final cap protects against pathological cases
+like `find /large-dir -exec touch {} \;` or a runaway tool emitting a
+`change` per millisecond. Excess events are dropped (not queued); the
+SSE consumer treats this as the same kind of event-loss the
+WebSocket-reconnect path already handles via mtime-drift re-check on
+focus.
 
 ### Backstop: existing 409-Conflict-on-save remains active
 
