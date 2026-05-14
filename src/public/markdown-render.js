@@ -214,10 +214,16 @@
         if (isInternalRelative(src)) {
           var resolvedImg = resolveRelative(src, ctx.basePath);
           if (resolvedImg) {
-            node.setAttribute(
-              'src',
-              '/api/files/download?path=' + encodeURIComponent(resolvedImg) + '&inline=1'
-            );
+            // Inline asset URL — `<img src>` can't carry custom headers,
+            // so the Bearer token is threaded via `?token=` (auth
+            // middleware accepts both). Without this, embedded markdown
+            // images 401 in --auth mode.
+            var imgUrl = '/api/files/download?path=' + encodeURIComponent(resolvedImg) + '&inline=1';
+            if (typeof window !== 'undefined' && window.authManager &&
+                typeof window.authManager.appendAuthToUrl === 'function') {
+              imgUrl = window.authManager.appendAuthToUrl(imgUrl);
+            }
+            node.setAttribute('src', imgUrl);
           }
         }
       }

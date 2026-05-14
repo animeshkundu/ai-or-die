@@ -1069,3 +1069,82 @@ function encodeParam(val) {
     });
   });
 });
+
+// ===========================================================================
+// Auth-mode regression: inline-preview asset URLs (PDF.js, image, iframe
+// fallback) MUST work when --auth <token> is set. The server has always
+// accepted `?token=<t>` as a fallback when the Authorization header isn't
+// available; the client just wasn't threading it through. This suite
+// pins both halves of that contract end-to-end.
+//
+// Reviewer's HIGH on 913bfdd was the visible breakage: PDF preview 401s
+// in --auth mode. Image preview and iframe fallback had the same latent
+// bug. The client now uses authManager.appendAuthToUrl() to thread the
+// token; this test verifies the server accepts the result.
+// ===========================================================================
+(ClaudeCodeWebServer ? describe : describe.skip)('Auth-mode inline preview', function () {
+  this.timeout(30000);
+
+  let server, port, tmpDir;
+  const TOKEN = 'test-bearer-token-xyz';
+
+  before(async function () {
+    this.timeout(30000);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-auth-test-'));
+    const origCwd = process.cwd();
+    process.chdir(tmpDir);
+    server = new ClaudeCodeWebServer({ port: 0, auth: TOKEN });
+    const httpServer = await server.start();
+    port = httpServer.address().port;
+    process.chdir(origCwd);
+  });
+
+  after(function () {
+    if (server) server.close();
+    if (tmpDir) {
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    }
+  });
+
+  function realTmpDir() {
+    try { return fs.realpathSync(tmpDir); } catch (_) { return tmpDir; }
+  }
+
+  it('rejects /api/files/download without auth (401)', async function () {
+    const target = path.join(realTmpDir(), 'auth-test-1.txt');
+    fs.writeFileSync(target, 'auth corpus');
+    const res = await request(port, 'GET',
+      `/api/files/download?path=${encodeParam(target)}&inline=1`);
+    assert.strictEqual(res.status, 401);
+  });
+
+  it('accepts /api/files/download with valid ?token= (200)', async function () {
+    const target = path.join(realTmpDir(), 'auth-test-2.txt');
+    fs.writeFileSync(target, 'auth corpus 2');
+    const res = await request(port, 'GET',
+      `/api/files/download?path=${encodeParam(target)}&inline=1&token=${encodeParam(TOKEN)}`);
+    assert.strictEqual(res.status, 200);
+    // Body shape: raw bytes for inline downloads.
+    const body = Buffer.isBuffer(res.body) ? res.body.toString() : String(res.body);
+    assert.ok(body.includes('auth corpus 2'));
+  });
+
+  it('rejects /api/files/download with wrong ?token= (401)', async function () {
+    const target = path.join(realTmpDir(), 'auth-test-3.txt');
+    fs.writeFileSync(target, 'auth corpus 3');
+    const res = await request(port, 'GET',
+      `/api/files/download?path=${encodeParam(target)}&inline=1&token=wrong-token`);
+    assert.strictEqual(res.status, 401);
+  });
+
+  it('accepts /api/files/stat with valid ?token= (200) and rejects without', async function () {
+    const target = path.join(realTmpDir(), 'stat-target.txt');
+    fs.writeFileSync(target, 'x');
+    const res401 = await request(port, 'GET',
+      `/api/files/stat?path=${encodeParam(target)}`);
+    assert.strictEqual(res401.status, 401);
+    const res200 = await request(port, 'GET',
+      `/api/files/stat?path=${encodeParam(target)}&token=${encodeParam(TOKEN)}`);
+    assert.strictEqual(res200.status, 200);
+  });
+});

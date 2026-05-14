@@ -195,6 +195,28 @@ class AuthManager {
         };
     }
 
+    /**
+     * Append the auth token as a `?token=` query param.
+     *
+     * Use this for asset URLs that the browser fetches WITHOUT being able
+     * to attach custom headers — `<img src>`, `<iframe src>`, PDF.js
+     * `getDocument({url})`, and any other browser-driven fetch where
+     * `getAuthHeaders()` can't be threaded through. The auth middleware
+     * accepts both `Authorization: Bearer <t>` and `?token=<t>` so this is
+     * the canonical fallback when the header path isn't available.
+     *
+     * Trade-off: query-param tokens can leak into server access logs and
+     * `Referer` headers. The download endpoint mitigates with
+     * `Cache-Control: no-store` + `X-Content-Type-Options: nosniff`. A
+     * future hardening pass should migrate to short-lived HMAC-signed
+     * file-scoped tokens; tracked separately.
+     */
+    appendAuthToUrl(url) {
+        if (!this.token) return url;
+        const separator = url.includes('?') ? '&' : '?';
+        return `${url}${separator}token=${encodeURIComponent(this.token)}`;
+    }
+
     getWebSocketUrl(baseUrl) {
         if (!this.token) return baseUrl;
         const separator = baseUrl.includes('?') ? '&' : '?';
