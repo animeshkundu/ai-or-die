@@ -1208,119 +1208,333 @@ function encodeParam(val) {
       });
     }
 
+    /**
+     * Helper: open an SSE for the given session + watch root, wait for
+     * {type:'start'}, then return the request handle so the caller can
+     * subscribe paths via POST and read events as they arrive.
+     */
+    function openSseAndWaitForStart(port, sessionId, watchRoot, timeoutMs) {
+      timeoutMs = timeoutMs || 3000;
+      return new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.0.0.1', port: port,
+          path: `/api/files/watch?session=${encodeParam(sessionId)}&path=${encodeParam(watchRoot)}`,
+          method: 'GET', headers: { 'Accept': 'text/event-stream' },
+        }, (res) => {
+          if (res.statusCode !== 200) {
+            const chunks = [];
+            res.on('data', (c) => chunks.push(c));
+            res.on('end', () => {
+              const raw = Buffer.concat(chunks).toString('utf-8');
+              let body;
+              try { body = JSON.parse(raw); } catch (_) { body = raw; }
+              resolve({ status: res.statusCode, body, request: req, events: [] });
+            });
+            return;
+          }
+          let buf = '';
+          const events = [];
+          let started = false;
+          const t = setTimeout(() => {
+            if (!started) {
+              try { req.destroy(); } catch (_) {}
+              reject(new Error('SSE start timeout after ' + timeoutMs + 'ms'));
+            }
+          }, timeoutMs);
+          res.setEncoding('utf-8');
+          res.on('data', (chunk) => {
+            buf += chunk;
+            let sep;
+            while ((sep = buf.indexOf('\n\n')) !== -1) {
+              const frame = buf.slice(0, sep);
+              buf = buf.slice(sep + 2);
+              const dataLines = frame.split('\n')
+                .filter((l) => l.startsWith('data:'))
+                .map((l) => l.replace(/^data:\s?/, ''));
+              if (!dataLines.length) continue;
+              try {
+                const evt = JSON.parse(dataLines.join('\n'));
+                events.push(evt);
+                if (evt.type === 'start' && !started) {
+                  started = true;
+                  clearTimeout(t);
+                  resolve({ status: 200, request: req, response: res, events: events });
+                }
+              } catch (_) {}
+            }
+          });
+          res.on('error', (err) => { if (!started) { clearTimeout(t); reject(err); } });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
+    /** Wait for an event matching predicate to appear in the events array. */
+    function waitForEvent(events, predicate, timeoutMs) {
+      timeoutMs = timeoutMs || 3000;
+      return new Promise((resolve, reject) => {
+        const start = Date.now();
+        function check() {
+          const found = events.find(predicate);
+          if (found) return resolve(found);
+          if (Date.now() - start > timeoutMs) return reject(new Error('waitForEvent timeout'));
+          setTimeout(check, 30);
+        }
+        check();
+      });
+    }
+
+    function postJson(port, urlPath) {
+      return new Promise((resolve, reject) => {
+        const req = http.request({
+          hostname: '127.0.0.1', port: port, path: urlPath, method: 'POST',
+          headers: { 'Content-Length': '0' },
+        }, (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => {
+            const raw = Buffer.concat(chunks).toString('utf-8');
+            let body;
+            try { body = JSON.parse(raw); } catch (_) { body = raw; }
+            resolve({ status: res.statusCode, body });
+          });
+        });
+        req.on('error', reject);
+        req.end();
+      });
+    }
+
+    it('returns 400 when session is missing', async function () {
+      const r = await consumeSseUntil(port, '/api/files/watch?path=' + encodeParam(realTmpDirW()), () => true, 1000);
+      assert.strictEqual(r.status, 400);
+    });
+
     it('returns 400 when path is missing', async function () {
-      const r = await consumeSseUntil(port, '/api/files/watch', () => true, 1000);
+      const r = await consumeSseUntil(port, '/api/files/watch?session=s1', () => true, 1000);
       assert.strictEqual(r.status, 400);
     });
 
     it('returns 403 when path escapes baseFolder', async function () {
       const escape = path.resolve(realTmpDirW(), '..', 'outside-watch');
-      const r = await consumeSseUntil(port, '/api/files/watch?path=' + encodeParam(escape), () => true, 1000);
+      const r = await consumeSseUntil(port, '/api/files/watch?session=s2&path=' + encodeParam(escape), () => true, 1000);
       assert.strictEqual(r.status, 403);
     });
 
     it('returns 404 when path does not exist', async function () {
       const missing = path.join(realTmpDirW(), 'definitely-not-here-' + Date.now());
-      const r = await consumeSseUntil(port, '/api/files/watch?path=' + encodeParam(missing), () => true, 1000);
+      const r = await consumeSseUntil(port, '/api/files/watch?session=s3&path=' + encodeParam(missing), () => true, 1000);
       assert.strictEqual(r.status, 404);
     });
 
     it('returns 400 when path is a file, not a directory', async function () {
       const f = path.join(realTmpDirW(), 'watch-not-a-dir.txt');
       fs.writeFileSync(f, 'x');
-      const r = await consumeSseUntil(port, '/api/files/watch?path=' + encodeParam(f), () => true, 1000);
+      const r = await consumeSseUntil(port, '/api/files/watch?session=s4&path=' + encodeParam(f), () => true, 1000);
       assert.strictEqual(r.status, 400);
       try { fs.unlinkSync(f); } catch (_) {}
     });
 
-    it('streams add → change → unlink for files in the watched dir', async function () {
-      const subDir = path.join(realTmpDirW(), 'watchcorpus-evt');
+    it('subscribe before EventSource open returns 404', async function () {
+      const subDir = path.join(realTmpDirW(), 'watch-sub-no-es');
       fs.mkdirSync(subDir, { recursive: true });
+      const target = path.join(subDir, 'never.txt');
 
-      // Start the SSE consumer first; once we see {type:'start'} we know
-      // chokidar's initial scan finished and any subsequent fs writes
-      // will surface as events.
-      const consumer = consumeSseUntil(
-        port,
-        '/api/files/watch?path=' + encodeParam(subDir),
-        (events) => events.some((e) => e.type === 'unlink'),
-        5000
-      );
+      const r = await postJson(port,
+        `/api/files/watch/subscribe?session=no-such-session&path=${encodeParam(target)}`);
+      assert.strictEqual(r.status, 404);
+      assert.match(r.body.error || '', /no active watcher/i);
 
-      // Wait briefly so the watcher has a chance to start before we write.
-      // (chokidar's 'ready' fires before our test would send the first
-      // write, but we add a tiny buffer to be safe across CI flake.)
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
 
+    it('multi-path subscribe on one EventSource → events from BOTH paths arrive', async function () {
+      const subDir = path.join(realTmpDirW(), 'watch-multipath');
+      fs.mkdirSync(subDir, { recursive: true });
+      fs.mkdirSync(path.join(subDir, 'sub1'), { recursive: true });
+      fs.mkdirSync(path.join(subDir, 'sub2'), { recursive: true });
+      const targetA = path.join(subDir, 'sub1', 'a.txt');
+      const targetB = path.join(subDir, 'sub2', 'b.txt');
+
+      const sessionId = 'mp-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(sse.status, 200);
+
+      // Subscribe both paths via the control channel.
+      const sub1 = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(targetA)}`);
+      assert.strictEqual(sub1.status, 204, 'expected 204 on first subscribe');
+      const sub2 = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(targetB)}`);
+      assert.strictEqual(sub2.status, 204, 'expected 204 on second subscribe');
+
+      // Write to BOTH; events for BOTH should arrive on the single SSE.
+      fs.writeFileSync(targetA, 'one');
+      fs.writeFileSync(targetB, 'two');
+
+      const evtA = await waitForEvent(sse.events, (e) => e.type === 'add' && e.path && e.path.endsWith('/sub1/a.txt'), 3000);
+      const evtB = await waitForEvent(sse.events, (e) => e.type === 'add' && e.path && e.path.endsWith('/sub2/b.txt'), 3000);
+
+      assert.ok(evtA, 'expected add event for sub1/a.txt');
+      assert.ok(evtB, 'expected add event for sub2/b.txt');
+      // relPath should be set and forward-slashed.
+      assert.strictEqual(evtA.relPath, 'sub1/a.txt');
+      assert.strictEqual(evtB.relPath, 'sub2/b.txt');
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    it('unsubscribe stops events for that path; non-subscribed paths are silent', async function () {
+      const subDir = path.join(realTmpDirW(), 'watch-unsub');
+      fs.mkdirSync(subDir, { recursive: true });
+      const subscribed = path.join(subDir, 'subscribed.txt');
+      const unsubscribed = path.join(subDir, 'never-subscribed.txt');
+
+      const sessionId = 'us-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(sse.status, 200);
+
+      // Subscribe one path; the other is never subscribed.
+      const sub = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subscribed)}`);
+      assert.strictEqual(sub.status, 204);
+
+      fs.writeFileSync(subscribed, 'sub');
+      fs.writeFileSync(unsubscribed, 'no-sub');
+
+      // Wait for the subscribed-file event to arrive.
+      await waitForEvent(sse.events, (e) => e.type === 'add' && e.path && e.path.endsWith('/subscribed.txt'), 3000);
+
+      // The unsubscribed file's add must NOT appear (subscription filter).
+      const unsubEvts = sse.events.filter((e) => e.path && e.path.endsWith('/never-subscribed.txt'));
+      assert.strictEqual(unsubEvts.length, 0,
+        'unsubscribed-path events leaked: ' + JSON.stringify(unsubEvts));
+
+      // Now unsubscribe the subscribed path; subsequent changes silent.
+      const before = sse.events.length;
+      const us = await postJson(port,
+        `/api/files/watch/unsubscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subscribed)}`);
+      assert.strictEqual(us.status, 204);
+      // chokidar/debounce may still be in flight from earlier events; wait
+      // out the debounce + a small buffer, snapshot, then write again.
+      await new Promise((r) => setTimeout(r, 200));
+      const beforeWrite = sse.events.length;
+      fs.writeFileSync(subscribed, 'silent');
+      await new Promise((r) => setTimeout(r, 250));
+      const newEvents = sse.events.slice(beforeWrite);
+      const subscribedEvents = newEvents.filter((e) => e.path && e.path.endsWith('/subscribed.txt'));
+      assert.strictEqual(subscribedEvents.length, 0,
+        'unsubscribed-path got events: ' + JSON.stringify(subscribedEvents));
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    it('streams add → change → unlink for a subscribed file', async function () {
+      const subDir = path.join(realTmpDirW(), 'watch-acu');
+      fs.mkdirSync(subDir, { recursive: true });
       const target = path.join(subDir, 'changeling.txt');
+
+      const sessionId = 'acu-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(sse.status, 200);
+
+      const sub = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(target)}`);
+      assert.strictEqual(sub.status, 204);
+
+      // Lifecycle: write → modify → delete, with > debounce-window between.
       fs.writeFileSync(target, 'first');
-      // Wait > debounce window before mutating again.
       await new Promise((resolve) => setTimeout(resolve, 250));
       fs.writeFileSync(target, 'second');
       await new Promise((resolve) => setTimeout(resolve, 250));
       fs.unlinkSync(target);
 
-      const r = await consumer;
-      assert.strictEqual(r.status, 200, 'expected 200 SSE');
-      const types = r.events.map((e) => e.type);
+      // Wait for the unlink event to confirm the chain completed.
+      await waitForEvent(sse.events, (e) => e.type === 'unlink' && e.path && e.path.endsWith('/changeling.txt'), 5000);
 
-      // The start event must appear before any fs events.
-      assert.ok(types.includes('start'), 'expected start event');
-      // chokidar may emit one 'add' OR one 'add' + one 'change' depending on
-      // platform / write-finish timing. Assert that we saw at least the
-      // canonical lifecycle endpoints.
-      assert.ok(types.includes('add'), 'expected add event for new file');
-      assert.ok(types.includes('change'), 'expected change event for second write');
-      assert.ok(types.includes('unlink'), 'expected unlink event');
+      const types = sse.events.filter((e) => e.path && e.path.endsWith('/changeling.txt')).map((e) => e.type);
+      assert.ok(types.includes('add'), 'expected add; got ' + types.join(','));
+      assert.ok(types.includes('change'), 'expected change; got ' + types.join(','));
+      assert.ok(types.includes('unlink'), 'expected unlink; got ' + types.join(','));
 
-      // Validate event-payload shape on a non-unlink sample.
-      const change = r.events.find((e) => e.type === 'change');
+      // Validate event-payload shape.
+      const change = sse.events.find((e) => e.type === 'change' && e.path && e.path.endsWith('/changeling.txt'));
       assert.ok(change, 'change event must exist');
-      assert.ok(change.path && change.path.endsWith('/changeling.txt'),
-        'change event path must end with the file basename, got ' + change.path);
-      assert.strictEqual(typeof change.mtime, 'number',
-        'change event must include numeric mtime; got ' + JSON.stringify(change));
+      assert.strictEqual(change.relPath, 'changeling.txt', 'relPath must be set');
+      assert.strictEqual(typeof change.mtime, 'number', 'change must include numeric mtime');
       assert.ok(typeof change.hash === 'string' && /^[0-9a-f]{32}$/.test(change.hash),
-        'change event must include md5 hash; got ' + change.hash);
+        'change must include md5 hash; got ' + change.hash);
 
-      // unlink should NOT include mtime/hash (file is gone).
-      const unlink = r.events.find((e) => e.type === 'unlink');
+      const unlink = sse.events.find((e) => e.type === 'unlink' && e.path && e.path.endsWith('/changeling.txt'));
       assert.strictEqual(unlink.mtime, null, 'unlink mtime must be null');
       assert.strictEqual(unlink.hash, undefined, 'unlink must not include hash');
 
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    it('opening a 2nd EventSource for same session replaces the first (single-ES-per-session)', async function () {
+      const subDir = path.join(realTmpDirW(), 'watch-replace');
+      fs.mkdirSync(subDir, { recursive: true });
+
+      const sessionId = 'rep-' + Date.now();
+      const first = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(first.status, 200);
+
+      // Open a SECOND ES with the same session id. The first should
+      // receive {type:"end", reason:"replaced"} on its stream.
+      const second = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(second.status, 200);
+
+      // Wait for the replaced event on the first stream.
+      await waitForEvent(first.events, (e) => e.type === 'end' && e.reason === 'replaced', 2000);
+
+      try { first.request.destroy(); } catch (_) {}
+      try { second.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
       fs.rmSync(subDir, { recursive: true, force: true });
     });
 
     it('rate-limits at 5 concurrent watchers per IP (returns 429 on 6th)', async function () {
-      const subDir = path.join(realTmpDirW(), 'watchcorpus-rl');
+      const subDir = path.join(realTmpDirW(), 'watch-rl');
       fs.mkdirSync(subDir, { recursive: true });
 
-      // Open 5 watchers and HOLD them open. The 6th must 429.
+      // Open 5 watchers with DISTINCT session ids and HOLD them open.
+      // The 6th must 429.
       const open5 = [];
       for (let i = 0; i < 5; i++) {
-        open5.push(await openSse(port, '/api/files/watch?path=' + encodeParam(subDir)));
+        open5.push(await openSse(port,
+          `/api/files/watch?session=rl-slot-${i}&path=${encodeParam(subDir)}`));
       }
-      // All 5 should be accepted.
       for (let i = 0; i < 5; i++) {
         assert.strictEqual(open5[i].status, 200,
           `slot ${i + 1} expected 200, got ${open5[i].status}`);
       }
-
       // 6th attempt → 429.
       const sixth = await consumeSseUntil(port,
-        '/api/files/watch?path=' + encodeParam(subDir), () => true, 1000);
+        `/api/files/watch?session=rl-slot-6&path=${encodeParam(subDir)}`, () => true, 1000);
       assert.strictEqual(sixth.status, 429,
         'expected 429 on 6th concurrent watcher, got ' + sixth.status);
 
-      // Close the 5 holders so the counter decrements + later tests aren't
-      // blocked.
+      // Close the 5 holders so the counter decrements.
       for (const h of open5) {
         try { h.request.destroy(); } catch (_) {}
       }
-      // Give the close handlers a tick to decrement.
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      await new Promise((resolve) => setTimeout(resolve, 200));
 
       fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    it('unsubscribe is idempotent (no-op for non-existent session)', async function () {
+      const target = path.join(realTmpDirW(), 'unsub-idem.txt');
+      const r = await postJson(port,
+        `/api/files/watch/unsubscribe?session=ghost&path=${encodeParam(target)}`);
+      assert.strictEqual(r.status, 204);
     });
   });
 });
@@ -1409,25 +1623,20 @@ function encodeParam(val) {
   it('rejects /api/files/watch without auth (401)', async function () {
     const watchDir = realTmpDir();
     const res = await request(port, 'GET',
-      `/api/files/watch?path=${encodeParam(watchDir)}`);
+      `/api/files/watch?session=auth-no&path=${encodeParam(watchDir)}`);
     assert.strictEqual(res.status, 401);
   });
 
   it('accepts /api/files/watch with valid ?token= (200 SSE start)', async function () {
-    // Open the connection just long enough to confirm we get past auth
-    // and into the SSE stream, then close.
     const watchDir = realTmpDir();
     const reqOpts = {
       hostname: '127.0.0.1', port: port,
-      path: `/api/files/watch?path=${encodeParam(watchDir)}&token=${encodeParam(TOKEN)}`,
+      path: `/api/files/watch?session=auth-yes&path=${encodeParam(watchDir)}&token=${encodeParam(TOKEN)}`,
       method: 'GET', headers: { 'Accept': 'text/event-stream' },
     };
     const status = await new Promise((resolve, reject) => {
       const req = http.request(reqOpts, (res) => {
-        // Drain so we don't trigger backpressure.
         res.on('data', () => {});
-        // Close immediately after we've seen the status line; the
-        // server's req.on('close') handler will release the watcher.
         setImmediate(() => {
           try { req.destroy(); } catch (_) {}
           resolve(res.statusCode);

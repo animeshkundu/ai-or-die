@@ -1503,36 +1503,59 @@ class ClaudeCodeWebServer {
     });
 
     // GET /api/files/watch — SSE-streamed file-system change notifications
-    // via chokidar. Per ADR-0017 (#100): proactive sync between agent edits
-    // and user-open Monaco tabs / file-browser listings, complementing the
-    // hash-based 409-Conflict-on-save backstop from ADR-0012.
+    // via chokidar. Per ADR-0017 (#100, amended at 4d047d1): proactive sync
+    // between agent edits and user-open Monaco tabs / file-browser
+    // listings, complementing the hash-based 409-Conflict-on-save backstop
+    // from ADR-0012.
     //
-    // Query params:
-    //   path   string, required — directory to watch (typically session
-    //                             cwd). Funneled through validatePath().
+    // Session-scoped multiplexing (ADR-0017 §Multiplexing): ONE EventSource
+    // per session, with paths managed via the POST /subscribe + /unsubscribe
+    // control channel. This avoids hitting Chromium's 6-EventSource-per-
+    // origin cap that would otherwise break workflows above ~5 open tabs.
+    //
+    // Wire shape:
+    //   GET  /api/files/watch?session=<id>&path=<rootDir>[&token=<auth>]
+    //     Opens the SSE stream. Watcher rooted at <rootDir> (typically the
+    //     session's workingDir). If an EventSource for this session is
+    //     already open, it is replaced (single-ES-per-session semantics).
+    //
+    //   POST /api/files/watch/subscribe?session=<id>&path=<abs>[&token=<auth>]
+    //     Adds <abs> to the active subscription set. Subsequent SSE events
+    //     for that path arrive on the open EventSource. Returns 204; 404 if
+    //     no EventSource is open for that session; 403 on validatePath fail.
+    //
+    //   POST /api/files/watch/unsubscribe?session=<id>&path=<abs>[&token=<auth>]
+    //     Removes <abs> from the subscription set. 204.
     //
     // Auth: ?token= (EventSource cannot carry custom headers; same
     // constraint as PDF.js worker / `<img src>` / `<iframe src>` per #96).
     //
-    // Concurrent-watcher cap: 5 per IP. New mechanic vs the per-min
-    // sliding-window in /api/search and /api/files/git-show — chokidar
-    // watchers consume kernel-level resources (FSEvents on macOS, inotify
-    // on Linux, RDC on Windows) that don't decay over time, so the right
-    // bound is "open at once" not "opens per minute". Tracked via
-    // _activeWatchersByIp Map<ip, count>; decremented on disconnect.
+    // Concurrent-watcher cap (ADR-0017 §Rate limiting layer 1):
+    //   5 open watchers per IP. Cleanest mechanic for SSE — open count
+    //   directly maps to active server load (one chokidar watcher + one
+    //   open TCP connection per concurrent watcher). Tracked via
+    //   _activeWatchersByIp Map<ip, count>; decremented on req.on('close').
     //
-    // Per-session emission cap: 100 events/min/session via the existing
-    // _perIpRateLimit helper, applied at SSE emit time. Coalescing inside
-    // FileWatcher (100ms per-path debounce) is the first line of defense;
-    // this cap catches pathological cases per ADR-0017 §Rate limiting.
+    // Per-session emission cap (ADR-0017 §Rate limiting layer 2):
+    //   100 events/min/session via the existing _perIpRateLimit helper.
+    //   Excess events are dropped silently (NOT queued); the SSE consumer
+    //   treats this as the same kind of event-loss the WebSocket-reconnect
+    //   path already handles via mtime-drift re-check on focus.
     //
     // SSE event shapes (newline-terminated, two-newline-separated):
     //   data: {"type":"start"}\n\n
-    //   data: {"type":"add"|"change"|"unlink","path":"...","mtime":<ms>,"hash"?:"..."}\n\n
+    //   data: {"type":"add"|"change"|"unlink"|"rename",
+    //          "path":"<abs>", "relPath":"<rel>",
+    //          "mtime":<ms-or-null>, "hash"?:"<md5>",
+    //          "prevPath"?:"<abs, rename only>"}\n\n
     //   data: {"type":"error","message":"..."}\n\n
-    //   data: {"type":"end","reason":"client-disconnect"|"error"|"watcher-error"}\n\n
+    //   data: {"type":"end","reason":"client-disconnect"|"replaced"|"watcher-error"}\n\n
     this.app.get('/api/files/watch', async (req, res) => {
+      const sessionId = req.query.session;
       const rawPath = req.query.path;
+      if (!sessionId || typeof sessionId !== 'string') {
+        return res.status(400).json({ error: 'session is required' });
+      }
       if (!rawPath || typeof rawPath !== 'string') {
         return res.status(400).json({ error: 'path is required' });
       }
@@ -1543,6 +1566,19 @@ class ClaudeCodeWebServer {
       // close.
       const ip = (req.ip || (req.connection && req.connection.remoteAddress) || 'unknown').toString();
       if (!this._activeWatchersByIp) this._activeWatchersByIp = new Map();
+      if (!this._fsWatchSessions) this._fsWatchSessions = new Map();
+
+      // If an EventSource already exists for this session, replace it
+      // (single-ES-per-session per ADR-0017). The displaced session
+      // releases its slot in the per-IP counter so this fresh open
+      // doesn't double-count.
+      const existing = this._fsWatchSessions.get(sessionId);
+      if (existing) {
+        try { existing.send && existing.send({ type: 'end', reason: 'replaced' }); } catch (_) {}
+        try { existing.cleanup && existing.cleanup('replaced'); } catch (_) {}
+        // existing.cleanup already decrements the per-IP counter.
+      }
+
       const currentCount = this._activeWatchersByIp.get(ip) || 0;
       const MAX_CONCURRENT_WATCHERS = 5;
       if (currentCount >= MAX_CONCURRENT_WATCHERS) {
@@ -1592,8 +1628,10 @@ class ClaudeCodeWebServer {
 
       let watcher;
       let watcherClosed = false;
-      let emittedEvents = 0;
       const debounceMs = parseInt(process.env.FS_WATCHER_DEBOUNCE_MS, 10) || 100;
+      const stabilityMs = parseInt(process.env.FS_WATCHER_STABILITY_MS, 10) || 80;
+      const pollIntervalMs = parseInt(process.env.FS_WATCHER_POLL_MS, 10) || 30;
+      const ignoreFromEnv = (process.env.FS_WATCHER_IGNORE || '').split(',').map((s) => s.trim()).filter(Boolean);
       const self = this;
 
       function decrementWatcherCount() {
@@ -1607,6 +1645,9 @@ class ClaudeCodeWebServer {
         if (watcherClosed) return;
         watcherClosed = true;
         decrementWatcherCount();
+        if (self._fsWatchSessions.get(sessionId) === sessionEntry) {
+          self._fsWatchSessions.delete(sessionId);
+        }
         if (watcher) {
           watcher.close().catch(() => {});
         }
@@ -1616,46 +1657,118 @@ class ClaudeCodeWebServer {
         } catch (_) {}
       }
 
+      // Register the session entry BEFORE chokidar startup so concurrent
+      // POST subscribe/unsubscribe calls during startup find it (they'll
+      // race-add to the watcher's subscription set; subscribe() is safe
+      // to call any time after FileWatcher construction).
+      const sessionEntry = {
+        watcher: null,        // assigned after FileWatcher construction
+        send: send,
+        cleanup: cleanup,
+        ip: ip,
+      };
+      this._fsWatchSessions.set(sessionId, sessionEntry);
+
       try {
-        watcher = new FileWatcher(watchRoot, { debounceMs: debounceMs });
+        watcher = new FileWatcher({
+          watchRoot: watchRoot,
+          debounceMs: debounceMs,
+          stabilityMs: stabilityMs,
+          pollIntervalMs: pollIntervalMs,
+          ignoreDirs: ignoreFromEnv.length ? ignoreFromEnv : undefined,
+        });
+        sessionEntry.watcher = watcher;
 
         watcher.on('event', (evt) => {
           if (watcherClosed) return;
-          // Per-session emission cap (100/min). The shared limiter is
-          // bucketed by IP; this is good enough since each watcher is
-          // 1 EventSource and we already cap at 5/IP. Pathological case
-          // (find -exec touch over 10k files) is bounded.
-          const rl = self._perIpRateLimit(req, 'watch-emit', 100, 60_000);
+          // Per-session emission cap (100/min). Bucketed by session id
+          // for accuracy across IP-shared environments (proxy / NAT).
+          const rl = self._perIpRateLimit({
+            ip: 'session:' + sessionId,
+            connection: { remoteAddress: 'session:' + sessionId },
+          }, 'watch-emit', 100, 60_000);
           if (rl) {
-            // Drop the event silently — we don't want to fill the SSE
-            // channel with rate-limit errors during a legitimate burst.
-            // Client will catch the missing change via the existing
-            // mtime-drift / 409-Conflict-on-save backstop.
+            // Drop the event silently per ADR-0017 §Rate limiting layer 2.
             return;
           }
-          emittedEvents += 1;
           send(evt);
         });
 
         watcher.on('error', (err) => {
           send({ type: 'error', message: (err && err.message) || String(err) });
           // Don't terminate on transient chokidar errors (perm-denied on
-          // walk, etc.) — surface them but keep the channel open. Only
-          // terminate on req close or unrecoverable.
+          // walk, etc.) — surface them but keep the channel open.
         });
 
         await watcher.start();
         send({ type: 'start' });
       } catch (err) {
         cleanup('watcher-error');
-        // Headers already sent; we surfaced via SSE error+end. Don't try
-        // to write a JSON body now.
         return;
       }
 
       // Client disconnect → close the watcher, decrement the per-IP
       // counter, and free kernel watch resources immediately.
       req.on('close', () => cleanup('client-disconnect'));
+    });
+
+    // POST /api/files/watch/subscribe — add a path to the active session's
+    // subscription set. Required: ?session=<id>&path=<absolute>.
+    // Returns 204 on success; 404 if no EventSource is open for the session;
+    // 403 if path fails validatePath.
+    this.app.post('/api/files/watch/subscribe', express.json({ limit: '64kb' }), async (req, res) => {
+      const sessionId = req.query.session || (req.body && req.body.session);
+      const rawPath = req.query.path || (req.body && req.body.path);
+      if (!sessionId || !rawPath) {
+        return res.status(400).json({ error: 'session and path are required' });
+      }
+
+      if (!this._fsWatchSessions) this._fsWatchSessions = new Map();
+      const entry = this._fsWatchSessions.get(sessionId);
+      if (!entry || !entry.watcher) {
+        return res.status(404).json({ error: 'no active watcher for session; open EventSource first' });
+      }
+
+      const validation = this.validatePath(rawPath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+
+      try {
+        await entry.watcher.subscribe(validation.path);
+      } catch (err) {
+        return res.status(500).json({ error: 'subscribe failed', message: err.message });
+      }
+      res.status(204).end();
+    });
+
+    // POST /api/files/watch/unsubscribe — remove a path from the active
+    // session's subscription set. Idempotent — returns 204 even if the
+    // path was never subscribed.
+    this.app.post('/api/files/watch/unsubscribe', express.json({ limit: '64kb' }), async (req, res) => {
+      const sessionId = req.query.session || (req.body && req.body.session);
+      const rawPath = req.query.path || (req.body && req.body.path);
+      if (!sessionId || !rawPath) {
+        return res.status(400).json({ error: 'session and path are required' });
+      }
+
+      if (!this._fsWatchSessions) this._fsWatchSessions = new Map();
+      const entry = this._fsWatchSessions.get(sessionId);
+      if (!entry || !entry.watcher) {
+        // Idempotent: no-op, return 204.
+        return res.status(204).end();
+      }
+
+      // Skip validatePath here — unsubscribe with a path that's outside
+      // baseFolder is a no-op since it could never have been subscribed
+      // in the first place. We still resolve to canonical form to match
+      // however subscribe() stored it.
+      const canonicalPath = path.resolve(rawPath);
+
+      try {
+        await entry.watcher.unsubscribe(canonicalPath);
+      } catch (err) {
+        return res.status(500).json({ error: 'unsubscribe failed', message: err.message });
+      }
+      res.status(204).end();
     });
 
 
