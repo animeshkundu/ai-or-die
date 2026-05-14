@@ -39,7 +39,7 @@
   // ---------------------------------------------------------------------------
 
   var STORAGE_PREFIX = 'fb-tabs-';
-  var STORAGE_VERSION = 1;
+  var STORAGE_VERSION = 2;
   var DEFAULT_MAX_TABS = 12;
   var DEFAULT_SESSION_KEY = 'default';
 
@@ -54,17 +54,28 @@
     return i === -1 ? s : (s.slice(i + 1) || s);
   }
 
-  // Compose a stable identity for "this open tab". Same (path, mode) always
-  // resolves to the same tab so reopening a file just activates it.
-  function tabKey(path, mode) {
-    return mode + ':' + (path || '');
+  // Compose a stable identity for "this open tab". Same (path, mode) plus
+  // diff-target always resolves to the same tab so reopening a file just
+  // activates it. Diff tabs need the compare-target in the key — otherwise
+  // "diff foo.js vs HEAD" and "diff foo.js vs main" would collide.
+  function tabKey(path, mode, diffTarget) {
+    var dt = '';
+    if (mode === 'diff' && diffTarget) {
+      dt = '|' + (diffTarget.compareWithRef || '') + '|' + (diffTarget.compareWithPath || '');
+    }
+    return mode + ':' + (path || '') + dt;
   }
 
   // Serialize a TabManager state for localStorage. Pure transformation —
   // the real persistence wrappers handle quota/private-mode failures.
   function serializeState(tabs, activeIndex) {
     var safe = (tabs || []).map(function (t) {
-      return { path: t.path, mode: t.mode };
+      var entry = { path: t.path, mode: t.mode };
+      if (t.mode === 'diff') {
+        if (t.compareWithRef)  entry.compareWithRef  = t.compareWithRef;
+        if (t.compareWithPath) entry.compareWithPath = t.compareWithPath;
+      }
+      return entry;
     });
     var idx = (typeof activeIndex === 'number' && activeIndex >= 0 && activeIndex < safe.length)
       ? activeIndex : (safe.length ? 0 : -1);
@@ -73,6 +84,11 @@
 
   // Deserialize defensively — anything unrecognised falls back to an empty
   // state so a stale or corrupted localStorage entry can't poison the panel.
+  // v1 → v2 migration is a "drop everything and start fresh" — v1 had no
+  // diff tabs, so users lose at most a list of preview/editor tabs (the
+  // files themselves are intact). Cheaper than a real migration path that
+  // would have to re-encode v1 entries into v2 shape, and the cost is
+  // bounded (one session of re-opening files).
   function deserializeState(raw) {
     if (!raw || typeof raw !== 'object') return { tabs: [], activeIndex: -1 };
     if (raw.version !== STORAGE_VERSION) return { tabs: [], activeIndex: -1 };
@@ -81,8 +97,20 @@
     for (var i = 0; i < raw.tabs.length; i++) {
       var t = raw.tabs[i];
       if (!t || typeof t.path !== 'string' || !t.path) continue;
-      var mode = (t.mode === 'editor' || t.mode === 'preview') ? t.mode : 'preview';
-      tabs.push({ path: t.path, mode: mode });
+      var mode = (t.mode === 'editor' || t.mode === 'preview' || t.mode === 'diff')
+        ? t.mode : 'preview';
+      var entry = { path: t.path, mode: mode };
+      if (mode === 'diff') {
+        // Both targets are user-supplied strings; trust validatePath on the
+        // server side, but a basic sanity strip keeps localStorage clean.
+        if (typeof t.compareWithRef  === 'string' && t.compareWithRef.length  <= 200) {
+          entry.compareWithRef  = t.compareWithRef;
+        }
+        if (typeof t.compareWithPath === 'string' && t.compareWithPath.length <= 4096) {
+          entry.compareWithPath = t.compareWithPath;
+        }
+      }
+      tabs.push(entry);
     }
     var idx = (typeof raw.activeIndex === 'number' && raw.activeIndex >= 0 && raw.activeIndex < tabs.length)
       ? raw.activeIndex : (tabs.length ? 0 : -1);
@@ -211,10 +239,17 @@
 
   TabManager.prototype.openFile = function (path, mode, options) {
     if (!path) return null;
-    mode = (mode === 'editor') ? 'editor' : 'preview';
+    mode = (mode === 'editor' || mode === 'diff') ? mode : 'preview';
     options = options || {};
 
-    var existing = this._findByKey(path, mode);
+    // For diff tabs, the identity includes the compare target so
+    // "diff foo.js vs HEAD" and "diff foo.js vs main" are distinct tabs.
+    var diffTarget = mode === 'diff' ? {
+      compareWithRef: options.compareWithRef || null,
+      compareWithPath: options.compareWithPath || null,
+    } : null;
+
+    var existing = this._findByKey(path, mode, diffTarget);
     if (existing) {
       this.activate(existing.id);
       // Even when reactivating, allow the caller to push a fresh jumpTo
@@ -322,6 +357,8 @@
         this._renderPreviewIntoTab(tab);
       } else if (tab.mode === 'editor') {
         this._renderEditorIntoTab(tab);
+      } else if (tab.mode === 'diff') {
+        this._renderDiffIntoTab(tab);
       }
     }
 
@@ -357,11 +394,22 @@
     contentEl.style.display = 'none'; // hidden until activate() shows it
     this._contentRootEl.appendChild(contentEl);
 
+    var displayName = basenameOf(path) || path;
+    if (mode === 'diff') {
+      // Render "foo.js ↔ HEAD" or "foo.js ↔ b.js" so the strip shows what's
+      // being compared at a glance.
+      var rhs = (options && options.compareWithRef) ||
+                (options && options.compareWithPath
+                  ? basenameOf(options.compareWithPath) : '') ||
+                'compare';
+      displayName = (basenameOf(path) || path) + ' ↔ ' + rhs;
+    }
+
     var tab = {
       id: 't_' + (++this._tabSeq),
       path: path,
       mode: mode,
-      name: basenameOf(path) || path,
+      name: displayName,
       dirty: false,
       contentEl: contentEl,
       panel: null,
@@ -371,9 +419,38 @@
       _initialContent: options && options.content != null ? options.content : null,
       _initialHash: options && options.hash != null ? options.hash : null,
       _initialItem: options && options.item ? options.item : null,
+      // Diff-mode targets — surfaced for both render-on-activate and
+      // localStorage persistence. Either compareWithRef OR compareWithPath
+      // is set (not both); the absence of both = "compare with HEAD".
+      compareWithRef: options && options.compareWithRef ? options.compareWithRef : null,
+      compareWithPath: options && options.compareWithPath ? options.compareWithPath : null,
     };
     this._tabs.push(tab);
     return tab;
+  };
+
+  TabManager.prototype._renderDiffIntoTab = function (tab) {
+    if (!window.fileDiff || !window.fileDiff.DiffViewerPanel) {
+      tab.contentEl.innerHTML = '<div class="fb-preview-error">Diff viewer not available.</div>';
+      return;
+    }
+    var self = this;
+    if (!tab.panel) {
+      tab.panel = new window.fileDiff.DiffViewerPanel({
+        authFetch: this.authFetch,
+        containerEl: tab.contentEl,
+        onClose: function () {
+          tab.panel = null;
+          self.closeTab(tab.id, { silent: true });
+        },
+      });
+    }
+    // Pick the comparison target from the tab's persisted state.
+    if (tab.compareWithPath) {
+      tab.panel.openFileVsFile(tab.compareWithPath, tab.path);
+    } else {
+      tab.panel.openRefVsWorking(tab.path, tab.compareWithRef || 'HEAD');
+    }
   };
 
   TabManager.prototype._renderPreviewIntoTab = function (tab) {
@@ -594,10 +671,15 @@
     return null;
   };
 
-  TabManager.prototype._findByKey = function (path, mode) {
-    var key = tabKey(path, mode);
+  TabManager.prototype._findByKey = function (path, mode, diffTarget) {
+    var key = tabKey(path, mode, diffTarget || null);
     for (var i = 0; i < this._tabs.length; i++) {
-      if (tabKey(this._tabs[i].path, this._tabs[i].mode) === key) return this._tabs[i];
+      var t = this._tabs[i];
+      var theirTarget = t.mode === 'diff' ? {
+        compareWithRef: t.compareWithRef,
+        compareWithPath: t.compareWithPath,
+      } : null;
+      if (tabKey(t.path, t.mode, theirTarget) === key) return t;
     }
     return null;
   };

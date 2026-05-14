@@ -454,6 +454,25 @@
       containerEl: this._previewContainer,
       onEdit: this._onEditRequest.bind(this),
       onBack: this._showBrowseView.bind(this),
+      onDiffRequest: this._onDiffRequest.bind(this),
+    });
+  };
+
+  // Routes a diff-button click from FilePreviewPanel through to TabManager,
+  // opening a new diff tab. Falls back to a status-bar error in degraded
+  // environments where TabManager couldn't construct.
+  FileBrowserPanel.prototype._onDiffRequest = function (req) {
+    if (!req || !req.path) return;
+    var tm = this._ensureTabManager();
+    if (!tm) {
+      if (this._statusBar) {
+        this._statusBar.textContent = 'Diff requires multi-file tabs (TabManager unavailable).';
+      }
+      return;
+    }
+    tm.openFile(req.path, 'diff', {
+      compareWithRef:  req.compareWithRef || null,
+      compareWithPath: req.compareWithPath || null,
     });
   };
 
@@ -1370,12 +1389,104 @@
     this.containerEl = options.containerEl;
     this.onEdit = options.onEdit || function () {};
     this.onBack = options.onBack || function () {};
+    // Diff-request handler — host (FileBrowserPanel) routes through
+    // TabManager.openFile(path, 'diff', { compareWithRef|compareWithPath }).
+    // Not wired in standalone preview-panel use; the Diff button is hidden
+    // when this is missing.
+    this.onDiffRequest = options.onDiffRequest || null;
     // Tear-down hooks for renderers that attach state outside the container
     // (Panzoom, Monaco, PDF.js etc. wire document-level event listeners that
     // innerHTML='' won't release). Each renderer pushes a function here;
     // showPreview() drains them before rendering the next file.
     this._activeDisposers = [];
   }
+
+  // Builds the Diff button + popover with three comparison targets:
+  //   - Compare with HEAD (one-click)
+  //   - Compare with ref… (prompt for any git rev)
+  //   - Compare with another file… (prompt for absolute path)
+  // The popover uses native event delegation; click-outside closes it via a
+  // capture-phase listener installed once per popover lifetime.
+  FilePreviewPanel.prototype._buildDiffMenu = function (item) {
+    var self = this;
+    var wrap = document.createElement('div');
+    wrap.className = 'fb-diff-menu-wrap';
+    wrap.style.position = 'relative';
+    wrap.style.display = 'inline-block';
+
+    var btn = document.createElement('button');
+    btn.className = 'btn btn-secondary btn-small fb-diff-menu-btn';
+    btn.type = 'button';
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.textContent = 'Diff ▾';
+    wrap.appendChild(btn);
+
+    var menu = document.createElement('div');
+    menu.className = 'fb-diff-menu';
+    menu.setAttribute('role', 'menu');
+    menu.style.display = 'none';
+    wrap.appendChild(menu);
+
+    function mkItem(label, handler) {
+      var i = document.createElement('button');
+      i.type = 'button';
+      i.className = 'fb-diff-menu-item';
+      i.setAttribute('role', 'menuitem');
+      i.textContent = label;
+      i.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeMenu();
+        try { handler(); } catch (err) {
+          if (typeof console !== 'undefined') console.error('diff handler:', err);
+        }
+      });
+      menu.appendChild(i);
+    }
+
+    mkItem('Compare with HEAD', function () {
+      self.onDiffRequest({ path: item.path, compareWithRef: 'HEAD' });
+    });
+    mkItem('Compare with ref…', function () {
+      var ref = window.prompt('Compare with which git ref?', 'HEAD');
+      if (ref == null) return;
+      ref = String(ref).trim();
+      if (!ref) return;
+      self.onDiffRequest({ path: item.path, compareWithRef: ref });
+    });
+    mkItem('Compare with another file…', function () {
+      var other = window.prompt('Path of the other file (absolute):');
+      if (other == null) return;
+      other = String(other).trim();
+      if (!other) return;
+      self.onDiffRequest({ path: item.path, compareWithPath: other });
+    });
+
+    var docCloser = null;
+    function openMenu() {
+      menu.style.display = '';
+      btn.setAttribute('aria-expanded', 'true');
+      docCloser = function (e) {
+        if (!wrap.contains(e.target)) closeMenu();
+      };
+      // Capture phase so we beat any inner click handlers that stopPropagation.
+      document.addEventListener('mousedown', docCloser, true);
+    }
+    function closeMenu() {
+      menu.style.display = 'none';
+      btn.setAttribute('aria-expanded', 'false');
+      if (docCloser) {
+        document.removeEventListener('mousedown', docCloser, true);
+        docCloser = null;
+      }
+    }
+
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (menu.style.display === 'none') openMenu(); else closeMenu();
+    });
+    return wrap;
+  };
 
   FilePreviewPanel.prototype._disposeActive = function () {
     while (this._activeDisposers.length) {
@@ -1413,6 +1524,16 @@
       editBtn.textContent = 'Edit';
       editBtn.addEventListener('click', function () { self.onEdit(item); });
       actions.appendChild(editBtn);
+    }
+
+    // Diff button — opens a small dropdown with comparison targets. Only
+    // shown for editable text-shaped files (mimeCategory text/code/markdown
+    // /json/csv); the diff editor would render binary content as garbage.
+    // Wired to FilePreviewPanel.onDiffRequest so the FileBrowserPanel can
+    // route through TabManager (mode='diff').
+    if (item.editable && typeof self.onDiffRequest === 'function') {
+      var diffBtn = self._buildDiffMenu(item);
+      if (diffBtn) actions.appendChild(diffBtn);
     }
 
     // Download button
@@ -1879,38 +2000,272 @@
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // CSV parsing — RFC 4180-ish (handles quoted fields, embedded separators,
+  // and "" escape). Multi-line quoted fields are NOT supported in v1; rows
+  // are split on \n before parsing. Per task #5.
+  // ---------------------------------------------------------------------------
+
+  function parseCsvLine(line, sep) {
+    var cells = [];
+    var i = 0;
+    var len = line.length;
+    while (i < len) {
+      var cell;
+      if (line.charAt(i) === '"') {
+        // Quoted field. Process until matching unescaped closing quote.
+        i++;
+        var buf = '';
+        while (i < len) {
+          var c = line.charAt(i);
+          if (c === '"') {
+            if (line.charAt(i + 1) === '"') { buf += '"'; i += 2; }
+            else { i++; break; }
+          } else {
+            buf += c; i++;
+          }
+        }
+        cell = buf;
+        // Skip any trailing junk up to the next separator (defensive).
+        while (i < len && line.charAt(i) !== sep) i++;
+      } else {
+        var start = i;
+        while (i < len && line.charAt(i) !== sep) i++;
+        cell = line.slice(start, i);
+      }
+      cells.push(cell);
+      if (i < len && line.charAt(i) === sep) i++;
+    }
+    // Edge case: a trailing separator means an empty trailing field.
+    if (line.length > 0 && line.charAt(line.length - 1) === sep) cells.push('');
+    return cells;
+  }
+
+  function isNumericCell(s) {
+    if (s == null || s === '') return false;
+    var n = Number(s);
+    return !isNaN(n) && isFinite(n);
+  }
+
+  function detectColumnIsNumeric(rows, colIdx) {
+    // Scan up to 20 rows; treat a column as numeric only if every sampled
+    // non-empty value parses as a number. Empty cells are ignored so a
+    // column with sparse data still sorts numerically.
+    var sample = Math.min(rows.length, 20);
+    var sawAny = false;
+    for (var r = 0; r < sample; r++) {
+      var v = rows[r][colIdx];
+      if (v == null || v === '') continue;
+      sawAny = true;
+      if (!isNumericCell(v)) return false;
+    }
+    return sawAny;
+  }
+
+  // Cap on parsed rows. Beyond this we slice and surface a "showing first N
+  // of M" notice — protects the browser from a multi-MB CSV painting the
+  // whole DOM on first preview. Virtualisation handles render-side sizing
+  // independently; this cap is only about parse + sort cost.
+  var CSV_MAX_ROWS = 1000;
+  var CSV_INITIAL_WINDOW = 50;
+  var CSV_PAGE_SIZE = 50;
+
   FilePreviewPanel.prototype._renderCsv = function (container, content) {
-    var lines = content.split('\n').filter(function (l) { return l.trim(); });
-    if (!lines.length) {
+    var self = this;
+    if (!content || !content.length) {
       container.textContent = 'Empty CSV file';
       return;
     }
 
-    var table = document.createElement('table');
-    table.className = 'fb-csv-table';
+    // Strip BOM if present (Excel-saved CSVs love this).
+    if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
 
-    var maxRows = Math.min(lines.length, 101); // 1 header + 100 data rows
-    for (var i = 0; i < maxRows; i++) {
-      var row = document.createElement('tr');
-      var cells = lines[i].split(',');
-      for (var j = 0; j < cells.length; j++) {
-        var cell = document.createElement(i === 0 ? 'th' : 'td');
-        cell.textContent = cells[j].replace(/^"|"$/g, '').trim();
-        row.appendChild(cell);
-      }
-      table.appendChild(row);
+    // Detect separator: tab-separated takes precedence if a tab appears in
+    // the first line (common for .tsv served as text/csv). Otherwise comma.
+    var firstNL = content.indexOf('\n');
+    var firstLine = firstNL === -1 ? content : content.slice(0, firstNL);
+    var sep = firstLine.indexOf('\t') !== -1 ? '\t' : ',';
+
+    // Split on \n and parse. Multi-line quoted fields are NOT supported
+    // in v1 — they'd require row-aware tokenisation across line boundaries.
+    var rawLines = content.split(/\r?\n/);
+    while (rawLines.length && rawLines[rawLines.length - 1] === '') rawLines.pop();
+    if (!rawLines.length) {
+      container.textContent = 'Empty CSV file';
+      return;
     }
 
-    var tableWrapper = document.createElement('div');
-    tableWrapper.className = 'fb-csv-wrapper';
-    tableWrapper.appendChild(table);
-    container.appendChild(tableWrapper);
+    var headerRow = parseCsvLine(rawLines[0], sep);
+    var totalDataRows = rawLines.length - 1;
+    var truncated = totalDataRows > CSV_MAX_ROWS;
+    var dataRowCount = truncated ? CSV_MAX_ROWS : totalDataRows;
 
-    if (lines.length > 101) {
+    var dataRows = new Array(dataRowCount);
+    for (var i = 0; i < dataRowCount; i++) {
+      dataRows[i] = parseCsvLine(rawLines[i + 1], sep);
+    }
+
+    // Cache numeric-column detection up front so repeated sorts don't re-scan.
+    var colIsNumeric = new Array(headerRow.length);
+    for (var c = 0; c < headerRow.length; c++) {
+      colIsNumeric[c] = detectColumnIsNumeric(dataRows, c);
+    }
+
+    var sortState = null;             // null | { col, dir: 'asc'|'desc' }
+    var sortedRows = dataRows.slice();
+    var renderedCount = 0;
+    var observer = null;
+    var sentinel = null;
+    var initialWindow = CSV_INITIAL_WINDOW;
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'fb-csv-wrapper';
+    var table = document.createElement('table');
+    table.className = 'fb-csv-table';
+    var thead = document.createElement('thead');
+    var headerTr = document.createElement('tr');
+    var tbody = document.createElement('tbody');
+
+    function renderHeader() {
+      headerTr.innerHTML = '';
+      headerRow.forEach(function (h, idx) {
+        var th = document.createElement('th');
+        th.className = 'fb-csv-th-sortable';
+        th.tabIndex = 0;
+        th.setAttribute('role', 'columnheader');
+        var label = document.createElement('span');
+        label.className = 'fb-csv-th-label';
+        label.textContent = h;
+        var arrow = document.createElement('span');
+        arrow.className = 'fb-csv-th-arrow';
+        if (sortState && sortState.col === idx) {
+          arrow.textContent = sortState.dir === 'asc' ? ' ▲' : ' ▼';
+          th.setAttribute('aria-sort', sortState.dir === 'asc' ? 'ascending' : 'descending');
+        } else {
+          arrow.textContent = '';
+          th.setAttribute('aria-sort', 'none');
+        }
+        th.appendChild(label);
+        th.appendChild(arrow);
+        function activate() {
+          if (sortState && sortState.col === idx) {
+            // toggle: asc → desc → unsorted (third click)
+            if (sortState.dir === 'asc') sortState = { col: idx, dir: 'desc' };
+            else sortState = null;
+          } else {
+            sortState = { col: idx, dir: 'asc' };
+          }
+          applySort();
+          renderHeader();
+          resetWindow();
+        }
+        th.addEventListener('click', activate);
+        th.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); }
+        });
+        headerTr.appendChild(th);
+      });
+    }
+
+    function applySort() {
+      if (!sortState) {
+        sortedRows = dataRows.slice();
+        return;
+      }
+      var col = sortState.col;
+      var dir = sortState.dir === 'asc' ? 1 : -1;
+      var numeric = colIsNumeric[col];
+      sortedRows = dataRows.slice().sort(function (a, b) {
+        var av = a[col];
+        var bv = b[col];
+        // Empty cells always sort last regardless of direction (matches
+        // user expectation in spreadsheet apps).
+        if (av == null || av === '') return 1;
+        if (bv == null || bv === '') return -1;
+        if (numeric) {
+          var an = Number(av);
+          var bn = Number(bv);
+          return an === bn ? 0 : (an < bn ? -1 : 1) * dir;
+        }
+        return String(av).localeCompare(String(bv)) * dir;
+      });
+    }
+
+    function appendRows(from, to) {
+      var frag = document.createDocumentFragment();
+      for (var r = from; r < to; r++) {
+        var tr = document.createElement('tr');
+        var cells = sortedRows[r];
+        for (var c2 = 0; c2 < headerRow.length; c2++) {
+          var td = document.createElement('td');
+          td.textContent = cells[c2] != null ? cells[c2] : '';
+          tr.appendChild(td);
+        }
+        frag.appendChild(tr);
+      }
+      tbody.appendChild(frag);
+      renderedCount = to;
+      updateSentinel();
+    }
+
+    function updateSentinel() {
+      if (renderedCount >= sortedRows.length) {
+        if (sentinel && sentinel.parentNode) sentinel.parentNode.removeChild(sentinel);
+        if (observer) { try { observer.disconnect(); } catch (_) {} observer = null; }
+      } else if (sentinel && !sentinel.parentNode) {
+        wrapper.appendChild(sentinel);
+      }
+    }
+
+    function resetWindow() {
+      tbody.innerHTML = '';
+      renderedCount = 0;
+      appendRows(0, Math.min(initialWindow, sortedRows.length));
+    }
+
+    sentinel = document.createElement('div');
+    sentinel.className = 'fb-csv-sentinel';
+    sentinel.setAttribute('aria-hidden', 'true');
+
+    if (typeof window.IntersectionObserver === 'function') {
+      observer = new window.IntersectionObserver(function (entries) {
+        for (var e = 0; e < entries.length; e++) {
+          if (entries[e].isIntersecting && renderedCount < sortedRows.length) {
+            appendRows(renderedCount,
+                       Math.min(renderedCount + CSV_PAGE_SIZE, sortedRows.length));
+          }
+        }
+      }, { root: wrapper, rootMargin: '200px 0px' });
+      observer.observe(sentinel);
+    } else {
+      // Old browser fallback — render everything up front.
+      initialWindow = sortedRows.length;
+    }
+
+    renderHeader();
+    thead.appendChild(headerTr);
+    table.appendChild(thead);
+    table.appendChild(tbody);
+    wrapper.appendChild(table);
+    wrapper.appendChild(sentinel);
+    container.appendChild(wrapper);
+
+    appendRows(0, Math.min(initialWindow, sortedRows.length));
+
+    if (truncated) {
       var notice = document.createElement('div');
       notice.className = 'fb-truncated-notice';
-      notice.textContent = 'Showing first 100 rows of ' + (lines.length - 1);
+      notice.textContent = 'Showing first ' + CSV_MAX_ROWS + ' of ' + totalDataRows + ' rows';
       container.appendChild(notice);
+    }
+
+    // Register teardown so navigating to another file releases the
+    // IntersectionObserver. Per the FilePreviewPanel _activeDisposers
+    // contract.
+    if (self._activeDisposers) {
+      self._activeDisposers.push(function () {
+        if (observer) { try { observer.disconnect(); } catch (_) {} observer = null; }
+      });
     }
   };
 
@@ -2469,6 +2824,9 @@
     isPreviewable: isPreviewable,
     isEditable: isEditable,
     isHtmlExtension: isHtmlExtension,
+    // CSV parsing — exposed for unit tests (task #5)
+    parseCsvLine: parseCsvLine,
+    detectColumnIsNumeric: detectColumnIsNumeric,
     buildSandboxedSrcdoc: buildSandboxedSrcdoc,
     HTML_PREVIEW_CSP: HTML_PREVIEW_CSP,
     HTML_PREVIEW_SRCDOC_CAP_BYTES: HTML_PREVIEW_SRCDOC_CAP_BYTES,
