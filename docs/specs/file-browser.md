@@ -326,6 +326,7 @@ Hooks into the xterm.js right-click event to detect file paths in terminal outpu
 | Category | File Extensions | Rendering Method |
 |----------|----------------|------------------|
 | Image | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`, `.ico` | `<img>` element via `/api/files/download?path=...&inline=1` |
+| HTML | `.html`, `.htm`, `.xhtml` | Sandboxed `<iframe sandbox="" referrerpolicy="no-referrer">` with srcdoc, plus a CSP `<meta>` (`default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:;`). `<base>` and `<meta http-equiv="refresh">` tags are stripped before render. Header offers a Source⇄Rendered toggle backed by Monaco read-only. Files > 1 MB disable rendered view and show source only. |
 | Text / Code | `.js`, `.ts`, `.py`, `.go`, `.rs`, `.java`, `.css`, `.html`, `.sh`, `.yml`, `.toml`, etc. | Read-only Monaco editor (line numbers, syntax highlighting, find/replace, virtualised) via `window.fileViewerMonaco.createCodeViewer({ readOnly: true })`. Falls back to a monospace `<pre>` with line numbers when Monaco is unreachable. |
 | JSON | `.json` | Pretty-printed `<pre>` with indentation |
 | CSV | `.csv`, `.tsv` | HTML `<table>`, max 100 rows displayed |

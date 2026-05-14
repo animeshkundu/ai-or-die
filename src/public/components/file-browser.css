@@ -430,6 +430,45 @@
   min-height: 0;
 }
 
+/* ---- HTML Preview (sandboxed iframe + Source/Rendered toggle) ---- */
+.fb-html-preview {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fb-html-toggle-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-secondary);
+}
+.fb-html-toggle-btn[disabled],
+.fb-html-toggle-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.fb-html-toggle-notice {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.fb-html-view {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.fb-html-iframe {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border: 0;
+  background: var(--surface-primary);
+  border-radius: var(--radius-md);
+}
+
 /* ---- CSV Preview ---- */
 .fb-csv-wrapper {
   overflow-x: auto;

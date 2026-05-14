@@ -101,6 +101,69 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Sandboxed-srcdoc helper for HTML preview (#18).
+  //
+  // Hardens an arbitrary HTML payload before it gets handed to an iframe via
+  // srcdoc + sandbox="" by:
+  //   1. Stripping every <base ...> tag (case-insensitive). A malicious
+  //      <base href="javascript:..."> would otherwise turn every relative
+  //      link into a script execution surface.
+  //   2. Stripping <meta http-equiv="refresh" ...>. The empty sandbox already
+  //      blocks top-level navigation, but a refresh attempt logs a noisy
+  //      console error; remove it pre-emptively.
+  //   3. Injecting a Content-Security-Policy <meta> at the top of <head>:
+  //        default-src 'none' — block everything by default
+  //        img-src data: blob: — inline images via data: still work
+  //        style-src 'unsafe-inline' — inline <style> still renders (sandbox
+  //          empty = null origin, so 'self' would not match; without inline
+  //          styles, almost no real HTML file looks right)
+  //        font-src data: — embedded data: fonts work
+  //      No connect-src/script-src grants — the iframe cannot reach the
+  //      network, blocking exfiltration vectors that CSS-injection attacks
+  //      depend on (background-image: url(http://attacker), font-display, etc.)
+  //
+  // Pure string transformation — exported under window.fileBrowser for tests.
+  // ---------------------------------------------------------------------------
+
+  var HTML_PREVIEW_CSP = "default-src 'none'; img-src data: blob:; " +
+    "style-src 'unsafe-inline'; font-src data:;";
+
+  function buildSandboxedSrcdoc(html) {
+    var s = String(html == null ? '' : html);
+    s = s.replace(/<base\b[^>]*>/gi, '');
+    s = s.replace(/<meta\b[^>]*\bhttp-equiv\s*=\s*['"]?refresh['"]?[^>]*>/gi, '');
+
+    var cspTag = '<meta http-equiv="Content-Security-Policy" content="' + HTML_PREVIEW_CSP + '">';
+
+    if (/<head\b[^>]*>/i.test(s)) {
+      s = s.replace(/<head\b[^>]*>/i, function (m) { return m + cspTag; });
+    } else if (/<html\b[^>]*>/i.test(s)) {
+      s = s.replace(/<html\b[^>]*>/i, function (m) { return m + '<head>' + cspTag + '</head>'; });
+    } else {
+      s = '<head>' + cspTag + '</head>' + s;
+    }
+    return s;
+  }
+
+  // 1 MB cap — beyond this, the rendered preview is disabled and the user
+  // sees the source view only. Large HTML payloads in srcdoc balloon memory
+  // and can hang the renderer.
+  var HTML_PREVIEW_SRCDOC_CAP_BYTES = 1024 * 1024;
+
+  function _measureBytes(s) {
+    if (typeof Blob !== 'undefined') {
+      try { return new Blob([s]).size; } catch (_) { /* fall through */ }
+    }
+    return s.length;
+  }
+
+  function isHtmlExtension(nameOrPath) {
+    if (!nameOrPath) return false;
+    var n = String(nameOrPath).toLowerCase();
+    return n.endsWith('.html') || n.endsWith('.htm') || n.endsWith('.xhtml');
+  }
+
+  // ---------------------------------------------------------------------------
   // Lazy script loader — used by image panzoom (vendored at /vendor/panzoom.min.js).
   // Returns a Promise that resolves when window[globalCheck] becomes truthy
   // after the script tag finishes loading. Memoised per src so concurrent
@@ -1497,6 +1560,8 @@
           self._renderJson(container, data.content, item);
         } else if (item.mimeCategory === 'csv') {
           self._renderCsv(container, data.content);
+        } else if (isHtmlExtension(item.name) || isHtmlExtension(item.path)) {
+          self._renderHtml(container, data.content, item);
         } else {
           self._renderCode(container, data.content, item);
         }
@@ -1619,6 +1684,105 @@
       this._renderCode(container, formatted, item);
     } catch (e) {
       this._renderCode(container, content, item);
+    }
+  };
+
+  // HTML preview (#18) — sandboxed iframe by default with a Source⇄Rendered
+  // toggle. The iframe gets `sandbox=""` (strictest: no scripts, no
+  // same-origin, no top-nav, no forms, no popups, no downloads), an
+  // `referrerpolicy="no-referrer"` attribute, and a CSP <meta> injected via
+  // buildSandboxedSrcdoc that further locks down what the (now-inert)
+  // document can fetch.
+  //
+  // Defence in depth:
+  //   - sandbox="" — browser-enforced isolation; document origin is "null".
+  //   - CSP meta — even if a future browser quirk weakens sandbox, the CSP
+  //     blocks every network class except inline data:/blob: assets.
+  //   - <base> + <meta refresh> stripping — closes navigation-shaped tricks.
+  //   - 1 MB cap — beyond which we disable rendering and show source only,
+  //     because srcdoc balloons memory and can hang the renderer.
+  FilePreviewPanel.prototype._renderHtml = function (container, content, item) {
+    var self = this;
+    var src = String(content == null ? '' : content);
+    var bytes = _measureBytes(src);
+    var oversize = bytes > HTML_PREVIEW_SRCDOC_CAP_BYTES;
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'fb-html-preview';
+    container.appendChild(wrapper);
+
+    // Toggle bar
+    var toggleBar = document.createElement('div');
+    toggleBar.className = 'fb-html-toggle-bar';
+
+    var toggleBtn = document.createElement('button');
+    toggleBtn.className = 'btn btn-secondary btn-small fb-html-toggle-btn';
+    toggleBtn.type = 'button';
+    toggleBar.appendChild(toggleBtn);
+
+    if (oversize) {
+      var notice = document.createElement('span');
+      notice.className = 'fb-html-toggle-notice';
+      notice.textContent = 'Rendered preview disabled (file > ' +
+        formatFileSize(HTML_PREVIEW_SRCDOC_CAP_BYTES) + ')';
+      toggleBar.appendChild(notice);
+    }
+    wrapper.appendChild(toggleBar);
+
+    // View host (swapped between rendered iframe and source Monaco viewer).
+    var view = document.createElement('div');
+    view.className = 'fb-html-view';
+    wrapper.appendChild(view);
+
+    var renderedActive = !oversize;
+
+    function renderRendered() {
+      view.innerHTML = '';
+      toggleBtn.textContent = 'Source';
+      toggleBtn.setAttribute('aria-label', 'Show source');
+      toggleBtn.setAttribute('aria-pressed', 'false');
+
+      var iframe = document.createElement('iframe');
+      iframe.className = 'fb-html-iframe';
+      // Empty sandbox = strictest. Every restriction is enabled by default;
+      // adding tokens (e.g. allow-scripts) would WEAKEN sandboxing.
+      iframe.setAttribute('sandbox', '');
+      iframe.setAttribute('referrerpolicy', 'no-referrer');
+      iframe.setAttribute('loading', 'lazy');
+      iframe.setAttribute('title', item ? ('Rendered ' + item.name) : 'HTML preview');
+      iframe.setAttribute('aria-label', 'HTML rendered preview, sandboxed');
+      iframe.setAttribute('srcdoc', buildSandboxedSrcdoc(src));
+      view.appendChild(iframe);
+    }
+
+    function renderSource() {
+      view.innerHTML = '';
+      toggleBtn.textContent = 'Rendered';
+      toggleBtn.setAttribute('aria-label', 'Show rendered preview');
+      toggleBtn.setAttribute('aria-pressed', 'true');
+      // Reuse the Monaco read-only code preview path so HTML source view
+      // gets the same syntax highlighting + chrome as any other code file.
+      self._renderCode(view, src, item);
+    }
+
+    toggleBtn.addEventListener('click', function () {
+      if (oversize) return;
+      if (renderedActive) {
+        renderSource();
+        renderedActive = false;
+      } else {
+        renderRendered();
+        renderedActive = true;
+      }
+    });
+
+    if (oversize) {
+      toggleBtn.disabled = true;
+      toggleBtn.classList.add('disabled');
+      toggleBtn.setAttribute('aria-disabled', 'true');
+      renderSource();
+    } else {
+      renderRendered();
     }
   };
 
@@ -2116,6 +2280,10 @@
     buildBreadcrumbs: buildBreadcrumbs,
     isPreviewable: isPreviewable,
     isEditable: isEditable,
+    isHtmlExtension: isHtmlExtension,
+    buildSandboxedSrcdoc: buildSandboxedSrcdoc,
+    HTML_PREVIEW_CSP: HTML_PREVIEW_CSP,
+    HTML_PREVIEW_SRCDOC_CAP_BYTES: HTML_PREVIEW_SRCDOC_CAP_BYTES,
     KNOWN_FILE_EXTENSIONS: KNOWN_FILE_EXTENSIONS,
     LINK_RE_SINGLE: LINK_RE_SINGLE,
     LINK_RE_GLOBAL: LINK_RE_GLOBAL,
