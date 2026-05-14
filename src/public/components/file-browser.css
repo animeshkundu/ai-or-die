@@ -229,10 +229,37 @@
 }
 
 /* ---- Preview: Image ---- */
+.fb-img-controls {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: center;
+  padding: var(--space-2) 0;
+}
+.fb-img-viewport {
+  position: relative;
+  width: 100%;
+  /* Cap the viewport so a giant image doesn't stretch the panel; panzoom
+     handles overflow inside this box. min/max clipping keeps the controls
+     visible above. */
+  height: clamp(240px, 50vh, 600px);
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--surface-tertiary);
+  /* Hint to the browser that descendants will be transformed often. */
+  contain: layout paint;
+  cursor: grab;
+}
+.fb-img-viewport:active { cursor: grabbing; }
 .fb-preview-image {
-  max-width: 100%; max-height: 300px;
+  max-width: 100%; max-height: 100%;
   object-fit: contain;
   border-radius: var(--radius-md);
+  /* When wrapped in .fb-img-viewport panzoom uses CSS transforms; allow it
+     to position freely without parent flex/grid interference. */
+  display: block;
+  /* Block native image-drag from competing with the pan gesture. */
+  user-select: none;
+  -webkit-user-drag: none;
 }
 .fb-preview-dims {
   font-size: var(--text-xs);

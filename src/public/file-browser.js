@@ -103,6 +103,51 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Lazy script loader — used by image panzoom (vendored at /vendor/panzoom.min.js).
+  // Returns a Promise that resolves when window[globalCheck] becomes truthy
+  // after the script tag finishes loading. Memoised per src so concurrent
+  // callers share one fetch.
+  // ---------------------------------------------------------------------------
+
+  var _scriptLoadPromises = {};
+
+  function loadVendorScript(src, globalCheck) {
+    if (typeof window === 'undefined') return Promise.reject(new Error('not in a browser'));
+    if (window[globalCheck]) return Promise.resolve(window[globalCheck]);
+    if (_scriptLoadPromises[src]) return _scriptLoadPromises[src];
+    _scriptLoadPromises[src] = new Promise(function (resolve, reject) {
+      var existing = document.querySelector('script[data-vendor-src="' + src + '"]');
+      function done() {
+        if (window[globalCheck]) resolve(window[globalCheck]);
+        else reject(new Error('loadVendorScript: ' + globalCheck + ' not present after ' + src + ' loaded'));
+      }
+      if (existing) {
+        existing.addEventListener('load', done, { once: true });
+        existing.addEventListener('error', function () {
+          reject(new Error('loadVendorScript: failed to load ' + src));
+        }, { once: true });
+        return;
+      }
+      var s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.setAttribute('data-vendor-src', src);
+      s.onload = done;
+      s.onerror = function () {
+        // Reset cache so the next caller can retry on transient failure.
+        delete _scriptLoadPromises[src];
+        reject(new Error('loadVendorScript: failed to load ' + src));
+      };
+      document.head.appendChild(s);
+    });
+    return _scriptLoadPromises[src];
+  }
+
+  function loadPanzoom() {
+    return loadVendorScript('/vendor/panzoom.min.js', 'Panzoom');
+  }
+
+  // ---------------------------------------------------------------------------
   // FileBrowserPanel
   // ---------------------------------------------------------------------------
 
@@ -1200,10 +1245,23 @@
     this.containerEl = options.containerEl;
     this.onEdit = options.onEdit || function () {};
     this.onBack = options.onBack || function () {};
+    // Tear-down hooks for renderers that attach state outside the container
+    // (Panzoom, Monaco, PDF.js etc. wire document-level event listeners that
+    // innerHTML='' won't release). Each renderer pushes a function here;
+    // showPreview() drains them before rendering the next file.
+    this._activeDisposers = [];
   }
+
+  FilePreviewPanel.prototype._disposeActive = function () {
+    while (this._activeDisposers.length) {
+      var fn = this._activeDisposers.pop();
+      try { fn(); } catch (_) { /* swallow — disposer should never throw */ }
+    }
+  };
 
   FilePreviewPanel.prototype.showPreview = function (item, currentDir) {
     var self = this;
+    this._disposeActive();
     this.containerEl.innerHTML = '';
 
     // Header
@@ -1271,17 +1329,101 @@
   };
 
   FilePreviewPanel.prototype._renderImage = function (container, item) {
+    var self = this;
+
+    // Viewport: clips the image at the panel boundary so panning stays
+    // visually contained. The image itself is the panzoom target.
+    var viewport = document.createElement('div');
+    viewport.className = 'fb-img-viewport';
+
     var img = document.createElement('img');
     img.className = 'fb-preview-image';
     img.alt = item.name;
+    img.draggable = false; // browser native drag-image conflicts with pan gesture
     img.src = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    viewport.appendChild(img);
+    container.appendChild(viewport);
+
+    // Dimension readout (preserves the existing UX from before #20).
+    var dims = document.createElement('div');
+    dims.className = 'fb-preview-dims';
+    container.appendChild(dims);
+
+    // Zoom controls \u2014 shown above the viewport. Wired only after Panzoom
+    // initialises so a CDN failure keeps the controls hidden rather than
+    // showing dead buttons.
+    var controls = document.createElement('div');
+    controls.className = 'fb-img-controls';
+    controls.style.display = 'none';
+    var fitBtn = document.createElement('button');
+    fitBtn.type = 'button';
+    fitBtn.className = 'btn btn-secondary btn-small';
+    fitBtn.textContent = 'Fit';
+    fitBtn.title = 'Fit to viewport';
+    var oneToOneBtn = document.createElement('button');
+    oneToOneBtn.type = 'button';
+    oneToOneBtn.className = 'btn btn-secondary btn-small';
+    oneToOneBtn.textContent = '100%';
+    oneToOneBtn.title = 'Actual size';
+    var resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'btn btn-secondary btn-small';
+    resetBtn.textContent = 'Reset';
+    resetBtn.title = 'Reset zoom and position';
+    controls.appendChild(fitBtn);
+    controls.appendChild(oneToOneBtn);
+    controls.appendChild(resetBtn);
+    container.insertBefore(controls, viewport);
+
+    var pz = null;
+    var wheelHandler = null;
+
     img.addEventListener('load', function () {
-      var dims = document.createElement('div');
-      dims.className = 'fb-preview-dims';
       dims.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight + ' px';
-      container.appendChild(dims);
+
+      // Lazy-load Panzoom only on the first image preview of the session.
+      // ~10 KB; if the user never opens an image they never pay it.
+      loadPanzoom().then(function (Panzoom) {
+        if (!viewport.isConnected) return; // user already navigated away
+        pz = Panzoom(img, {
+          maxScale: 10,
+          minScale: 0.1,
+          // Disable focal-point zoom on touch devices so tap-to-fit doesn't
+          // accidentally zoom into the wrong region. Pinch still works.
+          contain: 'outside',
+          startScale: 1,
+          step: 0.3,
+          // panOnlyWhenZoomed: true is too restrictive \u2014 allow free pan.
+        });
+        // Wheel zoom is opt-in in @panzoom/panzoom v4 \u2014 wire it on the
+        // viewport so scrolling outside the image doesn't intercept page
+        // scroll.
+        wheelHandler = function (e) { pz.zoomWithWheel(e); };
+        viewport.addEventListener('wheel', wheelHandler, { passive: false });
+
+        controls.style.display = '';
+        fitBtn.addEventListener('click', function () { pz && pz.reset(); });
+        oneToOneBtn.addEventListener('click', function () {
+          pz && pz.zoom(1, { animate: true });
+          pz && pz.pan(0, 0, { animate: true });
+        });
+        resetBtn.addEventListener('click', function () { pz && pz.reset(); });
+
+        // Register teardown \u2014 removes wheel listener + tears down internal
+        // pointer/touch listeners on document. Without this, switching
+        // previews would leak event handlers per image opened.
+        self._activeDisposers.push(function () {
+          if (wheelHandler) viewport.removeEventListener('wheel', wheelHandler);
+          try { pz && pz.destroy(); } catch (_) { /* ignore */ }
+          pz = null;
+          wheelHandler = null;
+        });
+      }).catch(function (err) {
+        // Degrade gracefully: image stays visible, just no pan/zoom.
+        // Matches the panel's "always render something" contract.
+        console.warn('[file-browser] panzoom unavailable:', err && err.message);
+      });
     });
-    container.appendChild(img);
   };
 
   FilePreviewPanel.prototype._renderPdf = function (container, item) {
