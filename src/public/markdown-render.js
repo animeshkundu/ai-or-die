@@ -30,8 +30,11 @@
   // Constants
   // ---------------------------------------------------------------------------
 
-  var MARKED_SCRIPT = 'vendor/marked.min.js';
-  var PURIFY_SCRIPT = 'vendor/purify.min.js';
+  // Use absolute paths so the renderer works correctly when the app is
+  // reverse-proxied at a sub-path (path-relative `vendor/...` would resolve
+  // against the current document URL — wrong inside e.g. /files/notes/).
+  var MARKED_SCRIPT = '/vendor/marked.min.js';
+  var PURIFY_SCRIPT = '/vendor/purify.min.js';
 
   // Pin Mermaid / KaTeX versions to keep CDN behaviour reproducible. Only
   // ever loaded if the document actually uses the feature.
@@ -223,6 +226,15 @@
       // click delegator can route them through onInternalLink. Replace the
       // user-visible href with '#' so a fallback navigation can't escape.
       if (tag === 'A' && node.hasAttribute('href')) {
+        // SECURITY: strip any user-injected data-fb-internal-path BEFORE we
+        // potentially set our own. Without this, raw HTML in markdown could
+        // inject `<a data-fb-internal-path="../../../etc/passwd">` and the
+        // click delegator would hand that path to opts.onInternalLink. The
+        // host (file-browser.js) is expected to validate via the server's
+        // validatePath, but defense in depth says don't pre-trust the attr.
+        if (node.hasAttribute(INTERNAL_LINK_ATTR)) {
+          node.removeAttribute(INTERNAL_LINK_ATTR);
+        }
         var href = node.getAttribute('href');
         if (isInternalRelative(href)) {
           var resolvedHref = resolveRelative(href, ctx.basePath);
@@ -460,8 +472,27 @@
         safeHtml = window.DOMPurify.sanitize(rawHtml, {
           USE_PROFILES: { html: true },
           ADD_ATTR: ['target', INTERNAL_LINK_ATTR],
-          // Keep <img loading="lazy"> as a hint when emitted by marked.
-          ALLOWED_ATTR: undefined,
+          // Lock down attack surfaces the HTML profile permits but markdown
+          // source has no legitimate use for.
+          //   - 'style' inline attribute: CSS-exfiltration via
+          //     `background-image: url(http://attacker)` and similar.
+          //     Inline <style> blocks are stripped by FORBID_TAGS too.
+          //   - 'srcset' on <img>/<source>: the hook only rewrites `src`,
+          //     so a srcset candidate could leak protocol-relative URLs.
+          FORBID_ATTR: ['style', 'srcset'],
+          // Markdown source never legitimately emits these. Raw HTML embed
+          // could, but a markdown preview pane is not a place to render
+          // forms / scripts / inline stylesheets.
+          FORBID_TAGS: [
+            'style', 'form', 'input', 'button',
+            'select', 'textarea', 'fieldset', 'label',
+          ],
+          // NOTE on ALLOWED_ATTR: do NOT pass `ALLOWED_ATTR: undefined`
+          // here — DOMPurify treats key-with-undefined-value as
+          // "key present" via hasOwnProperty, then crashes iterating
+          // `o.length` on undefined. The DEFAULT attribute allow-list
+          // already covers what we need (target via ADD_ATTR above plus
+          // data-* via DOMPurify's data-attr regex).
         });
       } finally {
         _currentRenderContext = null;
