@@ -3637,7 +3637,11 @@ class ClaudeCodeWebInterface {
             this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({
                 app: this,
                 authFetch: (url, opts) => this.authFetch(url, opts),
+                // initialPath kept as a back-compat fallback; getCwd is the
+                // source of truth on each open() so a session switch between
+                // opens picks up the new cwd (per ADR-0016 / task #14).
                 initialPath: this.getCurrentWorkingDir(),
+                getCwd: () => this.getCurrentWorkingDir(),
             });
         }
         if (this._fileBrowserPanel) {
@@ -3691,7 +3695,11 @@ class ClaudeCodeWebInterface {
             this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({
                 app: this,
                 authFetch: (url, opts) => this.authFetch(url, opts),
+                // initialPath kept as a back-compat fallback; getCwd is the
+                // source of truth on each open() so a session switch between
+                // opens picks up the new cwd (per ADR-0016 / task #14).
                 initialPath: this.getCurrentWorkingDir(),
+                getCwd: () => this.getCurrentWorkingDir(),
             });
         }
         if (this._fileBrowserPanel) {

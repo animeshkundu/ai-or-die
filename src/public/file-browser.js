@@ -110,6 +110,14 @@
     this.app = options.app;
     this.authFetch = options.authFetch;
     this.initialPath = options.initialPath || null;
+    // Optional callback returning the active session's working directory at
+    // the moment the panel opens. Lets the panel default to *the current*
+    // session's cwd rather than the cwd captured at construction time —
+    // important for users who switch sessions while the panel is closed.
+    // Falsy callbacks (or callbacks returning null/undefined) are tolerated:
+    // open() falls back to startPath → initialPath → null. A throwing
+    // callback is also tolerated (defensive coding per agent-instructions/05).
+    this.getCwd = typeof options.getCwd === 'function' ? options.getCwd : null;
 
     this._open = false;
     this._currentPath = null;
@@ -405,7 +413,18 @@
   FileBrowserPanel.prototype.open = function (startPath) {
     if (this._open) return;
     this._open = true;
-    var p = startPath || this.initialPath || null;
+    // Resolution order:
+    //   1. Explicit startPath argument from the caller (e.g. openToFile)
+    //   2. Live cwd from the active session (getCwd is invoked HERE, every
+    //      time, so a session switch between opens picks up the new cwd)
+    //   3. initialPath captured at construction (kept for tests + tooling)
+    //   4. null — the navigateTo handler will fall back to the server's
+    //      default base folder
+    var cwd = null;
+    if (this.getCwd) {
+      try { cwd = this.getCwd(); } catch (_) { cwd = null; }
+    }
+    var p = startPath || cwd || this.initialPath || null;
     this._panelEl.classList.add('open');
     this._updateOverlayMode();
     this.navigateTo(p);
