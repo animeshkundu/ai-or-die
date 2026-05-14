@@ -47,9 +47,9 @@ Before each cycle, a cleanup sweep kills orphaned processes on test ports. This 
 
 Within the factory loop, all testing runs locally -- unit tests and E2E tests execute on the developer machine, not on GitHub Actions.
 
-This overrides the CI-first mandate from `06-ci-first-testing.md` specifically for factory context. The rationale: the factory runs dozens of cycles, each producing testable code. Waiting for CI round-trips between cycles would make autonomous operation impractical.
+Under the project-wide local-first-then-CI rule (`06-local-first-then-ci.md`) the factory's local-only quality gates are now consistent with the project default rather than an explicit override; the factory still skips the CI-as-cross-platform-verification step between cycles for throughput, deferring CI verification to the end of a factory run when the resulting branch is pushed for human review.
 
-Human-driven development continues to use CI as the source of truth. The factory's local testing is a scoped exception documented in `docs/adrs/0015-autonomous-factory-protocol.md`.
+Human-driven development uses local tests to gate the push and CI to gate the merge. The factory's "local only between cycles" pattern is a scoped variant documented in `docs/adrs/0015-autonomous-factory-protocol.md`.
 
 When a factory run completes and merges to main, CI runs the full suite as usual. Factory-produced code must pass CI before reaching production.
 

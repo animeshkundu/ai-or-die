@@ -30,7 +30,7 @@ Adopt an adapted Autonomous Factory Protocol with these key choices:
 - **Build-on-branch pattern**: Work happens on `factory/wip-{item}` branches. Code merges to the factory branch only after all quality gates pass. Failed builds never pollute the main working branch.
 
 ### Quality Gates
-- **Local quality gates**: Unit tests + E2E subset rotation + prevention checks + security audit. All run locally within the factory cycle. This overrides the CI-first mandate from `06-ci-first-testing.md` specifically for factory context.
+- **Local quality gates**: Unit tests + E2E subset rotation + prevention checks + security audit. All run locally within the factory cycle. This overrides the CI-first mandate from `06-local-first-then-ci.md` specifically for factory context.
 
 ### Cost Tracking
 - **Hard caps**: 30 cycles maximum, $50 ceiling. The factory auto-terminates on cost overrun or 5 consecutive idle cycles. Each cycle logs its estimated token cost.
@@ -44,7 +44,7 @@ Adopt an adapted Autonomous Factory Protocol with these key choices:
 
 ### Safety
 - **Safety code protection**: The factory never removes error handlers, catch blocks, validation code, or defensive checks. The Simplicity Criterion (prefer shorter code) applies to factory process code only, never to production safety code.
-- **Local override of CI-first mandate** specifically within factory context. Human developers continue using CI as the authority per `06-ci-first-testing.md`.
+- **Local override of CI-first mandate** specifically within factory context. Human developers continue using CI as the authority per `06-local-first-then-ci.md`.
 
 ## Consequences
 
@@ -65,12 +65,12 @@ Adopt an adapted Autonomous Factory Protocol with these key choices:
 ### Neutral
 
 - Existing CI pipeline is unchanged -- factory operation does not modify `.github/workflows/`
-- Human developers continue using the CI-first workflow per `06-ci-first-testing.md`
+- Human developers continue using the CI-first workflow per `06-local-first-then-ci.md`
 - Factory operates exclusively on its own branch (`factory/autonomous` and `factory/wip-*`)
 
 ## Notes
 
 - Full protocol reference: `docs/factory/FACTORY_PROTOCOL.md`
 - Agent integration guide: `docs/agent-instructions/10-factory-protocol.md`
-- The CI-first mandate in `06-ci-first-testing.md` remains the standard for human-driven development; the factory's local testing is a specifically scoped override documented here and in the agent instruction
+- The CI-first mandate in `06-local-first-then-ci.md` remains the standard for human-driven development; the factory's local testing is a specifically scoped override documented here and in the agent instruction
 - Design informed by Karpathy's Autoresearch patterns: monotonic ratchet (quality never regresses), simplicity criterion (prefer shorter code), fixed time budget (capped cycles)

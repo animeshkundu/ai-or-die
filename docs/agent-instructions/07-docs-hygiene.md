@@ -18,10 +18,10 @@ This is not bureaucracy. This is how agents that don't share memory stay in sync
 | Fixed a bug | Update spec if behavior changed + add entry to `docs/history/` with root cause and fix |
 | Refactored code | Write ADR if pattern changed + update spec if API surface changed |
 | Added a dependency | Write ADR with research findings (version, license, CVE check, alternatives considered) |
-| Changed the CI pipeline | Update `docs/agent-instructions/03-tooling-and-pipelines.md` and `06-ci-first-testing.md` |
+| Changed the CI pipeline | Update `docs/agent-instructions/03-tooling-and-pipelines.md` and `06-local-first-then-ci.md` |
 | Changed WebSocket protocol | Update `docs/architecture/websocket-protocol.md` + update server spec |
 | Added a new bridge | Update `docs/specs/bridges.md` + update `docs/architecture/bridge-pattern.md` |
-| Changed E2E test structure | Update `docs/specs/e2e-testing.md` + update `06-ci-first-testing.md` CI job map |
+| Changed E2E test structure | Update `docs/specs/e2e-testing.md` + update `06-local-first-then-ci.md` CI job map |
 
 When in doubt: update the docs. Over-documentation is always better than under-documentation in an AI-agent-driven codebase.
 

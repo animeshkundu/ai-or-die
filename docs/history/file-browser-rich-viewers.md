@@ -388,7 +388,7 @@ Plan was reviewed by:
   switch, diff, search, mobile viewport, CDN-blocked degradation
   (`e2e/tests/file-browser.spec.js`). Cross-platform: `windows-latest`
   + `ubuntu-latest`, headless and headed.
-- **CI-only per `docs/agent-instructions/06-ci-first-testing.md`.** No
+- **CI-only per `docs/agent-instructions/06-local-first-then-ci.md`.** No
   local dev-server smoke loops; iterate via push → draft PR → CI.
 - **Tests use ports >11000.** Never 7777.
 

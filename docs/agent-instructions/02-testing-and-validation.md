@@ -19,7 +19,7 @@ Playwright tests that run on every PR across both Ubuntu and Windows. These are 
 
 Every new feature requires E2E coverage. Every bug fix requires a regression E2E test. No exceptions.
 
-See `docs/agent-instructions/06-ci-first-testing.md` for the complete CI workflow, job map, and debugging playbook.
+See `docs/agent-instructions/06-local-first-then-ci.md` for the complete local + CI workflow, job map, and debugging playbook.
 
 ### Tier 2: Copilot Agent Exploratory Testing (LLM, Periodic)
 
@@ -89,9 +89,9 @@ All testing happens on GitHub Actions runners. No local test runs. Ever.
 - CI provides fresh, reproducible, cross-platform results every time
 - E2E tests are the only true validation — if they pass on CI, the feature works
 
-The workflow: write code → push to branch → open draft PR → CI runs → read results → fix → push again.
+The workflow: write code → run unit + integration + relevant e2e locally → all green → push → open draft PR → CI runs Windows + Linux cross-platform check → read results → fix → push again.
 
-See `docs/agent-instructions/06-ci-first-testing.md` for the complete CI workflow guide, job map, and debugging playbook.
+See `docs/agent-instructions/06-local-first-then-ci.md` for the complete local + CI workflow guide, job map, and debugging playbook.
 
 ## Self-Validation
 
