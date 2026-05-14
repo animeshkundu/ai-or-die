@@ -177,21 +177,92 @@ describe('file-viewer-monaco', function () {
   });
 
   // -------------------------------------------------------------------------
-  // CDN base — must be on the allowlist that monaco-worker-shim.js enforces.
+  // CDN base — MUST exactly equal one of the entries in the worker shim's
+  // ALLOWED_BASES list. Host-only matching is insufficient: jsdelivr serves
+  // /npm/<any-package>/, so a host-only allowlist would let any attacker-
+  // published npm package execute as a same-origin Worker. This test reads
+  // the worker-shim source directly and parses out ALLOWED_BASES so the
+  // two files cannot drift apart.
   // -------------------------------------------------------------------------
 
-  describe('CDN host alignment with worker shim allowlist', function () {
-    it('MONACO_BASE host must match an allowed CDN host', function () {
-      var url = new URL(monaco.MONACO_BASE);
-      // Mirror of monaco-worker-shim.js ALLOWED_HOSTS — keep these in sync.
-      var allowed = ['cdn.jsdelivr.net', 'cdnjs.cloudflare.com', 'unpkg.com'];
-      assert.ok(allowed.indexOf(url.hostname) !== -1,
-        'MONACO_BASE host "' + url.hostname + '" not in worker shim allowlist');
+  describe('worker shim ALLOWED_BASES alignment', function () {
+    var shimSource;
+    var allowedBases;
+
+    before(function () {
+      var fs = require('fs');
+      var path = require('path');
+      shimSource = fs.readFileSync(
+        path.join(__dirname, '../src/public/vendor/monaco-worker-shim.js'),
+        'utf8'
+      );
+      // Parse the literal array. We deliberately avoid eval — the array is
+      // a list of plain string literals; a regex is enough and side-effect-free.
+      var match = shimSource.match(/ALLOWED_BASES\s*=\s*\[([\s\S]*?)\]/);
+      assert.ok(match, 'monaco-worker-shim.js must define ALLOWED_BASES');
+      allowedBases = match[1].split(',')
+        .map(function (s) { return s.trim().replace(/^['"]|['"]$/g, ''); })
+        .filter(Boolean);
+    });
+
+    it('MONACO_BASE must be present verbatim in the worker shim allowlist', function () {
+      assert.ok(allowedBases.indexOf(monaco.MONACO_BASE) !== -1,
+        'MONACO_BASE "' + monaco.MONACO_BASE + '" not in shim ALLOWED_BASES; ' +
+        'either bump both or fix the drift');
     });
 
     it('MONACO_BASE must be https', function () {
       var url = new URL(monaco.MONACO_BASE);
       assert.strictEqual(url.protocol, 'https:');
+    });
+
+    it('every ALLOWED_BASES entry must end with a trailing slash', function () {
+      // The shim normalises trailing slashes on input but not on the
+      // allowlist entries themselves; mismatched trailing slashes would
+      // cause a silent "everything fails" state.
+      allowedBases.forEach(function (b) {
+        assert.strictEqual(b.charAt(b.length - 1), '/', b + ' must end with /');
+      });
+    });
+
+    it('shim must reject host-only-allowlist patterns (path required)', function () {
+      // Sanity: ALLOWED_BASES must not be the bare host. The whole point
+      // of HIGH-1 was that 'https://cdn.jsdelivr.net/' is too coarse.
+      allowedBases.forEach(function (b) {
+        var u = new URL(b);
+        assert.ok(u.pathname.length > 1,
+          b + ' has empty path — that defeats the exact-prefix gate');
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Subresource Integrity — MUST be set on the dynamically injected
+  // loader.js script tag, mitigates CDN compromise / TLS MITM.
+  // -------------------------------------------------------------------------
+
+  describe('Monaco loader SRI', function () {
+    it('MONACO_LOADER_INTEGRITY must be a sha384 base64 string', function () {
+      assert.strictEqual(typeof monaco.MONACO_LOADER_INTEGRITY, 'string');
+      assert.match(monaco.MONACO_LOADER_INTEGRITY,
+        /^sha384-[A-Za-z0-9+/]{64}={0,2}$/,
+        'MONACO_LOADER_INTEGRITY "' + monaco.MONACO_LOADER_INTEGRITY +
+        '" is not a sha384 base64 string');
+    });
+
+    it('loader.js script tag must be wired with integrity attribute', function () {
+      // Read the source rather than executing — this keeps the test pure
+      // Node and side-effect-free.
+      var fs = require('fs');
+      var path = require('path');
+      var src = fs.readFileSync(
+        path.join(__dirname, '../src/public/file-viewer-monaco.js'),
+        'utf8'
+      );
+      assert.ok(src.indexOf('s.integrity = MONACO_LOADER_INTEGRITY') !== -1,
+        'expected `s.integrity = MONACO_LOADER_INTEGRITY` on the loader.js script tag');
+      assert.ok(src.indexOf("s.crossOrigin = 'anonymous'") !== -1,
+        'expected `s.crossOrigin = \'anonymous\'` on the loader.js script tag (required for SRI)');
     });
   });
 });

@@ -11,6 +11,17 @@
 
   var MONACO_VERSION = '0.52.2';
   var MONACO_BASE = 'https://cdn.jsdelivr.net/npm/monaco-editor@' + MONACO_VERSION + '/min/';
+  // SHA-384 SRI hash of vs/loader.js for the pinned MONACO_VERSION above.
+  // Mitigates a CDN compromise / TLS MITM compromising the loader bootstrap
+  // (which would otherwise have full DOM access in our origin and an open
+  // path to the bridge process — effective RCE). Per ADR-0016.
+  //
+  // Bumping MONACO_VERSION? Recompute with:
+  //   curl -sf https://cdn.jsdelivr.net/npm/monaco-editor@<NEW>/min/vs/loader.js \
+  //     | openssl dgst -sha384 -binary | openssl base64 -A
+  // and update both this constant AND the ALLOWED_BASES list in
+  // src/public/vendor/monaco-worker-shim.js.
+  var MONACO_LOADER_INTEGRITY = 'sha384-pHG02SG8pId94Np3AbPmBEJ1yPqaH0IkJGLSNGXYmuGhkazT8Lr/57WYpbkGjJtu';
   var WORKER_SHIM_PATH = '/vendor/monaco-worker-shim.js';
   var LOADER_TIMEOUT_MS = 15000; // CDN cold-start can be slow; matches Ace's old budget.
 
@@ -274,10 +285,15 @@
       var s = document.createElement('script');
       s.src = MONACO_BASE + 'vs/loader.js';
       s.async = true;
+      // crossOrigin + integrity together enable Subresource Integrity
+      // verification. The browser refuses to execute the script if its
+      // SHA-384 doesn't match — our last line of defence against a
+      // CDN compromise or TLS MITM serving a malicious loader.
       s.crossOrigin = 'anonymous';
+      s.integrity = MONACO_LOADER_INTEGRITY;
       s.setAttribute('data-monaco-loader', '1');
       s.onload = configureAndLoadEditor;
-      s.onerror = function () { done(new Error('loadMonaco: loader.js fetch failed')); };
+      s.onerror = function () { done(new Error('loadMonaco: loader.js fetch or integrity check failed')); };
       document.head.appendChild(s);
     }).catch(function (err) {
       // Reset the cache so a later call can retry — a transient CDN blip
@@ -413,6 +429,7 @@
     // Constants for tests + integration
     MONACO_VERSION: MONACO_VERSION,
     MONACO_BASE: MONACO_BASE,
+    MONACO_LOADER_INTEGRITY: MONACO_LOADER_INTEGRITY,
     WORKER_SHIM_PATH: WORKER_SHIM_PATH,
     WORKER_LABEL_ALLOWLIST: WORKER_LABEL_ALLOWLIST.slice(),
     THEME_MAP: THEME_MAP,

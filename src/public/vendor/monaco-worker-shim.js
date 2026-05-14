@@ -15,19 +15,29 @@
 //   };
 //
 // Security:
-//   The `?base=` query parameter is validated against an allowlist of CDN
-//   hosts before importScripts. This stops the Worker URL from becoming a
-//   path-traversal sink: an attacker who could spoof the loader options
-//   still couldn't cause this shim to importScripts an arbitrary origin.
+//   The `?base=` query parameter is matched against an EXACT-PREFIX allowlist
+//   of full Monaco base URLs (host + path + version + trailing slash). A
+//   host-only allowlist is insufficient — `cdn.jsdelivr.net/npm/<any-pkg>/`
+//   serves arbitrary npm-published code, which would give attacker-published
+//   packages same-origin Worker execution if we accepted any path under the
+//   allowlisted host. Exact-string match (after trailing-slash normalisation)
+//   is the right granularity: there is exactly one valid base per Monaco
+//   version, and bumping Monaco forces an intentional, reviewable update to
+//   this list.
+//
+//   Keep this list in sync with MONACO_BASE in src/public/file-viewer-monaco.js;
+//   test/file-viewer-monaco.test.js asserts the two stay aligned.
+//
 //   The `?label=` parameter is informational only (for DevTools naming).
 
 (function () {
   'use strict';
 
-  var ALLOWED_HOSTS = [
-    'cdn.jsdelivr.net',
-    'cdnjs.cloudflare.com',
-    'unpkg.com',
+  // Exact-prefix allowlist. One entry per supported Monaco version. Each
+  // entry MUST end with `/` so the trailing-slash normalisation below can
+  // match the bare `?base=` value.
+  var ALLOWED_BASES = [
+    'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/',
   ];
 
   function fail(reason) {
@@ -42,16 +52,22 @@
   var baseUrl = here.searchParams.get('base');
   if (!baseUrl) fail('missing base parameter');
 
-  // Force trailing slash so concatenation below is well-formed.
+  // Force trailing slash so concatenation below — and the allowlist match —
+  // are well-formed regardless of how the caller spelled the param.
   if (baseUrl.charAt(baseUrl.length - 1) !== '/') baseUrl += '/';
 
+  // Defence-in-depth: also reject anything that doesn't parse as a URL or
+  // doesn't use https. The exact-prefix match below would already catch
+  // these (they wouldn't match), but failing earlier with a clearer error
+  // simplifies debugging genuine misconfigurations.
   var parsed;
   try { parsed = new URL(baseUrl); }
   catch (_) { fail('invalid base URL'); }
-
   if (parsed.protocol !== 'https:') fail('base URL must be https');
-  if (ALLOWED_HOSTS.indexOf(parsed.hostname) === -1) {
-    fail('base URL host "' + parsed.hostname + '" not in allowlist');
+
+  // The actual gate. Equality, not host-membership.
+  if (ALLOWED_BASES.indexOf(baseUrl) === -1) {
+    fail('base URL "' + baseUrl + '" not in allowlist');
   }
 
   // Hand the base back to Monaco's worker bootstrap so it can locate
