@@ -682,4 +682,142 @@ function encodeParam(val) {
       assert.strictEqual(res.status, 403);
     });
   });
+
+  // ===========================================================================
+  // GET /api/files/git-show
+  // ===========================================================================
+  describe('GET /api/files/git-show', function () {
+    const { execFileSync } = require('child_process');
+    let gitAvailable = true;
+    try {
+      execFileSync('git', ['--version'], { stdio: 'ignore' });
+    } catch (_) {
+      gitAvailable = false;
+    }
+
+    // On macOS, os.tmpdir() returns a symlinked path (/var → /private/var) and
+    // process.cwd() resolves it; validatePath compares with path.resolve which
+    // does NOT resolve symlinks. So compute the realpath of tmpDir for use in
+    // requests so the path matches baseFolder. Linux + Windows tmp dirs are
+    // typically not symlinked, but realpath is a no-op there.
+    function realTmpDir() {
+      try { return fs.realpathSync(tmpDir); } catch (_) { return tmpDir; }
+    }
+    function realJoin() {
+      const parts = Array.prototype.slice.call(arguments);
+      return path.join.apply(null, [realTmpDir()].concat(parts));
+    }
+
+    function gitInit(dir) {
+      execFileSync('git', ['init', '--quiet'], { cwd: dir });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
+      execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+      // Disable signing to avoid prompting in CI
+      execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    }
+    function gitAdd(dir, file) {
+      execFileSync('git', ['add', file], { cwd: dir });
+    }
+    function gitCommit(dir, msg) {
+      execFileSync('git', ['commit', '--quiet', '-m', msg, '--allow-empty'], { cwd: dir });
+    }
+
+    (gitAvailable ? it : it.skip)('returns 404 when path is not in a git repository', async function () {
+      // tmpDir is NOT a git repo (we never `git init`-ed it).
+      createFile('not-in-git.txt', 'plain content');
+      const filePath = realJoin('not-in-git.txt');
+      const res = await request(port, 'GET',
+        `/api/files/git-show?path=${encodeParam(filePath)}`);
+      assert.strictEqual(res.status, 404);
+      assert.match(res.body.error || '', /Not a git repository/i);
+    });
+
+    (gitAvailable ? it : it.skip)('returns the committed content of a tracked file at HEAD', async function () {
+      const subDir = realJoin('gitrepo');
+      fs.mkdirSync(subDir, { recursive: true });
+      gitInit(subDir);
+      const target = path.join(subDir, 'tracked.txt');
+      fs.writeFileSync(target, 'committed-version-v1\n');
+      gitAdd(subDir, 'tracked.txt');
+      gitCommit(subDir, 'initial');
+      // Mutate working tree — git-show should return the committed version, not this.
+      fs.writeFileSync(target, 'working-tree-version-v2\n');
+
+      const res = await request(port, 'GET',
+        `/api/files/git-show?path=${encodeParam(target)}&ref=HEAD`);
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      assert.strictEqual(res.body.ref, 'HEAD');
+      assert.strictEqual(res.body.content, 'committed-version-v1\n');
+      assert.strictEqual(res.body.truncated, false);
+      assert.strictEqual(res.body.relPath, 'tracked.txt');
+
+      // Cleanup
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    (gitAvailable ? it : it.skip)('rejects refs with shell metacharacters', async function () {
+      const subDir = realJoin('gitrepo-meta');
+      fs.mkdirSync(subDir, { recursive: true });
+      gitInit(subDir);
+      const target = path.join(subDir, 'a.txt');
+      fs.writeFileSync(target, 'x');
+      gitAdd(subDir, 'a.txt');
+      gitCommit(subDir, 'init');
+
+      const dangerous = ['HEAD;rm -rf /', 'HEAD$(whoami)', 'HEAD|cat', 'HEAD`id`', 'HEAD\nfoo'];
+      for (const ref of dangerous) {
+        const res = await request(port, 'GET',
+          `/api/files/git-show?path=${encodeParam(target)}&ref=${encodeParam(ref)}`);
+        assert.strictEqual(res.status, 400, 'Expected 400 for ref=' + JSON.stringify(ref));
+        assert.match(res.body.error || '', /Invalid ref/i);
+      }
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    (gitAvailable ? it : it.skip)('rejects refs starting with - (option-injection)', async function () {
+      const subDir = realJoin('gitrepo-opt');
+      fs.mkdirSync(subDir, { recursive: true });
+      gitInit(subDir);
+      const target = path.join(subDir, 'b.txt');
+      fs.writeFileSync(target, 'y');
+      gitAdd(subDir, 'b.txt');
+      gitCommit(subDir, 'init');
+
+      const res = await request(port, 'GET',
+        `/api/files/git-show?path=${encodeParam(target)}&ref=${encodeParam('--upload-pack=evil')}`);
+      assert.strictEqual(res.status, 400);
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    (gitAvailable ? it : it.skip)('returns 404 with helpful message when ref does not contain the file', async function () {
+      const subDir = realJoin('gitrepo-missing');
+      fs.mkdirSync(subDir, { recursive: true });
+      gitInit(subDir);
+      const target = path.join(subDir, 'c.txt');
+      fs.writeFileSync(target, 'z');
+      gitAdd(subDir, 'c.txt');
+      gitCommit(subDir, 'init');
+
+      // Reference a file that exists but at a non-existent ref/branch.
+      const res = await request(port, 'GET',
+        `/api/files/git-show?path=${encodeParam(target)}&ref=does-not-exist`);
+      assert.strictEqual(res.status, 404);
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    (gitAvailable ? it : it.skip)('blocks path traversal via ?path', async function () {
+      const traversal = path.resolve(realTmpDir(), '..', 'outside-git.txt');
+      const res = await request(port, 'GET',
+        `/api/files/git-show?path=${encodeParam(traversal)}`);
+      assert.strictEqual(res.status, 403);
+    });
+
+    it('returns 400 when path is missing', async function () {
+      const res = await request(port, 'GET', '/api/files/git-show');
+      assert.strictEqual(res.status, 400);
+    });
+  });
 });

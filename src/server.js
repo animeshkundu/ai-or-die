@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
 const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -280,6 +281,42 @@ class ClaudeCodeWebServer {
     } catch (e) { /* If realpath fails, fall through to using resolved path */ }
 
     return { valid: true, path: resolvedPath };
+  }
+
+  /**
+   * Walk up from a file path looking for a `.git` entry (directory in a
+   * regular repo, file in a worktree). Returns the absolute path of the
+   * directory containing `.git`, or null if not inside any git repo.
+   *
+   * Bounded by the filesystem root and by the configured baseFolder — we
+   * never walk above baseFolder, which prevents leaking info about repos
+   * outside the served directory.
+   */
+  _findGitRoot(startPath) {
+    let current;
+    try {
+      const stat = fs.statSync(startPath);
+      current = stat.isDirectory() ? startPath : path.dirname(startPath);
+    } catch (_) {
+      current = path.dirname(startPath);
+    }
+    const baseResolved = path.resolve(this.baseFolder);
+    // Defensive cap: walk at most 64 levels up.
+    for (let i = 0; i < 64; i++) {
+      try {
+        if (fs.existsSync(path.join(current, '.git'))) return current;
+      } catch (_) { /* fall through */ }
+      const parent = path.dirname(current);
+      if (parent === current) return null;          // hit FS root
+      // Stop walking once we'd cross out of baseFolder, unless baseFolder
+      // is itself inside a repo (in which case we're already at its root).
+      if (current === baseResolved) {
+        // One more check at baseFolder, then stop.
+        return null;
+      }
+      current = parent;
+    }
+    return null;
   }
 
   setupExpress() {
@@ -1125,6 +1162,115 @@ class ClaudeCodeWebServer {
         }
         res.status(500).json({ error: 'Failed to download file', message: error.message });
       }
+    });
+
+    // GET /api/files/git-show — Returns `git show <ref>:<relpath>` content.
+    //
+    // Use case: file diff view shows the working-tree version vs the version
+    // from git (HEAD by default) so users can see "what changed since last
+    // commit" or "what would Claude's edit revert".
+    //
+    // Security:
+    //   - Path is funnelled through validatePath() (TOCTOU-safe via realpath).
+    //   - git is spawned via execFile with shell:false (NEVER shell:true) so
+    //     argument values can't be reinterpreted as shell metachars.
+    //   - --end-of-options separates options from positional args so a ref
+    //     starting with "-" can't be reinterpreted as a git option.
+    //   - Ref is also character-allowlisted (refs and SHAs only) as defence
+    //     in depth (e.g., reject NUL, semicolons, redirections, --options).
+    //   - Output capped at 5 MB; truncate cleanly with a marker.
+    //   - 404 if the file isn't inside any git repo (no `.git` ancestor).
+    this.app.get('/api/files/git-show', async (req, res) => {
+      const filePath = req.query.path;
+      const ref = req.query.ref || 'HEAD';
+
+      if (!filePath) return res.status(400).json({ error: 'Path is required' });
+
+      // Allowlist for refs: alphanum + a small set of git-rev punctuation.
+      // Covers HEAD, HEAD~3, HEAD^, branch names like main/feat-x, tags
+      // like v1.2.3, and full SHAs. Disallows -options, NUL, ;, |, $, `,
+      // backslash, whitespace, glob chars.
+      if (!/^[A-Za-z0-9_./~^@-]{1,200}$/.test(ref) || ref.startsWith('-')) {
+        return res.status(400).json({ error: 'Invalid ref' });
+      }
+
+      const validation = this.validatePath(filePath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+      const resolvedPath = validation.path;
+
+      // Walk up from the file's directory to locate the .git directory
+      // (covers nested repos, submodules-as-directories, and worktrees
+      // where .git is a file pointing at the actual git dir).
+      const gitRoot = this._findGitRoot(resolvedPath);
+      if (!gitRoot) {
+        return res.status(404).json({
+          error: 'Not a git repository',
+          message: 'No .git directory found in any parent of the requested path',
+        });
+      }
+
+      // Path relative to the git root, with forward slashes (git's canonical
+      // form). path.relative on Windows yields backslashes — normalize.
+      let relPath = path.relative(gitRoot, resolvedPath);
+      if (process.platform === 'win32') relPath = relPath.replace(/\\/g, '/');
+      if (!relPath || relPath.startsWith('..')) {
+        return res.status(400).json({ error: 'Path is outside the git repository' });
+      }
+
+      const MAX_BYTES = 5 * 1024 * 1024;
+      // execFile buffers stdout in memory; cap maxBuffer at MAX_BYTES + slack.
+      // shell:false is the default for execFile but make it explicit anyway.
+      const args = ['show', '--end-of-options', `${ref}:${relPath}`];
+      execFile('git', args, {
+        cwd: gitRoot,
+        shell: false,
+        maxBuffer: MAX_BYTES + 1024,
+        timeout: 10_000,        // 10s — git show on a single file is usually <100ms
+        windowsHide: true,
+      }, (err, stdout, stderr) => {
+        if (err) {
+          // Distinguish well-known cases:
+          //   - ENOENT: git not installed
+          //   - exit !== 0: git returned an error (bad ref, file not in tree, etc.)
+          //   - timeout / maxBuffer overflow
+          if (err.code === 'ENOENT') {
+            return res.status(503).json({ error: 'git is not installed on the server' });
+          }
+          if (err.killed && err.signal === 'SIGTERM') {
+            return res.status(504).json({ error: 'git show timed out' });
+          }
+          if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+            return res.status(413).json({ error: 'File too large at this revision (>5MB)' });
+          }
+          // Most likely: bad ref or file doesn't exist at that revision.
+          // Don't leak full stderr (could contain absolute paths); keep first line.
+          const firstLine = (stderr || '').split('\n')[0].slice(0, 300);
+          return res.status(404).json({
+            error: 'git show failed',
+            message: firstLine || (err.message ? err.message.slice(0, 300) : 'Unknown git error'),
+          });
+        }
+
+        // Truncate hard at MAX_BYTES (defence in depth — maxBuffer should
+        // already error first, but better safe than streaming unbounded).
+        let truncated = false;
+        let content = stdout;
+        if (Buffer.byteLength(content, 'utf8') > MAX_BYTES) {
+          content = content.slice(0, MAX_BYTES);
+          truncated = true;
+        }
+
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({
+          path: filePath,
+          ref: ref,
+          relPath: relPath,
+          gitRoot: gitRoot,
+          truncated: truncated,
+          content: content,
+        });
+      });
     });
 
     // PUT /api/files/content — Save edited file with hash conflict detection
