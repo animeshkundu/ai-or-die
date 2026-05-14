@@ -1065,6 +1065,34 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        // Ctrl/Cmd+Shift+F → toggle the file browser's cross-file search panel.
+        // Opens the file browser (if closed) and the search panel together so
+        // the user can hit one shortcut from anywhere in the app and start
+        // typing a query immediately. Mirrors the VS Code/JetBrains binding.
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+                // Don't steal the shortcut from a focused editor that owns
+                // its own find — Monaco's find-in-files for the editor pane
+                // is handled inside the editor surface; the file-browser
+                // search is for the project-wide case.
+                const tag = (e.target && e.target.tagName) || '';
+                const isEditableField = (tag === 'INPUT' || tag === 'TEXTAREA' ||
+                    (e.target && e.target.isContentEditable));
+                // Allow the shortcut when typing in our OWN search panel
+                // input (it'll just refocus); skip for any other text field.
+                const insideSearchPanel = e.target &&
+                    typeof e.target.closest === 'function' &&
+                    e.target.closest('.fb-search-panel');
+                if (isEditableField && !insideSearchPanel) return;
+
+                e.preventDefault();
+                const panel = this._ensureFileBrowser ? this._ensureFileBrowser() : this._fileBrowserPanel;
+                if (!panel) return;
+                if (!panel.isOpen()) panel.open();
+                if (typeof panel.toggleSearchPanel === 'function') panel.toggleSearchPanel();
+            }
+        });
+
         // Header overflow menu (tablet/mobile three-dot button)
         this._setupOverflowMenu();
 

@@ -475,14 +475,25 @@
 
     // Keyboard: Escape to close
     panel.addEventListener('keydown', function (e) {
+      // Cmd/Ctrl+Shift+F → toggle the cross-file search panel (#9). Catch
+      // here (panel-scope) and at the document level (below) so the
+      // shortcut works whether the panel or the surrounding terminal has
+      // focus when the user presses it.
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.toggleSearchPanel();
+        return;
+      }
       if (e.key === 'Escape') {
-        if (this._searchVisible) {
+        if (this._searchPanel && this._searchPanel.isOpen()) {
+          this._searchPanel.close();
+        } else if (this._searchVisible) {
           this._toggleSearch();
         } else if (this._currentView === 'editor') {
-          // Don't handle Escape here — Ace Editor has its own Escape
-          // command that handles closing search bar vs closing editor.
-          // The document-level fallback handler will catch it if Ace
-          // doesn't consume it.
+          // Don't handle Escape here — Monaco's find widget has its own
+          // Escape command. The document-level fallback handler will catch
+          // it if Monaco doesn't consume it.
           return;
         } else if (this._currentView === 'preview') {
           this._showBrowseView();
@@ -1042,6 +1053,69 @@
       return null;
     }
     return this._tabManager;
+  };
+
+  // Cross-file search panel (#9) — lazily mounted on first Cmd/Ctrl+Shift+F
+  // press OR header search-button click. The panel sits ABOVE the preview
+  // container (and thus above the tab strip when present) so it overlays
+  // the active view without disrupting the open tabs.
+  FileBrowserPanel.prototype._ensureSearchPanel = function () {
+    if (this._searchPanel) return this._searchPanel;
+    if (!window.fileSearch || typeof window.fileSearch.SearchPanel !== 'function') return null;
+    var self = this;
+    try {
+      this._searchPanel = new window.fileSearch.SearchPanel({
+        containerEl: this._panelEl,
+        getAuthToken: function () {
+          // Server accepts ?token=… as alternative to Authorization header
+          // (server.js:464). Read it from the same place authFetch does.
+          if (window.auth && window.auth.token) return window.auth.token;
+          try { return window.sessionStorage && window.sessionStorage.getItem('cc-web-token'); }
+          catch (_) { return null; }
+        },
+        getSearchRoot: function () {
+          // Search defaults to the current panel cwd (which honours getCwd
+          // per #14). Server falls back to baseFolder if we pass null.
+          return self._currentPath || null;
+        },
+        onResultClick: function (hit) {
+          if (!hit || !hit.path) return;
+          // Reuse the proven openFileInViewer → _pendingJumpTo →
+          // tabManager preview path established for terminal-link clicks
+          // (cef62bf). The tab gets a Monaco preview with the cursor at
+          // (line, col).
+          if (self.app && typeof self.app.openFileInViewer === 'function') {
+            self.app.openFileInViewer(hit.path, hit.line, hit.col);
+            return;
+          }
+          // Fallback: route directly through the panel if app's helper
+          // isn't reachable (e.g. SearchPanel embedded in a future
+          // standalone harness).
+          self._pendingJumpTo = { line: hit.line, col: hit.col || 1 };
+          self.openToFile(hit.path);
+        },
+        onClose: function () {
+          // Restore focus to the file list / tab strip if the user dismissed
+          // the panel, so keyboard nav continues seamlessly.
+          if (self._fileListEl && self._fileListEl.style.display !== 'none') {
+            try { self._fileListEl.focus(); } catch (_) { /* ignore */ }
+          }
+        },
+      });
+    } catch (e) {
+      if (typeof console !== 'undefined') console.warn('SearchPanel init failed:', e);
+      return null;
+    }
+    return this._searchPanel;
+  };
+
+  // Toggle the search panel, opening + focusing if closed. Public so the
+  // app's command palette / keyboard handler can drive it.
+  FileBrowserPanel.prototype.toggleSearchPanel = function () {
+    var sp = this._ensureSearchPanel();
+    if (!sp) return false;
+    if (sp.isOpen()) sp.close(); else sp.open();
+    return true;
   };
 
   FileBrowserPanel.prototype._handleBack = function () {
