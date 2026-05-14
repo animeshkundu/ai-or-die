@@ -326,7 +326,7 @@ Hooks into the xterm.js right-click event to detect file paths in terminal outpu
 | Category | File Extensions | Rendering Method |
 |----------|----------------|------------------|
 | Image | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`, `.ico` | `<img>` element via `/api/files/download?path=...&inline=1` |
-| Text / Code | `.js`, `.ts`, `.py`, `.go`, `.rs`, `.java`, `.css`, `.html`, `.sh`, `.yml`, `.toml`, etc. | Monospace `<pre>` with line numbers, hover-reveal "Edit" button |
+| Text / Code | `.js`, `.ts`, `.py`, `.go`, `.rs`, `.java`, `.css`, `.html`, `.sh`, `.yml`, `.toml`, etc. | Read-only Monaco editor (line numbers, syntax highlighting, find/replace, virtualised) via `window.fileViewerMonaco.createCodeViewer({ readOnly: true })`. Falls back to a monospace `<pre>` with line numbers when Monaco is unreachable. |
 | JSON | `.json` | Pretty-printed `<pre>` with indentation |
 | CSV | `.csv`, `.tsv` | HTML `<table>`, max 100 rows displayed |
 | PDF | `.pdf` | `<iframe>` embed via `/api/files/download?path=...&inline=1` |

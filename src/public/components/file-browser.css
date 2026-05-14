@@ -383,7 +383,7 @@
   text-align: center;
 }
 
-/* ---- Code Preview (gutter + code) ---- */
+/* ---- Code Preview (gutter + code; CDN-blocked Monaco fallback) ---- */
 .fb-code-preview {
   display: flex;
   background: var(--surface-tertiary);
@@ -409,6 +409,25 @@
 .fb-line-number {
   font-size: var(--text-xs);
   line-height: 1.5;
+}
+
+/* ---- Code Preview (Monaco read-only host) ----
+   Monaco's automaticLayout requires a non-zero box; enforce a min-height so
+   the viewer is usable inside short preview panes (mobile, narrow window). */
+.fb-code-monaco {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--surface-tertiary);
+}
+.fb-code-monaco .monaco-editor {
+  flex: 1;
+  min-height: 0;
 }
 
 /* ---- CSV Preview ---- */

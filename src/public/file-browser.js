@@ -19,36 +19,34 @@
     binary: 'fileBinary',
   };
 
-  // Ace Editor language mode mapping
-  var ACE_MODE_MAP = {
-    '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript', '.jsx': 'jsx',
-    '.ts': 'typescript', '.tsx': 'tsx',
-    '.py': 'python', '.rb': 'ruby', '.go': 'golang', '.rs': 'rust',
-    '.java': 'java', '.c': 'c_cpp', '.cpp': 'c_cpp', '.h': 'c_cpp', '.hpp': 'c_cpp',
-    '.cs': 'csharp', '.php': 'php',
-    '.sh': 'sh', '.bash': 'sh', '.zsh': 'sh', '.ps1': 'powershell',
-    '.bat': 'batchfile', '.cmd': 'batchfile',
-    '.yaml': 'yaml', '.yml': 'yaml', '.toml': 'toml',
-    '.xml': 'xml', '.html': 'html', '.htm': 'html',
-    '.css': 'css', '.scss': 'scss', '.less': 'less',
-    '.sql': 'sql', '.graphql': 'graphql',
-    '.swift': 'swift', '.kt': 'kotlin', '.scala': 'scala',
-    '.r': 'r', '.lua': 'lua', '.pl': 'perl',
-    '.md': 'markdown', '.mdx': 'markdown',
-    '.json': 'json', '.json5': 'json5',
-    '.csv': 'text', '.tsv': 'text',
-    '.txt': 'text', '.log': 'text', '.cfg': 'text', '.ini': 'ini',
-    '.env': 'text', '.properties': 'properties',
-  };
+  // Monaco language resolution — delegates to window.fileViewerMonaco when
+  // available (browser); falls back to require()'ing the loader module
+  // directly under Node tests so this file remains testable without a DOM.
+  // Replaces the prior Ace mode map (ADR-0016).
+  function getMonacoLanguage(extOrPath) {
+    if (typeof window !== 'undefined' && window.fileViewerMonaco &&
+        typeof window.fileViewerMonaco.getMonacoLanguage === 'function') {
+      return window.fileViewerMonaco.getMonacoLanguage(extOrPath);
+    }
+    if (typeof module !== 'undefined' && module.exports && typeof require === 'function') {
+      try {
+        return require('./file-viewer-monaco').getMonacoLanguage(extOrPath);
+      } catch (_) { /* fall through */ }
+    }
+    return 'plaintext';
+  }
+
+  // Backward-compat alias preserved for any external consumer that still
+  // imports `getAceMode`. Returns the canonical Monaco language id; the
+  // ACE-prefixed name is retained per the migration directive (preserve
+  // public API surface) and intentionally not removed.
+  function getAceMode(extension) {
+    return getMonacoLanguage(extension);
+  }
 
   function getFileIcon(item) {
     if (item.isDirectory) return 'folder';
     return FILE_ICON_MAP[item.mimeCategory] || 'file';
-  }
-
-  function getAceMode(extension) {
-    if (!extension) return 'text';
-    return ACE_MODE_MAP[extension.toLowerCase()] || 'text';
   }
 
   function formatFileSize(bytes) {
@@ -366,12 +364,12 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && self._open) {
         if (self._currentView === 'editor') {
-          // Check if Ace has an internal popup open (search bar)
-          var aceSearch = self._panelEl.querySelector('.ace_search');
-          if (aceSearch && aceSearch.offsetParent !== null) {
-            // Ace search is visible — let Ace handle this Escape, don't close editor
-            return;
-          }
+          // Check if Monaco's find/replace widget is open inside the editor.
+          // Monaco usually consumes Escape itself (stopPropagation), but a
+          // belt-and-braces DOM check guards against version drift and
+          // ensures we never close the editor out from under an open widget.
+          var monacoFind = self._panelEl.querySelector('.monaco-editor .find-widget.visible');
+          if (monacoFind) return;
           if (self._editorPanel) self._editorPanel.close();
         } else if (self._currentView === 'preview') {
           self._showBrowseView();
@@ -1496,11 +1494,11 @@
         container.innerHTML = '';
 
         if (item.mimeCategory === 'json') {
-          self._renderJson(container, data.content);
+          self._renderJson(container, data.content, item);
         } else if (item.mimeCategory === 'csv') {
           self._renderCsv(container, data.content);
         } else {
-          self._renderCode(container, data.content);
+          self._renderCode(container, data.content, item);
         }
 
         if (data.truncated) {
@@ -1516,11 +1514,86 @@
       });
   };
 
-  FilePreviewPanel.prototype._renderCode = function (container, content) {
+  // Read-only code preview backed by Monaco (ADR-0016). Replaces the prior
+  // hand-rolled <pre>+gutter renderer; that renderer is preserved as
+  // _renderCodePlainFallback for the CDN-blocked degraded path.
+  FilePreviewPanel.prototype._renderCode = function (container, content, item) {
+    var self = this;
+    var languageHint = '';
+    if (item) languageHint = item.path || item.name || '';
+
+    // Loader module missing — degrade to the prior plain renderer rather
+    // than show an empty pane.
+    if (!window.fileViewerMonaco || typeof window.fileViewerMonaco.createCodeViewer !== 'function') {
+      this._renderCodePlainFallback(container, content);
+      return;
+    }
+
+    // Monaco needs a host element with non-zero dimensions; .fb-code-monaco
+    // gives it a flex/min-height contract via file-browser.css.
+    var host = document.createElement('div');
+    host.className = 'fb-code-monaco';
+    container.appendChild(host);
+
+    var loading = document.createElement('div');
+    loading.className = 'fb-loading';
+    loading.style.cssText = 'padding:24px;text-align:center';
+    loading.textContent = 'Loading viewer...';
+    host.appendChild(loading);
+
+    // Tracks the resolved Monaco handle so the disposer can tear it down
+    // even if showPreview() switches files mid-load.
+    var resolvedHandle = null;
+    var disposed = false;
+    self._activeDisposers.push(function () {
+      disposed = true;
+      if (resolvedHandle) {
+        try { resolvedHandle.dispose(); } catch (_) { /* ignore */ }
+        resolvedHandle = null;
+      }
+    });
+
+    window.fileViewerMonaco.createCodeViewer(host, {
+      content: content,
+      language: window.fileViewerMonaco.getMonacoLanguage(languageHint),
+      readOnly: true,
+      minimap: false,
+      lineNumbers: 'on',
+      wordWrap: 'off',
+      ariaLabel: 'Read-only preview of ' + (item ? item.name : 'file'),
+      // No context menu in the read-only preview — host UI provides Edit/Download.
+      contextmenu: false,
+    }).then(function (handle) {
+      if (loading.parentNode) loading.parentNode.removeChild(loading);
+      if (disposed) {
+        // Race: showPreview() switched files while Monaco was loading.
+        try { handle.dispose(); } catch (_) { /* ignore */ }
+        return;
+      }
+      resolvedHandle = handle;
+    }).catch(function () {
+      if (loading.parentNode) loading.parentNode.removeChild(loading);
+      if (disposed) return;
+      // CDN failure: prefer the loader's plain-text renderer (consistent
+      // styling with the editor's fallback); degrade further to the local
+      // gutter+<pre> renderer if even that's missing.
+      if (window.fileViewerMonaco && typeof window.fileViewerMonaco.renderPlainTextFallback === 'function') {
+        window.fileViewerMonaco.renderPlainTextFallback(host, {
+          content: content,
+          notice: 'Code viewer unavailable — falling back to plain text.',
+        });
+      } else {
+        host.innerHTML = '';
+        self._renderCodePlainFallback(host, content);
+      }
+    });
+  };
+
+  FilePreviewPanel.prototype._renderCodePlainFallback = function (container, content) {
     var wrapper = document.createElement('div');
     wrapper.className = 'fb-code-preview';
 
-    var lines = content.split('\n');
+    var lines = String(content || '').split('\n');
     var gutter = document.createElement('div');
     gutter.className = 'fb-code-gutter';
     var code = document.createElement('pre');
@@ -1539,13 +1612,13 @@
     container.appendChild(wrapper);
   };
 
-  FilePreviewPanel.prototype._renderJson = function (container, content) {
+  FilePreviewPanel.prototype._renderJson = function (container, content, item) {
     try {
       var parsed = JSON.parse(content);
       var formatted = JSON.stringify(parsed, null, 2);
-      this._renderCode(container, formatted);
+      this._renderCode(container, formatted, item);
     } catch (e) {
-      this._renderCode(container, content);
+      this._renderCode(container, content, item);
     }
   };
 
@@ -2037,6 +2110,7 @@
     extractPathFromText: extractPathFromText,
     // Utilities (for testing)
     getFileIcon: getFileIcon,
+    getMonacoLanguage: getMonacoLanguage,
     getAceMode: getAceMode,
     formatFileSize: formatFileSize,
     buildBreadcrumbs: buildBreadcrumbs,
