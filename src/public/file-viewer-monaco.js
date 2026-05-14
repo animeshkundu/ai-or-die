@@ -25,12 +25,15 @@
   var WORKER_SHIM_PATH = '/vendor/monaco-worker-shim.js';
   var LOADER_TIMEOUT_MS = 15000; // CDN cold-start can be slow; matches Ace's old budget.
 
-  // Workers we know Monaco has under the AMD distribution. Anything outside
-  // this set is normalised to the generic editor worker — protects the
-  // worker shim's `?label=` from being polluted by future Monaco versions.
+  // Workers Monaco actually creates per the upstream worker manifest, plus
+  // the default editor worker. Anything outside this set is normalised to
+  // the editor worker — protects the worker shim's `?label=` from being
+  // polluted by future Monaco versions and makes DevTools worker names
+  // accurate. Per LOW-2 in adversarial review.
   var WORKER_LABEL_ALLOWLIST = [
-    'editor', 'editorWorkerService',
-    'json', 'css', 'html', 'typescript', 'javascript',
+    'editorWorkerService',
+    'json', 'css', 'scss', 'less', 'html',
+    'handlebars', 'razor', 'typescript', 'javascript',
   ];
 
   // ---------------------------------------------------------------------------
@@ -98,80 +101,33 @@
 
   // ---------------------------------------------------------------------------
   // Theme map — application themes (data-theme attribute) → Monaco theme name.
-  // The four custom themes are registered against `monaco.editor.defineTheme`
-  // the first time `loadMonaco()` resolves; built-ins (`vs`, `vs-dark`)
-  // require no registration.
+  //
+  // v1 maps every app theme onto Monaco's two built-in themes (`vs`, `vs-dark`).
+  // We do NOT register custom themes via monaco.editor.defineTheme.
+  //
+  // History: an earlier draft of this loader registered four custom themes
+  // (`aod-monokai`, `aod-nord`, `aod-solarized-dark`, `aod-solarized-light`)
+  // overriding only chrome colors and inheriting `vs`/`vs-dark` syntax token
+  // rules. Adversarial review (MEDIUM-1) correctly flagged this as worse than
+  // either built-in alternative: it claimed the user-selected accent theme
+  // but rendered Monaco's default syntax tokens on a mismatched background,
+  // looking neither like Monaco-default nor like real monokai/nord/solarized.
+  //
+  // Demoting to built-ins is honest: the chrome (terminal, sidebar, panel)
+  // stays themed via tokens.css; only Monaco's editor surface uses its
+  // built-in palette. Shipping real Monaco token rules per theme (~200 LOC
+  // of vendored data via the `monaco-themes` package) is a self-contained
+  // follow-up if user feedback warrants it. See ADR-0016 Consequences→Negative.
   // ---------------------------------------------------------------------------
 
   var THEME_MAP = {
     'midnight':         'vs-dark',
     'classic-dark':     'vs-dark',
     'classic-light':    'vs',
-    'monokai':          'aod-monokai',
-    'nord':             'aod-nord',
-    'solarized-dark':   'aod-solarized-dark',
-    'solarized-light':  'aod-solarized-light',
-  };
-
-  // Custom palettes — pulled from tokens.css so editor chrome stays in
-  // visual sync with the rest of the app surface.
-  var CUSTOM_THEMES = {
-    'aod-monokai': {
-      base: 'vs-dark',
-      colors: {
-        'editor.background':         '#272822',
-        'editor.foreground':         '#f8f8f2',
-        'editorLineNumber.foreground': '#75715e',
-        'editorLineNumber.activeForeground': '#f8f8f2',
-        'editor.selectionBackground': '#49483e',
-        'editor.lineHighlightBackground': '#3e3d32',
-        'editorCursor.foreground':   '#f8f8f0',
-        'editorWhitespace.foreground': '#3b3a32',
-        'editorIndentGuide.background': '#3b3a32',
-      },
-    },
-    'aod-nord': {
-      base: 'vs-dark',
-      colors: {
-        'editor.background':         '#2e3440',
-        'editor.foreground':         '#d8dee9',
-        'editorLineNumber.foreground': '#4c566a',
-        'editorLineNumber.activeForeground': '#eceff4',
-        'editor.selectionBackground': '#434c5e',
-        'editor.lineHighlightBackground': '#3b4252',
-        'editorCursor.foreground':   '#88c0d0',
-        'editorWhitespace.foreground': '#3b4252',
-        'editorIndentGuide.background': '#3b4252',
-      },
-    },
-    'aod-solarized-dark': {
-      base: 'vs-dark',
-      colors: {
-        'editor.background':         '#002b36',
-        'editor.foreground':         '#839496',
-        'editorLineNumber.foreground': '#586e75',
-        'editorLineNumber.activeForeground': '#eee8d5',
-        'editor.selectionBackground': '#073642',
-        'editor.lineHighlightBackground': '#073642',
-        'editorCursor.foreground':   '#268bd2',
-        'editorWhitespace.foreground': '#073642',
-        'editorIndentGuide.background': '#073642',
-      },
-    },
-    'aod-solarized-light': {
-      base: 'vs',
-      colors: {
-        'editor.background':         '#fdf6e3',
-        'editor.foreground':         '#586e75',
-        'editorLineNumber.foreground': '#93a1a1',
-        'editorLineNumber.activeForeground': '#073642',
-        'editor.selectionBackground': '#eee8d5',
-        'editor.lineHighlightBackground': '#eee8d5',
-        'editorCursor.foreground':   '#268bd2',
-        'editorWhitespace.foreground': '#eee8d5',
-        'editorIndentGuide.background': '#eee8d5',
-      },
-    },
+    'monokai':          'vs-dark',
+    'nord':             'vs-dark',
+    'solarized-dark':   'vs-dark',
+    'solarized-light':  'vs',
   };
 
   function getCurrentThemeName() {
@@ -192,27 +148,10 @@
   // ---------------------------------------------------------------------------
 
   var _monacoPromise = null;
-  var _themesDefined = false;
 
   function _normaliseLabel(label) {
-    if (!label) return 'editor';
-    return WORKER_LABEL_ALLOWLIST.indexOf(label) === -1 ? 'editor' : label;
-  }
-
-  function _registerCustomThemes(monaco) {
-    if (_themesDefined) return;
-    Object.keys(CUSTOM_THEMES).forEach(function (name) {
-      var t = CUSTOM_THEMES[name];
-      // `rules: []` keeps Monaco's tokenizer rules from its base theme;
-      // we override only chrome colors, not token highlight colors.
-      monaco.editor.defineTheme(name, {
-        base: t.base,
-        inherit: true,
-        rules: [],
-        colors: t.colors,
-      });
-    });
-    _themesDefined = true;
+    if (!label) return 'editorWorkerService';
+    return WORKER_LABEL_ALLOWLIST.indexOf(label) === -1 ? 'editorWorkerService' : label;
   }
 
   function loadMonaco() {
@@ -237,7 +176,6 @@
       // 2. Already loaded? (e.g. caller raced two loadMonaco() before promise
       //    memoisation took effect, or monaco was preloaded via a script tag.)
       if (window.monaco && window.monaco.editor) {
-        try { _registerCustomThemes(window.monaco); } catch (_) { /* ignore */ }
         return resolve(window.monaco);
       }
 
@@ -257,7 +195,6 @@
           // a no-op in the Monaco loader.
           window.require.config({ paths: { vs: MONACO_BASE + 'vs' } });
           window.require(['vs/editor/editor.main'], function () {
-            try { _registerCustomThemes(window.monaco); } catch (_) { /* ignore */ }
             done(null, window.monaco);
           }, function (err) {
             done(err || new Error('loadMonaco: editor.main load failed'));
@@ -275,6 +212,14 @@
       // 4. Inject the AMD loader from the CDN.
       var existing = document.querySelector('script[data-monaco-loader]');
       if (existing) {
+        // LOW-1 (per adversarial review): if a previous loadMonaco() failed
+        // via timeout but the script tag actually loaded successfully later,
+        // the `load` event fired before this listener attached and would
+        // never fire again. Short-circuit if the AMD loader is already on
+        // window — that's the durable signal that loader.js executed.
+        if (window.require && typeof window.require.config === 'function') {
+          return configureAndLoadEditor();
+        }
         existing.addEventListener('load', configureAndLoadEditor, { once: true });
         existing.addEventListener('error', function () {
           done(new Error('loadMonaco: loader.js fetch failed (existing tag)'));
@@ -318,6 +263,29 @@
     }
 
     return loadMonaco().then(function (monaco) {
+      // MEDIUM-2 (per adversarial review): sweep any prior Monaco editor
+      // already mounted in this container before re-creating. Without this,
+      // calling createCodeViewer twice on the same container stacks two
+      // editors — both keep models, both keep ResizeObservers (because of
+      // automaticLayout: true), neither is GC-able. The dominant file-browser
+      // flow ("user clicks file A then file B") hits this on every click,
+      // and with tabs/diff/PDF wired into the same _activeDisposers queue
+      // a leak per click compounds quickly.
+      try {
+        if (monaco.editor && typeof monaco.editor.getEditors === 'function') {
+          monaco.editor.getEditors().forEach(function (e) {
+            try {
+              var node = e.getDomNode && e.getDomNode();
+              if (node && container.contains(node)) {
+                try { var m = e.getModel(); m && m.dispose(); } catch (_) { /* ignore */ }
+                try { e.dispose(); } catch (_) { /* ignore */ }
+              }
+            } catch (_) { /* ignore */ }
+          });
+        }
+      } catch (_) { /* getEditors not available on very old Monaco — best-effort */ }
+      while (container.firstChild) container.removeChild(container.firstChild);
+
       var theme = resolveMonacoTheme(options.theme);
       var language = options.language || getMonacoLanguage(options.extension || '');
       var editor = monaco.editor.create(container, {
@@ -344,8 +312,6 @@
         accessibilitySupport: 'auto',
         bracketPairColorization: { enabled: true },
         guides: { bracketPairs: 'active', indentation: true },
-        // Disable Monaco's built-in command palette key (F1) collision-prone
-        // with browser screen readers; the host app owns command palette.
         ariaLabel: options.ariaLabel || 'Code editor',
       });
 

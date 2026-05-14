@@ -45,22 +45,26 @@ describe('file-viewer-monaco', function () {
   // -------------------------------------------------------------------------
 
   describe('_normaliseLabel', function () {
-    it('should pass through known labels', function () {
-      ['editor', 'json', 'css', 'html', 'typescript', 'javascript'].forEach(function (l) {
+    it('should pass through known Monaco worker labels', function () {
+      // Mirror of the upstream Monaco worker manifest. Per LOW-2 in
+      // adversarial review: 'editor' isn't a label Monaco actually emits;
+      // 'editorWorkerService' is the default.
+      ['editorWorkerService', 'json', 'css', 'scss', 'less', 'html',
+       'handlebars', 'razor', 'typescript', 'javascript'].forEach(function (l) {
         assert.strictEqual(monaco._normaliseLabel(l), l, l + ' should pass through');
       });
     });
 
-    it('should fall back to "editor" for unknown labels', function () {
-      assert.strictEqual(monaco._normaliseLabel('mystery'), 'editor');
-      assert.strictEqual(monaco._normaliseLabel(''), 'editor');
-      assert.strictEqual(monaco._normaliseLabel(null), 'editor');
-      assert.strictEqual(monaco._normaliseLabel(undefined), 'editor');
+    it('should fall back to "editorWorkerService" for unknown labels', function () {
+      assert.strictEqual(monaco._normaliseLabel('mystery'), 'editorWorkerService');
+      assert.strictEqual(monaco._normaliseLabel(''), 'editorWorkerService');
+      assert.strictEqual(monaco._normaliseLabel(null), 'editorWorkerService');
+      assert.strictEqual(monaco._normaliseLabel(undefined), 'editorWorkerService');
     });
 
-    it('should fall back to "editor" for path-traversal-shaped labels', function () {
-      assert.strictEqual(monaco._normaliseLabel('../../evil'), 'editor');
-      assert.strictEqual(monaco._normaliseLabel('http://attacker'), 'editor');
+    it('should fall back for path-traversal-shaped labels', function () {
+      assert.strictEqual(monaco._normaliseLabel('../../evil'), 'editorWorkerService');
+      assert.strictEqual(monaco._normaliseLabel('http://attacker'), 'editorWorkerService');
     });
   });
 
@@ -149,11 +153,16 @@ describe('file-viewer-monaco', function () {
       assert.strictEqual(monaco.resolveMonacoTheme('classic-light'), 'vs');
     });
 
-    it('should map monokai/nord/solarized to custom aod- themes', function () {
-      assert.strictEqual(monaco.resolveMonacoTheme('monokai'), 'aod-monokai');
-      assert.strictEqual(monaco.resolveMonacoTheme('nord'), 'aod-nord');
-      assert.strictEqual(monaco.resolveMonacoTheme('solarized-dark'), 'aod-solarized-dark');
-      assert.strictEqual(monaco.resolveMonacoTheme('solarized-light'), 'aod-solarized-light');
+    it('should demote monokai/nord/solarized accent themes to a built-in (MEDIUM-1)', function () {
+      // Per adversarial review MEDIUM-1: shipping a custom Monaco theme
+      // that overrides only chrome colors but inherits vs-dark syntax
+      // tokens looks worse than just using vs-dark. v1 demotes; real
+      // monaco-themes token rules are a deferred follow-up. See ADR-0016
+      // Consequences→Negative.
+      assert.strictEqual(monaco.resolveMonacoTheme('monokai'), 'vs-dark');
+      assert.strictEqual(monaco.resolveMonacoTheme('nord'), 'vs-dark');
+      assert.strictEqual(monaco.resolveMonacoTheme('solarized-dark'), 'vs-dark');
+      assert.strictEqual(monaco.resolveMonacoTheme('solarized-light'), 'vs');
     });
 
     it('should fall back to vs-dark for unknown themes', function () {
@@ -167,12 +176,15 @@ describe('file-viewer-monaco', function () {
                        'nord', 'solarized-dark', 'solarized-light'];
       appThemes.forEach(function (t) {
         var resolved = monaco.resolveMonacoTheme(t);
-        assert.ok(resolved && resolved !== 'vs-dark' || t === 'midnight' || t === 'classic-dark',
-          'theme ' + t + ' must resolve explicitly, not via the unknown-theme fallback');
-        assert.ok(['vs', 'vs-dark'].indexOf(resolved) !== -1 ||
-                  resolved.indexOf('aod-') === 0,
-          'theme ' + t + ' resolved to "' + resolved + '" which is neither built-in nor custom');
+        assert.ok(['vs', 'vs-dark'].indexOf(resolved) !== -1,
+          'theme ' + t + ' resolved to "' + resolved + '" — must be a built-in (vs or vs-dark) ' +
+          'until real Monaco token-rule data is shipped');
       });
+    });
+
+    it('should not export CUSTOM_THEMES (removed in MEDIUM-1 demote)', function () {
+      assert.strictEqual(monaco.CUSTOM_THEMES, undefined,
+        'CUSTOM_THEMES should be gone — themes now demote to built-ins');
     });
   });
 

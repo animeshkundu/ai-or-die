@@ -176,6 +176,18 @@ the explicit "Compare with..." feature.
 - **Worker shim is one more vendored file** to keep current with Monaco
   version bumps. Mitigated by the label allowlist (the shim is essentially
   six lines of switch-on-label) and a sticky pinned Monaco version.
+- **Custom theme palettes deferred.** v1 maps every app accent theme
+  (monokai, nord, solarized-dark, solarized-light) onto Monaco's built-in
+  `vs` / `vs-dark`. The chrome — terminal, sidebar, panel — stays themed
+  via `tokens.css`; only Monaco's editor surface uses its built-in
+  palette. An earlier draft of the loader registered four custom themes
+  that overrode only chrome colors and inherited `vs-dark` syntax token
+  rules; adversarial review (MEDIUM-1) correctly flagged this as worse
+  than either alternative — claimed the user's accent theme but rendered
+  Monaco-default syntax tokens on a mismatched background. Shipping real
+  Monaco token rules per theme (~200 LOC of vendored data via the
+  `monaco-themes` package) is a self-contained follow-up if user feedback
+  warrants it.
 
 ### Neutral
 
