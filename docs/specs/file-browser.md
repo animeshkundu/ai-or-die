@@ -25,7 +25,12 @@ Serve:    GET /api/files/download?path=<file>&inline=1 -> stream binary (images,
 Edit:     GET content -> Monaco Editor -> PUT /api/files/content -> save with hash
 Upload:   drag-drop / picker / paste -> POST /api/files/upload (base64 JSON, 10MB)
 Download: GET /api/files/download?path=<file>          -> Content-Disposition: attachment
+Watch:    GET /api/files/watch?session=<id>            -> SSE stream of {type,path,relPath,mtime,hash?,prevPath?}
+          POST /api/files/watch/subscribe?path=<abs>   -> add path to active set
+          POST /api/files/watch/unsubscribe?path=<abs> -> remove from active set
 ```
+
+Reactive sync (the Watch channel) keeps open editor tabs and the directory listing in step with on-disk reality without user-driven refresh — the central architectural piece for an AI-driven coding UI where the agent edits files concurrently with the user. See "Reactive file-system sync" below and [ADR-0017](../adrs/0017-fs-watcher-push-channel.md).
 
 ---
 
@@ -233,6 +238,74 @@ Stream a file for download or inline preview.
 
 **Read limit:** 100 MB max download size.
 
+#### `GET /api/files/watch`
+
+Open a Server-Sent Events (SSE) stream of file-system change events for the active session. **One stream per session, multiplexed via the subscribe/unsubscribe control endpoints below.** Per [ADR-0017](../adrs/0017-fs-watcher-push-channel.md).
+
+**Query params:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `session` | string | Required. Claude session id; the watcher is rooted at the session's `workingDir`. |
+| `token` | string | Auth token (when auth is enabled). EventSource cannot carry custom headers, so the token rides via `?token=` per `AuthManager#appendAuthToUrl`. Same pattern as `<img>` / `<iframe>` / PDF.js worker URLs (#96). |
+
+**Response:** SSE stream. Each event has `data:` containing a JSON object:
+
+```json
+{
+  "type": "change" | "add" | "unlink" | "rename",
+  "path": "/abs/path/to/file.js",
+  "relPath": "src/file.js",
+  "mtime": 1715692800123,
+  "hash": "<md5, only on `change` for text ≤5MB>",
+  "prevPath": "/abs/old/path.js (only on `rename`)"
+}
+```
+
+- `add` / `unlink` for file creation / deletion.
+- `change` for content modification of an existing file.
+- `rename` for same-inode `add` + `unlink` pairs that occur within a 50ms server-side coalescing window (chokidar's `alwaysStat: true` provides the inode). Falls back to separate `add` + `unlink` if the window misses.
+
+The watcher runs with `chokidar`'s `awaitWriteFinish: { stabilityThreshold: 80, pollInterval: 30 }` (~110ms latency, suppresses mid-write false positives) plus a 100ms per-path debounce (collapses agent batch refactors) plus a 50ms server-side `add+change` dedup (collapses atomic-rename save). All three thresholds are tunable via `FS_WATCHER_STABILITY_MS`, `FS_WATCHER_POLL_MS`, and `FS_WATCHER_DEBOUNCE_MS` env vars.
+
+**Ignored directories:** mirrors `/api/search`'s `EXCLUDE_DIRS` — `node_modules`, `.git`, `dist`, `build`, `target`, `.next`, `.cache`, `__pycache__`, `.venv`, `venv`, `.tox`, `.gradle`. Configurable via `FS_WATCHER_IGNORE` env var (comma-separated). `.gitignore` parsing deferred.
+
+**Initial state:** the stream emits ONLY changes, never an initial snapshot. Clients use `GET /api/files?path=<dir>` for the initial directory listing.
+
+**Concurrent-watcher cap:** state-based, **5 open watchers per IP**. The 6th `GET /api/files/watch` with a different session id rejected with 429. Decrements on `req.on('close')`.
+
+**Per-session event-emission cap:** ~100 events/min (rate-based) on top of the three coalescing layers, as a final backpressure.
+
+**Errors:** 401 (no token in auth mode), 403 (validatePath rejects `<dir>`), 429 (concurrent-watcher cap exceeded).
+
+#### `POST /api/files/watch/subscribe`
+
+Add a path to the active subscription set for a session's open SSE stream.
+
+**Query params:**
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `session` | string | Required. Must match an open SSE stream. |
+| `path` | string | Required. Absolute path. validatePath() funneled. |
+| `token` | string | Auth token (when auth enabled). |
+
+**Response:** 204 No Content on success.
+
+The server's chokidar watcher watches the SUPERSET of all subscribed paths' parent directories — narrower than the entire `workingDir`, broader than per-file. Subsequent SSE events for `path` will arrive on the open EventSource for that session.
+
+**Errors:** 401, 403, 404 (no open SSE stream for that session id), 409 (subscription already active for this path).
+
+#### `POST /api/files/watch/unsubscribe`
+
+Remove a path from the active subscription set.
+
+**Query params:** same shape as `/subscribe`.
+
+**Response:** 204 No Content on success (idempotent — unsubscribing an already-unsubscribed path returns 204).
+
+**Errors:** 401, 403, 404 (no open SSE stream for that session).
+
 ---
 
 ## Client Architecture
@@ -245,8 +318,8 @@ Stream a file for download or inline preview.
 | `file-editor.js` | `src/public/file-editor.js` | `FileEditorPanel` (Monaco-based; ADR-0016) |
 | `file-viewer-monaco.js` | `src/public/file-viewer-monaco.js` | `loadMonaco()`, `createCodeViewer()`, `getMonacoLanguage()`, `resolveMonacoTheme()`, `applyThemeToAll()`, `renderPlainTextFallback()` |
 | `markdown-render.js` | `src/public/markdown-render.js` | `marked` + `DOMPurify` hook + lazy mermaid + lazy KaTeX |
-| `file-tabs.js` | `src/public/file-tabs.js` | `TabManager` — multi-file tab strip, per-tab Monaco models, localStorage persistence keyed by session id |
-| `file-diff.js` | `src/public/file-diff.js` | `DiffViewerPanel` — `monaco.editor.createDiffEditor` wrapper. Side-by-side read-only diff with intra-line highlighting. Convenience helpers `openHeadVsWorking(path)` / `openRefVsWorking(path, ref)` / `openFileVsFile(a, b)`. Mounted by TabManager mode `'diff'`. |
+| `file-tabs.js` | `src/public/file-tabs.js` | `TabManager` — multi-file tab strip, per-tab Monaco models, localStorage persistence keyed by session id, fs-watcher subscription lifecycle (per ADR-0017) |
+| `file-diff.js` | `src/public/file-diff.js` | `DiffViewerPanel` — `monaco.editor.createDiffEditor` wrapper. Side-by-side read-only diff with intra-line highlighting. Convenience helpers `openHeadVsWorking(path)` / `openRefVsWorking(path, ref)` / `openFileVsFile(a, b)` / `openMemoryVsFile(memContent, diskPath)` (the last entry point for the dirty-tab toast's Compare button per ADR-0017). Mounted by TabManager mode `'diff'`. |
 | `notebook-render.js` | `src/public/notebook-render.js` | Read-only Jupyter `.ipynb` viewer. Lazy-loads kokes/nbviewer.js (~50 KB) on first use, parses + renders into a scratch DIV, then sanitises through DOMPurify (same FORBID_ATTR/FORBID_TAGS profile as `markdown-render.js`) before inserting into the live DOM. |
 | `file-search.js` | `src/public/file-search.js` | `SearchPanel` — cross-file search panel toggled via `Cmd/Ctrl+Shift+F`. Streams matches from `GET /api/search` (SSE; ripgrep + grep fallback). Result-row click routes through `app.openFileInViewer(path, line, col)` → `_pendingJumpTo` → Monaco preview tab at the matched line. |
 | `file-pdf-viewer.js` | `src/public/file-pdf-viewer.js` | PDF.js wrapper with thin viewer chrome (prev/next/zoom/fit) |
@@ -400,6 +473,53 @@ Server: `GET /api/search?q=<term>&regex=0|1&caseSensitive=0|1&glob=<pattern>` (S
 Client: `src/public/file-search.js` (TBD — task #9 still pending). Plan: `Cmd/Ctrl + Shift + F` opens a panel above the tab strip; consumes the SSE stream via `EventSource`; each result row is `path:line` + matched-line context; click opens the file in a tab and jumps via `editor.revealLineInCenter` + `setSelection`. Cancels the previous EventSource on each new query.
 
 ---
+
+## Reactive file-system sync
+
+Per [ADR-0017](../adrs/0017-fs-watcher-push-channel.md). The architectural piece that makes the file browser first-class for an AI-driven coding UI: **open editor tabs and the directory listing reflect on-disk reality in near-real-time, without user-driven refresh.** When the agent (Claude / Codex / Gemini) edits a file the user has open, the user sees the new content within ~100-200ms instead of finding out at save time via the existing 409-Conflict modal.
+
+The hash-based 409-Conflict-on-save flow from [ADR-0012](../adrs/0012-file-browser-architecture.md) stays active as a backstop for events the watcher missed (network drops, EventSource reconnects, coalescing-window edge cases, platform watcher gaps). The two layers compose: fs-watcher = proactive UX win, OCC = correctness guarantee.
+
+### Wire shape
+
+- **`GET /api/files/watch?session=<id>`** opens an SSE stream rooted at the session's `workingDir`. ONE EventSource per session.
+- **`POST /api/files/watch/subscribe?session=<id>&path=<abs>`** adds a path to the active subscription set. Subsequent SSE events for that path arrive on the open EventSource.
+- **`POST /api/files/watch/unsubscribe?session=<id>&path=<abs>`** removes a path.
+
+Single EventSource (not per open file) avoids the browser SSE-per-origin cap (Chromium 6); subscribe/unsubscribe is cheap and lets the server's chokidar watcher track only the paths anyone cares about.
+
+Event shape: `{type, path, relPath, mtime, hash?, prevPath?}`. Types: `change` (modify), `add` (create), `unlink` (delete), `rename` (server-coalesced same-inode add+unlink within 50ms). See "GET /api/files/watch" in the Server API section above for the full payload contract + cap + tunable env vars.
+
+### Client lifecycle
+
+`TabManager` owns the EventSource per session:
+
+- On panel mount: open `EventSource('/api/files/watch?session=<id>&token=<t>')`.
+- On `openFile(path)`: `POST /subscribe`. Add to local subscription map.
+- On `closeTab(id)`: `POST /unsubscribe` for that tab's path.
+- On panel unmount or session switch: close EventSource; subscriptions clear server-side via `req.on('close')` cleanup.
+
+`FileBrowserPanel` shares the same EventSource:
+
+- On `navigateTo(newDir)`: `POST /unsubscribe` for the old dir + `POST /subscribe` for the new.
+
+### Per-event reactions
+
+| Event | Tab state | Reaction |
+|-------|-----------|----------|
+| `change` matching open path | clean (Monaco model value === `_lastSavedContent`) | **Silent reload**. `GET /api/files/content`, swap content into Monaco model, **preserve cursor + scroll + selection** via `getPosition()` → `setValue()` → `setPosition(saved)` with bounds-check. Reuses the `_suppressContentChange` flag from the existing `_reloadFile` path. Update `_lastSavedContent` to the new content. |
+| `change` matching open path | dirty | **Non-blocking toast** on the tab strip: `agent modified <path>` with three buttons — **Reload (discard)** / **Compare** / **Keep mine**. Don't force a modal mid-typing. The existing 409 modal still fires if the user hits Save. |
+| `add` / `unlink` matching panel's current dir | — | Refresh directory listing without user F5. |
+| `rename` matching open tab path | — | Tab's path metadata updates in-place. Subsequent saves go to `path`, not `prevPath`. Listing refresh treats it as `unlink(prevPath) + add(path)`. |
+| Any event after EventSource reconnect | open tabs | Mark all open tabs as needing an `mtime` re-check on next focus. Don't speculatively re-fetch (would thrash); use mtime drift as the staleness signal. |
+
+### Compare-with-memory
+
+The dirty-tab toast's "Compare" button needs to diff the user's in-memory buffer against the new disk content. `DiffViewerPanel` (#6) gains a new entry point `openMemoryVsFile(memContent, diskPath)` that takes the user's current Monaco buffer value (string) and the absolute disk path; the panel fetches via `/api/files/content` and renders the diff in the same diff-tab surface as `openFileVsFile()`, with visible labels distinguishing "memory" vs "disk."
+
+### CSS
+
+`.fb-tab-toast` chrome on the tab strip — non-blocking inline banner with the three action buttons. Positioned over the tab to which the toast applies; auto-dismisses on user action or after 30s.
 
 ## Editor
 
@@ -678,7 +798,6 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 
 ## Limitations
 
-- **No real-time file watching.** Directory listings are point-in-time snapshots. Manual refresh is required to see external changes. File watching via WebSocket is deferred to Phase 2.
 - **No delete or rename.** Destructive operations are excluded to limit security exposure. Users can use the terminal for these operations.
 - **10 MB upload limit.** Chunked upload for larger files is deferred to Phase 2.
 - **Monaco Editor requires CDN.** If `cdn.jsdelivr.net` is unreachable, code preview falls back to a monospace `<pre>` with line numbers (`renderPlainTextFallback`); the editor pane shows an actionable error inside its toolbar; the Compare-Changes diff falls back to a twin-`<pre>` view. Browsing and previewing of non-code files still works.
@@ -686,3 +805,4 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 - **No LSP-style IntelliSense for non-built-in languages.** Monaco ships hovers/completions/diagnostics for JS/TS/JSON/CSS/HTML/Markdown out of the box. Python/Go/Rust IntelliSense would need a real language server.
 - **CSV preview cap is 1000 parsed rows.** Beyond that a "showing first 1000 of N" notice surfaces and the user is expected to filter/edit the file in a real spreadsheet tool. Multi-line quoted CSV fields are also not supported in v1.
 - **Notebook (`.ipynb`) preview** falls through to JSON until `nbviewer.js` integration lands (task #3).
+- **Reactive sync is best-effort, not guaranteed.** The fs-watcher channel (ADR-0017) delivers events for the common case in <200ms but can miss events on EventSource reconnect, network partitions, platform watcher gaps (network filesystems, FUSE mounts), or coalescing-window edge cases. The hash-based 409-Conflict-on-save flow (ADR-0012) remains active as the correctness backstop. `.gitignore` is not parsed by the watcher; static `EXCLUDE_DIRS` list applies (deferred follow-up).
