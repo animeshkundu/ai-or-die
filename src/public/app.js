@@ -715,11 +715,20 @@ class ClaudeCodeWebInterface {
             }
         });
 
-        // Sync terminal colors when the CSS theme changes (data-theme attribute)
+        // Sync terminal colors AND any live Monaco instances when the CSS
+        // theme changes (data-theme attribute on documentElement).
         const themeObserver = new MutationObserver((mutations) => {
             for (const m of mutations) {
-                if (m.attributeName === 'data-theme' && this.terminal) {
-                    this.syncTerminalTheme();
+                if (m.attributeName === 'data-theme') {
+                    if (this.terminal) this.syncTerminalTheme();
+                    // Editor pane + read-only code preview re-theme live so
+                    // they don't get stuck on whatever theme was active when
+                    // they were created. Loader reads the new data-theme via
+                    // resolveMonacoTheme() internally.
+                    if (window.fileViewerMonaco &&
+                        typeof window.fileViewerMonaco.applyThemeToAll === 'function') {
+                        try { window.fileViewerMonaco.applyThemeToAll(); } catch (_) { /* swallow */ }
+                    }
                 }
             }
         });

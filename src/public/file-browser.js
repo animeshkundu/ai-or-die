@@ -821,7 +821,12 @@
     this._selectedItem = item;
     this._fileListEl.style.display = 'none';
     this._previewContainer.style.display = '';
-    this._previewPanel.showPreview(item, this._currentPath);
+    // Consume any jump-to-line set by a terminal-link click (systems-engineer's
+    // #7). The flag lives on the panel; clear it now so a subsequent open of a
+    // different file doesn't inherit a stale target line.
+    var jumpTo = this._pendingJumpTo || null;
+    this._pendingJumpTo = null;
+    this._previewPanel.showPreview(item, this._currentPath, { jumpTo: jumpTo });
     this._renderBreadcrumbs();
     this._announceToScreenReader('Previewing ' + item.name);
   };
@@ -1320,10 +1325,15 @@
     }
   };
 
-  FilePreviewPanel.prototype.showPreview = function (item, currentDir) {
+  FilePreviewPanel.prototype.showPreview = function (item, currentDir, options) {
     var self = this;
     this._disposeActive();
     this.containerEl.innerHTML = '';
+
+    // Capture per-render options. _jumpTo is consumed once by _renderCode
+    // when Monaco resolves; it's cleared post-consumption so a switch back
+    // and forth between previews doesn't repeat the jump.
+    this._jumpTo = (options && options.jumpTo) ? options.jumpTo : null;
 
     // Header
     var header = document.createElement('div');
@@ -1636,6 +1646,30 @@
         return;
       }
       resolvedHandle = handle;
+      // Consume any pending jump-to-line set by a terminal-link click (#7).
+      // The line/col are 1-based (Monaco's convention) AND the values from
+      // path tokens like `src/foo.js:42:7` are 1-based, so they map directly.
+      // Out-of-range lines are silently clamped by Monaco; we wrap in a
+      // try just in case the editor was disposed mid-call.
+      var jump = self._jumpTo;
+      self._jumpTo = null;
+      if (jump && jump.line) {
+        var line = parseInt(jump.line, 10);
+        var col  = parseInt(jump.col, 10);
+        if (isFinite(line) && line > 0) {
+          if (!isFinite(col) || col < 1) col = 1;
+          try {
+            handle.editor.revealLineInCenter(line);
+            handle.editor.setPosition({ lineNumber: line, column: col });
+            // Selection at a single point doubles as a visual cursor marker;
+            // helpful when read-only Monaco doesn't draw a blinking caret.
+            if (handle.monaco && handle.monaco.Selection) {
+              handle.editor.setSelection(new handle.monaco.Selection(line, col, line, col));
+            }
+            handle.editor.focus();
+          } catch (_) { /* line out of range or editor disposed — non-fatal */ }
+        }
+      }
     }).catch(function () {
       if (loading.parentNode) loading.parentNode.removeChild(loading);
       if (disposed) return;
