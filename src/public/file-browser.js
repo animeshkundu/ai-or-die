@@ -125,9 +125,59 @@
   // Pure string transformation — exported under window.fileBrowser for tests.
   // ---------------------------------------------------------------------------
 
+  // CSP for the sandboxed HTML preview iframe. Locked down to the absolute
+  // minimum the iframe needs to render real-world HTML files.
+  //   - default-src 'none'         : block everything by default. CSP3 fall-
+  //                                  back applies for connect-src/frame-src/
+  //                                  worker-src/manifest-src/media-src/
+  //                                  object-src — they all inherit 'none'.
+  //   - img-src data: blob:        : inline data: images render; no http(s)
+  //                                  fetch; no exfiltration via background-
+  //                                  image since style-src is also locked.
+  //   - style-src 'unsafe-inline'  : intentional. Sandbox makes the iframe
+  //                                  origin "null" so 'self' wouldn't match.
+  //                                  Without inline styles essentially every
+  //                                  real HTML file looks broken. CSS-exfil
+  //                                  vectors are closed at the network layer
+  //                                  (no img/font/connect-src grant for
+  //                                  http(s)). NOT 'self' — that wouldn't
+  //                                  resolve under sandbox null origin.
+  //   - font-src data:             : embedded data: fonts render.
+  //   - form-action 'none'         : per CSP spec form-action does NOT fall
+  //                                  back to default-src. Without this it
+  //                                  defaults to '*'. Sandbox already blocks
+  //                                  form submission today (no allow-forms),
+  //                                  but if a future contributor adds
+  //                                  allow-forms this becomes the only line
+  //                                  of defense.
+  //   - base-uri 'none'            : per CSP spec base-uri also doesn't fall
+  //                                  back to default-src. Second line of
+  //                                  defense behind the regex <base> strip
+  //                                  in buildSandboxedSrcdoc — if the regex
+  //                                  ever has an edge-case bypass (it can —
+  //                                  see the over-strip caveat in that
+  //                                  helper), base-uri 'none' still neuters
+  //                                  the injected base URL.
+  //
+  // NOTE: frame-ancestors is intentionally omitted — per CSP spec, it is
+  // ignored when the policy is delivered via <meta http-equiv>. Adding it
+  // here would mislead a future maintainer into thinking it does anything.
+  // The sandbox attribute itself prevents the iframe from being framed.
   var HTML_PREVIEW_CSP = "default-src 'none'; img-src data: blob:; " +
-    "style-src 'unsafe-inline'; font-src data:;";
+    "style-src 'unsafe-inline'; font-src data:; " +
+    "form-action 'none'; base-uri 'none';";
 
+  // KNOWN LIMITATION: this regex strips ANY <base ...> token regardless of
+  // HTML context. Literal text inside <p>/<pre>/<code>/<script>/<style>/
+  // comments/attribute-values that contains the bytes "<base" will be
+  // silently mangled (e.g. an HTML tutorial that quotes `<base>` in a
+  // <p>). Security impact is zero — those literals are inert text per the
+  // HTML parser, and CSP base-uri 'none' is the second line of defense if
+  // a real <base> ever slips through. UX impact is real for tutorial-style
+  // HTML files. Switching to DOMParser-based mutation is the proper fix
+  // and is tracked as a follow-up; for now the simpler regex wins on
+  // worker-thread-free overhead. Same caveat applies to the meta-refresh
+  // strip below.
   function buildSandboxedSrcdoc(html) {
     var s = String(html == null ? '' : html);
     s = s.replace(/<base\b[^>]*>/gi, '');
@@ -150,11 +200,30 @@
   // and can hang the renderer.
   var HTML_PREVIEW_SRCDOC_CAP_BYTES = 1024 * 1024;
 
+  // UTF-8 byte counter. Browsers always have Blob; Node tests since v18 do
+  // too, but older Node CI matrices fall back through Buffer.byteLength
+  // (also UTF-8 by default). Final fallback is a hand-rolled UTF-8 byte
+  // count — `s.length` would return UTF-16 code units which severely
+  // undercounts CJK / emoji / heavy-Unicode HTML (3-4× off) and could let
+  // a 1.2 MB Chinese-text file slip past the 1 MB cap and hang the
+  // renderer the cap exists to prevent.
   function _measureBytes(s) {
     if (typeof Blob !== 'undefined') {
       try { return new Blob([s]).size; } catch (_) { /* fall through */ }
     }
-    return s.length;
+    if (typeof Buffer !== 'undefined' && Buffer.byteLength) {
+      try { return Buffer.byteLength(s, 'utf8'); } catch (_) { /* fall through */ }
+    }
+    // Final fallback — count UTF-8 bytes by hand.
+    var bytes = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if      (c < 0x80)    bytes += 1;
+      else if (c < 0x800)   bytes += 2;
+      else if (c < 0xD800 || c >= 0xE000) bytes += 3;
+      else { bytes += 4; i++; } // surrogate pair → 4 UTF-8 bytes, skip the trailing surrogate
+    }
+    return bytes;
   }
 
   function isHtmlExtension(nameOrPath) {
@@ -1950,7 +2019,30 @@
 
     var renderedActive = !oversize;
 
+    // HIGH (reviewer audit of 7e73e6f): every toggle into Source view mounts
+    // a fresh Monaco editor via _renderCode, which APPENDS its disposer to
+    // self._activeDisposers. The pool is only drained by showPreview() →
+    // _disposeActive(). Without per-toggle accounting, repeated Source ⇄
+    // Rendered cycles accumulate orphaned Monaco editors (with their
+    // ResizeObserver + text models + listeners live) until the user finally
+    // navigates to a different file. Fix: track the index of the disposer
+    // we register on each renderSource() call and drain it before mounting
+    // the next editor (or before transitioning to the iframe view).
+    var sourceDisposerIdx = -1;
+
+    function disposeSource() {
+      if (sourceDisposerIdx >= 0 && sourceDisposerIdx < self._activeDisposers.length) {
+        var fn = self._activeDisposers.splice(sourceDisposerIdx, 1)[0];
+        try { fn(); } catch (_) { /* swallow */ }
+      }
+      sourceDisposerIdx = -1;
+    }
+
     function renderRendered() {
+      // Drain any prior source-view editor before swapping the DOM. Without
+      // this, switching back to Rendered detaches the editor's DOM but
+      // leaves its model + ResizeObserver + listeners alive.
+      disposeSource();
       view.innerHTML = '';
       toggleBtn.textContent = 'Source';
       toggleBtn.setAttribute('aria-label', 'Show source');
@@ -1970,10 +2062,19 @@
     }
 
     function renderSource() {
+      // Drain any PREVIOUS source-view editor first. Important on the
+      // back-and-forth case (Source → Rendered → Source); without it we'd
+      // leak the original editor since toggling Source again pushes a new
+      // disposer rather than reusing the prior one.
+      disposeSource();
       view.innerHTML = '';
       toggleBtn.textContent = 'Rendered';
       toggleBtn.setAttribute('aria-label', 'Show rendered preview');
       toggleBtn.setAttribute('aria-pressed', 'true');
+      // Capture the index BEFORE _renderCode appends its disposer. The
+      // disposer push in _renderCode is synchronous (verify before any
+      // refactor that adds awaits in that path).
+      sourceDisposerIdx = self._activeDisposers.length;
       // Reuse the Monaco read-only code preview path so HTML source view
       // gets the same syntax highlighting + chrome as any other code file.
       self._renderCode(view, src, item);

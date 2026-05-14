@@ -124,6 +124,20 @@ describe('file-browser HTML preview helpers (#18)', function () {
       assert.ok(out.indexOf('connect-src') === -1, 'fetch/XHR blocked entirely');
     });
 
+    it('CSP includes form-action and base-uri (do NOT fall back to default-src)', function () {
+      // Per CSP spec, form-action and base-uri do NOT inherit from
+      // default-src. Without explicit directives they default to *. This
+      // test guards against a future regression that drops them.
+      var out = fb.buildSandboxedSrcdoc('<html></html>');
+      assert.ok(out.indexOf("form-action 'none'") !== -1,
+        'form-action must be present (sandbox already blocks form-submit; this is the second line of defense)');
+      assert.ok(out.indexOf("base-uri 'none'") !== -1,
+        'base-uri must be present (second line of defense behind <base> regex strip)');
+      // frame-ancestors is intentionally OMITTED — meta-CSP-ignored per spec.
+      assert.ok(out.indexOf('frame-ancestors') === -1,
+        'frame-ancestors is meta-CSP-ignored; do not add it');
+    });
+
     it('handles null / undefined / empty input safely', function () {
       assert.strictEqual(typeof fb.buildSandboxedSrcdoc(null), 'string');
       assert.strictEqual(typeof fb.buildSandboxedSrcdoc(undefined), 'string');
