@@ -301,21 +301,69 @@ class ClaudeCodeWebServer {
     } catch (_) {
       current = path.dirname(startPath);
     }
-    const baseResolved = path.resolve(this.baseFolder);
-    // Defensive cap: walk at most 64 levels up.
+
+    // baseFolder may itself be a symlink — resolve to its realpath ONCE so
+    // the lexical equality check below matches the realpath validatePath
+    // returned for the file we're walking up from. Without this, a server
+    // started with `--folder /symlink-to-foo` could keep walking past the
+    // intended boundary because the operator's lexical path !== realpath.
+    // (Reviewer LOW-1 on 2fa99d1.)
+    let baseResolved;
+    try { baseResolved = fs.realpathSync(this.baseFolder); }
+    catch (_) { baseResolved = path.resolve(this.baseFolder); }
+
+    // Defensive cap: walk at most 64 levels up. parent === current already
+    // terminates at the FS root, but the cap defends against pathological
+    // path inputs that pass path.dirname non-lexically (none in stdlib
+    // today, but cheap insurance).
     for (let i = 0; i < 64; i++) {
+      // lstat (NOT existsSync, which follows symlinks): a user with write
+      // access inside baseFolder could otherwise plant `.git → /etc` and
+      // redirect git's repo discovery to a directory of their choosing.
+      // Worktree pointers are regular files containing `gitdir: ...`, so
+      // we accept either dir or file but explicitly reject symlinks.
+      // (Reviewer MEDIUM-4 on 2fa99d1.)
       try {
-        if (fs.existsSync(path.join(current, '.git'))) return current;
-      } catch (_) { /* fall through */ }
+        const st = fs.lstatSync(path.join(current, '.git'));
+        if (st.isDirectory() || st.isFile()) return current;
+        // Symlink, socket, anything else → skip; keep walking.
+      } catch (_) { /* ENOENT or perm error → keep walking */ }
+
       const parent = path.dirname(current);
       if (parent === current) return null;          // hit FS root
-      // Stop walking once we'd cross out of baseFolder, unless baseFolder
-      // is itself inside a repo (in which case we're already at its root).
-      if (current === baseResolved) {
-        // One more check at baseFolder, then stop.
-        return null;
-      }
+      // Don't walk above the served baseFolder.
+      if (current === baseResolved) return null;
       current = parent;
+    }
+    return null;
+  }
+
+  /**
+   * Sliding-window per-IP rate limiter. Returns null if the request is
+   * allowed, or { retryAfterMs } if it should be 429'd. Keeps a separate
+   * Map per `bucket` name (so /api/search and /api/files/git-show have
+   * independent budgets). Map size capped at 10k entries — DoS hardening
+   * against floods of new IPs.
+   *
+   * Lifted from the inline /api/search implementation so /api/files/git-show
+   * (and any future endpoint) can share the same primitive without
+   * cargo-culting the boundary logic. Per reviewer MEDIUM-1 on 2fa99d1.
+   */
+  _perIpRateLimit(req, bucket, max, windowMs) {
+    const ip = (req.ip || (req.connection && req.connection.remoteAddress) || 'unknown').toString();
+    if (!this._rateLimitBuckets) this._rateLimitBuckets = new Map();
+    let map = this._rateLimitBuckets.get(bucket);
+    if (!map) { map = new Map(); this._rateLimitBuckets.set(bucket, map); }
+    const now = Date.now();
+    const recent = (map.get(ip) || []).filter((t) => now - t < windowMs);
+    if (recent.length >= max) {
+      return { retryAfterMs: windowMs - (now - recent[0]) };
+    }
+    recent.push(now);
+    map.set(ip, recent);
+    if (map.size > 10_000) {
+      const firstKey = map.keys().next().value;
+      if (firstKey) map.delete(firstKey);
     }
     return null;
   }
@@ -1195,6 +1243,16 @@ class ClaudeCodeWebServer {
         return res.status(400).json({ error: 'Invalid ref' });
       }
 
+      // Per-IP rate limit: 30/min/IP. `git show` on a packed-refs repo with
+      // a 5MB blob is expensive enough that an authenticated client could
+      // saturate CPU with a flood of concurrent requests. Reviewer MEDIUM-1
+      // on 2fa99d1 — bucket separate from /api/search so the diff view
+      // doesn't share a budget with cross-file search.
+      const rl = this._perIpRateLimit(req, 'git-show', 30, 60_000);
+      if (rl) {
+        return res.status(429).json({ error: 'Too many git-show requests', retryAfterMs: rl.retryAfterMs });
+      }
+
       const validation = this.validatePath(filePath);
       if (!validation.valid) return res.status(403).json({ error: validation.error });
       const resolvedPath = validation.path;
@@ -1217,6 +1275,24 @@ class ClaudeCodeWebServer {
       if (!relPath || relPath.startsWith('..')) {
         return res.status(400).json({ error: 'Path is outside the git repository' });
       }
+
+      // Strip server-absolute paths from any string we send to the client.
+      // git error messages routinely contain `cwd`-resolved absolute paths
+      // (e.g. "fatal: not a git repository: '/Users/.../foo/.git'") which
+      // leak host filesystem layout. Reviewer MEDIUM-2 on 2fa99d1.
+      const sanitize = (s) => {
+        if (!s) return s;
+        let out = String(s);
+        try {
+          const escapeRe = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (gitRoot) out = out.replace(new RegExp(escapeRe(gitRoot), 'g'), '<repo>');
+          if (this.baseFolder) out = out.replace(new RegExp(escapeRe(this.baseFolder), 'g'), '<base>');
+        } catch (_) {}
+        // Catch-all: redact long absolute path tokens that survived the prefix
+        // strip (different drive letters, symlink-resolved variants, etc.).
+        out = out.replace(/(['"]?)(\/[^\s'"`]{12,}|[A-Za-z]:[\\/][^\s'"`]{6,})\1/g, '<path>');
+        return out.slice(0, 300);
+      };
 
       const MAX_BYTES = 5 * 1024 * 1024;
       // execFile buffers stdout in memory; cap maxBuffer at MAX_BYTES + slack.
@@ -1244,20 +1320,28 @@ class ClaudeCodeWebServer {
             return res.status(413).json({ error: 'File too large at this revision (>5MB)' });
           }
           // Most likely: bad ref or file doesn't exist at that revision.
-          // Don't leak full stderr (could contain absolute paths); keep first line.
-          const firstLine = (stderr || '').split('\n')[0].slice(0, 300);
+          // Sanitize stderr first so absolute server paths don't leak
+          // (reviewer MEDIUM-2 on 2fa99d1).
+          const firstLine = sanitize((stderr || '').split('\n')[0])
+            || sanitize(err.message)
+            || 'Unknown git error';
           return res.status(404).json({
             error: 'git show failed',
-            message: firstLine || (err.message ? err.message.slice(0, 300) : 'Unknown git error'),
+            message: firstLine,
           });
         }
 
-        // Truncate hard at MAX_BYTES (defence in depth — maxBuffer should
-        // already error first, but better safe than streaming unbounded).
+        // Truncate at MAX_BYTES on a BYTE boundary (reviewer MEDIUM-3 on
+        // 2fa99d1 — String.prototype.slice cuts on codepoints, but our
+        // cap is in bytes; multibyte UTF-8 → up to 4× MAX_BYTES bytes
+        // through the wire). Buffer.slice + toString('utf8') replaces a
+        // partial codepoint at the cut with U+FFFD instead of producing
+        // malformed UTF-8.
         let truncated = false;
         let content = stdout;
-        if (Buffer.byteLength(content, 'utf8') > MAX_BYTES) {
-          content = content.slice(0, MAX_BYTES);
+        const buf = Buffer.from(stdout, 'utf8');
+        if (buf.length > MAX_BYTES) {
+          content = buf.slice(0, MAX_BYTES).toString('utf8');
           truncated = true;
         }
 
@@ -1316,26 +1400,16 @@ class ClaudeCodeWebServer {
         }
       }
 
-      // Per-IP rate limit: 10 searches/minute. Lazy in-process state.
-      const ip = (req.ip || (req.connection && req.connection.remoteAddress) || 'unknown').toString();
-      if (!this._searchRateLimit) this._searchRateLimit = new Map();
-      const now = Date.now();
-      const windowMs = 60_000;
-      const maxPerWindow = 10;
-      const recent = (this._searchRateLimit.get(ip) || []).filter((t) => now - t < windowMs);
-      if (recent.length >= maxPerWindow) {
+      // Per-IP rate limit: 10 searches/minute. Shared sliding-window
+      // helper (see _perIpRateLimit) — separate bucket from
+      // /api/files/git-show so the diff view doesn't share a budget
+      // with cross-file search.
+      const rl = this._perIpRateLimit(req, 'search', 10, 60_000);
+      if (rl) {
         return res.status(429).json({
           error: 'Too many searches',
-          retryAfterMs: windowMs - (now - recent[0]),
+          retryAfterMs: rl.retryAfterMs,
         });
-      }
-      recent.push(now);
-      this._searchRateLimit.set(ip, recent);
-      // Bound map size — drop the oldest entry if we somehow accumulate
-      // 10000 IPs (DoS hardening).
-      if (this._searchRateLimit.size > 10_000) {
-        const firstKey = this._searchRateLimit.keys().next().value;
-        if (firstKey) this._searchRateLimit.delete(firstKey);
       }
 
       // Resolve and validate the search root.

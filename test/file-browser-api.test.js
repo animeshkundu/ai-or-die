@@ -819,6 +819,104 @@ function encodeParam(val) {
       const res = await request(port, 'GET', '/api/files/git-show');
       assert.strictEqual(res.status, 400);
     });
+
+    // ── Reviewer follow-ups (MEDIUM-1..4 + LOW-1 from review of 2fa99d1) ──
+
+    (gitAvailable ? it : it.skip)('rejects symlinked .git as the repo root (MEDIUM-4)', async function () {
+      // Create a directory whose `.git` is a SYMLINK pointing at /etc.
+      // Plain existsSync would follow the symlink and treat it as a repo,
+      // which would then run `git show` with `cwd=<that dir>` — letting
+      // an attacker redirect git's repo discovery (CVE-class footgun).
+      // The fix uses lstat + isDirectory()/isFile(), rejecting symlinks.
+      const subDir = realJoin('symlinked-git');
+      fs.mkdirSync(subDir, { recursive: true });
+      try {
+        // Symlink target needs to exist and be a directory; /tmp works
+        // cross-platform (Windows tests would skip via gitAvailable on
+        // most CI runners that don't have git).
+        fs.symlinkSync(os.tmpdir(), path.join(subDir, '.git'), 'dir');
+      } catch (e) {
+        // Symlinks may not be supported in the test sandbox — skip.
+        this.skip();
+        return;
+      }
+      const target = path.join(subDir, 'foo.txt');
+      fs.writeFileSync(target, 'content');
+
+      const res = await request(port, 'GET',
+        `/api/files/git-show?path=${encodeParam(target)}`);
+      // _findGitRoot must NOT treat the symlink as a repo root; we get
+      // either 'Not a git repository' (404 — no real .git ancestor) or
+      // 'git show failed' if git is reached for a non-repo cwd.
+      assert.ok(res.status === 404, 'Expected 404 for symlinked .git, got ' + res.status);
+      assert.match(res.body.error || '', /Not a git repository|git show failed/);
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    (gitAvailable ? it : it.skip)('rate-limits at 30 requests per minute per IP (MEDIUM-1)', async function () {
+      const subDir = realJoin('gitrepo-rl');
+      fs.mkdirSync(subDir, { recursive: true });
+      gitInit(subDir);
+      const target = path.join(subDir, 'rl.txt');
+      fs.writeFileSync(target, 'x');
+      gitAdd(subDir, 'rl.txt');
+      gitCommit(subDir, 'init');
+
+      // Reset the per-IP bucket so prior tests don't taint our budget.
+      if (server._rateLimitBuckets) {
+        const b = server._rateLimitBuckets.get('git-show');
+        if (b) b.clear();
+      }
+
+      // Fire 31 requests sequentially; 31st must 429.
+      let lastStatus;
+      for (let i = 0; i < 31; i++) {
+        const r = await request(port, 'GET',
+          `/api/files/git-show?path=${encodeParam(target)}&ref=HEAD`);
+        lastStatus = r.status;
+        if (r.status === 429) break;
+      }
+      assert.strictEqual(lastStatus, 429, 'expected 429 within 31 requests, got ' + lastStatus);
+
+      // Reset again so the NEXT test doesn't inherit an exhausted budget.
+      if (server._rateLimitBuckets) {
+        const b = server._rateLimitBuckets.get('git-show');
+        if (b) b.clear();
+      }
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    (gitAvailable ? it : it.skip)('sanitizes server-absolute paths from error messages (MEDIUM-2)', async function () {
+      // Reset rate-limit bucket in case a prior test exhausted our budget.
+      if (server._rateLimitBuckets) {
+        const b = server._rateLimitBuckets.get('git-show');
+        if (b) b.clear();
+      }
+
+      const subDir = realJoin('gitrepo-leak');
+      fs.mkdirSync(subDir, { recursive: true });
+      gitInit(subDir);
+      const target = path.join(subDir, 'l.txt');
+      fs.writeFileSync(target, 'y');
+      gitAdd(subDir, 'l.txt');
+      gitCommit(subDir, 'init');
+
+      // Reference a non-existent ref → git emits an error containing the
+      // file path or repo path. The response message must NOT contain
+      // the absolute server path verbatim.
+      const res = await request(port, 'GET',
+        `/api/files/git-show?path=${encodeParam(target)}&ref=does-not-exist-xyz`);
+      assert.strictEqual(res.status, 404);
+      const msg = res.body.message || '';
+      assert.ok(!msg.includes(subDir),
+        'message must not leak absolute repo path; got: ' + msg);
+      assert.ok(!msg.includes(realTmpDir()),
+        'message must not leak base folder; got: ' + msg);
+
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
   });
 
   // ===========================================================================
