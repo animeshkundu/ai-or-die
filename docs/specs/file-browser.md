@@ -264,6 +264,22 @@ The navigation panel that displays directory listings and handles file selection
 | `navigateUp()` | Navigate to parent directory |
 | `navigateHome()` | Navigate to session working directory |
 
+**Constructor options:**
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `app` | object | Host app instance — gives access to terminals, sessions, fitAddon |
+| `authFetch` | function | Authenticated fetch wrapper (`(url, opts) => Promise<Response>`) |
+| `initialPath` | string \| null | Captured at construction. Used as a final fallback in `open()`; kept for tests and tooling that don't have a session context |
+| `getCwd` | function \| null | Optional callback returning the active session's working directory. **Invoked on every `open()`** so a session switch between opens picks up the new cwd. A throwing or null-returning callback falls through to `initialPath`. |
+
+**`open(startPath)` resolution order:**
+
+1. Explicit `startPath` argument from the caller (e.g. `openToFile`).
+2. `getCwd()` return value, if `getCwd` is configured and returns a truthy string.
+3. `initialPath` captured at construction.
+4. `null` — `navigateTo` falls back to the server's default base folder.
+
 **File list rendering:**
 - Directories listed first, then files, alphabetically within each group.
 - Each item shows an icon (color-coded by category), name, and size (files only).
