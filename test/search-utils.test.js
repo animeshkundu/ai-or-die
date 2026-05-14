@@ -3,6 +3,13 @@
 // we exercise the public searchStream() with a "fake" backend by injecting
 // a controlled producer process. For the cap behaviour specifically, we
 // drive the stream by mocking child_process.spawn via require() rewiring.
+//
+// REUSE NOTE: the fake-spawn + controllable-Readable-stdout pattern below
+// (makeFakeChild, withFakeSpawn, loadSearchWithStubbedExec) is reusable for
+// any test that needs to exercise a child_process consumer without spawning
+// a real binary. Extracting it into a shared helper at
+// `test/helpers/fake-child-process.js` is tracked in
+// https://github.com/animeshkundu/ai-or-die/issues/98.
 
 const assert = require('assert');
 const { Readable, EventEmitter } = require('stream');
