@@ -385,6 +385,36 @@ class ClaudeCodeWebServer {
     return null;
   }
 
+  /**
+   * Sliding-window per-SESSION rate limiter. Same shape as _perIpRateLimit
+   * but keyed on a sessionId rather than an IP — the right granularity for
+   * /api/files/find (and any future endpoint scoped to a single user's
+   * working session) since IP buckets collapse legitimate users behind a
+   * shared reverse proxy or NAT.
+   *
+   * Bucket maps are kept small (cap 10k entries with LRU-ish eviction) so
+   * a flood of fake session ids can't OOM the limiter.
+   */
+  _perSessionRateLimit(sessionId, bucket, max, windowMs) {
+    if (!sessionId) return null;
+    if (!this._sessionRateLimitBuckets) this._sessionRateLimitBuckets = new Map();
+    let map = this._sessionRateLimitBuckets.get(bucket);
+    if (!map) { map = new Map(); this._sessionRateLimitBuckets.set(bucket, map); }
+    const now = Date.now();
+    const recent = (map.get(sessionId) || []).filter((t) => now - t < windowMs);
+    if (recent.length >= max) {
+      return { retryAfterMs: windowMs - (now - recent[0]) };
+    }
+    recent.push(now);
+    map.set(sessionId, recent);
+    if (map.size > 10_000) {
+      const firstKey = map.keys().next().value;
+      if (firstKey) map.delete(firstKey);
+    }
+    return null;
+  }
+
+
   setupExpress() {
     this.app.use(cors());
     this.app.use(express.json());
@@ -1508,7 +1538,274 @@ class ClaudeCodeWebServer {
       req.on('close', () => { handle.kill(); });
     });
 
-    // GET /api/files/watch — SSE-streamed file-system change notifications
+    // GET /api/files/find — fuzzy filename search ("Cmd-P" Go-to-File).
+    //
+    // Pipeline (per docs/specs/file-browser.md §"GET /api/files/find"):
+    //   1. validatePath() the requested root (defaults to liveCwd ?? session.workingDir).
+    //   2. Spawn `rg --files --hidden --glob '!.git'` rooted at that path.
+    //      Backend selection re-uses the same chain as /api/search via
+    //      utils/search.js (system rg → bundled @vscode/ripgrep → SEA path).
+    //      grep is NOT a viable fallback here (it has no --files mode); if
+    //      the backend chain returns null we 503 with a clear hint.
+    //   3. Hard-cap enumeration at 10,000 files. Above that, return
+    //      { truncated: true, totalFound } so the UI can render a "refine
+    //      your search" hint instead of blocking the event loop on a giant
+    //      fuzzysort sweep.
+    //   4. Score with fuzzysort (acronym + contiguous + basename boosts).
+    //   5. Sort desc by score, slice to limit (default 50, max 200).
+    //
+    // Per-session 5 queries/sec rate limit (per spec — IP rate limiting is
+    // wrong granularity behind reverse proxies).
+    //
+    // Response shape: { matches: [{ path, basename, score, mtimeMs }],
+    //                   truncated, totalFound, queryMs }.
+    this.app.get('/api/files/find', async (req, res) => {
+      const t0 = Date.now();
+
+      const q = typeof req.query.q === 'string' ? req.query.q : '';
+      const trimmed = q.trim();
+      if (!trimmed) {
+        return res.status(400).json({ error: 'q (query) is required' });
+      }
+      if (q.length > 1024) {
+        return res.status(400).json({ error: 'q is too long (max 1024 chars)' });
+      }
+
+      const sessionId = typeof req.query.session === 'string' ? req.query.session : '';
+      if (!sessionId) {
+        return res.status(400).json({ error: 'session is required' });
+      }
+      const session = this.claudeSessions.get(sessionId);
+      // session may be missing (the client sometimes calls find before any
+      // session is created — e.g. fresh tab); we still allow that, but
+      // then `path` MUST be supplied explicitly because there is no
+      // workingDir / liveCwd to default to.
+
+      // Per-session rate limit: 5 queries/sec sliding window.
+      const rl = this._perSessionRateLimit(sessionId, 'files-find', 5, 1000);
+      if (rl) {
+        return res.status(429).json({
+          error: 'Too many find queries for this session',
+          retryAfterMs: rl.retryAfterMs,
+        });
+      }
+
+      // Resolve the search root: explicit `path` > liveCwd > workingDir > 400.
+      let rawPath = typeof req.query.path === 'string' ? req.query.path : '';
+      if (!rawPath && session) {
+        rawPath = session.liveCwd || session.workingDir || '';
+      }
+      if (!rawPath) {
+        return res.status(400).json({ error: 'path is required (no session workingDir to default to)' });
+      }
+
+      const validation = this.validatePath(rawPath);
+      if (!validation.valid) {
+        return res.status(403).json({ error: validation.error });
+      }
+      const root = validation.path;
+
+      // limit: default 50, hard cap 200.
+      let limit = parseInt(req.query.limit, 10);
+      if (!Number.isFinite(limit) || limit <= 0) limit = 50;
+      if (limit > 200) limit = 200;
+
+      // Enumeration: spawn `rg --files --hidden --glob '!.git'`. We reuse
+      // the search-backend detection from utils/search.js so the bundled
+      // @vscode/ripgrep path (the primary backend on Windows + corporate
+      // installs) is honoured the same way as /api/search.
+      const backend = search.detectBackend();
+      if (backend !== 'rg') {
+        // grep can't enumerate files (it can list with `find . -type f` but
+        // that has different .gitignore semantics; v1 hard-requires rg).
+        return res.status(503).json({
+          error: 'ripgrep is required for fuzzy file find but is not available',
+        });
+      }
+
+      const rgPath = search.detectRgPath() || 'rg';
+
+      let stdoutBuf = '';
+      let totalFound = 0;
+      let truncated = false;
+      const ENUMERATION_CAP = 10_000;
+
+      const { spawn } = require('child_process');
+      let proc;
+      try {
+        proc = spawn(rgPath, ['--files', '--hidden', '--glob', '!.git', '--no-messages'], {
+          cwd: root,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        return res.status(503).json({ error: 'failed to spawn ripgrep', message: err.message });
+      }
+
+      let killed = false;
+      const killForCap = () => {
+        if (killed) return;
+        killed = true;
+        truncated = true;
+        try { proc.kill('SIGTERM'); } catch (_) {}
+      };
+
+      // Buffer-and-split stdout. rg --files emits one path per line, no
+      // structured framing — cheap to parse and skip the JSON overhead.
+      const files = [];
+      proc.stdout.on('data', (chunk) => {
+        if (killed) return;
+        stdoutBuf += chunk.toString('utf-8');
+        let nl;
+        while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+          const line = stdoutBuf.slice(0, nl);
+          stdoutBuf = stdoutBuf.slice(nl + 1);
+          if (!line) continue;
+          totalFound++;
+          if (totalFound > ENUMERATION_CAP) {
+            killForCap();
+            break;
+          }
+          files.push(line);
+        }
+      });
+
+      // Drain stderr to avoid backpressure deadlock — rg can write to it
+      // for permission warnings, etc. We don't surface them; --no-messages
+      // already silences most.
+      proc.stderr.resume();
+
+      proc.on('error', (err) => {
+        // Process never started or died catastrophically. Surface as 503.
+        if (!res.headersSent) {
+          res.status(503).json({ error: 'ripgrep error', message: err.message });
+        }
+      });
+
+      proc.on('close', () => {
+        try {
+          // Score each file with fuzzysort. We score against the BASENAME
+          // for the primary key (matches user mental model — they type
+          // the filename, not the directory) but `fuzzysort.go` also
+          // accepts a key-extraction wrapper. We do this by hand because
+          // we want score+basename in the response.
+          const fuzzysort = require('fuzzysort');
+          // Prepare targets: basename strings. fuzzysort.prepare() builds
+          // an internal index per target — worth doing for the cap-sized
+          // candidate list since we re-run it per query (no cache for v1).
+          const prepared = files.map((rel) => {
+            const abs = path.isAbsolute(rel) ? rel : path.join(root, rel);
+            const base = path.basename(rel);
+            return { abs, base, prep: fuzzysort.prepare(base) };
+          });
+
+          // fuzzysort.go returns matches sorted by score descending.
+          const scored = fuzzysort.go(trimmed, prepared, {
+            key: 'prep',
+            limit,
+            // threshold is fuzzysort's "minimum score" knob — anything
+            // below is filtered out. -10000 = "include even weak partials"
+            // (matches the VS Code Cmd-P feel).
+            threshold: -10000,
+          });
+
+          const matches = [];
+          for (const s of scored) {
+            const item = s.obj;
+            let mtimeMs = 0;
+            try {
+              mtimeMs = fs.statSync(item.abs).mtimeMs;
+            } catch (_) {
+              // File vanished between rg enumeration and the stat — skip
+              // mtime but include the match.
+            }
+            matches.push({
+              path: item.abs,
+              basename: item.base,
+              score: s.score,
+              mtimeMs,
+            });
+          }
+
+          res.json({
+            matches,
+            truncated,
+            totalFound,
+            queryMs: Date.now() - t0,
+          });
+        } catch (err) {
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'find failed', message: err.message });
+          }
+        }
+      });
+
+      // Client disconnect → kill the child immediately.
+      req.on('close', () => {
+        try { proc.kill('SIGTERM'); } catch (_) {}
+      });
+    });
+
+    // GET /api/sessions/:sessionId/repo-root — resolve git repo root for
+    // a session's working directory. Used by the client-side terminal-path
+    // resolver chain (file-browser.js TerminalPathDetector) so paths like
+    // "src/app.js" inside a stack trace can be tried against the repo root
+    // in addition to liveCwd and workingDir. See spec
+    // docs/specs/file-browser.md §"GET /api/sessions/:id/repo-root".
+    //
+    // Cached per session for the session lifetime (the repo root doesn't
+    // move during a session). Cache is invalidated only when the session
+    // is deleted.
+    this.app.get('/api/sessions/:sessionId/repo-root', (req, res) => {
+      const sessionId = req.params.sessionId;
+      const session = this.claudeSessions.get(sessionId);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+
+      // Cached?
+      if (Object.prototype.hasOwnProperty.call(session, '_repoRootCache')) {
+        return res.json({ root: session._repoRootCache });
+      }
+
+      const startDir = session.liveCwd || session.workingDir;
+      if (!startDir) return res.json({ root: null });
+
+      const validation = this.validatePath(startDir);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+
+      // Use git rev-parse rather than the local _findGitRoot walk so we
+      // correctly handle worktrees (where .git is a file, not a dir
+      // pointing into the main repo). _findGitRoot also handles worktrees
+      // but git's own resolver is the definitive answer.
+      execFile('git', ['rev-parse', '--show-toplevel'], {
+        cwd: validation.path,
+        timeout: 5000,
+      }, (err, stdout) => {
+        if (err) {
+          // Most common: not in a git repo (`fatal: not a git repository`).
+          // Cache null so we don't re-spawn git on every link click.
+          session._repoRootCache = null;
+          return res.json({ root: null });
+        }
+        const root = String(stdout).trim();
+        if (!root) {
+          session._repoRootCache = null;
+          return res.json({ root: null });
+        }
+        // Validate the resolved root is inside the sandbox before caching
+        // and returning — git could theoretically resolve to something
+        // outside baseFolder if the session's workingDir is a deep path
+        // into a repo whose root sits above baseFolder (the served
+        // sub-directory case).
+        const rootValidation = this.validatePath(root);
+        if (!rootValidation.valid) {
+          session._repoRootCache = null;
+          return res.json({ root: null });
+        }
+        session._repoRootCache = rootValidation.path;
+        res.json({ root: session._repoRootCache });
+      });
+    });
+
+
     // via chokidar. Per ADR-0017 (#100, amended at 4d047d1): proactive sync
     // between agent edits and user-open Monaco tabs / file-browser
     // listings, complementing the hash-based 409-Conflict-on-save backstop
