@@ -2654,10 +2654,38 @@ class ClaudeCodeWebServer {
 
     try {
       console.log(`startToolSession(${toolName}): spawning in session ${sessionId}, workingDir=${session.workingDir}`);
+
+      // Per ADR-0019: only the Terminal bridge parses OSC 7 → live CWD.
+      // Claude/Codex/Copilot/Gemini bridges don't `chdir` their host
+      // process; their session.liveCwd stays null. We pass the OSC 7
+      // hooks only when starting a Terminal session so the other bridges
+      // remain a true no-op.
+      const osc7Hooks = (toolName === 'terminal') ? {
+        validatePath: (p) => this.validatePath(p),
+        onCwdChange: (cwd, prev) => {
+          // Mirror onto the session record so the find/repo-root endpoints
+          // (which take session id → workingDir) can reach for liveCwd
+          // without going through the bridge map.
+          const s = this.claudeSessions.get(sessionId);
+          if (s) {
+            s.liveCwd = cwd;
+            this.sessionStore.markDirty();
+          }
+          this.broadcastToSession(sessionId, {
+            type: 'cwd_changed',
+            sessionId,
+            cwd,
+            prev,
+            source: 'osc7',
+          });
+        },
+      } : {};
+
       await bridge.startSession(sessionId, {
         workingDir: session.workingDir,
         cols: cols || 80,
         rows: rows || 24,
+        ...osc7Hooks,
         onOutput: (data) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;
