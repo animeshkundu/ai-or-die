@@ -1244,10 +1244,12 @@
     this._unbindFileWatcher = this._fileWatcher.onEvent(function (evt) {
       try { self._dispatchWatcherEvent(evt); } catch (_) { /* swallow handler-side errors */ }
     });
-    // Maintain the listing-direct-children subscription set so
-    // navigateTo can compute add/remove diffs without scanning the
-    // whole watcher state.
-    this._listingSubscriptions = {}; // path → true (Set-as-object for older-browser tolerance)
+    // Maintain the listing-recursive-subscription pointer so navigateTo
+    // can unsubscribe the previous dir before subscribing the new one.
+    // Per ce0102e the server treats a recursive subscription as one
+    // entry against the IP-cap; never accumulating across navigateTos
+    // is important for long-running sessions.
+    this._listingDirSubscription = null;
     return this._fileWatcher;
   };
 

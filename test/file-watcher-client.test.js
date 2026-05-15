@@ -85,10 +85,25 @@ describe('file-watcher-client.js (pure helpers)', function () {
         '/api/files/watch/subscribe?session=sess&path=%2Fx'
       );
     });
-    it('appends token + URL-encodes everything', function () {
-      var u = wc.buildControlUrl('subscribe', 'sess&val', '/has space', 'tok+1');
+    it('appends recursive=1 when opts.recursive is true (post-ce0102e)', function () {
+      assert.strictEqual(
+        wc.buildControlUrl('subscribe', 'sess', '/abs/dir', null, { recursive: true }),
+        '/api/files/watch/subscribe?session=sess&path=%2Fabs%2Fdir&recursive=1'
+      );
+      assert.strictEqual(
+        wc.buildControlUrl('unsubscribe', 'sess', '/abs/dir', null, { recursive: true }),
+        '/api/files/watch/unsubscribe?session=sess&path=%2Fabs%2Fdir&recursive=1'
+      );
+    });
+    it('omits recursive when opts.recursive is falsy', function () {
+      assert.ok(wc.buildControlUrl('subscribe', 'sess', '/x', null, {}).indexOf('recursive') === -1);
+      assert.ok(wc.buildControlUrl('subscribe', 'sess', '/x', null, { recursive: false }).indexOf('recursive') === -1);
+    });
+    it('appends token + URL-encodes everything (with recursive)', function () {
+      var u = wc.buildControlUrl('subscribe', 'sess&val', '/has space', 'tok+1', { recursive: true });
       assert.ok(u.indexOf('session=sess%26val') !== -1);
       assert.ok(u.indexOf('path=%2Fhas%20space') !== -1);
+      assert.ok(u.indexOf('recursive=1') !== -1);
       assert.ok(u.indexOf('token=tok%2B1') !== -1);
     });
     it('returns empty string when session OR path missing', function () {

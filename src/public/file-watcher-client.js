@@ -75,15 +75,30 @@
     return url;
   }
 
-  // Build the subscribe / unsubscribe URL.
-  function buildControlUrl(action, sessionId, path, token) {
+  // Build the subscribe / unsubscribe URL. `opts.recursive=true` appends
+  // `&recursive=1` so the server stores the path as a directory-recursive
+  // subscription (per ce0102e). Backward compatible — omit for exact-path
+  // semantics.
+  function buildControlUrl(action, sessionId, path, token, opts) {
     var endpoint = action === 'unsubscribe' ? UNSUBSCRIBE_ENDPOINT : SUBSCRIBE_ENDPOINT;
     if (!sessionId || !path) return '';
     var url = endpoint +
       '?session=' + encodeURIComponent(String(sessionId)) +
       '&path=' + encodeURIComponent(String(path));
+    if (opts && opts.recursive) url += '&recursive=1';
     if (token) url += '&token=' + encodeURIComponent(String(token));
     return url;
+  }
+
+  // Compound refcount key — recursive vs exact subscriptions on the
+  // same path are tracked independently because the server treats them
+  // as distinct entries (`wrong-flavour-unsubscribe is a no-op` per
+  // ce0102e's contract). Means the same path can be subscribed both
+  // exact (by a tab) AND recursive (by the listing) without dedup; the
+  // server's "no double-fire" test guarantees only one event per
+  // change anyway.
+  function refKey(path, recursive) {
+    return (recursive ? 'r:' : 'e:') + normalizePath(path);
   }
 
   // Forward-slash-normalize a path so client-side comparisons match
@@ -219,28 +234,32 @@
   // callers (listing + tab, two tabs of the same file) only POSTs once.
   // Server-side subscribe is idempotent so the duplicate-POST cost is
   // bounded, but skipping the call entirely keeps network noise down.
-  WatcherClient.prototype.subscribe = function (path) {
+  WatcherClient.prototype.subscribe = function (path, opts) {
     if (this._destroyed || !path) return Promise.resolve(false);
-    var key = normalizePath(path);
+    var recursive = !!(opts && opts.recursive);
+    var key = refKey(path, recursive);
     var prev = this._subscriptionRefs[key] || 0;
     this._subscriptionRefs[key] = prev + 1;
     if (prev > 0) return Promise.resolve(true); // already subscribed; no POST
-    return this._sendControl('subscribe', key);
+    return this._sendControl('subscribe', normalizePath(path), { recursive: recursive });
   };
 
-  WatcherClient.prototype.unsubscribe = function (path) {
+  WatcherClient.prototype.unsubscribe = function (path, opts) {
     if (this._destroyed || !path) return Promise.resolve(false);
-    var key = normalizePath(path);
+    var recursive = !!(opts && opts.recursive);
+    var key = refKey(path, recursive);
     var prev = this._subscriptionRefs[key] || 0;
     if (prev === 0) return Promise.resolve(true); // not subscribed; no-op
     this._subscriptionRefs[key] = prev - 1;
     if (prev > 1) return Promise.resolve(true); // still subscribed by others
     delete this._subscriptionRefs[key];
-    return this._sendControl('unsubscribe', key);
+    return this._sendControl('unsubscribe', normalizePath(path), { recursive: recursive });
   };
 
   // Read the live subscription set (for diagnostics / tests / replay-on-
-  // reconnect).
+  // reconnect). Returns the compound refcount keys ('e:' or 'r:' prefix
+  // → exact / recursive flavour); callers that just want paths can map
+  // off the prefix.
   WatcherClient.prototype.subscribedPaths = function () {
     return Object.keys(this._subscriptionRefs);
   };
@@ -341,30 +360,36 @@
     var pending = this._pendingControl.slice();
     this._pendingControl = [];
     for (var i = 0; i < pending.length; i++) {
-      this._sendControlImmediate(pending[i].action, pending[i].path);
+      this._sendControlImmediate(pending[i].action, pending[i].path, pending[i].opts);
     }
-    var paths = Object.keys(this._subscriptionRefs);
-    for (var j = 0; j < paths.length; j++) {
-      this._sendControlImmediate('subscribe', paths[j]);
+    // Replay every active refcounted subscription. The compound key
+    // carries the recursive flavour ('e:' / 'r:' prefix) so we
+    // re-issue exact AND recursive subs correctly after reconnect.
+    var keys = Object.keys(this._subscriptionRefs);
+    for (var j = 0; j < keys.length; j++) {
+      var k = keys[j];
+      var recursive = k.charAt(0) === 'r';
+      var path = k.slice(2); // strip 'e:' / 'r:' prefix
+      this._sendControlImmediate('subscribe', path, { recursive: recursive });
     }
   };
 
-  WatcherClient.prototype._sendControl = function (action, path) {
+  WatcherClient.prototype._sendControl = function (action, path, opts) {
     // If the watcher isn't ready yet, queue the call to drain on `start`.
     // Server's POST endpoint returns 404 until the EventSource has
     // landed (no-active-watcher); queueing avoids racy 404s on cold
     // connect and is also the natural reconnect-replay path.
     if (!this._ready) {
-      this._pendingControl.push({ action: action, path: path });
+      this._pendingControl.push({ action: action, path: path, opts: opts || null });
       return Promise.resolve(true);
     }
-    return this._sendControlImmediate(action, path);
+    return this._sendControlImmediate(action, path, opts);
   };
 
-  WatcherClient.prototype._sendControlImmediate = function (action, path) {
+  WatcherClient.prototype._sendControlImmediate = function (action, path, opts) {
     if (!this.authFetch || !this._currentSession) return Promise.resolve(false);
     var token = this.getAuthToken();
-    var url = buildControlUrl(action, this._currentSession, path, token);
+    var url = buildControlUrl(action, this._currentSession, path, token, opts);
     if (!url) return Promise.resolve(false);
     // Best-effort POST; 404 (no-active-watcher) is benign during
     // reconnect — the next `start` re-replays.
