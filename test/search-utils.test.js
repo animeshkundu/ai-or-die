@@ -434,4 +434,71 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
       ctx.restore();
     }
   });
+
+  // --------------------------------------------------------------------
+  // ADR-0018 / SEA-binary boot fix: detection must consult
+  // global.__SEA_RG_PATH__ BEFORE the require('@vscode/ripgrep') path,
+  // because in SEA mode there is no node_modules at runtime and that
+  // require throws. sea-bootstrap.js extracts the bundled binary to a
+  // temp dir, chmods +x, and surfaces the resolved path via that
+  // global; without the consult-first ordering, the SEA Windows binary
+  // hard-errors on every boot via requireBackendAtStartup().
+  // --------------------------------------------------------------------
+  it('uses global.__SEA_RG_PATH__ when set (SEA mode), bypassing @vscode/ripgrep require', function () {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sea-rg-test-'));
+    const fakeRg = path.join(tmpDir, 'rg');
+    fs.writeFileSync(fakeRg, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(fakeRg, 0o755);
+    global.__SEA_RG_PATH__ = fakeRg;
+
+    // Stub system rg as ABSENT so detection falls past step 1 and
+    // stops at step 2 (SEA-bundled). bundledAvailable: false also
+    // proves we never reached step 3 (npm @vscode/ripgrep).
+    const ctx = loadSearchWithStubbedExec(function (cmd, args) {
+      if (cmd === 'where' && /^rg/.test(args[0])) {
+        const e = new Error('rg not found'); e.status = 1; throw e;
+      }
+      if (cmd === 'which' && args[0] === 'rg') {
+        const e = new Error('rg not found'); e.status = 1; throw e;
+      }
+      throw new Error('unexpected: ' + cmd);
+    }, 'win32', { bundledAvailable: false });
+    try {
+      assert.strictEqual(ctx.search.detectBackend(), 'rg',
+        'SEA-bundled rg path MUST surface as backend=rg');
+      assert.strictEqual(ctx.search.detectRgPath(), fakeRg,
+        'detectRgPath() MUST return the SEA-extracted absolute path so spawn bypasses node_modules');
+    } finally {
+      ctx.restore();
+      delete global.__SEA_RG_PATH__;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips global.__SEA_RG_PATH__ when the extracted file is unexecutable (corrupt asset / quarantine)', function () {
+    // Even though sea-bootstrap.js chmods +x, an antivirus quarantine
+    // of the just-extracted binary or a corrupted SEA asset could
+    // leave it non-readable. Detection must surface that as fall-
+    // through to grep / null instead of a per-request spawn failure.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sea-rg-bad-'));
+    const fakeRg = path.join(tmpDir, 'rg');
+    fs.writeFileSync(fakeRg, '#!/bin/sh\nexit 0\n');
+    fs.chmodSync(fakeRg, 0o644);    // NOT executable
+    global.__SEA_RG_PATH__ = fakeRg;
+
+    const ctx = loadSearchWithStubbedExec(function (cmd, args) {
+      if (cmd === 'which' && args[0] === 'rg') {
+        const e = new Error('rg not found'); e.status = 1; throw e;
+      }
+      throw new Error('unexpected: ' + cmd);
+    }, 'darwin', { bundledAvailable: false });
+    try {
+      assert.strictEqual(ctx.search.detectBackend(), null,
+        'SEA-extracted rg without exec bit MUST fall through; macOS has no grep fallback');
+    } finally {
+      ctx.restore();
+      delete global.__SEA_RG_PATH__;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

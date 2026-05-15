@@ -58,24 +58,49 @@ function _detectBackend() {
     return _detectedBackend;
   } catch (_) { /* not found — try bundled */ }
 
-  // 2. Fall back to the @vscode/ripgrep bundled binary. This is the
-  //    primary backend for Windows + macOS-no-Homebrew users; corp
-  //    machines where rg isn't on PATH; and CI runners that don't
-  //    pre-install ripgrep. The bundled binary is downloaded at
-  //    `npm install` time by the @vscode/ripgrep postinstall script
-  //    (network call — corp proxies + `--ignore-scripts` are the two
-  //    failure modes captured in ADR-0018). When that postinstall
-  //    SUCCEEDS, the rgPath returned here is an absolute path inside
-  //    node_modules; we verify it actually exists and is executable
-  //    before declaring it as our backend.
+  // 2. SEA-bundled rg (ADR-0018, Windows-binary boot fix). When the
+  //    SEA bootstrap runs (sea-bootstrap.js), it extracts the bundled
+  //    @vscode/ripgrep platform-specific binary to a temp dir, chmods
+  //    it +x on POSIX, and surfaces the resolved path via the
+  //    global.__SEA_RG_PATH__ sentinel. We MUST consult this BEFORE
+  //    the require('@vscode/ripgrep') path below, because in SEA mode
+  //    the package isn't on disk (no node_modules at runtime) and the
+  //    require throws.
+  //
+  //    The X_OK check here is belt-and-suspenders — sea-bootstrap.js
+  //    already chmods the file, but a corrupted asset extraction or
+  //    antivirus quarantine of the just-extracted binary could leave
+  //    it non-executable. accessSync surfaces that as a fall-through
+  //    to grep / null instead of letting spawn fail per-request.
+  try {
+    if (typeof global !== 'undefined' && global.__SEA_RG_PATH__) {
+      fs.accessSync(global.__SEA_RG_PATH__, fs.constants.X_OK);
+      _detectedBackend = 'rg';
+      _detectedRgPath = global.__SEA_RG_PATH__;
+      return _detectedBackend;
+    }
+  } catch (_) { /* extracted but unexecutable — fall through */ }
+
+  // 3. Fall back to the @vscode/ripgrep bundled binary (npm-install
+  //    path). This is the primary backend for Windows + macOS-no-
+  //    Homebrew users running from `npm install`; corp machines where
+  //    rg isn't on PATH; and CI runners that don't pre-install
+  //    ripgrep. The bundled binary is downloaded at `npm install`
+  //    time by the @vscode/ripgrep postinstall script (network call
+  //    — corp proxies + `--ignore-scripts` are the two failure modes
+  //    captured in ADR-0018). When that postinstall SUCCEEDS, the
+  //    rgPath returned here is an absolute path inside node_modules;
+  //    we verify it actually exists and is executable before
+  //    declaring it as our backend.
   //
   //    Track the resolved path in _detectedRgPath so the spawn() call
   //    below can pass it explicitly (bypassing PATH lookup, which on
   //    Windows would never find the bundled binary anyway).
   try {
     // require() can throw if the package is missing entirely (offline
-    // install, ripped-out node_modules, --ignore-scripts) — wrap to
-    // keep _detectBackend total-on-error.
+    // install, ripped-out node_modules, --ignore-scripts, OR SEA mode
+    // where node_modules isn't extracted) — wrap to keep _detectBackend
+    // total-on-error.
     const rgPath = require('@vscode/ripgrep').rgPath;
     if (rgPath && typeof rgPath === 'string') {
       // X_OK: the bundled binary may exist on disk but be non-
@@ -91,7 +116,7 @@ function _detectBackend() {
     }
   } catch (_) { /* package missing OR rgPath unexecutable — fall through */ }
 
-  // 3. grep fallback: STRICT Linux only, AND only as a SAFETY NET for
+  // 4. grep fallback: STRICT Linux only, AND only as a SAFETY NET for
   //    "rg present-but-unusable" cases that slip past steps 1 + 2
   //    (antivirus quarantine of the bundled binary, perms stripped at
   //    extraction time, corp policy block on the bundled path). grep
