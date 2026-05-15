@@ -130,7 +130,7 @@ class Osc7Parser {
       if (!body.startsWith('file://')) continue;
 
       try {
-        const p = url.fileURLToPath(body);
+        const p = decodeOsc7File(body);
         results.push(p);
       } catch (_) {
         // Malformed URI (invalid host segment, bad percent encoding, etc.).
@@ -163,5 +163,51 @@ class Osc7Parser {
   }
 }
 
+/**
+ * Decode an OSC 7 file:// URI into a local path. Tolerant wrapper around
+ * Node's url.fileURLToPath() that handles the real-world case where shell
+ * prompt hooks emit `file://$HOSTNAME/...` (with the local machine's
+ * hostname, not `localhost`).
+ *
+ * Background: the documented bash hook in docs/specs/file-browser.md and
+ * the zsh / pwsh hooks all emit `file://$HOSTNAME$PWD` / `file://$HOST$PWD`
+ * / `file://$env:COMPUTERNAME/$p` respectively. On POSIX (Linux + macOS),
+ * Node's url.fileURLToPath() throws ERR_INVALID_FILE_URL_HOST for any
+ * host segment that isn't exactly `localhost` or empty — so the spec
+ * hooks never produced a usable path until this fallback was added.
+ *
+ * Behaviour:
+ *   - Try fileURLToPath(body) first. If it succeeds (host is empty,
+ *     "localhost", or — on Windows — a UNC server name), return the
+ *     decoded path unchanged.
+ *   - On POSIX, when fileURLToPath throws ERR_INVALID_FILE_URL_HOST,
+ *     re-parse with the host segment stripped: `file://hostname/path`
+ *     → `file:///path`. This mirrors what every consumer terminal
+ *     (iTerm2, GNOME Terminal, WezTerm, etc.) does — they trust the
+ *     path locally because the OSC 7 came from a shell on the same
+ *     machine as the terminal emulator.
+ *   - On Windows, the host segment is meaningful (UNC paths). Don't
+ *     strip it — propagate the throw so the parser silently skips.
+ *   - All other errors propagate so the caller can decide (the parser
+ *     wraps in try/catch and silently skips).
+ */
+function decodeOsc7File(body) {
+  try {
+    return url.fileURLToPath(body);
+  } catch (err) {
+    if (err && err.code === 'ERR_INVALID_FILE_URL_HOST' && process.platform !== 'win32') {
+      // POSIX: a non-localhost hostname in OSC 7 is the rule, not the
+      // exception (every shell hook emits $HOSTNAME / $HOST). Strip it
+      // and re-parse the path component as a local POSIX path.
+      const m = body.match(/^file:\/\/[^/]*(\/.*)$/);
+      if (m) {
+        return url.fileURLToPath('file://' + m[1]);
+      }
+    }
+    throw err;
+  }
+}
+
 module.exports = Osc7Parser;
 module.exports.MAX_PENDING = MAX_PENDING;
+module.exports._decodeOsc7File = decodeOsc7File;

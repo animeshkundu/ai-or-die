@@ -53,20 +53,40 @@ describe('Osc7Parser', function () {
       assert.deepStrictEqual(out, [url.fileURLToPath('file://localhost/Users/foo')]);
     });
 
-    it('parses with arbitrary hostname (parity with url.fileURLToPath on the host platform)', function () {
+    it('parses with arbitrary hostname (POSIX: strip host fallback; Windows: UNC)', function () {
       const p = new Osc7Parser();
       const uri = 'file://my-host.example.com/Users/foo';
-      // Node's fileURLToPath REJECTS non-localhost hosts on POSIX (it
-      // throws ERR_INVALID_FILE_URL_HOST). On Windows it accepts the host
-      // and yields a UNC path. The parser must mirror that: silent skip
-      // when fileURLToPath throws, decoded path when it succeeds.
+      // Real shells emit `file://$HOSTNAME$PWD` — almost never `localhost`.
+      // Node's fileURLToPath REJECTS non-localhost hosts on POSIX, so the
+      // parser falls back to stripping the host and decoding the path
+      // component locally (mirrors iTerm2 / GNOME Terminal / WezTerm
+      // behaviour). On Windows the host segment is meaningful (UNC), so
+      // fileURLToPath handles it directly.
       let expected;
-      try {
+      if (process.platform === 'win32') {
         expected = [url.fileURLToPath(uri)];
-      } catch (_) {
-        expected = []; // POSIX: silent skip
+      } else {
+        expected = [url.fileURLToPath('file:///Users/foo')];
       }
       assert.deepStrictEqual(p.feed('\x1b]7;' + uri + '\x07'), expected);
+    });
+
+    it('parses with the local machine hostname (the spec\'s bash hook case)', function () {
+      // This is THE case the codex critic flagged — bash's PROMPT_COMMAND
+      // hook in docs/specs/file-browser.md emits `file://$HOSTNAME$PWD`.
+      // On macOS / Linux $HOSTNAME is the machine name (e.g. "mini.local"),
+      // never "localhost". Without the host-strip fallback the parser
+      // silently drops every prompt's OSC 7 sequence — meaning the
+      // documented hook has NO effect end-to-end.
+      const p = new Osc7Parser();
+      const out = p.feed('\x1b]7;file://mini.local/Users/foo/code\x07');
+      if (process.platform === 'win32') {
+        // On Windows, file://mini.local/Users/foo/code is a UNC path.
+        assert.deepStrictEqual(out, [url.fileURLToPath('file://mini.local/Users/foo/code')]);
+      } else {
+        // POSIX: host stripped, path decoded locally.
+        assert.deepStrictEqual(out, [url.fileURLToPath('file:///Users/foo/code')]);
+      }
     });
 
     it('decodes percent-encoded paths (spaces)', function () {
