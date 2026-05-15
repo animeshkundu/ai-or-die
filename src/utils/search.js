@@ -128,7 +128,13 @@ function _buildRgArgs(query, opts) {
   // -- separates options from positional args (paranoia: rg also has
   // --regexp= which we use, but extra defence is cheap).
   args.push('--regexp', query);
-  args.push('--', opts.cwd || '.');
+  // Positional path is `.` (relative) — spawn's cwd is set to opts.cwd
+  // already (see streamSearch). rg's `--glob 'foo/*.js'` only matches
+  // when the search target is relative (`.`); passing the same absolute
+  // path here as positional silently drops directory-prefix globs
+  // (reproduced on rg 15.1.0 macOS + Linux CI). Use `.` so the glob root
+  // coincides with cwd.
+  args.push('--', '.');
   return { cmd: 'rg', args };
 }
 
