@@ -142,12 +142,23 @@ test.describe('File browser — rich viewers + search (#7, #19, #8, #13)', () =>
 
     // Resolve the absolute path the regex would extract from terminal text.
     // The activate handler resolves relatives against getCurrentWorkingDir();
-    // since our fixture is absolute, that's a no-op.
-    const targetWithLine = jsTarget.replace(/\\/g, '/') + ':42';
+    // since our fixture is absolute, that's a no-op. Forward-slash the
+    // path so it's a valid URL-encodable form on every platform.
+    const targetPath = jsTarget.replace(/\\/g, '/');
+    const targetLine = 42;
 
     // Trigger what `activate()` does: validate via /api/files/stat, then
     // call openFileInViewer(path, line, col). This is the user-observable
     // outcome of clicking an underlined link.
+    //
+    // We pass path + line as STRUCTURED data via the evaluate arg instead
+    // of as `path:line` and splitting on `:` inside the page — that split
+    // breaks on Windows because the drive-letter prefix (`C:\...`)
+    // contains a colon that the simple `split(':')` would mistake for
+    // the line separator. The activate flow's actual `path:line:col`
+    // parser uses a regex anchored at the end of the string to handle
+    // Windows drives correctly; this test just exercises the wiring
+    // downstream of that parser.
     //
     // We capture `_pendingJumpTo` synchronously inside the same evaluate
     // because file-browser.js consumes the flag on the next event-loop
@@ -156,9 +167,7 @@ test.describe('File browser — rich viewers + search (#7, #19, #8, #13)', () =>
     // consume). Reading the flag from a separate `page.evaluate` after
     // the panel opens would race the consume — pendingJumpTo would
     // already be null.
-    const result = await page.evaluate(async (target) => {
-      const [pathPart, lineStr] = target.split(':');
-      const line = parseInt(lineStr, 10);
+    const result = await page.evaluate(async ({ pathPart, line }) => {
       const stat = await window.app.authFetch('/api/files/stat?path=' + encodeURIComponent(pathPart));
       if (!stat.ok) return { ok: false, status: stat.status };
       window.app.openFileInViewer(pathPart, line, 1);
@@ -169,9 +178,9 @@ test.describe('File browser — rich viewers + search (#7, #19, #8, #13)', () =>
         ok: true,
         pendingJumpTo: pj ? { line: pj.line, col: pj.col } : null,
       };
-    }, targetWithLine);
+    }, { pathPart: targetPath, line: targetLine });
 
-    expect(result.ok, 'stat should succeed for fixture path').toBe(true);
+    expect(result.ok, 'stat should succeed for fixture path; status was ' + (result.status || 'n/a')).toBe(true);
     expect(result.pendingJumpTo, 'pendingJumpTo should be set with line 42').toBeTruthy();
     expect(result.pendingJumpTo.line).toBe(42);
 
