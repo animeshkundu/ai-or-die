@@ -329,24 +329,18 @@ test.describe('File browser — rich viewers + search (#7, #19, #8, #13)', () =>
     const end = events.find((e) => e.type === 'end');
 
     expect(start, 'expected start event').toBeTruthy();
-    expect(start.backend === 'rg' || start.backend === 'grep' || start.backend === null).toBe(true);
+    // ADR-0018: rg is bundled via @vscode/ripgrep, so the backend is
+    // ALWAYS 'rg' on every supported platform. The earlier conditional
+    // (skip-on-null) was a Windows workaround from before bundling — the
+    // bundled binary now makes search load-bearing on Windows too.
+    expect(start.backend).toBe('rg');
     expect(end, 'expected end event').toBeTruthy();
 
-    // ≥2 matches when a backend is available. Windows CI runners
-    // typically don't have rg installed and the strict-Linux-only grep
-    // policy in src/utils/search.js (peer-review MEDIUM-2 on bde844f)
-    // means backend === null on those runners — the SSE returns an
-    // error event with "install ripgrep" guidance and zero matches.
-    // The contract assertion is the SSE shape (start/end events fire,
-    // backend is one of the documented values); match-count is only
-    // asserted when a backend was actually available.
-    if (start.backend) {
-      expect(matches.length, `matches: ${JSON.stringify(matches)}`).toBeGreaterThanOrEqual(2);
-      for (const m of matches) {
-        expect(typeof m.path).toBe('string');
-        expect(typeof m.line).toBe('number');
-        expect(m.text).toMatch(/NEEDLE-PRESENT/);
-      }
+    expect(matches.length, `matches: ${JSON.stringify(matches)}`).toBeGreaterThanOrEqual(2);
+    for (const m of matches) {
+      expect(typeof m.path).toBe('string');
+      expect(typeof m.line).toBe('number');
+      expect(m.text).toMatch(/NEEDLE-PRESENT/);
     }
   });
 
