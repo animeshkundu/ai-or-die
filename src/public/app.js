@@ -676,6 +676,59 @@ class ClaudeCodeWebInterface {
             );
         }
 
+        // Generic file drop (Part D). Sibling to the image handler — runs
+        // in capture phase so it can preempt xterm's drop handler. Image
+        // MIMEs delegate to attachImageHandler (above) via onImageDrop;
+        // anything else uploads to <workingDir>/.claude-attachments/ and
+        // injects `@<absolute-path>` as bracketed paste (Claude's native
+        // file-reference syntax).
+        if (window.genericDropHandler && termContainer) {
+            this._genericDropHandler = window.genericDropHandler.attachGenericDropHandler({
+                containerEl: termContainer,
+                getWorkingDir: () => this.getCurrentWorkingDir(),
+                getAuthToken: () => (window.authManager && window.authManager.getToken
+                    ? window.authManager.getToken() : null),
+                onImageDrop: (files) => {
+                    // Re-dispatch to the image handler's drop pipeline. We
+                    // can't easily hand it a constructed DataTransfer in
+                    // a JSDOM-portable way, so we route the FIRST file
+                    // through the image-preview modal it already exposes.
+                    if (window.imageHandler && typeof window.imageHandler.showImagePreview === 'function' &&
+                        files && files.length) {
+                        try {
+                            window.imageHandler.showImagePreview(files[0], (imageData) => {
+                                this._pendingImageCaption = imageData.caption;
+                                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                                    this.send({
+                                        type: 'image_upload',
+                                        base64: imageData.base64,
+                                        mimeType: imageData.mimeType,
+                                        fileName: imageData.fileName || 'pasted-image.png',
+                                        caption: imageData.caption || ''
+                                    });
+                                }
+                            });
+                        } catch (_) { /* ignore */ }
+                    }
+                },
+                injectAtPath: (atPath) => {
+                    if (!atPath) return;
+                    let normalized = attachClipboardHandler.normalizeLineEndings(atPath + ' ');
+                    if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+                        normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                    }
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.send({ type: 'input', data: normalized });
+                    }
+                },
+                onError: (basename, msg) => {
+                    if (window.feedback && typeof window.feedback.error === 'function') {
+                        window.feedback.error(basename + ': ' + msg);
+                    }
+                },
+            });
+        }
+
         this.setupTerminalSearch();
         this.setupTerminalContextMenu();
         this._setupTerminalLinking(this.terminal);
