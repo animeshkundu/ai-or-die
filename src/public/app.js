@@ -3902,21 +3902,19 @@ class ClaudeCodeWebInterface {
                 getSearchPath: () => this.getCurrentWorkingDir(),
                 getSession: () => this.currentClaudeSessionId || null,
                 onResultClick: (hit) => {
-                    // openToFile handles both the not-yet-open case (calls
-                    // open() with the parent dir) and the already-open
-                    // case (rebases via navigateTo). The redundant
-                    // panel.open() that used to live here actively caused
-                    // QA #5's race: open()-then-openToFile against a
-                    // nested file would no-op the inner open() and leave
-                    // the panel at workingDir. Trust openToFile to do
-                    // the right thing.
+                    // Delegate to fileFind.dispatchFindHit — encapsulates
+                    // the editor-vs-preview branch in a regression-tested
+                    // helper. Editor mode force-bootstraps the panel's
+                    // tab manager via _ensureTabManager() (was a sync race
+                    // against the lazy init before QA #6) and skips
+                    // openToFile entirely so we don't end up with a
+                    // duplicate preview tab. Preview mode hands off to
+                    // openToFile (which carries QA #5's rebase-on-open
+                    // semantics).
                     const panel = this._ensureFileBrowser();
-                    if (!panel) return;
-                    panel.openToFile(hit.path);
-                    if (hit.mode === 'editor' && panel._tabManager &&
-                        typeof panel._tabManager.openFile === 'function') {
-                        try { panel._tabManager.openFile(hit.path, 'editor'); } catch (_) {}
-                    }
+                    if (!panel || !window.fileFind ||
+                        typeof window.fileFind.dispatchFindHit !== 'function') return;
+                    window.fileFind.dispatchFindHit(panel, hit);
                 },
             });
         } catch (e) {

@@ -119,6 +119,118 @@ describe('file-find.js (pure helpers)', function () {
       assert.strictEqual(ff.formatTruncationBanner(null, 50), null);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // dispatchFindHit — the Cmd-P → file-browser dispatch helper.
+  //
+  // QA #6 regression: an earlier draft did `panel.openToFile(hit.path)`
+  // unconditionally then synchronously checked `panel._tabManager` for
+  // editor mode. That null-checked the tabManager BEFORE openToFile's
+  // async navigateTo had a chance to bootstrap it lazily, so first-use
+  // Cmd+Enter silently degraded to a preview tab. Fix: editor mode must
+  // call `panel._ensureTabManager()` (force-bootstrap) and skip the
+  // openToFile dance entirely so we don't end up with two tabs.
+  // -------------------------------------------------------------------------
+
+  describe('dispatchFindHit', function () {
+    it('exists and is exported', function () {
+      assert.strictEqual(typeof ff.dispatchFindHit, 'function');
+    });
+
+    it('preview mode → calls panel.openToFile only', function () {
+      var calls = { openToFile: [], ensureTabManager: 0, openFile: [] };
+      var panel = {
+        isOpen: function () { return true; },
+        open: function () { /* no-op */ },
+        openToFile: function (p) { calls.openToFile.push(p); },
+        _ensureTabManager: function () { calls.ensureTabManager++; return null; },
+      };
+      ff.dispatchFindHit(panel, { path: '/a/file.js', mode: 'preview' });
+      assert.deepStrictEqual(calls.openToFile, ['/a/file.js']);
+      assert.strictEqual(calls.ensureTabManager, 0,
+        'preview mode must NOT touch the tab manager directly');
+    });
+
+    it('editor mode → ensures tabManager + opens with mode=editor', function () {
+      var calls = { openToFile: [], ensureTabManager: 0, openFile: [] };
+      var fakeTM = {
+        openFile: function (p, m) { calls.openFile.push({ path: p, mode: m }); return 't_1'; },
+      };
+      var panel = {
+        isOpen: function () { return true; },
+        open: function () { /* no-op */ },
+        openToFile: function (p) { calls.openToFile.push(p); },
+        _ensureTabManager: function () { calls.ensureTabManager++; return fakeTM; },
+      };
+      ff.dispatchFindHit(panel, { path: '/a/file.js', mode: 'editor' });
+      assert.strictEqual(calls.openToFile.length, 0,
+        'editor mode must NOT call openToFile (would open a preview tab too)');
+      assert.strictEqual(calls.ensureTabManager, 1,
+        'editor mode MUST force-bootstrap the tab manager');
+      assert.deepStrictEqual(calls.openFile, [{ path: '/a/file.js', mode: 'editor' }]);
+    });
+
+    it('editor mode on first use (lazy tabManager) — _ensureTabManager builds it', function () {
+      // The QA #6 fixture: simulate a panel where _tabManager STARTS null,
+      // and only _ensureTabManager() can mint it. The fix uses the latter
+      // so the editor-mode call is no longer racing against the lazy init.
+      var lazyTM = null;
+      var calls = { openFile: [] };
+      var panel = {
+        _tabManager: null,           // synchronous read returns null (the bug)
+        isOpen: function () { return true; },
+        open: function () {},
+        openToFile: function () {},
+        _ensureTabManager: function () {
+          if (!lazyTM) {
+            lazyTM = {
+              openFile: function (p, m) { calls.openFile.push({ path: p, mode: m }); return 't'; },
+            };
+          }
+          return lazyTM;
+        },
+      };
+      ff.dispatchFindHit(panel, { path: '/a/file.js', mode: 'editor' });
+      // The fix's contract: editor-mode tab opened on first invocation.
+      assert.strictEqual(calls.openFile.length, 1);
+      assert.strictEqual(calls.openFile[0].mode, 'editor');
+      assert.strictEqual(calls.openFile[0].path, '/a/file.js');
+    });
+
+    it('editor mode opens the panel first when closed', function () {
+      var opened = 0;
+      var fakeTM = { openFile: function () {} };
+      var panel = {
+        isOpen: function () { return false; },
+        open: function () { opened++; },
+        _ensureTabManager: function () { return fakeTM; },
+        openToFile: function () {},
+      };
+      ff.dispatchFindHit(panel, { path: '/a/file.js', mode: 'editor' });
+      assert.strictEqual(opened, 1, 'panel.open() must fire when closed');
+    });
+
+    it('editor mode is a no-op when panel.openFile throws (defensive)', function () {
+      var panel = {
+        isOpen: function () { return true; },
+        open: function () {},
+        openToFile: function () {},
+        _ensureTabManager: function () {
+          return { openFile: function () { throw new Error('boom'); } };
+        },
+      };
+      // Must not throw — dispatchFindHit swallows tabManager errors.
+      assert.doesNotThrow(function () {
+        ff.dispatchFindHit(panel, { path: '/a/file.js', mode: 'editor' });
+      });
+    });
+
+    it('does nothing for null panel / null hit / hit without path', function () {
+      assert.doesNotThrow(function () { ff.dispatchFindHit(null, { path: '/x', mode: 'editor' }); });
+      assert.doesNotThrow(function () { ff.dispatchFindHit({}, null); });
+      assert.doesNotThrow(function () { ff.dispatchFindHit({}, {}); });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

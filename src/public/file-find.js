@@ -88,6 +88,53 @@
   }
 
   // ---------------------------------------------------------------------------
+  // dispatchFindHit — Cmd-P → file-browser dispatch helper.
+  //
+  // Encapsulates the "what to do with a Cmd-P selection" decision so the
+  // editor-vs-preview branch can be regression-tested without dragging
+  // app.js into a JSDOM scenario. Called from app.js's onResultClick on
+  // every Cmd-P activation.
+  //
+  // Preview mode (default): hand off to FileBrowserPanel.openToFile, which
+  //   navigates the panel to the file's parent dir and auto-opens a
+  //   preview tab via the existing _onItemClick → _ensureTabManager() →
+  //   tabManager.openFile(path, 'preview') chain.
+  //
+  // Editor mode (Cmd/Ctrl+Enter): force-bootstrap the panel's tabManager
+  //   via _ensureTabManager() and open directly with mode='editor'. We
+  //   skip openToFile entirely — calling it would open BOTH a preview
+  //   tab (from its async onItemClick) AND an editor tab (from us),
+  //   and an earlier draft that did `panel._tabManager` synchronously
+  //   (without _ensure*) raced with the lazy init and silently degraded
+  //   to preview-only on first use (QA finding #6).
+  //
+  // Pure / sync — accepts any object that quacks like FileBrowserPanel.
+  // Defensive against null panel / null hit / missing path. Swallows
+  // tabManager.openFile errors (consistent with the rest of file-find's
+  // fire-and-forget posture).
+  function dispatchFindHit(panel, hit) {
+    if (!panel || !hit || !hit.path) return;
+    if (hit.mode === 'editor') {
+      try {
+        if (typeof panel.isOpen === 'function' && !panel.isOpen() &&
+            typeof panel.open === 'function') {
+          panel.open();
+        }
+      } catch (_) { /* ignore — we still try the tab open */ }
+      if (typeof panel._ensureTabManager !== 'function') return;
+      var tm;
+      try { tm = panel._ensureTabManager(); } catch (_) { tm = null; }
+      if (!tm || typeof tm.openFile !== 'function') return;
+      try { tm.openFile(hit.path, 'editor'); } catch (_) { /* ignore */ }
+      return;
+    }
+    // Preview (default).
+    if (typeof panel.openToFile === 'function') {
+      try { panel.openToFile(hit.path); } catch (_) { /* ignore */ }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Browser-only beyond this point
   // ---------------------------------------------------------------------------
 
@@ -101,6 +148,7 @@
         buildFindUrl: buildFindUrl,
         splitBasenameParent: splitBasenameParent,
         formatTruncationBanner: formatTruncationBanner,
+        dispatchFindHit: dispatchFindHit,
       };
     }
     return;
@@ -466,6 +514,7 @@
     buildFindUrl: buildFindUrl,
     splitBasenameParent: splitBasenameParent,
     formatTruncationBanner: formatTruncationBanner,
+    dispatchFindHit: dispatchFindHit,
     FIND_ENDPOINT: FIND_ENDPOINT,
     DEFAULT_DEBOUNCE_MS: DEFAULT_DEBOUNCE_MS,
     DEFAULT_LIMIT: DEFAULT_LIMIT,
