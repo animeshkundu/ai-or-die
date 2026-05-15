@@ -332,12 +332,21 @@ test.describe('File browser — rich viewers + search (#7, #19, #8, #13)', () =>
     expect(start.backend === 'rg' || start.backend === 'grep' || start.backend === null).toBe(true);
     expect(end, 'expected end event').toBeTruthy();
 
-    // ≥2 matches (one per haystack file).
-    expect(matches.length, `matches: ${JSON.stringify(matches)}`).toBeGreaterThanOrEqual(2);
-    for (const m of matches) {
-      expect(typeof m.path).toBe('string');
-      expect(typeof m.line).toBe('number');
-      expect(m.text).toMatch(/NEEDLE-PRESENT/);
+    // ≥2 matches when a backend is available. Windows CI runners
+    // typically don't have rg installed and the strict-Linux-only grep
+    // policy in src/utils/search.js (peer-review MEDIUM-2 on bde844f)
+    // means backend === null on those runners — the SSE returns an
+    // error event with "install ripgrep" guidance and zero matches.
+    // The contract assertion is the SSE shape (start/end events fire,
+    // backend is one of the documented values); match-count is only
+    // asserted when a backend was actually available.
+    if (start.backend) {
+      expect(matches.length, `matches: ${JSON.stringify(matches)}`).toBeGreaterThanOrEqual(2);
+      for (const m of matches) {
+        expect(typeof m.path).toBe('string');
+        expect(typeof m.line).toBe('number');
+        expect(m.text).toMatch(/NEEDLE-PRESENT/);
+      }
     }
   });
 
