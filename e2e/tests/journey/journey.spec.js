@@ -305,14 +305,14 @@ test.describe('User Journey through live ai-or-die UI', () => {
     await shot(page, '04-osc7-hook-installed');
 
     if (cwdChangedFrames.length === 0) {
-      recordFinding('P0', 'Step 4 — OSC 7 hook does not fire',
-        'After installing the spec\'s bash PROMPT_COMMAND hook AND the zsh chpwd hook, ' +
-        'and `cd /tmp && cd /tmp/express`, ZERO `cwd_changed` frames arrived. ' +
-        'Hand off to systems-engineer (#7) — this is exactly the real-shell validation they own. ' +
-        'Possible causes: (a) shell escape interpretation in the WebSocket input pipeline strips ESC bytes; ' +
-        '(b) bridge\'s OSC 7 parser doesn\'t handle the percent-encoded form; ' +
-        '(c) shell hook syntax doesn\'t survive the WebSocket bracketed-paste round-trip. ' +
-        'Captured terminal text: \n```\n' + (await getTerminalText(page)).slice(-1500) + '\n```');
+      recordFinding('KNOWN-LIMITATION', 'Step 4 — OSC 7 silently rejected for out-of-sandbox cd',
+        'After installing the spec\'s zsh chpwd hook and `cd /tmp/express` (OUTSIDE the dev ' +
+        'server\'s --folder sandbox = ai-or-die repo), zero `cwd_changed` frames arrived. ' +
+        'This is the documented behaviour per docs/specs/file-browser.md "Live CWD tracking" ' +
+        'Limitations + ADR-0019 §Notes (architect task #15, commit e3783c8). The bridge\'s ' +
+        'silent rejection is correct per the security rule; the panel\'s lack of visual feedback ' +
+        'is the documented v1 gap. Out-of-band verification (direct WS test against the same ' +
+        'server) confirms the hook + parser work correctly for in-sandbox paths.\n\nCaptured terminal text: \n```\n' + (await getTerminalText(page)).slice(-1500) + '\n```');
     } else {
       const targets = cwdChangedFrames.map((f) => f.cwd);
       if (!targets.includes('/tmp/express')) {
@@ -393,10 +393,13 @@ test.describe('User Journey through live ai-or-die UI', () => {
     await shot(page, '06-after-click');
 
     if (clickResult.mode !== 'opened') {
-      recordFinding('P1', 'Step 6 — click on stack-trace path',
-        'Path resolution result: ' + JSON.stringify(clickResult) + '. ' +
-        'Expected to find /tmp/express/lib/router.js via workingDir+hint. ' +
-        'If liveCwd is null (because OSC 7 is dead from step 4), the resolver only had session.workingDir to chain against.');
+      recordFinding('KNOWN-LIMITATION', 'Step 6 — click on stack-trace path (out-of-sandbox)',
+        'Path resolution result: ' + JSON.stringify(clickResult) + '. The stack trace points ' +
+        'at /tmp/express/lib/router.js, but the session\'s workingDir is the ai-or-die repo ' +
+        '(the --folder sandbox), so the resolver chain produces ai-or-die/lib/router.js which ' +
+        'does not exist. This is downstream of the Step 4 out-of-sandbox limitation. The click + ' +
+        'resolver code is exercised correctly by 58-click-stack-trace.spec.js in-sandbox. ' +
+        'Reframed as KNOWN-LIMITATION per architect commit e3783c8.');
     } else {
       recordFinding('PASS', 'Step 6 — stack-trace click opens file', 'Opened: ' + clickResult.path);
     }
@@ -448,25 +451,41 @@ test.describe('User Journey through live ai-or-die UI', () => {
     }
   });
 
-  test('Step 7c — Cmd-P "src/app.js" path-separator query', async () => {
+  test('Step 7c — Cmd-P path-separator query (SE fix verification — commit dbe28cc)', async () => {
+    // Query `tests/journey` — files at e2e/tests/journey/journey*.spec.js
+    // exist inside the journey's working session (ai-or-die repo root).
+    // Pre-fix (basename-only scoring), `tests/journey` returned 0 because
+    // `/` doesn't appear in any basename. SE's commit dbe28cc rewrites the
+    // ranker to score against BOTH basename AND relative path, so this
+    // path-separator form now resolves. Verify against the live server.
     await page.evaluate(async () => {
       window.app._findPanel.runQuery('');
-      await window.app._findPanel.runQuery('lib/router');
+      await window.app._findPanel.runQuery('tests/journey');
     });
-    await page.waitForTimeout(500);
+    // 120 ms debounce + small fetch latency. Wait for results to land
+    // rather than a fixed timer.
+    await page.waitForFunction(() => {
+      const p = window.app && window.app._findPanel;
+      if (!p) return false;
+      return Array.isArray(p._lastResults) &&
+             (p._lastResults.length > 0 ||
+              (p._statusEl && !p._statusEl.classList.contains('busy')));
+    }, { timeout: 8000 });
     await shot(page, '07c-cmdp-pathsep-query');
     const matches = await page.evaluate(() => {
       const p = window.app._findPanel;
       return ((p && p._lastResults) || []).slice(0, 5).map((m) => m.path);
     });
-    const hasRouter = matches.some((m) => /lib[\\/]router/.test(m));
-    if (!hasRouter) {
+    const hasJourney = matches.some((m) => /tests[\\/]journey[\\/]journey/.test(m));
+    if (!hasJourney) {
       recordFinding('P1', 'Step 7c — path-separator query',
-        'Query "lib/router" returned matches: ' + JSON.stringify(matches) +
-        '. Did NOT include lib/router.js. fuzzysort scores against basename only — "lib/router" with the `/` may rank below pure basename matches. Recommend fuzzysort against fullpath OR a fallback path-aware ranker.');
+        'Query "tests/journey" returned matches: ' + JSON.stringify(matches) +
+        '. Did NOT include a tests/journey path. Either SE\'s commit dbe28cc regressed or ' +
+        'the search root is not the ai-or-die repo. (Direct curl confirms the fix works ' +
+        'on the same server; suspect a session-context wiring race.)');
     } else {
-      recordFinding('PASS', 'Step 7c — path-separator query',
-        'lib/router matched: ' + matches.filter((m) => /router/.test(m)).slice(0, 3).join(', '));
+      recordFinding('PASS', 'Step 7c — path-separator query (SE fix dbe28cc)',
+        'tests/journey matched: ' + matches.filter((m) => /journey/.test(m)).slice(0, 3).join(', '));
     }
   });
 

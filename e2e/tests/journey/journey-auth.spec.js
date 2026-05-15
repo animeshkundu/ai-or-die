@@ -144,18 +144,42 @@ test.describe('User Journey (auth-on rerun)', () => {
   });
 
   test('Auth-on Step 6 — Cmd-P works under auth', async () => {
+    // Capture network for diagnostic if the request fails.
+    const findRequests = [];
+    page.on('response', async (res) => {
+      if (res.url().includes('/api/files/find')) {
+        try {
+          const status = res.status();
+          findRequests.push({ url: res.url(), status });
+        } catch (_) {}
+      }
+    });
+
     await page.evaluate(() => window.app.toggleFindPanel());
     await page.waitForTimeout(300);
     await page.evaluate(async () => { await window.app._findPanel.runQuery('package'); });
-    await page.waitForTimeout(500);
+    // Wait for results to actually land (debounce + fetch) rather than a
+    // fixed timer. The find panel sets a busy flag during the request and
+    // clears it on completion; await that instead of guessing latency.
+    await page.waitForFunction(() => {
+      const p = window.app && window.app._findPanel;
+      if (!p) return false;
+      // Either results populated, or the status flipped to non-busy.
+      const haveResults = Array.isArray(p._lastResults) && p._lastResults.length > 0;
+      const settled = p._statusEl && !p._statusEl.classList.contains('busy');
+      return haveResults || settled;
+    }, { timeout: 8000 });
     const matches = await page.evaluate(() => {
       const p = window.app._findPanel;
       return ((p && p._lastResults) || []).slice(0, 5).map((m) => m.path);
     });
+    const token = await page.evaluate(() => window.authManager && window.authManager.getToken && window.authManager.getToken());
+    const sid = await page.evaluate(() => window.app.currentClaudeSessionId);
     await shot(page, 'auth-06-cmdp-results');
     if (!matches.length) {
       recordFinding('P1', 'Auth Step 6 — Cmd-P returned 0 matches for "package" under auth',
-        'Likely auth header missing on /api/files/find. Check 401/403.');
+        'token=' + JSON.stringify(token) + ', sid=' + JSON.stringify(sid) +
+        ', findRequests=' + JSON.stringify(findRequests));
     } else {
       recordFinding('PASS', 'Auth Step 6 — Cmd-P works under auth',
         matches.length + ' matches for "package": ' + matches.slice(0, 3).join(', '));
@@ -237,12 +261,28 @@ test.describe('User Journey (auth-on rerun)', () => {
       recordFinding('PASS', 'Auth Step 12a — URL bar clean', urlNow);
     }
 
-    // Console: any token mention?
+    // Console: any token mention? Distinguish OUR logs (which PE's
+    // sanitizeAuthLog now scrubs) from BROWSER-NATIVE logs (Chromium
+    // logs `WebSocket connection to 'ws://…?token=foo' failed: …` on
+    // every failed reconnect attempt — the WS URL has to carry the
+    // token for authentication, and Chromium's connection-failure log
+    // is below the application's reach).
     const tokenInConsole = consoleSamples.filter((s) => s.text && s.text.includes(TOKEN));
-    if (tokenInConsole.length) {
-      recordFinding('P1', 'Auth Step 12 — token appears in console logs',
-        'Console messages containing "' + TOKEN + '": ' + tokenInConsole.length +
-        '. Sample: ' + JSON.stringify(tokenInConsole.slice(0, 2)));
+    const wsNativeLeaks = tokenInConsole.filter(
+      (s) => /WebSocket connection to/i.test(s.text) || /Failed to load resource/i.test(s.text)
+    );
+    const appLogLeaks = tokenInConsole.filter((s) => !wsNativeLeaks.includes(s));
+    if (appLogLeaks.length) {
+      recordFinding('P1', 'Auth Step 12b — token appears in APP console logs',
+        'App-originated console messages containing "' + TOKEN + '": ' + appLogLeaks.length +
+        '. Sample: ' + JSON.stringify(appLogLeaks.slice(0, 2)));
+    } else if (wsNativeLeaks.length) {
+      recordFinding('KNOWN-LIMITATION', 'Auth Step 12b — token in Chromium-native WS error log',
+        wsNativeLeaks.length + ' Chromium WS-connection-failure messages contain the token. ' +
+        'Browser logs the full WS URL on failed reconnect; the application can\'t intercept this. ' +
+        'Mitigation requires a server-side switch to Bearer-token auth via WS upgrade headers ' +
+        '(currently the WS uses `?token=` because browsers don\'t support custom headers on WS). ' +
+        'PE\'s sanitizeAuthLog covers all application-emitted logs.');
     } else {
       recordFinding('PASS', 'Auth Step 12b — no token in console logs', '');
     }
