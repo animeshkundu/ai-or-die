@@ -1351,3 +1351,93 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ---- FindPanel — Cmd-P "Go to File" picker (Part B) ---- */
+/*
+ * Mounted into <body> so it floats above the terminal and the file-browser
+ * panel both. Centered modal with a max-width like VS Code's quick-open.
+ * Keyboard nav handled by FindPanel itself; we just style.
+ */
+.fb-find-panel {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: var(--z-modal, 1200);
+  width: min(640px, 92vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-elevated, var(--surface-secondary));
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+.fb-find-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border-default);
+}
+.fb-find-panel-input {
+  flex: 1;
+  padding: 8px 10px;
+  background: var(--surface-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 13px;
+  outline: none;
+}
+.fb-find-panel-input:focus { border-color: var(--accent-default); }
+.fb-find-close {
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+.fb-find-close:hover { background: var(--surface-tertiary); color: var(--text-primary); }
+.fb-find-truncation {
+  padding: 6px 12px;
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-default);
+}
+.fb-find-status {
+  padding: 4px 12px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.fb-find-status.busy { color: var(--accent-default); }
+.fb-find-status.error { color: var(--danger-default, #e53e3e); }
+.fb-find-results {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.fb-find-result {
+  display: block;
+  text-align: left;
+  width: 100%;
+  background: none;
+  border: 0;
+  padding: 8px 12px;
+  color: var(--text-primary);
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fb-find-result:hover,
+.fb-find-result.focused { background: var(--accent-soft); }
+.fb-find-result-basename { font-weight: 600; }
+.fb-find-result-parent { color: var(--text-tertiary); margin-left: 4px; font-size: 12px; }

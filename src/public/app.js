@@ -1099,6 +1099,28 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        // Ctrl/Cmd+P → toggle the Cmd-P "Go to File" panel (per ADR-0019
+        // Part B). Global shortcut: works whether or not the file browser
+        // is open. Steals the browser's print binding intentionally — file
+        // navigation in a coding tool wins over the OS print dialog. We
+        // don't steal when the focus is in a text input (so users can
+        // type 'p' freely), with one exception: our own find input, where
+        // re-pressing should just refocus.
+        document.addEventListener('keydown', (e) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            if (e.shiftKey || e.altKey) return;
+            if (e.key !== 'p' && e.key !== 'P') return;
+            const tag = (e.target && e.target.tagName) || '';
+            const isEditable = (tag === 'INPUT' || tag === 'TEXTAREA' ||
+                (e.target && e.target.isContentEditable));
+            const insideFindPanel = e.target &&
+                typeof e.target.closest === 'function' &&
+                e.target.closest('.fb-find-panel');
+            if (isEditable && !insideFindPanel) return;
+            e.preventDefault();
+            this.toggleFindPanel();
+        });
+
         // Header overflow menu (tablet/mobile three-dot button)
         this._setupOverflowMenu();
 
@@ -3789,6 +3811,49 @@ class ClaudeCodeWebInterface {
     toggleFileBrowser() {
         const panel = this._ensureFileBrowser();
         if (panel) panel.toggle();
+    }
+
+    // Cmd-P "Go to File" panel (per ADR-0019 + Part B of file-browser-v2).
+    // Mounted lazily on first Cmd/Ctrl+P press; reused thereafter.
+    _ensureFindPanel() {
+        if (this._findPanel || !window.fileFind) return this._findPanel || null;
+        // The panel mounts itself into the supplied container — we reuse
+        // <body> so it floats above the terminal regardless of the file
+        // browser's open/closed state.
+        try {
+            this._findPanel = new window.fileFind.FindPanel({
+                containerEl: document.body,
+                getAuthToken: () => (window.authManager && window.authManager.getToken
+                    ? window.authManager.getToken()
+                    : null),
+                getSearchPath: () => this.getCurrentWorkingDir(),
+                getSession: () => this.currentClaudeSessionId || null,
+                onResultClick: (hit) => {
+                    // Route through the file browser's tab manager — open()
+                    // ensures the panel is mounted; openToFile auto-creates
+                    // a preview tab. For 'editor' mode we open the file
+                    // then ask the panel to switch to the editor view.
+                    const panel = this._ensureFileBrowser();
+                    if (!panel) return;
+                    if (!panel.isOpen()) panel.open();
+                    panel.openToFile(hit.path);
+                    if (hit.mode === 'editor' && panel._tabManager &&
+                        typeof panel._tabManager.openFile === 'function') {
+                        try { panel._tabManager.openFile(hit.path, 'editor'); } catch (_) {}
+                    }
+                },
+            });
+        } catch (e) {
+            console.warn('[file-find] panel init failed:', e);
+            return null;
+        }
+        return this._findPanel;
+    }
+
+    toggleFindPanel() {
+        const panel = this._ensureFindPanel();
+        if (!panel) return;
+        if (panel.isOpen()) panel.close(); else panel.open();
     }
 
     // VS Code Tunnel Methods
