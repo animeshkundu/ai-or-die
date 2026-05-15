@@ -1252,42 +1252,28 @@
   };
 
   // Snapshot-based listing subscriptions (#41 wire model post-ff79038):
-  // server-side subscriptions are EXACT-PATH match, so to see add/unlink
-  // for the panel's direct children we subscribe each child individually.
-  // Diff old vs new on every navigateTo: subscribe added paths,
-  // unsubscribe removed ones.
+  // server-side subscriptions support a `recursive` flag: a single
+  // recursive subscription on the panel's current dir delivers events
+  // for any path under that dir — including NEW files the agent
+  // creates after the listing was fetched. So we subscribe the cwd
+  // recursively on every navigateTo and unsubscribe the previous cwd.
   //
-  // v1 UX trade-off: a NEW file created by the agent under the current
-  // dir AFTER the listing was last fetched won't fire an add event
-  // (its path wasn't in the subscription set when the event landed).
-  // The user has to refresh the listing manually OR navigateTo again
-  // to pick it up. Acceptable for v1; tracked as a follow-up
-  // (server-side prefix-match subscription would close the gap).
+  // Per ce0102e (server-side recursive=1 subscriptions), this closes
+  // the v1 limitation where new-file add events were missed because
+  // the path wasn't in the exact-path subscription set at event time.
   FileBrowserPanel.prototype._reconcileListingSubscriptions = function (items) {
     var watcher = this._fileWatcher;
     if (!watcher) return;
-    var nextSet = {};
-    if (Array.isArray(items)) {
-      for (var i = 0; i < items.length; i++) {
-        if (items[i] && items[i].path) nextSet[items[i].path] = true;
-      }
+    var nextDir = this._currentPath || null;
+    var prevDir = this._listingDirSubscription || null;
+    if (prevDir === nextDir) return; // no-op; already subscribed
+    if (prevDir) {
+      try { watcher.unsubscribe(prevDir, { recursive: true }); } catch (_) { /* swallow */ }
     }
-    var prevSet = this._listingSubscriptions || {};
-    // Subscribe paths in the new set that weren't in the old.
-    for (var p in nextSet) {
-      if (!Object.prototype.hasOwnProperty.call(nextSet, p)) continue;
-      if (!prevSet[p]) {
-        try { watcher.subscribe(p); } catch (_) { /* swallow */ }
-      }
+    if (nextDir) {
+      try { watcher.subscribe(nextDir, { recursive: true }); } catch (_) { /* swallow */ }
     }
-    // Unsubscribe paths in the old set that aren't in the new.
-    for (var q in prevSet) {
-      if (!Object.prototype.hasOwnProperty.call(prevSet, q)) continue;
-      if (!nextSet[q]) {
-        try { watcher.unsubscribe(q); } catch (_) { /* swallow */ }
-      }
-    }
-    this._listingSubscriptions = nextSet;
+    this._listingDirSubscription = nextDir;
   };
 
   // Routes an SSE event to the right surface. Server-side subscription
