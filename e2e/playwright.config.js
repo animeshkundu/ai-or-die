@@ -162,6 +162,18 @@ module.exports = defineConfig({
         viewport: { width: 1280, height: 800 },
       },
     },
+    // CI-friendly regression assertions for QA #13's auth findings.
+    // Uses createServer({ auth: 'qa13regr' }) so it self-hosts — no
+    // separate process required (unlike journey-auth which targets a
+    // pre-running 11501 dev server).
+    {
+      name: 'journey-auth-regressions',
+      testMatch: /journey[\\/]journey-auth-regressions\.spec\.js/,
+      timeout: 60000,
+      use: {
+        viewport: { width: 1280, height: 800 },
+      },
+    },
     // Server restart feature tests
     {
       name: 'restart',

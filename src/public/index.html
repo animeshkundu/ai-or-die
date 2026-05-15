@@ -796,7 +796,18 @@
                         });
                     })
                     .catch(err => {
-                        console.log('ServiceWorker registration failed:', err);
+                        // Per QA #13 finding #4: passing the Error object to
+                        // console.log includes its `stack`, which on some
+                        // browsers contains the originating URL with the
+                        // `?token=…` query param embedded in `at` lines.
+                        // Sanitise via window.sanitizeAuthLog (auth.js) and
+                        // log the message string only (no stack at all).
+                        var msg = (err && err.message) ? err.message : String(err);
+                        var fallback = function (s) {
+                            return String(s).replace(/([?&])token=[^&\s'"`)]+/gi, '$1token=<redacted>');
+                        };
+                        var sanitize = window.sanitizeAuthLog || fallback;
+                        console.log('ServiceWorker registration failed:', sanitize(msg));
                     });
             });
         }
