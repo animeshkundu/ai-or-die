@@ -19,6 +19,12 @@ class ClaudeCodeWebInterface {
         this.folderMode = true; // Always use folder mode
         this.currentFolderPath = null;
         this.claudeSessions = [];
+        // Live CWD map (per ADR-0019): sessionId → most recent OSC-7-tracked
+        // working directory reported by the Terminal bridge. Populated by
+        // the WebSocket `cwd_changed` handler. Read by getCurrentWorkingDir()
+        // and the file-browser panel's notifyCwdChanged() flow. Map keeps
+        // dynamic add/delete cheap as sessions come and go.
+        this._liveCwd = new Map();
         this.isCreatingNewSession = false;
         Object.defineProperty(this, 'isMobile', {
             get: () => this.detectMobile(),
@@ -2248,6 +2254,26 @@ class ClaudeCodeWebInterface {
                 if (this._heartbeat) this._heartbeat.onPong();
                 break;
 
+            case 'cwd_changed': {
+                // OSC 7 in-band CWD update from a Terminal-bridge session
+                // (per ADR-0019). Record the new cwd in the per-session
+                // _liveCwd map; notify the file-browser panel so it can
+                // re-root if its _followsTerminal flag is on for this
+                // session. Defensive against missing fields — silent drop
+                // beats a thrown handler that breaks subsequent frames.
+                if (message.sessionId && message.cwd) {
+                    if (!this._liveCwd) this._liveCwd = new Map();
+                    this._liveCwd.set(message.sessionId, message.cwd);
+                    if (this._fileBrowserPanel &&
+                        typeof this._fileBrowserPanel.notifyCwdChanged === 'function') {
+                        try {
+                            this._fileBrowserPanel.notifyCwdChanged(message.sessionId, message.cwd);
+                        } catch (_) { /* never let a panel error break the WS pipe */ }
+                    }
+                }
+                break;
+            }
+
             case 'image_upload_complete': {
                 const { filePath } = message;
                 const caption = this._pendingImageCaption || '';
@@ -3819,10 +3845,22 @@ class ClaudeCodeWebInterface {
     }
 
     getCurrentWorkingDir() {
-        // Return the working directory of the active session, or the base folder
-        if (this.currentClaudeSessionId && this.claudeSessions) {
-            const session = this.claudeSessions.find(s => s.id === this.currentClaudeSessionId);
-            if (session && session.workingDir) return session.workingDir;
+        // Resolution order (per ADR-0019):
+        //   1. liveCwd from the OSC 7 parser (Terminal-bridge sessions only).
+        //   2. session.workingDir — the directory the PTY was spawned in.
+        //   3. currentFolderPath — the global base folder fallback.
+        // Steps 1 & 2 are session-scoped; step 3 is the safety net for
+        // pre-session contexts (e.g. the panel opened before any session
+        // exists).
+        if (this.currentClaudeSessionId) {
+            if (this._liveCwd && this._liveCwd.has(this.currentClaudeSessionId)) {
+                var live = this._liveCwd.get(this.currentClaudeSessionId);
+                if (live) return live;
+            }
+            if (this.claudeSessions) {
+                const session = this.claudeSessions.find(s => s.id === this.currentClaudeSessionId);
+                if (session && session.workingDir) return session.workingDir;
+            }
         }
         return this.currentFolderPath || null;
     }

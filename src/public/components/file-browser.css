@@ -64,6 +64,14 @@
 .fb-header-btn.active { color: var(--accent-default); background: var(--accent-soft); }
 .fb-back-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Follow-terminal toggle (📍): pulsing accent dot when actively following
+   the OSC 7-tracked CWD; muted when paused (manual nav). Hidden until
+   OSC 7 fires for the active session — see ADR-0019. */
+.fb-follow-toggle { font-size: 14px; line-height: 1; }
+.fb-follow-toggle.active { color: var(--accent-default); background: var(--accent-soft); }
+.fb-follow-toggle:not(.active) { color: var(--text-tertiary); opacity: 0.6; }
+.fb-follow-toggle:not(.active):hover { color: var(--text-primary); opacity: 1; }
+
 /* ---- Breadcrumbs ---- */
 .fb-breadcrumbs {
   display: flex; align-items: center;

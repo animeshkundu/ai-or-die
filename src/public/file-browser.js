@@ -349,6 +349,15 @@
     this._searchQuery = '';
     this._dragDepth = 0;
 
+    // Live-CWD follow-toggle state (per ADR-0019). Per-session boolean
+    // governing whether incoming `cwd_changed` WS frames re-root the
+    // panel; default `true` (follow on session create). Manual breadcrumb
+    // navigation flips it `false`; the "📍 follow terminal" header toggle
+    // re-engages it. _lastLiveCwd stashes the most recent OSC-7-tracked
+    // cwd per session so re-engaging can re-root immediately.
+    this._followsByOrigin = new Map();   // sessionId → boolean
+    this._lastLiveCwd = new Map();       // sessionId → string
+
     this._panelEl = null;
     this._backdropEl = null;
     this._previewPanel = null;
@@ -413,6 +422,20 @@
     searchBtn.innerHTML = window.icons ? window.icons.search(14) : 'S';
     searchBtn.addEventListener('click', this._toggleSearch.bind(this));
     header.appendChild(searchBtn);
+
+    // Follow-terminal toggle (per ADR-0019). Hidden until OSC 7 fires for
+    // the active session — _refreshFollowToggleUI() flips display on once
+    // a liveCwd is stashed. Click toggles the per-session follow flag.
+    var followBtn = document.createElement('button');
+    followBtn.className = 'fb-header-btn fb-follow-toggle active';
+    followBtn.title = '📍 Following terminal';
+    followBtn.setAttribute('aria-label', 'Toggle terminal CWD follow');
+    followBtn.setAttribute('aria-pressed', 'true');
+    followBtn.textContent = '📍';
+    followBtn.style.display = 'none';
+    followBtn.addEventListener('click', this._onFollowToggleClick.bind(this));
+    header.appendChild(followBtn);
+    this._followToggleBtn = followBtn;
 
     // Upload button
     var uploadBtn = document.createElement('button');
@@ -873,13 +896,145 @@
     if (this._currentPath && this._basePath) {
       var parent = this._currentPath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
       if (parent && parent.length >= this._basePath.replace(/\\/g, '/').length) {
+        this._markManualNav();
         this.navigateTo(parent);
       }
     }
   };
 
   FileBrowserPanel.prototype.navigateHome = function () {
+    this._markManualNav();
     this.navigateTo(this._basePath);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Live-CWD follow-toggle (per ADR-0019)
+  // ---------------------------------------------------------------------------
+  //
+  // The panel follows the active session's OSC-7-reported CWD by default.
+  // The user can click the header "📍 follow terminal" toggle to disengage
+  // (panel stops re-rooting on `cwd_changed`) and click again to re-engage
+  // (panel jumps to the latest stashed liveCwd). Per-session boolean so
+  // switching between sessions preserves each one's independent choice.
+  //
+  // Wired by `app.js`'s WebSocket `cwd_changed` handler:
+  //   panel.notifyCwdChanged(sessionId, cwd)
+  //
+  // Spec: docs/specs/file-browser.md "Live CWD follow-toggle"
+  // ---------------------------------------------------------------------------
+
+  FileBrowserPanel.prototype._activeSessionId = function () {
+    if (!this.app) return null;
+    return this.app.currentClaudeSessionId || null;
+  };
+
+  FileBrowserPanel.prototype._isActiveSession = function (sessionId) {
+    if (!sessionId) return false;
+    return this._activeSessionId() === sessionId;
+  };
+
+  /**
+   * Returns true when the panel is currently configured to follow the
+   * given session's OSC-7 CWD. Defaults to true on first lookup, and
+   * tolerates null/undefined/empty sessionId arguments by reporting true
+   * (the safe / default UX).
+   */
+  FileBrowserPanel.prototype.followsTerminal = function (sessionId) {
+    if (!sessionId) return true;
+    if (!this._followsByOrigin.has(sessionId)) return true;
+    return !!this._followsByOrigin.get(sessionId);
+  };
+
+  /**
+   * Flip the per-session follow flag. When flipping to `true` and a
+   * liveCwd has been stashed for an open active session, re-root the
+   * panel immediately so the user sees the terminal's current cwd
+   * without having to issue another `cd` (per ADR-0019 UX contract).
+   */
+  FileBrowserPanel.prototype.setFollowsTerminal = function (sessionId, value) {
+    if (!sessionId) return;
+    var v = !!value;
+    this._followsByOrigin.set(sessionId, v);
+    this._refreshFollowToggleUI();
+    if (v && this._open && this._isActiveSession(sessionId)) {
+      var stashed = this._lastLiveCwd.get(sessionId);
+      if (stashed) this.navigateTo(stashed);
+    }
+  };
+
+  /**
+   * Last OSC-7-reported cwd for a session, or undefined if none seen.
+   * Exposed for tests + the toggle button's hover tooltip.
+   */
+  FileBrowserPanel.prototype.getLastLiveCwd = function (sessionId) {
+    if (!sessionId) return undefined;
+    return this._lastLiveCwd.get(sessionId);
+  };
+
+  /**
+   * Entry point for the WebSocket `cwd_changed` handler in app.js.
+   * Always stashes the latest liveCwd (so re-engaging the toggle / a
+   * later session-switch picks it up). Re-roots the panel only when
+   * (followsTerminal && open && active session). When not re-rooting,
+   * still refreshes the toggle UI so the tooltip reflects the new cwd.
+   */
+  FileBrowserPanel.prototype.notifyCwdChanged = function (sessionId, cwd) {
+    if (!sessionId || !cwd) return;
+    this._lastLiveCwd.set(sessionId, cwd);
+    if (this.followsTerminal(sessionId) && this._open && this._isActiveSession(sessionId)) {
+      this.navigateTo(cwd);
+    }
+    this._refreshFollowToggleUI();
+  };
+
+  /**
+   * Called by every manual navigation entry point (breadcrumb click,
+   * back button, home button) so the panel stops chasing the terminal
+   * once the user has expressed an intent to look elsewhere. Per ADR-0019:
+   * the implicit "auto-rebase if breadcrumb still matches old liveCwd"
+   * rule was rejected as brittle; this explicit flip is the contract.
+   */
+  FileBrowserPanel.prototype._markManualNav = function () {
+    var sid = this._activeSessionId();
+    if (!sid) return;
+    this._followsByOrigin.set(sid, false);
+    this._refreshFollowToggleUI();
+  };
+
+  /**
+   * Click handler for the header "📍 follow terminal" toggle. Flips the
+   * per-session follow flag for the active session; setFollowsTerminal
+   * handles the immediate-re-root-on-engage behaviour per ADR-0019.
+   */
+  FileBrowserPanel.prototype._onFollowToggleClick = function () {
+    var sid = this._activeSessionId();
+    if (!sid) return;
+    this.setFollowsTerminal(sid, !this.followsTerminal(sid));
+  };
+
+  /**
+   * Refresh the header toggle button's appearance + tooltip. Real
+   * implementation flips an `active` class and updates the title attr;
+   * tests stub this so the state-machine assertions stay DOM-free.
+   */
+  FileBrowserPanel.prototype._refreshFollowToggleUI = function () {
+    if (!this._followToggleBtn) return;
+    var sid = this._activeSessionId();
+    var following = this.followsTerminal(sid);
+    var stashed = sid ? this._lastLiveCwd.get(sid) : null;
+    try {
+      this._followToggleBtn.classList[following ? 'add' : 'remove']('active');
+      this._followToggleBtn.setAttribute('aria-pressed', following ? 'true' : 'false');
+      var label = following
+        ? '📍 Following terminal'
+        : '📍 Follow terminal (paused)';
+      if (stashed) label += ' — last seen at ' + stashed;
+      this._followToggleBtn.title = label;
+      // Hidden when no liveCwd has ever been observed for the active
+      // session (Claude/Codex/Gemini bridges never emit cwd_changed —
+      // see ADR-0019 Bridge Contract). Visible the moment OSC 7 fires.
+      this._followToggleBtn.style.display = stashed ? '' : 'none';
+    } catch (_) { /* ignore — DOM may be partially built or stubbed */ }
   };
 
   // -- Rendering --
@@ -904,6 +1059,7 @@
       if (idx < segments.length - 1) {
         span.style.cursor = 'pointer';
         span.addEventListener('click', function () {
+          self._markManualNav();
           self.navigateTo(seg.path);
         });
       }
