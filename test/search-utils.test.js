@@ -220,11 +220,43 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
   // visible to the module's detection code we must (a) monkey-patch
   // FIRST, then (b) clear the require cache and re-require search.js so
   // it captures our patched execFileSync.
-  function loadSearchWithStubbedExec(stubbedExec, platform) {
+  //
+  // ADR-0018 update: detection now ALSO consults @vscode/ripgrep's
+  // bundled binary BEFORE falling back to grep. Tests that want to
+  // exercise the "no rg anywhere" path must therefore stub BOTH:
+  //   - execFileSync (system PATH lookup)
+  //   - fs.accessSync (bundled-binary X_OK check)
+  // The stubFsAccess helper below makes the bundled binary appear
+  // unexecutable; the production X_OK check then throws and detection
+  // falls through to grep / null exactly as before.
+  function loadSearchWithStubbedExec(stubbedExec, platform, opts) {
+    opts = opts || {};
+    const bundledAvailable = opts.bundledAvailable === true;
     const realPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: platform, configurable: true });
     const realExec = realCp.execFileSync;
     realCp.execFileSync = stubbedExec;
+
+    // Patch fs.accessSync ONLY for the bundled @vscode/ripgrep path —
+    // leave every other accessSync call (read-checks elsewhere in the
+    // module graph) untouched.
+    const realAccessSync = fs.accessSync;
+    fs.accessSync = function (target, mode) {
+      // Detect the bundled-rg liveness check: target ends with rg/rg.exe
+      // AND lives under node_modules/@vscode/ripgrep. We cannot rely on
+      // exact path equality because the platform-specific suffix varies
+      // (ripgrep-darwin-arm64 vs ripgrep-linux-x64 vs ripgrep-win32-x64).
+      const looksLikeBundledRg =
+        typeof target === 'string' &&
+        /[\\/]node_modules[\\/]@vscode[\\/]ripgrep/.test(target);
+      if (looksLikeBundledRg) {
+        if (bundledAvailable) return undefined;
+        const e = new Error('EACCES: permission denied'); e.code = 'EACCES';
+        throw e;
+      }
+      return realAccessSync.apply(fs, arguments);
+    };
+
     const searchPath = require.resolve('../src/utils/search');
     delete require.cache[searchPath];
     const search = require(searchPath);
@@ -232,6 +264,7 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
       search: search,
       restore: function () {
         realCp.execFileSync = realExec;
+        fs.accessSync = realAccessSync;
         Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
         delete require.cache[searchPath];
       },
@@ -245,11 +278,11 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
       }
       if (cmd === 'which' && args[0] === 'grep') return Buffer.from('/usr/bin/grep\n');
       throw new Error('unexpected execFileSync call: ' + cmd + ' ' + args.join(' '));
-    }, 'darwin');
+    }, 'darwin', { bundledAvailable: false });
     try {
       const backend = ctx.search.detectBackend();
       assert.strictEqual(backend, null,
-        'macOS detection MUST return null when rg is absent (no grep fallback)');
+        'macOS detection MUST return null when neither system nor bundled rg is usable (no grep fallback)');
     } finally {
       ctx.restore();
     }
@@ -262,7 +295,7 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
       }
       if (cmd === 'which' && args[0] === 'grep') return Buffer.from('/usr/bin/grep\n');
       throw new Error('unexpected: ' + cmd);
-    }, 'linux');
+    }, 'linux', { bundledAvailable: false });
     try {
       assert.strictEqual(ctx.search.detectBackend(), 'grep');
     } finally {
@@ -277,10 +310,126 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
       }
       if (cmd === 'where' && args[0] === 'grep') return Buffer.from('C:\\fake\\grep.exe\n');
       throw new Error('unexpected: ' + cmd);
-    }, 'win32');
+    }, 'win32', { bundledAvailable: false });
     try {
       assert.strictEqual(ctx.search.detectBackend(), null,
-        'Windows detection MUST return null when rg is absent (no grep fallback)');
+        'Windows detection MUST return null when neither system nor bundled rg is usable (no grep fallback)');
+    } finally {
+      ctx.restore();
+    }
+  });
+
+  // --------------------------------------------------------------------
+  // ADR-0018: bundled @vscode/ripgrep fallback
+  // --------------------------------------------------------------------
+
+  it('falls back to bundled @vscode/ripgrep when system rg is absent (Windows)', function () {
+    // Windows has no system rg, no grep fallback. The bundled binary
+    // is the ONLY path to a working backend on a stock Windows runner.
+    // This test pins the contract that drove the ADR-0018 decision.
+    const ctx = loadSearchWithStubbedExec(function (cmd, args) {
+      if (cmd === 'where' && /^rg/.test(args[0])) {
+        const e = new Error('rg not found'); e.status = 1; throw e;
+      }
+      // Should never reach grep on Windows — the bundled check should
+      // succeed first.
+      throw new Error('unexpected: ' + cmd + ' ' + args[0]);
+    }, 'win32', { bundledAvailable: true });
+    try {
+      assert.strictEqual(ctx.search.detectBackend(), 'rg',
+        'Windows detection MUST surface backend=rg when bundled binary is usable');
+      const rgPath = ctx.search.detectRgPath();
+      assert.ok(rgPath && typeof rgPath === 'string',
+        'detectRgPath() MUST return the bundled binary path (non-null) so spawn bypasses PATH');
+      assert.match(rgPath, /node_modules[\\/]@vscode[\\/]ripgrep/,
+        'rgPath MUST point inside @vscode/ripgrep node_modules; got ' + rgPath);
+    } finally {
+      ctx.restore();
+    }
+  });
+
+  it('falls back to bundled @vscode/ripgrep when system rg is absent (macOS)', function () {
+    // Mirror of the Windows test for macOS-no-Homebrew users — same
+    // wire-shape contract.
+    const ctx = loadSearchWithStubbedExec(function (cmd, args) {
+      if (cmd === 'which' && args[0] === 'rg') {
+        const e = new Error('rg not found'); e.status = 1; throw e;
+      }
+      throw new Error('unexpected: ' + cmd + ' ' + args[0]);
+    }, 'darwin', { bundledAvailable: true });
+    try {
+      assert.strictEqual(ctx.search.detectBackend(), 'rg');
+      assert.ok(ctx.search.detectRgPath(), 'detectRgPath() must be set');
+    } finally {
+      ctx.restore();
+    }
+  });
+
+  it('system rg takes precedence over bundled rg (preserves user installs)', function () {
+    // Order matters — Homebrew/apt/choco rg may be newer than what the
+    // bundled npm package ships, OR may have user customizations. The
+    // detection must try the system binary FIRST and only fall back if
+    // it's missing. detectRgPath() returns null when system rg is in
+    // play (spawn uses unqualified 'rg' name + PATH lookup).
+    const ctx = loadSearchWithStubbedExec(function (cmd, args) {
+      if (cmd === 'which' && args[0] === 'rg') return Buffer.from('/usr/local/bin/rg\n');
+      throw new Error('unexpected: ' + cmd);
+    }, 'darwin', { bundledAvailable: true });    // bundled is also OK; should NOT be used
+    try {
+      assert.strictEqual(ctx.search.detectBackend(), 'rg');
+      assert.strictEqual(ctx.search.detectRgPath(), null,
+        'when system rg is found, detectRgPath() MUST be null so spawn uses PATH');
+    } finally {
+      ctx.restore();
+    }
+  });
+
+  it('requireBackendAtStartup() throws NO_SEARCH_BACKEND with actionable guidance when nothing is usable', function () {
+    // The hard-error gate (ADR-0018 v1) — refuses to start the server
+    // when both system rg AND bundled rg are unavailable AND grep is
+    // not on Linux. Operator gets a multi-line install-guidance error
+    // instead of cryptic "0 matches" later.
+    const ctx = loadSearchWithStubbedExec(function (cmd, args) {
+      if (cmd === 'where' && /^rg/.test(args[0])) {
+        const e = new Error('rg not found'); e.status = 1; throw e;
+      }
+      throw new Error('unexpected: ' + cmd + ' ' + args[0]);
+    }, 'win32', { bundledAvailable: false });
+    try {
+      assert.strictEqual(ctx.search.detectBackend(), null,
+        'precondition: detection must be null for this scenario');
+      let thrown = null;
+      try { ctx.search.requireBackendAtStartup(); }
+      catch (e) { thrown = e; }
+      assert.ok(thrown, 'requireBackendAtStartup() MUST throw when no backend is available');
+      assert.strictEqual(thrown.code, 'NO_SEARCH_BACKEND',
+        'thrown error MUST set code=NO_SEARCH_BACKEND so callers can pattern-match');
+      assert.match(thrown.message, /ripgrep is required/i,
+        'message must lead with the install-ripgrep guidance');
+      assert.match(thrown.message, /@vscode\/ripgrep/,
+        'message must mention re-running npm install for the bundled package');
+      assert.match(thrown.message, /brew install ripgrep/,
+        'message must include macOS install command');
+      assert.match(thrown.message, /apt install ripgrep/,
+        'message must include Linux install command');
+      assert.match(thrown.message, /choco install ripgrep/,
+        'message must include Windows install command');
+    } finally {
+      ctx.restore();
+    }
+  });
+
+  it('requireBackendAtStartup() returns the backend name when one is usable', function () {
+    const ctx = loadSearchWithStubbedExec(function (cmd, args) {
+      if (cmd === 'where' && /^rg/.test(args[0])) {
+        const e = new Error('rg not found'); e.status = 1; throw e;
+      }
+      throw new Error('unexpected: ' + cmd);
+    }, 'win32', { bundledAvailable: true });
+    try {
+      const result = ctx.search.requireBackendAtStartup();
+      assert.strictEqual(result, 'rg',
+        'when bundled rg is usable, startup gate must return "rg" (not throw)');
     } finally {
       ctx.restore();
     }

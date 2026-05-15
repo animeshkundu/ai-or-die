@@ -2059,6 +2059,14 @@ class ClaudeCodeWebServer {
       this.terminalBridge._commandReady,
     ]);
 
+    // Search-backend startup gate (ADR-0018). Hard-error with actionable
+    // guidance if neither system rg nor the @vscode/ripgrep bundled
+    // binary is usable, instead of letting the broken state surface
+    // later as cryptic "0 matches" UI behaviour. Recovering with a
+    // degraded "search disabled" mode is an explicit non-goal for v1 —
+    // the file-browser feature treats search as load-bearing.
+    search.requireBackendAtStartup();
+
     // Non-blocking STT init — downloads model if needed
     if (this.sttEngine._enabled || this.sttEngine._sttEndpoint) {
       this.sttEngine.initialize().catch(err => {

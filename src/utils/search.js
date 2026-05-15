@@ -8,21 +8,35 @@
 //
 // Why ripgrep (with strict-Linux grep fallback): rg is ~10× faster than
 // grep, respects .gitignore by default, has stable JSON output, and ships
-// with a single binary on every platform. grep is the fallback for
-// constrained Linux servers without rg installed; on Windows we don't
-// fall back to findstr (different output format, no recursion semantics
-// we can rely on); on macOS we don't fall back to grep either because
-// Homebrew users frequently shadow `/usr/bin/grep` with ugrep, which has
-// incompatible flags (peer-review MEDIUM-2 on bde844f).
+// with a single binary on every platform. We bundle rg via @vscode/ripgrep
+// so Windows + macOS-no-Homebrew users get a working backend out of the
+// box (ADR-0018). System rg is preferred when present; the bundled binary
+// is the cross-platform fallback. grep stays as a strict-Linux-only safety
+// net for "rg present but unexecutable" edge cases (antivirus quarantine,
+// stripped exec bit, corp policy block).
 
 'use strict';
 
 const { spawn, execFileSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
 // One-time async-safe detection of available search backends.
+//
+// _detectedBackend  : 'rg' | 'grep' | null (wire-shape value, surfaced in
+//                     SSE 'start' event + 'end' event for clients). The
+//                     SAME value is used regardless of whether rg comes
+//                     from PATH or from the @vscode/ripgrep bundled
+//                     binary — keeping the contract backward-compatible.
+// _detectedRgPath   : absolute path to the rg binary actually used (only
+//                     set when backend === 'rg' AND the bundled fallback
+//                     was selected). Read by the spawn() call in
+//                     streamSearch — when non-null, spawn passes this
+//                     path explicitly instead of relying on PATH lookup
+//                     for the unqualified 'rg' name.
 let _detectedBackend = null;
+let _detectedRgPath = null;
 let _detectionDone = false;
 
 function _detectBackend() {
@@ -32,19 +46,65 @@ function _detectBackend() {
   const rgName = process.platform === 'win32' ? 'rg.exe' : 'rg';
   const which = process.platform === 'win32' ? 'where' : 'which';
 
-  // Try rg first (works cross-platform).
+  // 1. Try system rg FIRST — preserves users on platforms with newer or
+  //    customized ripgrep installs (Homebrew, apt, choco). The spawn
+  //    below uses the unqualified name 'rg' (PATH-resolved) by leaving
+  //    _detectedRgPath null; spawn's own PATH lookup is fine for this
+  //    case.
   try {
     execFileSync(which, [rgName], { stdio: 'ignore', shell: false });
     _detectedBackend = 'rg';
+    _detectedRgPath = null;     // PATH-resolved 'rg' at spawn time
     return _detectedBackend;
-  } catch (_) { /* not found */ }
+  } catch (_) { /* not found — try bundled */ }
 
-  // grep fallback: STRICT Linux only. macOS BSD grep + Homebrew ugrep have
-  // incompatible `--max-count <N>` (space form) and subtle `--exclude-dir`
-  // semantics; rather than probe `grep --version` for GNU-grep signature,
-  // refuse to fall back at all (peer-review MEDIUM-2 on bde844f). The
-  // route returns an error event so the client can surface "install
-  // ripgrep" guidance instead of misbehaving.
+  // 2. Fall back to the @vscode/ripgrep bundled binary. This is the
+  //    primary backend for Windows + macOS-no-Homebrew users; corp
+  //    machines where rg isn't on PATH; and CI runners that don't
+  //    pre-install ripgrep. The bundled binary is downloaded at
+  //    `npm install` time by the @vscode/ripgrep postinstall script
+  //    (network call — corp proxies + `--ignore-scripts` are the two
+  //    failure modes captured in ADR-0018). When that postinstall
+  //    SUCCEEDS, the rgPath returned here is an absolute path inside
+  //    node_modules; we verify it actually exists and is executable
+  //    before declaring it as our backend.
+  //
+  //    Track the resolved path in _detectedRgPath so the spawn() call
+  //    below can pass it explicitly (bypassing PATH lookup, which on
+  //    Windows would never find the bundled binary anyway).
+  try {
+    // require() can throw if the package is missing entirely (offline
+    // install, ripped-out node_modules, --ignore-scripts) — wrap to
+    // keep _detectBackend total-on-error.
+    const rgPath = require('@vscode/ripgrep').rgPath;
+    if (rgPath && typeof rgPath === 'string') {
+      // X_OK: the bundled binary may exist on disk but be non-
+      // executable due to chmod stripping (zip extraction on Windows
+      // can lose the bit; antivirus quarantine on macOS strips it;
+      // corp policy on Windows can block exec entirely). accessSync
+      // is the cheapest pre-spawn liveness check — if it throws, fall
+      // through to the grep safety net.
+      fs.accessSync(rgPath, fs.constants.X_OK);
+      _detectedBackend = 'rg';
+      _detectedRgPath = rgPath;
+      return _detectedBackend;
+    }
+  } catch (_) { /* package missing OR rgPath unexecutable — fall through */ }
+
+  // 3. grep fallback: STRICT Linux only, AND only as a SAFETY NET for
+  //    "rg present-but-unusable" cases that slip past steps 1 + 2
+  //    (antivirus quarantine of the bundled binary, perms stripped at
+  //    extraction time, corp policy block on the bundled path). grep
+  //    is NOT the primary path on any platform under the bundled-rg
+  //    design — when this branch hits, search semantics degrade
+  //    (no .gitignore awareness, no per-file --max-count, no JSON
+  //    output) and the client surfaces backend === 'grep' so the UI
+  //    can show a "limited mode" hint.
+  //
+  //    macOS BSD grep + Homebrew ugrep have incompatible --max-count
+  //    and --exclude-dir semantics; rather than probe grep --version
+  //    for GNU-grep signature, refuse to fall back at all on macOS
+  //    (peer-review MEDIUM-2 on bde844f).
   if (process.platform === 'linux') {
     try {
       execFileSync(which, ['grep'], { stdio: 'ignore', shell: false });
@@ -54,6 +114,7 @@ function _detectBackend() {
   }
 
   _detectedBackend = null;
+  _detectedRgPath = null;
   return _detectedBackend;
 }
 
@@ -62,6 +123,7 @@ function _detectBackend() {
  */
 function resetBackendDetection() {
   _detectedBackend = null;
+  _detectedRgPath = null;
   _detectionDone = false;
 }
 
@@ -69,6 +131,46 @@ function resetBackendDetection() {
  * Synchronous accessor — returns 'rg' | 'grep' | null.
  */
 function detectBackend() { return _detectBackend(); }
+
+/**
+ * Returns the resolved rg binary path (absolute) when the bundled
+ * fallback is in use, or null when system rg (PATH-resolved) is in
+ * use. Exposed primarily for test introspection — production code
+ * reads _detectedRgPath directly via the spawn() call.
+ */
+function detectRgPath() {
+  _detectBackend();
+  return _detectedRgPath;
+}
+
+/**
+ * Server-startup gate — fail fast with actionable guidance when no
+ * backend is available, instead of letting the broken state surface
+ * as cryptic "0 matches" UI behaviour later (ADR-0018 v1 design:
+ * startup is honest about the broken state rather than silently
+ * disabling the search feature).
+ *
+ * Throws an Error with a multi-line message for the operator. Callers
+ * (server.js `start()`) should let the error propagate to abort the
+ * boot — recovering with a degraded "search disabled" mode is an
+ * explicit non-goal for v1.
+ */
+function requireBackendAtStartup() {
+  const backend = _detectBackend();
+  if (backend) return backend;
+  const lines = [
+    'ripgrep is required for cross-file search.',
+    '',
+    '  - Verify @vscode/ripgrep installed correctly (re-run `npm install`)',
+    '  - OR install rg manually:',
+    '      macOS:    brew install ripgrep',
+    '      Linux:    apt install ripgrep    (or your distro\'s equivalent)',
+    '      Windows:  choco install ripgrep  (or scoop install ripgrep)',
+  ];
+  const err = new Error(lines.join('\n'));
+  err.code = 'NO_SEARCH_BACKEND';
+  throw err;
+}
 
 // ---------------------------------------------------------------------------
 // DoS hardening (peer-review HIGH on bde844f)
@@ -217,7 +319,15 @@ function searchStream(query, opts) {
     ? _buildRgArgs(query, opts)
     : _buildGrepArgs(query, opts);
 
-  const child = spawn(cmd, args, {
+  // When the bundled rg fallback is in use, _detectedRgPath holds the
+  // absolute path inside node_modules. Pass it explicitly to spawn() so
+  // we don't depend on PATH lookup (which on Windows would never find
+  // the bundled binary). When system rg is in use, _detectedRgPath is
+  // null and we fall back to the unqualified 'rg' name from
+  // _buildRgArgs (PATH-resolved by the OS).
+  const spawnCmd = (backend === 'rg' && _detectedRgPath) ? _detectedRgPath : cmd;
+
+  const child = spawn(spawnCmd, args, {
     cwd: opts.cwd || process.cwd(),
     shell: false,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -392,6 +502,8 @@ function searchStream(query, opts) {
 module.exports = {
   searchStream: searchStream,
   detectBackend: detectBackend,
+  detectRgPath: detectRgPath,
+  requireBackendAtStartup: requireBackendAtStartup,
   resetBackendDetection: resetBackendDetection,
   // Exported for unit tests of the per-line / per-buffer cap logic.
   _MAX_LINE_BYTES: MAX_LINE_BYTES,
