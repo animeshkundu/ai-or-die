@@ -1469,12 +1469,18 @@ class ClaudeCodeWebServer {
         maxTotal: 500,
         maxFilesize: '10M',
         onMatch: (m) => {
+          // rg's positional is `.` (relative) — see _buildRgArgs comment.
+          // Resolve relative match paths to absolute against cwd so the
+          // wire shape stays consistent (clients expect absPath absolute).
+          const absMatchPath = path.isAbsolute(m.path)
+            ? m.path
+            : path.resolve(cwd, m.path);
           // Make path relative to cwd so the client can resolve consistently.
-          const relPath = path.relative(cwd, m.path) || m.path;
+          const relPath = path.relative(cwd, absMatchPath) || absMatchPath;
           send({
             type: 'match',
             path: relPath,
-            absPath: m.path,
+            absPath: absMatchPath,
             line: m.line,
             col: m.col,
             text: m.text,
