@@ -18,3 +18,9 @@ test-*.js
 
 # Factory operational state (ephemeral, tracked on factory branch only)
 docs/factory/state/
+
+# Test runtime artifacts — Playwright trace/result/screenshot output and
+# the generic-drop pipeline's per-session attachment dir created when the
+# upload endpoint runs against a fixture.
+test-results/
+e2e/.claude-attachments/

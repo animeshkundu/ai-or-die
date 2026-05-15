@@ -139,6 +139,29 @@ module.exports = defineConfig({
       testMatch: /5[6-9]-.*\.spec\.js|6[0-6]-.*\.spec\.js/,
       timeout: 90000,
     },
+    // Exploratory user-journey suite. Drives the live dev server at
+    // http://127.0.0.1:11500 — start it BEFORE running:
+    //   node bin/ai-or-die.js --port 11500 --no-open --disable-auth
+    // Default headless; pass --headed via the CLI for human observation.
+    // (See e2e/tests/journey/journey.spec.js for the 12-step plan.)
+    {
+      name: 'journey',
+      testMatch: /journey[\\/]journey\.spec\.js/,
+      timeout: 120000,
+      use: {
+        viewport: { width: 1280, height: 800 },
+      },
+    },
+    // Auth-on rerun. Drives a SEPARATE dev server with --auth foo:
+    //   node bin/ai-or-die.js --port 11501 --no-open --auth foo
+    {
+      name: 'journey-auth',
+      testMatch: /journey[\\/]journey-auth\.spec\.js/,
+      timeout: 120000,
+      use: {
+        viewport: { width: 1280, height: 800 },
+      },
+    },
     // Server restart feature tests
     {
       name: 'restart',
