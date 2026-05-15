@@ -3902,13 +3902,16 @@ class ClaudeCodeWebInterface {
                 getSearchPath: () => this.getCurrentWorkingDir(),
                 getSession: () => this.currentClaudeSessionId || null,
                 onResultClick: (hit) => {
-                    // Route through the file browser's tab manager — open()
-                    // ensures the panel is mounted; openToFile auto-creates
-                    // a preview tab. For 'editor' mode we open the file
-                    // then ask the panel to switch to the editor view.
+                    // openToFile handles both the not-yet-open case (calls
+                    // open() with the parent dir) and the already-open
+                    // case (rebases via navigateTo). The redundant
+                    // panel.open() that used to live here actively caused
+                    // QA #5's race: open()-then-openToFile against a
+                    // nested file would no-op the inner open() and leave
+                    // the panel at workingDir. Trust openToFile to do
+                    // the right thing.
                     const panel = this._ensureFileBrowser();
                     if (!panel) return;
-                    if (!panel.isOpen()) panel.open();
                     panel.openToFile(hit.path);
                     if (hit.mode === 'editor' && panel._tabManager &&
                         typeof panel._tabManager.openFile === 'function') {

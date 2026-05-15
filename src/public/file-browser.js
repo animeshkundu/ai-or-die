@@ -763,13 +763,25 @@
   };
 
   FileBrowserPanel.prototype.openToFile = function (filePath) {
-    // Navigate to the parent directory and select the file
+    // Navigate to the parent directory and select the file. Always rebase
+    // — if the panel is already open at a different dir, open(parentDir)
+    // would no-op (open() short-circuits on _open=true) and the file
+    // would never become visible. Per QA #5: Cmd-P → click on a nested
+    // file silently failed because of that no-op race. Set the pending
+    // selection FIRST so a synchronous re-render path picks it up.
     var parts = filePath.replace(/\\/g, '/').split('/');
     var fileName = parts.pop();
     var dirPath = parts.join('/') || '/';
-    this.open(dirPath);
-    // After navigation, auto-select the file
     this._pendingSelectFile = fileName;
+    if (!this._open) {
+      this.open(dirPath);
+    } else {
+      // Already open — rebase the listing to the file's parent dir
+      // unconditionally. navigateTo will fire even when dirPath equals
+      // the current path; a re-list is harmless and ensures the
+      // pending-select handler runs against fresh items.
+      this.navigateTo(dirPath);
+    }
   };
 
   FileBrowserPanel.prototype._adjustTerminal = function () {

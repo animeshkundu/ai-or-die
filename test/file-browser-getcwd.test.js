@@ -215,4 +215,53 @@ describe('FileBrowserPanel.getCwd callback', function () {
     assert.strictEqual(calls.getCwd, 1);
     assert.deepStrictEqual(calls.navigateTo, ['/initial']);
   });
+
+  // -------------------------------------------------------------------------
+  // openToFile rebases the panel to the file's parent directory even when
+  // the panel is already open at a different dir. Regression for QA #5
+  // bug: Cmd-P → click a nested file → panel stayed at workingDir
+  // because openToFile's internal open(parentDir) no-ops on _open=true.
+  // -------------------------------------------------------------------------
+
+  describe('openToFile rebase', function () {
+    it('navigates to parent dir on first call (panel was closed)', function () {
+      panel = makePanel({ getCwd: () => '/Users/foo' });
+      panel.openToFile('/Users/foo/src/nested/app.js');
+      // First call ran open(parentDir) → navigateTo fired with parent.
+      assert.deepStrictEqual(calls.navigateTo, ['/Users/foo/src/nested']);
+      assert.strictEqual(panel._pendingSelectFile, 'app.js');
+    });
+
+    it('re-navigates to parent dir even when panel is already open', function () {
+      panel = makePanel({ getCwd: () => '/Users/foo' });
+      // Open the panel via the normal entry point so _open is true.
+      panel.open();
+      assert.deepStrictEqual(calls.navigateTo, ['/Users/foo']);
+      // Clear the spy and call openToFile on a NESTED file.
+      calls.navigateTo.length = 0;
+      panel.openToFile('/Users/foo/src/nested/app.js');
+      // Bug fix: navigateTo MUST fire with the parent dir; the file's
+      // pending-select is set so the listing renderer auto-selects it.
+      assert.deepStrictEqual(calls.navigateTo, ['/Users/foo/src/nested']);
+      assert.strictEqual(panel._pendingSelectFile, 'app.js');
+    });
+
+    it('handles root-of-base files (parent dir === "/")', function () {
+      panel = makePanel({ getCwd: () => '/' });
+      panel.open();
+      calls.navigateTo.length = 0;
+      panel.openToFile('/hello-world.js');
+      assert.deepStrictEqual(calls.navigateTo, ['/']);
+      assert.strictEqual(panel._pendingSelectFile, 'hello-world.js');
+    });
+
+    it('normalises Windows path separators before splitting', function () {
+      panel = makePanel({ getCwd: () => '/Users/foo' });
+      panel.open();
+      calls.navigateTo.length = 0;
+      panel.openToFile('C:\\Users\\foo\\src\\app.js');
+      assert.deepStrictEqual(calls.navigateTo, ['C:/Users/foo/src']);
+      assert.strictEqual(panel._pendingSelectFile, 'app.js');
+    });
+  });
 });
