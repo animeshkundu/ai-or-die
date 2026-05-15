@@ -255,10 +255,45 @@ Wire shape:
 - `POST /api/files/watch/unsubscribe?session=<id>&path=<absolute>`
   removes a path. Server stops emitting events for it.
 
-The chokidar watcher itself watches the SUPERSET of all subscribed
-paths' parent directories — narrower than watching the entire
-`workingDir`, broader than watching individual files. This balances
-kernel-watch resource cost against subscription latency.
+The chokidar watcher watches the **entire `session.workingDir` subtree**
+from the moment the SSE stream opens, with the `EXCLUDE_DIRS` ignore
+list applied at the watcher level. Subscriptions filter on EMIT, not on
+watch creation: every event chokidar produces is checked against the
+session's active subscription set; matches are forwarded to the SSE
+stream, non-matches are dropped server-side.
+
+This deviates from an earlier draft of this ADR which proposed watching
+only the SUPERSET of subscribed paths' parent directories and adding /
+removing watches dynamically as subscriptions changed. Two reasons the
+shipped implementation went with broader-watch + filter-on-emit instead,
+documented here so future maintainers don't try to "fix" it back to the
+narrower model:
+
+1. **chokidar v5's empty-watch ready-event quirk.** `chokidar.watch([])`
+   never fires `'ready'`, which would have left the watcher in an
+   indeterminate state until the first subscription arrived. Watching
+   the workingDir subtree from start avoids this entirely.
+
+2. **subscribe → kernel-watch race window.** With dynamic
+   `chokidar.add(parentDir)` on every subscription, there's a small
+   window between the `add()` call walking the directory and the
+   kernel's inotify / FSEvents watch becoming live during which a
+   write would be missed silently. Broader-watch + filter-on-emit is
+   race-free because the watch is established before any subscription
+   exists.
+
+**Resource cost trade-off**: more inotify / FSEvents handles upfront,
+bounded by the `EXCLUDE_DIRS` ignore list. For typical projects
+(node-shaped repos, Python projects, monorepos) the count stays well
+under Linux's `inotify_max_user_watches` default of 8192. Mac FSEvents
+and Windows ReadDirectoryChangesW do not have a comparable per-user
+cap. If a user with an unusually broad workingDir hits the Linux limit,
+they can extend the ignore list via `FS_WATCHER_IGNORE` env var.
+
+**User-visible contract is unchanged.** The subscribe/unsubscribe
+endpoints still control which paths produce client-visible events; the
+narrow-vs-broad watch decision is purely an internal implementation
+detail of the server-side wrapper.
 
 `TabManager` is the canonical client subscriber: opens the EventSource
 on first tab, calls `/subscribe` on every `openFile()`, calls
