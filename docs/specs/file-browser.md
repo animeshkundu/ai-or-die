@@ -321,7 +321,7 @@ Remove a path from the active subscription set.
 | `file-tabs.js` | `src/public/file-tabs.js` | `TabManager` — multi-file tab strip, per-tab Monaco models, localStorage persistence keyed by session id, fs-watcher subscription lifecycle (per ADR-0017) |
 | `file-diff.js` | `src/public/file-diff.js` | `DiffViewerPanel` — `monaco.editor.createDiffEditor` wrapper. Side-by-side read-only diff with intra-line highlighting. Convenience helpers `openHeadVsWorking(path)` / `openRefVsWorking(path, ref)` / `openFileVsFile(a, b)` / `openMemoryVsFile(memContent, diskPath)` (the last entry point for the dirty-tab toast's Compare button per ADR-0017). Mounted by TabManager mode `'diff'`. |
 | `notebook-render.js` | `src/public/notebook-render.js` | Read-only Jupyter `.ipynb` viewer. Lazy-loads kokes/nbviewer.js (~50 KB) on first use, parses + renders into a scratch DIV, then sanitises through DOMPurify (same FORBID_ATTR/FORBID_TAGS profile as `markdown-render.js`) before inserting into the live DOM. |
-| `file-search.js` | `src/public/file-search.js` | `SearchPanel` — cross-file search panel toggled via `Cmd/Ctrl+Shift+F`. Streams matches from `GET /api/search` (SSE; ripgrep + grep fallback). Result-row click routes through `app.openFileInViewer(path, line, col)` → `_pendingJumpTo` → Monaco preview tab at the matched line. |
+| `file-search.js` | `src/public/file-search.js` | `SearchPanel` — cross-file search panel toggled via `Cmd/Ctrl+Shift+F`. Streams matches from `GET /api/search` (SSE; ripgrep via system PATH or bundled `@vscode/ripgrep` per [ADR-0018](../adrs/0018-bundled-ripgrep-search-backend.md), grep belt-and-suspenders on Linux). Result-row click routes through `app.openFileInViewer(path, line, col)` → `_pendingJumpTo` → Monaco preview tab at the matched line. |
 | `file-pdf-viewer.js` | `src/public/file-pdf-viewer.js` | PDF.js wrapper with thin viewer chrome (prev/next/zoom/fit) |
 | `monaco-worker-shim.js` | `src/public/vendor/monaco-worker-shim.js` | Same-origin Web Worker; bootstraps Monaco's CDN worker via `importScripts` (gated by exact-prefix base-URL allowlist; ADR-0016) |
 | `panzoom.min.js` | `src/public/vendor/panzoom.min.js` | Vendored `@panzoom/panzoom` 4.6.0 (~10 KB MIT) |
@@ -468,9 +468,32 @@ Source: `src/public/file-tabs.js` -- class `TabManager`. A horizontal tab strip 
 
 ## Cross-File Search
 
-Server: `GET /api/search?q=<term>&regex=0|1&caseSensitive=0|1&glob=<pattern>` (SSE-streamed) shells out to `rg --json --max-count 50 --max-filesize 10M`, falling back to `grep -rIn` on systems without ripgrep. Respects `.gitignore`. Rate-limited 10 searches/min/IP. Path-validated to baseFolder; rejects globs that escape.
+**Server**: `GET /api/search?q=<term>&regex=0|1&caseSensitive=0|1&glob=<pattern>` (SSE-streamed) shells out to ripgrep with `--json --max-count 50 --max-filesize 10M`, respects `.gitignore`, rate-limited 10 searches/min/IP, path-validated to baseFolder (rejects globs that escape).
 
-Client: `src/public/file-search.js` (TBD — task #9 still pending). Plan: `Cmd/Ctrl + Shift + F` opens a panel above the tab strip; consumes the SSE stream via `EventSource`; each result row is `path:line` + matched-line context; click opens the file in a tab and jumps via `editor.revealLineInCenter` + `setSelection`. Cancels the previous EventSource on each new query.
+**Backend selection** (per [ADR-0018](../adrs/0018-bundled-ripgrep-search-backend.md)) follows a four-step detection chain on first server start, cached behind a `_detectionDone` flag for the process lifetime:
+
+1. **System `rg`** — if `which rg` (or `where rg` on Windows) returns an executable in PATH. Lets users with a newer or custom-built ripgrep keep their environment.
+2. **Bundled `@vscode/ripgrep`** — `require('@vscode/ripgrep').rgPath` resolves to the platform-appropriate binary downloaded by npm during the postinstall step (~2 MB). Same package VS Code, Cursor, Theia, and GitHub Copilot Workspace use; MIT-licensed wrapper around the MIT/Unlicense rg binary.
+3. **`grep -rIn` belt-and-suspenders on Linux** — used only when neither rg path is executable (e.g. Windows Defender quarantine, `noexec` mount, corp permission strip). Slower, no `.gitignore` respect, no structured `--json`. Explicitly NOT a primary path; future maintainers should not use its existence as license to half-support rg features.
+4. **Hard error at server startup** elsewhere, with three-line user-actionable guidance:
+   ```
+   ai-or-die: search backend unavailable.
+   The bundled ripgrep binary is not present at <path>.
+   Either:
+     - reinstall: rm -rf node_modules && npm ci
+     - install ripgrep manually:
+         macOS:   brew install ripgrep
+         Windows: choco install ripgrep   (or scoop install ripgrep)
+     - then restart the server
+   ```
+
+The SSE wire contract is unchanged regardless of which backend is selected: same `start` event with `backend: 'rg' | 'grep' | null` field, same `match` event payload, same `end` event with `droppedLines` count. Clients and tests treat the backend choice as implementation-internal — the e2e regression net at scenario `(j)` in `15-file-browser-rich-viewers.spec.js` asserts `start.backend === 'rg'` on every supported platform now that the bundled binary is always present.
+
+**Opt-out: `AI_OR_DIE_NO_BUNDLED_RG=1`** — when set, `_detectBackend()` skips the bundled step and falls back directly to the Linux grep path or hard-error. For users who want "system rg only" (corp-policy-blocked postinstall network calls, security-conscious `--ignore-scripts` installs, air-gapped deployments) without disabling postinstall hooks for the entire dependency tree.
+
+**Postinstall failure mode**: if `@vscode/ripgrep`'s postinstall download fails (corporate proxy blocking the Microsoft CDN, offline install, `--ignore-scripts`, network outage during install), Linux soft-degrades to grep with a clear startup warning; macOS / Windows hard-error per the message above. Linux's behaviour preserves backward compatibility with the pre-ADR-0018 grep-only fallback. CI verifies the bundled binary is present + executable via a small `node -e accessSync(rgPath, X_OK)` step after `npm ci`, so install-time failures are caught fast on both `ubuntu-latest` and `windows-latest` rather than producing a cascade of spec failures downstream.
+
+**Client**: `src/public/file-search.js` — `Cmd/Ctrl + Shift + F` opens a panel above the tab strip; consumes the SSE stream via `EventSource`; each result row is `path:line` + matched-line context; click opens the file in a tab and jumps via `editor.revealLineInCenter` + `setSelection`. Cancels the previous EventSource on each new query. Surfaces the `droppedLines` count from the `end` event when matched-line truncation hit the per-line cap.
 
 ---
 
