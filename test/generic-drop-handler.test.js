@@ -361,4 +361,72 @@ describe('generic-drop-handler.js (pure helpers)', function () {
       done();
     }).catch(done);
   });
+
+  // -------------------------------------------------------------------------
+  // Default uploadImpl wire contract (regression for QA #5 fix).
+  //
+  // The server endpoint POST /api/files/upload reads `{ targetDir,
+  // fileName, content }` (src/server.js:2271). An earlier draft sent
+  // `base64` instead of `content`, and the unit tests that injected a
+  // custom uploadImpl never exercised the default path — so a 100% green
+  // suite shipped a 400-on-every-drop production bug. This regression
+  // guard runs the default uploadImpl with an injected fetchImpl that
+  // captures the request body and asserts the field shape.
+  // -------------------------------------------------------------------------
+
+  describe('default uploadImpl wire contract', function () {
+    it('POSTs { targetDir, fileName, content } to /api/files/upload', function (done) {
+      var captured = null;
+      attachGenericDropHandler({
+        containerEl: container,
+        getWorkingDir: function () { return '/Users/foo'; },
+        onImageDrop: function () {},
+        // Note: uploadImpl NOT overridden — exercising the default path.
+        fetchImpl: function (url, opts) {
+          captured = { url: url, opts: opts, body: opts && opts.body ? JSON.parse(opts.body) : null };
+          return Promise.resolve({
+            ok: true, status: 200,
+            json: function () {
+              return Promise.resolve({
+                name: captured.body.fileName,
+                path: '/Users/foo/.claude-attachments/' + captured.body.fileName,
+                size: 100,
+              });
+            },
+          });
+        },
+        injectAtPath: function () {},
+      });
+      dispatchDrop(container, [makeFile('hello.txt', 'text/plain', 1)]);
+      // Default uploadImpl chains FileReader → fetch → resp.json. Drain
+      // until we see the captured request.
+      var ticks = 0;
+      function waitForCapture() {
+        return flush().then(function () {
+          if (captured || ticks++ > 50) return;
+          return waitForCapture();
+        });
+      }
+      waitForCapture().then(function () {
+        try {
+          assert.ok(captured, 'fetch should have been called');
+          assert.strictEqual(captured.url.indexOf('/api/files/upload'), 0, 'url: ' + captured.url);
+          assert.strictEqual(captured.opts.method, 'POST');
+          assert.ok(captured.body, 'request body parsed');
+          assert.ok(typeof captured.body.targetDir === 'string', 'targetDir present');
+          assert.ok(captured.body.targetDir.indexOf('.claude-attachments') !== -1,
+            'targetDir is the attachments dir: ' + captured.body.targetDir);
+          assert.ok(typeof captured.body.fileName === 'string', 'fileName present');
+          assert.ok(captured.body.fileName.indexOf('hello.txt') !== -1,
+            'fileName carries basename: ' + captured.body.fileName);
+          // CRITICAL: server reads `content`, not `base64`. Bug fixture.
+          assert.ok(typeof captured.body.content === 'string' && captured.body.content.length > 0,
+            '`content` field must be present (server contract): ' + JSON.stringify(Object.keys(captured.body)));
+          assert.strictEqual(captured.body.base64, undefined,
+            '`base64` field must NOT be present (legacy field name)');
+          done();
+        } catch (e) { done(e); }
+      });
+    });
+  });
 });

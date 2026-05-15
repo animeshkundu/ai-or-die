@@ -168,6 +168,14 @@
           // Default: base64 JSON to /api/files/upload. Mirrors the image
           // flow's wire contract (server already enforces 10MB cap,
           // blocked-extension list, sanitisation, and validatePath()).
+          //
+          // FIELD NAME: server reads `content` (src/server.js:2271 →
+          // `const { targetDir, fileName, content, overwrite } = req.body`).
+          // An earlier draft sent `base64` here and 400-d every drop in
+          // production — caught by QA E2E (#5). The unit-test path
+          // missed it because it injected a custom uploadImpl; the
+          // default-uploadImpl wire-contract test in
+          // test/generic-drop-handler.test.js is the regression guard.
           return _fileToBase64(file).then(function (base64) {
             var token = getAuthToken();
             var url = UPLOAD_ENDPOINT;
@@ -178,8 +186,7 @@
               body: JSON.stringify({
                 targetDir: targetPath.replace(/[\\/][^\\/]*$/, ''),
                 fileName: targetPath.replace(/.*[\\/]/, ''),
-                base64: base64,
-                mimeType: file.type || 'application/octet-stream',
+                content: base64,
               }),
             }, fetchOpts || {}));
           });
