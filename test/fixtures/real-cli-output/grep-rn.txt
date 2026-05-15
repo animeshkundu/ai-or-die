@@ -1,0 +1,8 @@
+src/public/file-find.js:9:// Public API (window.fileFind):
+src/public/file-find.js:524:  window.fileFind = exportsObj;
+src/public/app.js:3892:        if (this._findPanel || !window.fileFind) return this._findPanel || null;
+src/public/app.js:3897:            this._findPanel = new window.fileFind.FindPanel({
+src/public/app.js:3905:                    // Delegate to fileFind.dispatchFindHit — encapsulates
+src/public/app.js:3915:                    if (!panel || !window.fileFind ||
+src/public/app.js:3916:                        typeof window.fileFind.dispatchFindHit !== 'function') return;
+src/public/app.js:3917:                    window.fileFind.dispatchFindHit(panel, hit);

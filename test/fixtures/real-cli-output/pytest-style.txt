@@ -1,0 +1,21 @@
+============================= test session starts ==============================
+collected 2 items
+
+test/test_thing.py::test_one FAILED
+test/test_thing.py::test_two FAILED
+
+=================================== FAILURES ===================================
+___________________________________ test_one ___________________________________
+
+    def test_one():
+>       assert 1 == 2
+E       assert 1 == 2
+
+test/test_thing.py:5: AssertionError
+___________________________________ test_two ___________________________________
+
+  File "/Users/kundus/Software/ai-or-die/scripts/builder.py", line 88, in <module>
+    main()
+  File "scripts/lib/util.py", line 23, in main
+    raise ValueError("oops")
+ValueError: oops

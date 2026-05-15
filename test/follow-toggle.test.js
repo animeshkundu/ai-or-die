@@ -246,5 +246,95 @@ describe('FileBrowserPanel — _followsTerminal toggle', function () {
       assert.strictEqual(panel.getLastLiveCwd('sess-a'), '/a');
       assert.strictEqual(panel.getLastLiveCwd('sess-b'), '/b');
     });
+
+    // -----------------------------------------------------------------------
+    // Concurrency scenario (task #8 part 3): user opens 3 sessions and
+    // switches fast between them. Each session keeps its own follow
+    // state + its own stashed liveCwd; switching active sessions does
+    // NOT bleed state between them.
+    //
+    // Models the real fast-switch flow:
+    //   - sess-A starts, OSC 7 fires once (panel re-roots, follow=true).
+    //   - User switches to sess-B (active sessionId changes), OSC 7 fires
+    //     in sess-B's PTY (panel re-roots to sess-B's cwd).
+    //   - User toggles "follow" off in sess-B — only sess-B is affected.
+    //   - User switches to sess-C, never seen before — defaults to
+    //     follow=true, no stashed liveCwd.
+    //   - User switches BACK to sess-A — panel still respects sess-A's
+    //     own follow state (true), and a fresh OSC 7 in sess-A re-roots.
+    // -----------------------------------------------------------------------
+    it('3-session fast-switch — per-session state survives session switching', function () {
+      // Tiny app shim with mutable currentClaudeSessionId so we can
+      // simulate session switching cleanly.
+      const app = { currentClaudeSessionId: 'sess-A' };
+      const { panel, calls } = makePanel({ app: app });
+      panel._open = true;
+
+      // sess-A: OSC 7 → re-root.
+      panel.notifyCwdChanged('sess-A', '/Users/foo/sess-A');
+      assert.deepStrictEqual(calls.navigateTo, ['/Users/foo/sess-A']);
+
+      // Switch to sess-B (UI side).
+      app.currentClaudeSessionId = 'sess-B';
+      // sess-B's first OSC 7.
+      panel.notifyCwdChanged('sess-B', '/Users/foo/sess-B');
+      assert.deepStrictEqual(calls.navigateTo, ['/Users/foo/sess-A', '/Users/foo/sess-B']);
+
+      // User pauses follow in sess-B only.
+      panel.setFollowsTerminal('sess-B', false);
+      assert.strictEqual(panel.followsTerminal('sess-A'), true,
+        'sess-A follow MUST stay true');
+      assert.strictEqual(panel.followsTerminal('sess-B'), false,
+        'sess-B follow MUST be false');
+
+      // sess-B fires another OSC 7 — must NOT re-root (paused).
+      panel.notifyCwdChanged('sess-B', '/Users/foo/sess-B-elsewhere');
+      // navigateTo count unchanged — last entry still sess-B's first.
+      assert.strictEqual(calls.navigateTo.length, 2,
+        'paused session must not re-root: ' + JSON.stringify(calls.navigateTo));
+      // But the stash still updated.
+      assert.strictEqual(panel.getLastLiveCwd('sess-B'), '/Users/foo/sess-B-elsewhere');
+
+      // Switch to sess-C — never seen before, defaults to follow=true.
+      app.currentClaudeSessionId = 'sess-C';
+      assert.strictEqual(panel.followsTerminal('sess-C'), true);
+      // First OSC 7 in sess-C → re-root.
+      panel.notifyCwdChanged('sess-C', '/Users/foo/sess-C');
+      assert.deepStrictEqual(calls.navigateTo, [
+        '/Users/foo/sess-A',
+        '/Users/foo/sess-B',
+        '/Users/foo/sess-C',
+      ]);
+
+      // Switch back to sess-A.
+      app.currentClaudeSessionId = 'sess-A';
+      // sess-A's follow state preserved (true); stashed cwd still /Users/foo/sess-A.
+      assert.strictEqual(panel.followsTerminal('sess-A'), true);
+      assert.strictEqual(panel.getLastLiveCwd('sess-A'), '/Users/foo/sess-A');
+      // A new OSC 7 in sess-A → re-roots.
+      panel.notifyCwdChanged('sess-A', '/Users/foo/sess-A2');
+      assert.strictEqual(calls.navigateTo[calls.navigateTo.length - 1], '/Users/foo/sess-A2');
+
+      // sess-B's pause state STILL holds across the switch — switch
+      // back and confirm it stayed false.
+      app.currentClaudeSessionId = 'sess-B';
+      assert.strictEqual(panel.followsTerminal('sess-B'), false,
+        'sess-B paused state must survive switching');
+    });
+
+    it('per-session getLastLiveCwd is not contaminated by switching', function () {
+      const app = { currentClaudeSessionId: 'sess-A' };
+      const { panel } = makePanel({ app: app });
+      panel.notifyCwdChanged('sess-A', '/a/here');
+      panel.notifyCwdChanged('sess-B', '/b/there');
+      panel.notifyCwdChanged('sess-C', '/c/elsewhere');
+      // Switching active session must NOT mutate the stash.
+      app.currentClaudeSessionId = 'sess-B';
+      assert.strictEqual(panel.getLastLiveCwd('sess-A'), '/a/here');
+      assert.strictEqual(panel.getLastLiveCwd('sess-B'), '/b/there');
+      assert.strictEqual(panel.getLastLiveCwd('sess-C'), '/c/elsewhere');
+      app.currentClaudeSessionId = 'sess-C';
+      assert.strictEqual(panel.getLastLiveCwd('sess-A'), '/a/here');
+    });
   });
 });

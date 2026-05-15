@@ -1,0 +1,4 @@
+[server] listening on http://0.0.0.0:7777
+[server] base folder: /Users/kundus/Software/ai-or-die
+[server] watching for changes via /Users/kundus/Software/ai-or-die/src/server.js
+WARN  config file at /Users/kundus/Software/ai-or-die/.claude-code-web/config.json missing — using defaults

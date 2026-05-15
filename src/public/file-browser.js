@@ -3152,17 +3152,30 @@
   // recover the precise start column of the captured path inside the line.
   //
   // Group 1 = leading boundary (single char or empty at line start)
+  // Group 1 = leading boundary (single char or empty at line start)
   // Group 2 = the path text
-  // Group 3 = optional line number
-  // Group 4 = optional column number
+  // Group 3 = optional line number  (`:line` form OR first capture of `(line,col)` form)
+  // Group 4 = optional column number (`:line:col` OR `(line,col)` second capture)
   //
   // Note: the path body intentionally does NOT permit spaces. Terminal
   // copy/paste of paths with spaces is uncommon; supporting them would
   // require quote-aware parsing and isn't worth the false-positive cost.
+  //
+  // Tail forms (peer-review #8 — real-output sampling exposed tsc):
+  //   `:42`        → :line
+  //   `:42:5`      → :line:col
+  //   `(42,5)`     → tsc-style `(line,col)` form. tsc emits errors as
+  //                  `path(line,col): error TS####:` — without this
+  //                  branch the path itself was matched but the line
+  //                  was lost AND the trailing `(` blocked LINK_RIGHT
+  //                  unless we also added `(` to it.
   var LINK_BODY = '(?:[A-Za-z]:[\\\\/]|~[\\\\/]|\\.{0,2}[\\\\/])?[\\w./\\\\-]*?\\.(?:' + EXT_ALT + ')';
-  var LINK_TAIL = '(?::(\\d+)(?::(\\d+))?)?';
+  var LINK_TAIL = '(?::(\\d+)(?::(\\d+))?|\\((\\d+),(\\d+)\\))?';
   var LINK_LEFT = '(^|[\\s\'"`(\\[<,;])';
-  var LINK_RIGHT = '(?=[\\s\'"`)\\]>,;]|[.:](?:\\s|$)|$)';
+  // Right boundary now also tolerates `(` — without it, the tsc-style
+  // `path(line,col):` left the regex unable to anchor (peer-review #8).
+  // The new `(line,col)` capture above handles cursor placement.
+  var LINK_RIGHT = '(?=[\\s\'"`)\\]>,;(]|[.:](?:\\s|$)|$)';
 
   // Single-match version (for the right-click selection extractor).
   var LINK_RE_SINGLE = new RegExp(LINK_LEFT + '(' + LINK_BODY + ')' + LINK_TAIL + LINK_RIGHT, 'i');
@@ -3202,10 +3215,21 @@
     var pathOnly = m[2];
     if (VERSION_RE.test(pathOnly)) return null;
 
+    // Two tail forms (per the regex): :line[:col] in groups 3+4, or
+    // tsc-style (line,col) in groups 5+6. Mutually exclusive.
+    var line = null, col = null;
+    if (m[3]) {
+      line = parseInt(m[3], 10);
+      col = m[4] ? parseInt(m[4], 10) : null;
+    } else if (m[5]) {
+      line = parseInt(m[5], 10);
+      col = m[6] ? parseInt(m[6], 10) : null;
+    }
+
     return {
       path: pathOnly,
-      line: m[3] ? parseInt(m[3], 10) : null,
-      col: m[4] ? parseInt(m[4], 10) : null,
+      line: line,
+      col: col,
     };
   }
 
@@ -3621,20 +3645,27 @@
 
         var pathStart = m.index + leadLen;
         var pathEnd = pathStart + pathOnly.length;       // exclusive
-        var line = m[3] ? parseInt(m[3], 10) : null;
-        var col = m[4] ? parseInt(m[4], 10) : null;
-
-        // Extend the link region to cover the trailing :line[:col] suffix
-        // so the user clicks the whole "path:42:5" rather than just the path.
-        var fullEnd = pathEnd;
+        // Tail forms: `:line[:col]` → groups 3 + 4; `(line,col)` → groups
+        // 5 + 6. Only ONE of the two alternations can match per the regex
+        // (LINK_TAIL is a single optional non-capturing group with two
+        // alternatives). tsc-style `path(1234,17):` lands here as 5+6.
+        var line = null, col = null, tailLen = 0;
         if (m[3]) {
-          fullEnd += 1 /* ':' */ + m[3].length;
-          if (m[4]) fullEnd += 1 + m[4].length;
+          line = parseInt(m[3], 10);
+          tailLen += 1 /* ':' */ + m[3].length;
+          if (m[4]) { col = parseInt(m[4], 10); tailLen += 1 + m[4].length; }
+        } else if (m[5]) {
+          line = parseInt(m[5], 10);
+          col = m[6] ? parseInt(m[6], 10) : null;
+          tailLen += 1 /* '(' */ + m[5].length + 1 /* ',' */ + (m[6] ? m[6].length : 0) + 1 /* ')' */;
         }
 
+        // Extend the link region to cover the trailing line/col so the
+        // user clicks the whole "path:42:5" or "path(42,5)" rather than
+        // just the path.
         matches.push({
           startCol: pathStart,
-          endCol: fullEnd,        // exclusive
+          endCol: pathEnd + tailLen,        // exclusive
           path: pathOnly,
           line: line,
           col: col,

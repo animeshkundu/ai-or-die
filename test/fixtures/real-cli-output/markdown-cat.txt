@@ -1,0 +1,10 @@
+# README
+
+See [the spec](docs/specs/file-browser.md) for the full contract,
+or jump straight to the [resolver section](docs/specs/file-browser.md:519).
+
+The implementation lives in:
+- [file-browser.js](src/public/file-browser.js)
+- [file-find.js](src/public/file-find.js:42)
+
+Bug history is in [docs/history](docs/history/README.md).

@@ -1,0 +1,3 @@
+src/public/app.js(1234,17): error TS2304: Cannot find name 'foo'.
+src/public/file-browser.js(42,5): error TS2322: Type 'string' is not assignable to type 'number'.
+test/file-find-panel.test.js(99,1): warning TS6196: 'unused' is declared but its value is never read.

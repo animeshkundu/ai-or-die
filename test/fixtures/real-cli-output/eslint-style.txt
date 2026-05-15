@@ -1,0 +1,8 @@
+/Users/kundus/Software/ai-or-die/src/public/file-browser.js
+  1234:5  error    'foo' is not defined            no-undef
+  3401:23 warning  Unexpected console statement    no-console
+
+/Users/kundus/Software/ai-or-die/src/public/app.js
+  87:1    error    Missing semicolon               semi
+
+✖ 3 problems (2 errors, 1 warning)
