@@ -96,6 +96,13 @@
     this.containerEl = options.containerEl;
     this.onClose = options.onClose || function () {};
     this.onSave = options.onSave || function () {};
+    // Optional notifier for dirty-state transitions (#41 / ADR-0017
+    // cleanup of the original `_wrapDirtyTracking` monkey-patch in
+    // TabManager). Called with `(isDirty)` whenever _dirty toggles —
+    // including via applyDiskContent's reset path, which the
+    // monkey-patch missed because _suppressContentChange skipped the
+    // _onContentChange code path entirely.
+    this.onDirtyChange = options.onDirtyChange || function () {};
     this._filePath = null;        this._fileHash = null;
     this._lastSavedContent = null;
     this._editor = null;          // Monaco IStandaloneCodeEditor instance
@@ -391,6 +398,7 @@
     // onDidChangeModelContent re-creates the draft we just removed and
     // sets _dirty=true even though no user input occurred.
     if (this._suppressContentChange) return;
+    var wasDirty = this._dirty;
     this._dirty = true;
     this._dirtyDot.classList.add('visible');
     if (this._editor) {
@@ -399,6 +407,9 @@
       } catch (_) { /* quota or private mode — draft recovery becomes best-effort */ }
     }
     if (this._autoSave) this._scheduleAutoSave();
+    if (!wasDirty) {
+      try { this.onDirtyChange(true); } catch (_) { /* swallow callback errors */ }
+    }
   };
 
   FileEditorPanel.prototype._scheduleAutoSave = function () {
@@ -425,12 +436,16 @@
         return resp.json().then(function (d) {
           self._fileHash = d.hash || self._fileHash;
           self._lastSavedContent = val;
+          var wasDirtyOnSave = self._dirty;
           self._dirty = false; self._saving = false; self._retryCount = 0;
           self._dirtyDot.classList.remove('visible');
           try { localStorage.removeItem('fb-draft-' + self._filePath); } catch (_) { /* ignore */ }
           self._updateStatus('Saved', getMonacoLanguage(getExtension(self._filePath)));
           self._announceToScreenReader('File saved');
           self.onSave();
+          if (wasDirtyOnSave) {
+            try { self.onDirtyChange(false); } catch (_) { /* swallow */ }
+          }
         });
       } else if (resp.status === 409) {
         return resp.json().then(function (d) {
@@ -535,6 +550,7 @@
     if (this._destroyed || !data) return false;
     this._fileHash = data.hash || null;
     this._lastSavedContent = data.content == null ? '' : String(data.content);
+    var wasDirty = this._dirty;
     this._dirty = false;
     if (this._dirtyDot) this._dirtyDot.classList.remove('visible');
     if (this._editor) {
@@ -576,6 +592,13 @@
     // onDidChangeModelContent.
     if (this._filePath) {
       try { localStorage.removeItem('fb-draft-' + this._filePath); } catch (_) { /* ignore */ }
+    }
+    if (wasDirty) {
+      // Notify the host (TabManager) so the tab-strip dirty dot clears.
+      // The monkey-patched _onContentChange path used to handle this,
+      // but `_suppressContentChange` skips that wrapper entirely, so the
+      // dirty-dot would otherwise stay visible after a silent reload.
+      try { this.onDirtyChange(false); } catch (_) { /* swallow */ }
     }
     return true;
   };

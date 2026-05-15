@@ -140,10 +140,17 @@ test.describe('File browser — fs-watcher reactive sync (#100, ADR-0017)', () =
       'line three initial',
       '',
     ].join('\n'));
-    // Wait for the reactive re-sync of the multi-line content.
+    // Wait for the reactive re-sync of the multi-line content. Read the
+    // live Monaco model — see the rationale in the silent-reload wait
+    // below; legacy `.fb-code-content` is part of the instant-paint and
+    // is swept by Monaco's host-clear once the editor mounts.
     await page.waitForFunction(() => {
-      const host = document.querySelector('.fb-code-content');
-      return host && (host.textContent || '').includes('line three initial');
+      const tm = window.app._fileBrowserPanel && window.app._fileBrowserPanel._tabManager;
+      const tab = tm && tm.getActiveTab && tm.getActiveTab();
+      const ed = tab && tab.panel && tab.panel._monacoEditor;
+      if (!ed) return false;
+      try { return (ed.getValue() || '').includes('line three initial'); }
+      catch (_) { return false; }
     }, { timeout: 5000 });
 
     // Move cursor to line 2 col 5.
@@ -165,10 +172,20 @@ test.describe('File browser — fs-watcher reactive sync (#100, ADR-0017)', () =
 
     // Watcher latency budget per ADR-0017: chokidar awaitWriteFinish 80ms
     // + per-path debounce 100ms + SSE delivery + client re-fetch round-trip.
-    // Allow up to 2s for the silent reload.
+    // Allow up to 5s for the silent reload.
+    //
+    // Read the live Monaco model value directly — the legacy
+    // `.fb-code-content` element is part of the instant-paint phase and
+    // is swept by Monaco's host-clear when the editor mounts (per the
+    // 9c2f6a6 MEDIUM-2 fix). Reading model.getValue() is the accurate
+    // post-mount source of truth.
     await page.waitForFunction(() => {
-      const host = document.querySelector('.fb-code-content');
-      return host && (host.textContent || '').includes('CHANGED by agent');
+      const tm = window.app._fileBrowserPanel && window.app._fileBrowserPanel._tabManager;
+      const tab = tm && tm.getActiveTab && tm.getActiveTab();
+      const ed = tab && tab.panel && tab.panel._monacoEditor;
+      if (!ed) return false;
+      try { return (ed.getValue() || '').includes('CHANGED by agent'); }
+      catch (_) { return false; }
     }, { timeout: 5000 });
 
     // Cursor should still be at line 2 col 5 (or as close as bounds-checking
@@ -193,11 +210,23 @@ test.describe('File browser — fs-watcher reactive sync (#100, ADR-0017)', () =
   test('(b) external write to dirty tab → toast with 3 buttons', async ({ page }) => {
     await setupPage(page);
     await openPanelToFixtures(page);
-    await clickFile(page, 'dirty-tab.txt');
+    // Open in EDITOR mode (not preview) — preview tabs don't have a
+    // dirty buffer; the toast-on-dirty UX is for editor tabs only.
+    // Same pattern as 16-spec scenario (h).
+    await page.evaluate(async (p) => {
+      const fb = window.app._fileBrowserPanel;
+      const tm = fb._ensureTabManager();
+      await tm.openFile(p, 'editor');
+    }, dirtyFile.replace(/\\/g, '/'));
 
+    // Wait for Monaco editor mount via the live model.
     await page.waitForFunction(() => {
-      const host = document.querySelector('.fb-code-content');
-      return host && (host.textContent || '').includes('initial dirty content');
+      const tm = window.app._fileBrowserPanel && window.app._fileBrowserPanel._tabManager;
+      const tab = tm && tm.getActiveTab && tm.getActiveTab();
+      const ed = tab && tab.panel && tab.panel._monacoEditor;
+      if (!ed) return false;
+      try { return (ed.getValue() || '').includes('initial dirty content'); }
+      catch (_) { return false; }
     }, { timeout: 15000 });
 
     // Make the tab dirty by typing into Monaco.
@@ -238,8 +267,12 @@ test.describe('File browser — fs-watcher reactive sync (#100, ADR-0017)', () =
 
     // Editor now shows the agent's content; dirty dot cleared.
     await page.waitForFunction(() => {
-      const host = document.querySelector('.fb-code-content');
-      return host && (host.textContent || '').includes('agent rewrote dirty-tab.txt');
+      const tm = window.app._fileBrowserPanel && window.app._fileBrowserPanel._tabManager;
+      const tab = tm && tm.getActiveTab && tm.getActiveTab();
+      const ed = tab && tab.panel && tab.panel._monacoEditor;
+      if (!ed) return false;
+      try { return (ed.getValue() || '').includes('agent rewrote dirty-tab.txt'); }
+      catch (_) { return false; }
     }, { timeout: 5000 });
     await expect(
       page.locator('.fb-tab .fb-tab-dirty-dot').first()

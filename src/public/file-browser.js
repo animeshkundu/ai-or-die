@@ -691,6 +691,19 @@
     var p = startPath || cwd || this.initialPath || null;
     this._panelEl.classList.add('open');
     this._updateOverlayMode();
+    // fs-watcher (#41 / ADR-0017): bring up the single-EventSource-per-
+    // session SSE channel BEFORE navigateTo fires its initial fetch so
+    // the watcher is ready by the time _reconcileListingSubscriptions
+    // wants to issue its first /subscribe POSTs. The WatcherClient
+    // queues subscribe calls until the server emits its `start` event,
+    // so the order doesn't strictly matter — but mounting first keeps
+    // intent obvious in the lifecycle.
+    if (p) {
+      var watcher = this._ensureFileWatcher();
+      if (watcher && typeof watcher.connect === 'function') {
+        try { watcher.connect(p); } catch (_) { /* swallow */ }
+      }
+    }
     this.navigateTo(p);
     this._announceToScreenReader('File browser opened');
     // Adjust terminal width
@@ -829,16 +842,15 @@
         self._showBrowseView();
         self._statusBar.textContent = data.totalCount + ' item' + (data.totalCount !== 1 ? 's' : '');
 
-        // fs-watcher (#41 / ADR-0017): point the single per-panel watcher
-        // at the directory we just navigated to. The chokidar subscription
-        // is recursive, so this watcher catches events for ALL open tabs
-        // that live anywhere under this dir AND for direct children of
-        // the dir (the listing itself). Switching dirs swaps the
-        // subscription; opening tabs above this dir leaves them in the
-        // "outside the watcher root" gap (known v1 limitation —
-        // subscribe/unsubscribe control channel from ADR-0017 amendment
-        // would close it; tracked as a follow-up).
-        self._ensureFileWatcher().switchRoot(self._currentPath);
+        // fs-watcher (#41 / ADR-0017 — wire model post-ff79038): one
+        // EventSource per session at panel mount, refcount-based per-path
+        // subscriptions multiplexed over it. Listing direct-child paths
+        // are subscribed snapshot-style on each navigateTo (and old ones
+        // unsubscribed). Tabs subscribe their own path independently
+        // through TabManager so they work even if opened outside this
+        // dir. The cwd-recursive limitation from the per-path design is
+        // gone — tabs anywhere under any directory are covered.
+        self._reconcileListingSubscriptions(self._items);
 
         // Auto-select pending file
         if (self._pendingSelectFile) {
@@ -1129,6 +1141,12 @@
         authFetch: this.authFetch,
         sessionKey: sessionKey,
         iconSet: window.icons || null,
+        // Pass the panel's WatcherClient so TabManager can subscribe
+        // each open tab's path explicitly (handles tabs opened OUTSIDE
+        // the panel's current dir — the v1 limitation from the
+        // pre-pivot per-path wire model). null-safe: TabManager guards
+        // every call with `if (this.fileWatcher && ...)`.
+        getFileWatcher: function () { return self._fileWatcher || null; },
         onActiveChange: function (info) {
           // Surface the active editor panel so legacy back-button flows
           // (which call self._editorPanel.close()) still work.
@@ -1167,34 +1185,36 @@
     return this._tabManager;
   };
 
-  // Single fs-watcher per panel (#41 / ADR-0017) — opens an EventSource
-  // against /api/files/watch?path=<currentPath> and dispatches add /
-  // change / unlink events to:
-  //   - TabManager (per-tab dirty/clean reaction; routed through
-  //     TabManager.handleExternalEvent if defined).
-  //   - The directory listing (refresh on add/unlink matching _currentPath).
+  // Single fs-watcher per panel (#41 / ADR-0017, post-ff79038 wire model).
+  // Opens ONE EventSource per session at /api/files/watch?session=<id>&
+  // path=<rootDir>; per-path subscriptions are multiplexed over it via
+  // POST /subscribe + /unsubscribe. The single ES sidesteps Chromium's
+  // 6-EventSource-per-origin cap; refcount-based subscribe in the
+  // WatcherClient lets the listing AND open tabs share paths cleanly.
   //
-  // Lazy: not created until first navigateTo() so the EventSource only
-  // exists once the user has opened the panel. switchRoot is called from
-  // navigateTo when the dir changes; the watcher follows the panel's view
-  // of the world.
+  // Mounted from open() so the SSE is up before the first navigateTo
+  // wants to issue subscribe POSTs (those queue until the server emits
+  // its `start` event so the order is forgiving either way).
   //
   // Returns the WatcherClient instance, or a no-op stub if
   // window.fileWatcherClient never loaded (CSP / vendor-script missing).
-  // Stub keeps callers from null-checking on every navigateTo.
   FileBrowserPanel.prototype._ensureFileWatcher = function () {
     if (this._fileWatcher) return this._fileWatcher;
     if (!window.fileWatcherClient ||
         typeof window.fileWatcherClient.WatcherClient !== 'function') {
       // Module missing — return a no-op stub so callers don't have to
-      // null-check switchRoot / disconnect / etc on every navigateTo.
+      // null-check at every call site (open / navigateTo / TabManager).
       var stub = {
         connect: function () { return false; },
         disconnect: function () {},
-        switchRoot: function () {},
+        subscribe: function () { return Promise.resolve(false); },
+        unsubscribe: function () { return Promise.resolve(false); },
         currentRoot: function () { return null; },
+        currentSession: function () { return null; },
         isConnected: function () { return false; },
+        isReady: function () { return false; },
         onEvent: function () { return function () {}; },
+        subscribedPaths: function () { return []; },
         destroy: function () {},
       };
       this._fileWatcher = stub;
@@ -1202,7 +1222,19 @@
     }
     var self = this;
     try {
-      this._fileWatcher = new window.fileWatcherClient.WatcherClient({});
+      this._fileWatcher = new window.fileWatcherClient.WatcherClient({
+        authFetch: this.authFetch,
+        // Stable session id resolution — prefer the active claude session
+        // id (matches the storage key used by TabManager #4 + the
+        // FileBrowserPanel.openToFile lifecycle); fall back to 'default'
+        // for harness use without an app singleton.
+        getSessionId: function () {
+          if (self.app && self.app.currentClaudeSessionId) {
+            return self.app.currentClaudeSessionId;
+          }
+          return 'default';
+        },
+      });
     } catch (e) {
       if (typeof console !== 'undefined') console.warn('WatcherClient init failed:', e);
       this._fileWatcher = null;
@@ -1212,17 +1244,64 @@
     this._unbindFileWatcher = this._fileWatcher.onEvent(function (evt) {
       try { self._dispatchWatcherEvent(evt); } catch (_) { /* swallow handler-side errors */ }
     });
+    // Maintain the listing-direct-children subscription set so
+    // navigateTo can compute add/remove diffs without scanning the
+    // whole watcher state.
+    this._listingSubscriptions = {}; // path → true (Set-as-object for older-browser tolerance)
     return this._fileWatcher;
   };
 
-  // Routes an SSE event to the right surface. Per ADR-0017 §Client-side
-  // reaction lifecycle:
-  //   - change matching open tab → TabManager.handleExternalChange.
-  //   - unlink matching open tab → TabManager.handleExternalUnlink.
-  //   - add / unlink matching this._currentPath direct child → list refresh.
-  //   - rename event would be split server-side into unlink+add (current
-  //     v1 endpoint doesn't emit rename; the dual-event handling here
-  //     covers it implicitly).
+  // Snapshot-based listing subscriptions (#41 wire model post-ff79038):
+  // server-side subscriptions are EXACT-PATH match, so to see add/unlink
+  // for the panel's direct children we subscribe each child individually.
+  // Diff old vs new on every navigateTo: subscribe added paths,
+  // unsubscribe removed ones.
+  //
+  // v1 UX trade-off: a NEW file created by the agent under the current
+  // dir AFTER the listing was last fetched won't fire an add event
+  // (its path wasn't in the subscription set when the event landed).
+  // The user has to refresh the listing manually OR navigateTo again
+  // to pick it up. Acceptable for v1; tracked as a follow-up
+  // (server-side prefix-match subscription would close the gap).
+  FileBrowserPanel.prototype._reconcileListingSubscriptions = function (items) {
+    var watcher = this._fileWatcher;
+    if (!watcher) return;
+    var nextSet = {};
+    if (Array.isArray(items)) {
+      for (var i = 0; i < items.length; i++) {
+        if (items[i] && items[i].path) nextSet[items[i].path] = true;
+      }
+    }
+    var prevSet = this._listingSubscriptions || {};
+    // Subscribe paths in the new set that weren't in the old.
+    for (var p in nextSet) {
+      if (!Object.prototype.hasOwnProperty.call(nextSet, p)) continue;
+      if (!prevSet[p]) {
+        try { watcher.subscribe(p); } catch (_) { /* swallow */ }
+      }
+    }
+    // Unsubscribe paths in the old set that aren't in the new.
+    for (var q in prevSet) {
+      if (!Object.prototype.hasOwnProperty.call(prevSet, q)) continue;
+      if (!nextSet[q]) {
+        try { watcher.unsubscribe(q); } catch (_) { /* swallow */ }
+      }
+    }
+    this._listingSubscriptions = nextSet;
+  };
+
+  // Routes an SSE event to the right surface. Server-side subscription
+  // filtering means we only get events for paths we explicitly
+  // subscribed (listing direct children OR open tab paths), so the
+  // dispatcher just routes by event type without re-checking membership.
+  //
+  //   - start / end / error: lifecycle events; consumed by WatcherClient
+  //     internally (visible here only for diagnostics).
+  //   - change / rename: route to TabManager.handleExternalEvent for the
+  //     tab-level dirty/clean reaction.
+  //   - add / unlink: route to TabManager (in case an open tab matches
+  //     OR the listing wants to refresh) AND refresh the dir listing if
+  //     the path is a direct child of _currentPath.
   FileBrowserPanel.prototype._dispatchWatcherEvent = function (evt) {
     if (!evt || !evt.type) return;
     if (evt.type === 'start' || evt.type === 'end' || evt.type === 'error') return;
@@ -1230,21 +1309,26 @@
     var path = evt.path;
     if (!path) return;
 
-    // Route to TabManager if any open tab matches this path.
+    // Route to TabManager — it filters by open-tab path internally.
     var tm = this._tabManager;
     if (tm && typeof tm.handleExternalEvent === 'function') {
       try { tm.handleExternalEvent(evt); } catch (_) { /* swallow */ }
     }
 
-    // Listing refresh: fire only when the changed path is a DIRECT child of
-    // the panel's current dir (chokidar emits recursively but the listing
-    // only shows direct children; deep changes don't affect what we render).
+    // Listing refresh: fire when the changed path is a DIRECT child of
+    // the panel's current dir. Server-side subscription filtering means
+    // we only see events for paths we subscribed to; for the listing we
+    // explicitly subscribed each direct child via
+    // _reconcileListingSubscriptions, so any add/unlink here that lives
+    // under _currentPath is by definition a direct child.
     if (this._currentPath && (evt.type === 'add' || evt.type === 'unlink')) {
       var parent = path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
       var here = String(this._currentPath).replace(/\\/g, '/').replace(/\/+$/, '');
       if (parent === here) {
-        // Cheap re-fetch — debounced naturally because chokidar already
-        // coalesces 100ms per path on the server side.
+        // Cheap re-fetch — chokidar already coalesces 100ms per path on
+        // the server, so a flurry of writes collapses to one refresh.
+        // navigateTo will re-call _reconcileListingSubscriptions so any
+        // newly-added file is picked up into the subscription set.
         this._refresh();
       }
     }
@@ -2244,6 +2328,12 @@
         return;
       }
       resolvedHandle = handle;
+      // Expose the live Monaco editor instance on the panel so the
+      // fs-watcher integration (and tests) can reach it for cursor /
+      // selection / scroll preservation across silent reloads. Same
+      // field name as FileEditorPanel for symmetry — both panel types
+      // surface `_monacoEditor` once their viewer mounts.
+      self._monacoEditor = handle.editor;
       // Consume any pending jump-to-line set by a terminal-link click (#7).
       // The line/col are 1-based (Monaco's convention) AND the values from
       // path tokens like `src/foo.js:42:7` are 1-based, so they map directly.
@@ -2292,6 +2382,35 @@
 
   FilePreviewPanel.prototype._renderCodePlainFallback = function (container, content) {
     _buildPlainCodePreview(container, content);
+  };
+
+  // Cursor-preserving silent reload for the preview pane (#41 / ADR-0017).
+  // Symmetric to FileEditorPanel.applyDiskContent — captures + restores
+  // the live Monaco viewer's position/selection/viewState across a
+  // setValue, so when the fs-watcher fires a `change` event for an open
+  // preview tab the new content lands without visibly disrupting the
+  // user's reading position. No dirty/draft state to worry about
+  // (preview is always read-only, no buffer to lose).
+  //
+  // Falls back to a no-op if Monaco hasn't mounted yet (the preview is
+  // still in the initial-pre paint window) — caller can fall through to
+  // a full showPreview re-render in that case.
+  FilePreviewPanel.prototype.applyDiskContent = function (data) {
+    if (!data || !this._monacoEditor) return false;
+    var ed = this._monacoEditor;
+    var content = data.content == null ? '' : String(data.content);
+    var pos = null, selection = null, viewState = null;
+    try { pos = ed.getPosition(); } catch (_) { /* ignore */ }
+    try { selection = ed.getSelection(); } catch (_) { /* ignore */ }
+    try { viewState = ed.saveViewState(); } catch (_) { /* ignore */ }
+    try { ed.setValue(content); } catch (_) { return false; }
+    if (viewState) { try { ed.restoreViewState(viewState); } catch (_) {} }
+    if (selection) {
+      try { ed.setSelection(selection); } catch (_) { /* line may no longer exist */ }
+    } else if (pos) {
+      try { ed.setPosition(pos); } catch (_) { /* line may no longer exist */ }
+    }
+    return true;
   };
 
   FilePreviewPanel.prototype._renderJson = function (container, content, item) {

@@ -156,6 +156,15 @@
     this.iconSet = options.iconSet || (typeof window !== 'undefined' ? window.icons : null);
     this.onActiveChange = options.onActiveChange || function () {};
     this.onAllClosed = options.onAllClosed || function () {};
+    // Optional getter — host (FileBrowserPanel) supplies the WatcherClient
+    // so TabManager can subscribe each open tab's path explicitly. null
+    // when the panel has no live watcher (closed, harness-without-watcher,
+    // CSP-blocked module). Refcount-aware in WatcherClient: same path
+    // subscribed by both the panel listing AND a tab is one server-side
+    // subscription with refcount 2; closing the tab decrements but
+    // doesn't unsubscribe until the listing also drops it.
+    this.getFileWatcher = typeof options.getFileWatcher === 'function'
+      ? options.getFileWatcher : function () { return null; };
 
     this._tabs = [];                  // [{id, path, mode, name, dirty, contentEl, panel, tabEl}]
     this._activeId = null;
@@ -309,15 +318,25 @@
     // Preview tab: always "clean" (no buffer). Re-render via the
     // preview panel's own dispatch. Cheap because preview content is
     // already cached server-side and the network call is small.
-    if (tab.mode === 'preview' && typeof panel.showPreview === 'function') {
-      // Use the same item shape the panel saw on first render. Recreate
-      // a minimal item from the tab; the panel's _renderTextContent
-      // re-fetches fresh content on each call.
-      var item = tab._initialItem || {
-        path: tab.path, name: tab.name,
-        mimeCategory: 'code', previewable: true, editable: true,
-      };
-      try { panel.showPreview(item, undefined, {}); } catch (_) { /* swallow */ }
+    if (tab.mode === 'preview') {
+      // If the preview panel already has a Monaco viewer mounted AND
+      // exposes applyDiskContent (FilePreviewPanel does, post-#41), use
+      // the cursor-preserving silent reload — fetch fresh content +
+      // hand it to the viewer without rebuilding the surface. Falls
+      // through to a full showPreview re-render when applyDiskContent
+      // isn't available (Monaco hasn't mounted yet) OR the panel is
+      // still in the initial-pre paint window.
+      if (typeof panel.applyDiskContent === 'function' && panel._monacoEditor) {
+        this._silentReloadTab(tab);
+        return;
+      }
+      if (typeof panel.showPreview === 'function') {
+        var item = tab._initialItem || {
+          path: tab.path, name: tab.name,
+          mimeCategory: 'code', previewable: true, editable: true,
+        };
+        try { panel.showPreview(item, undefined, {}); } catch (_) { /* swallow */ }
+      }
       return;
     }
 
@@ -325,7 +344,12 @@
     // would discard the intentional snapshot the user is examining.
   };
 
-  TabManager.prototype._silentReloadEditorTab = function (tab) {
+  // Cursor-preserving silent reload, shared between editor + preview
+  // tabs (post-#41). Both panel types implement applyDiskContent with
+  // the same Monaco position/selection/viewState capture-and-restore
+  // pattern, so this helper is panel-type-agnostic — it just fetches
+  // /api/files/content and hands the result over.
+  TabManager.prototype._silentReloadTab = function (tab) {
     if (!tab || !tab.panel) return;
     var panel = tab.panel;
     var path = tab.path;
@@ -340,6 +364,14 @@
         try { panel.applyDiskContent({ content: data.content, hash: data.hash }); } catch (_) {}
       })
       .catch(function () { /* best-effort silent refresh; failure leaves the existing buffer */ });
+  };
+
+  // Backward-compat alias — _silentReloadEditorTab was the original
+  // name when only editor tabs supported applyDiskContent. Preview
+  // tabs gained the same surface in the fs-watcher integration; the
+  // alias keeps internal callers stable while the rename lands.
+  TabManager.prototype._silentReloadEditorTab = function (tab) {
+    return this._silentReloadTab(tab);
   };
 
   TabManager.prototype._handleExternalUnlink = function (tab) {
@@ -711,6 +743,15 @@
       compareWithPath: options && options.compareWithPath ? options.compareWithPath : null,
     };
     this._tabs.push(tab);
+    // fs-watcher subscribe (#41 / ADR-0017): explicit per-path subscribe
+    // so the tab gets change/unlink events even when opened OUTSIDE the
+    // panel's current dir. Refcount-aware in WatcherClient — listing +
+    // tab subscribing the same path yields one server-side subscription
+    // with refcount 2.
+    var watcher = this.getFileWatcher();
+    if (watcher && typeof watcher.subscribe === 'function') {
+      try { watcher.subscribe(path); } catch (_) { /* swallow */ }
+    }
     return tab;
   };
 
@@ -799,17 +840,21 @@
           tab.dirty = false;
           self._renderStrip();
         },
+        // Explicit dirty-state notifier (#41 cleanup of the original
+        // _wrapDirtyTracking monkey-patch). Fires on every transition
+        // INCLUDING the silent-reload path (applyDiskContent), which
+        // the monkey-patch missed because _suppressContentChange skipped
+        // _onContentChange. Tab strip dirty dot now stays in sync after
+        // an external write → Reload-discard cycle.
+        onDirtyChange: function (isDirty) {
+          if (tab.dirty !== isDirty) {
+            tab.dirty = isDirty;
+            self._renderStrip();
+            self._persist();
+          }
+        },
       });
       tab.panel.openEditor(tab.path, data.content, data.hash);
-      // Polling-free dirty tracking: the panel mutates _dirty in
-      // _onContentChange. Wrap that to surface a callback.
-      _wrapDirtyTracking(tab.panel, function (isDirty) {
-        if (tab.dirty !== isDirty) {
-          tab.dirty = isDirty;
-          self._renderStrip();
-          self._persist();
-        }
-      });
     }).catch(function (err) {
       tab.contentEl.innerHTML = '<div class="fb-preview-error">Failed to open editor: ' +
         (err && err.message ? _esc(err.message) : 'unknown') + '</div>';
@@ -818,6 +863,13 @@
 
   TabManager.prototype._disposeTab = function (tab) {
     if (!tab) return;
+    // fs-watcher unsubscribe (#41) — refcount-aware in WatcherClient,
+    // so this is safe even when the listing is also subscribed to the
+    // same path. Symmetric to the subscribe in _createTab.
+    var watcher = this.getFileWatcher();
+    if (watcher && typeof watcher.unsubscribe === 'function' && tab.path) {
+      try { watcher.unsubscribe(tab.path); } catch (_) { /* swallow */ }
+    }
     if (tab.panel) {
       try {
         if (typeof tab.panel.destroy === 'function') tab.panel.destroy();
