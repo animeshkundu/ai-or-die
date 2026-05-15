@@ -98,6 +98,27 @@ function collectAssets() {
     console.log('Collected sherpa-onnx-node JS files');
   }
 
+  // @vscode/ripgrep platform-specific binary (ADR-0018). The SEA binary
+  // has no node_modules at runtime, so we bundle the rg executable as
+  // an asset and let sea-bootstrap.js extract it on first boot. Without
+  // this, requireBackendAtStartup() in src/server.js hard-errors on
+  // every boot of the Windows/macOS binary (system rg is not on PATH
+  // and the @vscode/ripgrep require fails because the package isn't
+  // on disk).
+  const rgPkgName = `@vscode/ripgrep-${PLATFORM}-${ARCH}`;
+  const rgPkgDir = path.join(ROOT, 'node_modules', rgPkgName);
+  // Asset prefix uses a dot separator instead of '@vscode/' so the key
+  // stays simple ASCII and matches the extraction code in
+  // sea-bootstrap.js. The `vscode-ripgrep` segment makes the prefix
+  // unambiguous for future asset auditing.
+  const rgAssetPrefix = `vscode-ripgrep-${PLATFORM}-${ARCH}`;
+  if (fs.existsSync(rgPkgDir)) {
+    collectFilesRecursive(rgPkgDir, rgAssetPrefix, assets);
+    console.log(`Collected bundled ripgrep binary from ${rgPkgName}`);
+  } else {
+    console.warn(`Warning: ${rgPkgName} not found. Cross-file search will be unavailable in the binary.`);
+  }
+
   console.log(`Total assets: ${Object.keys(assets).length}`);
   return assets;
 }

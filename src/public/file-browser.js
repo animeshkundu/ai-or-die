@@ -19,36 +19,34 @@
     binary: 'fileBinary',
   };
 
-  // Ace Editor language mode mapping
-  var ACE_MODE_MAP = {
-    '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript', '.jsx': 'jsx',
-    '.ts': 'typescript', '.tsx': 'tsx',
-    '.py': 'python', '.rb': 'ruby', '.go': 'golang', '.rs': 'rust',
-    '.java': 'java', '.c': 'c_cpp', '.cpp': 'c_cpp', '.h': 'c_cpp', '.hpp': 'c_cpp',
-    '.cs': 'csharp', '.php': 'php',
-    '.sh': 'sh', '.bash': 'sh', '.zsh': 'sh', '.ps1': 'powershell',
-    '.bat': 'batchfile', '.cmd': 'batchfile',
-    '.yaml': 'yaml', '.yml': 'yaml', '.toml': 'toml',
-    '.xml': 'xml', '.html': 'html', '.htm': 'html',
-    '.css': 'css', '.scss': 'scss', '.less': 'less',
-    '.sql': 'sql', '.graphql': 'graphql',
-    '.swift': 'swift', '.kt': 'kotlin', '.scala': 'scala',
-    '.r': 'r', '.lua': 'lua', '.pl': 'perl',
-    '.md': 'markdown', '.mdx': 'markdown',
-    '.json': 'json', '.json5': 'json5',
-    '.csv': 'text', '.tsv': 'text',
-    '.txt': 'text', '.log': 'text', '.cfg': 'text', '.ini': 'ini',
-    '.env': 'text', '.properties': 'properties',
-  };
+  // Monaco language resolution — delegates to window.fileViewerMonaco when
+  // available (browser); falls back to require()'ing the loader module
+  // directly under Node tests so this file remains testable without a DOM.
+  // Replaces the prior Ace mode map (ADR-0016).
+  function getMonacoLanguage(extOrPath) {
+    if (typeof window !== 'undefined' && window.fileViewerMonaco &&
+        typeof window.fileViewerMonaco.getMonacoLanguage === 'function') {
+      return window.fileViewerMonaco.getMonacoLanguage(extOrPath);
+    }
+    if (typeof module !== 'undefined' && module.exports && typeof require === 'function') {
+      try {
+        return require('./file-viewer-monaco').getMonacoLanguage(extOrPath);
+      } catch (_) { /* fall through */ }
+    }
+    return 'plaintext';
+  }
+
+  // Backward-compat alias preserved for any external consumer that still
+  // imports `getAceMode`. Returns the canonical Monaco language id; the
+  // ACE-prefixed name is retained per the migration directive (preserve
+  // public API surface) and intentionally not removed.
+  function getAceMode(extension) {
+    return getMonacoLanguage(extension);
+  }
 
   function getFileIcon(item) {
     if (item.isDirectory) return 'folder';
     return FILE_ICON_MAP[item.mimeCategory] || 'file';
-  }
-
-  function getAceMode(extension) {
-    if (!extension) return 'text';
-    return ACE_MODE_MAP[extension.toLowerCase()] || 'text';
   }
 
   function formatFileSize(bytes) {
@@ -103,6 +101,227 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Sandboxed-srcdoc helper for HTML preview (#18).
+  //
+  // Hardens an arbitrary HTML payload before it gets handed to an iframe via
+  // srcdoc + sandbox="" by:
+  //   1. Stripping every <base ...> tag (case-insensitive). A malicious
+  //      <base href="javascript:..."> would otherwise turn every relative
+  //      link into a script execution surface.
+  //   2. Stripping <meta http-equiv="refresh" ...>. The empty sandbox already
+  //      blocks top-level navigation, but a refresh attempt logs a noisy
+  //      console error; remove it pre-emptively.
+  //   3. Injecting a Content-Security-Policy <meta> at the top of <head>:
+  //        default-src 'none' — block everything by default
+  //        img-src data: blob: — inline images via data: still work
+  //        style-src 'unsafe-inline' — inline <style> still renders (sandbox
+  //          empty = null origin, so 'self' would not match; without inline
+  //          styles, almost no real HTML file looks right)
+  //        font-src data: — embedded data: fonts work
+  //      No connect-src/script-src grants — the iframe cannot reach the
+  //      network, blocking exfiltration vectors that CSS-injection attacks
+  //      depend on (background-image: url(http://attacker), font-display, etc.)
+  //
+  // Pure string transformation — exported under window.fileBrowser for tests.
+  // ---------------------------------------------------------------------------
+
+  // CSP for the sandboxed HTML preview iframe. Locked down to the absolute
+  // minimum the iframe needs to render real-world HTML files.
+  //   - default-src 'none'         : block everything by default. CSP3 fall-
+  //                                  back applies for connect-src/frame-src/
+  //                                  worker-src/manifest-src/media-src/
+  //                                  object-src — they all inherit 'none'.
+  //   - img-src data: blob:        : inline data: images render; no http(s)
+  //                                  fetch; no exfiltration via background-
+  //                                  image since style-src is also locked.
+  //   - style-src 'unsafe-inline'  : intentional. Sandbox makes the iframe
+  //                                  origin "null" so 'self' wouldn't match.
+  //                                  Without inline styles essentially every
+  //                                  real HTML file looks broken. CSS-exfil
+  //                                  vectors are closed at the network layer
+  //                                  (no img/font/connect-src grant for
+  //                                  http(s)). NOT 'self' — that wouldn't
+  //                                  resolve under sandbox null origin.
+  //   - font-src data:             : embedded data: fonts render.
+  //   - form-action 'none'         : per CSP spec form-action does NOT fall
+  //                                  back to default-src. Without this it
+  //                                  defaults to '*'. Sandbox already blocks
+  //                                  form submission today (no allow-forms),
+  //                                  but if a future contributor adds
+  //                                  allow-forms this becomes the only line
+  //                                  of defense.
+  //   - base-uri 'none'            : per CSP spec base-uri also doesn't fall
+  //                                  back to default-src. Second line of
+  //                                  defense behind the regex <base> strip
+  //                                  in buildSandboxedSrcdoc — if the regex
+  //                                  ever has an edge-case bypass (it can —
+  //                                  see the over-strip caveat in that
+  //                                  helper), base-uri 'none' still neuters
+  //                                  the injected base URL.
+  //
+  // NOTE: frame-ancestors is intentionally omitted — per CSP spec, it is
+  // ignored when the policy is delivered via <meta http-equiv>. Adding it
+  // here would mislead a future maintainer into thinking it does anything.
+  // The sandbox attribute itself prevents the iframe from being framed.
+  var HTML_PREVIEW_CSP = "default-src 'none'; img-src data: blob:; " +
+    "style-src 'unsafe-inline'; font-src data:; " +
+    "form-action 'none'; base-uri 'none';";
+
+  // KNOWN LIMITATION: this regex strips ANY <base ...> token regardless of
+  // HTML context. Literal text inside <p>/<pre>/<code>/<script>/<style>/
+  // comments/attribute-values that contains the bytes "<base" will be
+  // silently mangled (e.g. an HTML tutorial that quotes `<base>` in a
+  // <p>). Security impact is zero — those literals are inert text per the
+  // HTML parser, and CSP base-uri 'none' is the second line of defense if
+  // a real <base> ever slips through. UX impact is real for tutorial-style
+  // HTML files. Switching to DOMParser-based mutation is the proper fix
+  // and is tracked as a follow-up; for now the simpler regex wins on
+  // worker-thread-free overhead. Same caveat applies to the meta-refresh
+  // strip below.
+  function buildSandboxedSrcdoc(html) {
+    var s = String(html == null ? '' : html);
+    s = s.replace(/<base\b[^>]*>/gi, '');
+    s = s.replace(/<meta\b[^>]*\bhttp-equiv\s*=\s*['"]?refresh['"]?[^>]*>/gi, '');
+
+    var cspTag = '<meta http-equiv="Content-Security-Policy" content="' + HTML_PREVIEW_CSP + '">';
+
+    if (/<head\b[^>]*>/i.test(s)) {
+      s = s.replace(/<head\b[^>]*>/i, function (m) { return m + cspTag; });
+    } else if (/<html\b[^>]*>/i.test(s)) {
+      s = s.replace(/<html\b[^>]*>/i, function (m) { return m + '<head>' + cspTag + '</head>'; });
+    } else {
+      s = '<head>' + cspTag + '</head>' + s;
+    }
+    return s;
+  }
+
+  // 1 MB cap — beyond this, the rendered preview is disabled and the user
+  // sees the source view only. Large HTML payloads in srcdoc balloon memory
+  // and can hang the renderer.
+  var HTML_PREVIEW_SRCDOC_CAP_BYTES = 1024 * 1024;
+
+  // UTF-8 byte counter. Browsers always have Blob; Node tests since v18 do
+  // too, but older Node CI matrices fall back through Buffer.byteLength
+  // (also UTF-8 by default). Final fallback is a hand-rolled UTF-8 byte
+  // count — `s.length` would return UTF-16 code units which severely
+  // undercounts CJK / emoji / heavy-Unicode HTML (3-4× off) and could let
+  // a 1.2 MB Chinese-text file slip past the 1 MB cap and hang the
+  // renderer the cap exists to prevent.
+  function _measureBytes(s) {
+    if (typeof Blob !== 'undefined') {
+      try { return new Blob([s]).size; } catch (_) { /* fall through */ }
+    }
+    if (typeof Buffer !== 'undefined' && Buffer.byteLength) {
+      try { return Buffer.byteLength(s, 'utf8'); } catch (_) { /* fall through */ }
+    }
+    // Final fallback — count UTF-8 bytes by hand.
+    var bytes = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if      (c < 0x80)    bytes += 1;
+      else if (c < 0x800)   bytes += 2;
+      else if (c < 0xD800 || c >= 0xE000) bytes += 3;
+      else { bytes += 4; i++; } // surrogate pair → 4 UTF-8 bytes, skip the trailing surrogate
+    }
+    return bytes;
+  }
+
+  function isHtmlExtension(nameOrPath) {
+    if (!nameOrPath) return false;
+    var n = String(nameOrPath).toLowerCase();
+    return n.endsWith('.html') || n.endsWith('.htm') || n.endsWith('.xhtml');
+  }
+
+  function isIpynbExtension(nameOrPath) {
+    if (!nameOrPath) return false;
+    return String(nameOrPath).toLowerCase().endsWith('.ipynb');
+  }
+
+  function isMarkdownExtension(nameOrPath) {
+    if (!nameOrPath) return false;
+    var n = String(nameOrPath).toLowerCase();
+    return n.endsWith('.md') || n.endsWith('.mdx') || n.endsWith('.markdown');
+  }
+
+  // Build the legacy gutter+content code-preview DOM into `host`. Used in
+  // two places:
+  //   1. _renderCode's instant-paint pre-Monaco mount (architect's
+  //      7bfd634 idea — render content immediately, let Monaco's
+  //      host-sweep replace this DOM when it resolves). Uses the legacy
+  //      DOM shape so 14-spec's `.fb-code-gutter` + `.fb-code-content`
+  //      locators continue to find the same elements they always did.
+  //   2. _renderCodePlainFallback (CDN-blocked degraded path). The two
+  //      paths emit identical structure so the visual fallback feels
+  //      consistent regardless of how the user got there.
+  function _buildPlainCodePreview(host, content) {
+    var wrapper = document.createElement('div');
+    wrapper.className = 'fb-code-preview';
+
+    var lines = String(content == null ? '' : content).split('\n');
+    var gutter = document.createElement('div');
+    gutter.className = 'fb-code-gutter';
+    var code = document.createElement('pre');
+    code.className = 'fb-code-content';
+
+    for (var i = 0; i < lines.length; i++) {
+      var lineNum = document.createElement('div');
+      lineNum.className = 'fb-line-number';
+      lineNum.textContent = i + 1;
+      gutter.appendChild(lineNum);
+    }
+
+    code.textContent = content;
+    wrapper.appendChild(gutter);
+    wrapper.appendChild(code);
+    host.appendChild(wrapper);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Lazy script loader — used by image panzoom (vendored at /vendor/panzoom.min.js).
+  // Returns a Promise that resolves when window[globalCheck] becomes truthy
+  // after the script tag finishes loading. Memoised per src so concurrent
+  // callers share one fetch.
+  // ---------------------------------------------------------------------------
+
+  var _scriptLoadPromises = {};
+
+  function loadVendorScript(src, globalCheck) {
+    if (typeof window === 'undefined') return Promise.reject(new Error('not in a browser'));
+    if (window[globalCheck]) return Promise.resolve(window[globalCheck]);
+    if (_scriptLoadPromises[src]) return _scriptLoadPromises[src];
+    _scriptLoadPromises[src] = new Promise(function (resolve, reject) {
+      var existing = document.querySelector('script[data-vendor-src="' + src + '"]');
+      function done() {
+        if (window[globalCheck]) resolve(window[globalCheck]);
+        else reject(new Error('loadVendorScript: ' + globalCheck + ' not present after ' + src + ' loaded'));
+      }
+      if (existing) {
+        existing.addEventListener('load', done, { once: true });
+        existing.addEventListener('error', function () {
+          reject(new Error('loadVendorScript: failed to load ' + src));
+        }, { once: true });
+        return;
+      }
+      var s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      s.setAttribute('data-vendor-src', src);
+      s.onload = done;
+      s.onerror = function () {
+        // Reset cache so the next caller can retry on transient failure.
+        delete _scriptLoadPromises[src];
+        reject(new Error('loadVendorScript: failed to load ' + src));
+      };
+      document.head.appendChild(s);
+    });
+    return _scriptLoadPromises[src];
+  }
+
+  function loadPanzoom() {
+    return loadVendorScript('/vendor/panzoom.min.js', 'Panzoom');
+  }
+
+  // ---------------------------------------------------------------------------
   // FileBrowserPanel
   // ---------------------------------------------------------------------------
 
@@ -110,6 +329,14 @@
     this.app = options.app;
     this.authFetch = options.authFetch;
     this.initialPath = options.initialPath || null;
+    // Optional callback returning the active session's working directory at
+    // the moment the panel opens. Lets the panel default to *the current*
+    // session's cwd rather than the cwd captured at construction time —
+    // important for users who switch sessions while the panel is closed.
+    // Falsy callbacks (or callbacks returning null/undefined) are tolerated:
+    // open() falls back to startPath → initialPath → null. A throwing
+    // callback is also tolerated (defensive coding per agent-instructions/05).
+    this.getCwd = typeof options.getCwd === 'function' ? options.getCwd : null;
 
     this._open = false;
     this._currentPath = null;
@@ -125,6 +352,9 @@
     this._panelEl = null;
     this._backdropEl = null;
     this._previewPanel = null;
+    this._tabManager = null; // Lazy-initialized on first preview/editor open.
+    this._fileWatcher = null; // Lazy-initialized on first navigateTo() (#41 / ADR-0017).
+    this._unbindFileWatcher = null; // off() returned by WatcherClient.onEvent
 
     this._buildDOM();
   }
@@ -286,14 +516,25 @@
 
     // Keyboard: Escape to close
     panel.addEventListener('keydown', function (e) {
+      // Cmd/Ctrl+Shift+F → toggle the cross-file search panel (#9). Catch
+      // here (panel-scope) and at the document level (below) so the
+      // shortcut works whether the panel or the surrounding terminal has
+      // focus when the user presses it.
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault();
+        e.stopPropagation();
+        this.toggleSearchPanel();
+        return;
+      }
       if (e.key === 'Escape') {
-        if (this._searchVisible) {
+        if (this._searchPanel && this._searchPanel.isOpen()) {
+          this._searchPanel.close();
+        } else if (this._searchVisible) {
           this._toggleSearch();
         } else if (this._currentView === 'editor') {
-          // Don't handle Escape here — Ace Editor has its own Escape
-          // command that handles closing search bar vs closing editor.
-          // The document-level fallback handler will catch it if Ace
-          // doesn't consume it.
+          // Don't handle Escape here — Monaco's find widget has its own
+          // Escape command. The document-level fallback handler will catch
+          // it if Monaco doesn't consume it.
           return;
         } else if (this._currentView === 'preview') {
           this._showBrowseView();
@@ -313,12 +554,12 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && self._open) {
         if (self._currentView === 'editor') {
-          // Check if Ace has an internal popup open (search bar)
-          var aceSearch = self._panelEl.querySelector('.ace_search');
-          if (aceSearch && aceSearch.offsetParent !== null) {
-            // Ace search is visible — let Ace handle this Escape, don't close editor
-            return;
-          }
+          // Check if Monaco's find/replace widget is open inside the editor.
+          // Monaco usually consumes Escape itself (stopPropagation), but a
+          // belt-and-braces DOM check guards against version drift and
+          // ensures we never close the editor out from under an open widget.
+          var monacoFind = self._panelEl.querySelector('.monaco-editor .find-widget.visible');
+          if (monacoFind) return;
           if (self._editorPanel) self._editorPanel.close();
         } else if (self._currentView === 'preview') {
           self._showBrowseView();
@@ -339,6 +580,37 @@
       containerEl: this._previewContainer,
       onEdit: this._onEditRequest.bind(this),
       onBack: this._showBrowseView.bind(this),
+      onDiffRequest: this._onDiffRequest.bind(this),
+      onInternalLinkClick: function (resolvedPath) {
+        // Markdown's relative <a href> click delegate routes here. Open
+        // the resolved path in the file browser's preview tab via the
+        // app's openFileInViewer (same plumbing terminal-link clicks +
+        // search-result clicks use, so jumpTo + Monaco mount is
+        // consistent across surfaces).
+        if (self.app && typeof self.app.openFileInViewer === 'function') {
+          self.app.openFileInViewer(resolvedPath);
+        } else {
+          self.openToFile(resolvedPath);
+        }
+      },
+    });
+  };
+
+  // Routes a diff-button click from FilePreviewPanel through to TabManager,
+  // opening a new diff tab. Falls back to a status-bar error in degraded
+  // environments where TabManager couldn't construct.
+  FileBrowserPanel.prototype._onDiffRequest = function (req) {
+    if (!req || !req.path) return;
+    var tm = this._ensureTabManager();
+    if (!tm) {
+      if (this._statusBar) {
+        this._statusBar.textContent = 'Diff requires multi-file tabs (TabManager unavailable).';
+      }
+      return;
+    }
+    tm.openFile(req.path, 'diff', {
+      compareWithRef:  req.compareWithRef || null,
+      compareWithPath: req.compareWithPath || null,
     });
   };
 
@@ -405,9 +677,33 @@
   FileBrowserPanel.prototype.open = function (startPath) {
     if (this._open) return;
     this._open = true;
-    var p = startPath || this.initialPath || null;
+    // Resolution order:
+    //   1. Explicit startPath argument from the caller (e.g. openToFile)
+    //   2. Live cwd from the active session (getCwd is invoked HERE, every
+    //      time, so a session switch between opens picks up the new cwd)
+    //   3. initialPath captured at construction (kept for tests + tooling)
+    //   4. null — the navigateTo handler will fall back to the server's
+    //      default base folder
+    var cwd = null;
+    if (this.getCwd) {
+      try { cwd = this.getCwd(); } catch (_) { cwd = null; }
+    }
+    var p = startPath || cwd || this.initialPath || null;
     this._panelEl.classList.add('open');
     this._updateOverlayMode();
+    // fs-watcher (#41 / ADR-0017): bring up the single-EventSource-per-
+    // session SSE channel BEFORE navigateTo fires its initial fetch so
+    // the watcher is ready by the time _reconcileListingSubscriptions
+    // wants to issue its first /subscribe POSTs. The WatcherClient
+    // queues subscribe calls until the server emits its `start` event,
+    // so the order doesn't strictly matter — but mounting first keeps
+    // intent obvious in the lifecycle.
+    if (p) {
+      var watcher = this._ensureFileWatcher();
+      if (watcher && typeof watcher.connect === 'function') {
+        try { watcher.connect(p); } catch (_) { /* swallow */ }
+      }
+    }
     this.navigateTo(p);
     this._announceToScreenReader('File browser opened');
     // Adjust terminal width
@@ -419,6 +715,18 @@
     this._open = false;
     this._panelEl.classList.remove('open');
     this._backdropEl.classList.remove('active');
+    // Drop the fs-watcher when the panel closes — the SSE consumes a
+    // server-side chokidar watcher (kernel resource) per the
+    // MAX_CONCURRENT_WATCHERS=5/IP cap. Re-opens the next time the
+    // panel is opened + navigateTo fires. Also unbinds the dispatch
+    // handler so it doesn't fire against a stale tabManager reference.
+    if (this._unbindFileWatcher) {
+      try { this._unbindFileWatcher(); } catch (_) { /* ignore */ }
+      this._unbindFileWatcher = null;
+    }
+    if (this._fileWatcher && typeof this._fileWatcher.disconnect === 'function') {
+      try { this._fileWatcher.disconnect(); } catch (_) { /* ignore */ }
+    }
     this._announceToScreenReader('File browser closed');
     this._adjustTerminal();
   };
@@ -533,6 +841,16 @@
         self._renderItems();
         self._showBrowseView();
         self._statusBar.textContent = data.totalCount + ' item' + (data.totalCount !== 1 ? 's' : '');
+
+        // fs-watcher (#41 / ADR-0017 — wire model post-ff79038): one
+        // EventSource per session at panel mount, refcount-based per-path
+        // subscriptions multiplexed over it. Listing direct-child paths
+        // are subscribed snapshot-style on each navigateTo (and old ones
+        // unsubscribed). Tabs subscribe their own path independently
+        // through TabManager so they work even if opened outside this
+        // dir. The cwd-recursive limitation from the per-path design is
+        // gone — tabs anywhere under any directory are covered.
+        self._reconcileListingSubscriptions(self._items);
 
         // Auto-select pending file
         if (self._pendingSelectFile) {
@@ -691,12 +1009,42 @@
     this._adjustTerminal();
   };
 
+  // Display-only preview-mode transition. Used by TabManager.onActiveChange
+  // when openFile is called programmatically (terminal-link click, search
+  // result, diff button, markdown internal-link delegate) — _showPreviewView
+  // would re-render the preview panel and race with TabManager's own
+  // renderer. This helper just swaps the visibility (file-list out,
+  // preview-container in) so the tab strip + content TabManager already
+  // mounted become visible to the user. No-op if the view is already
+  // preview/editor (caller's branch already gated that, but defensive).
+  FileBrowserPanel.prototype._makePreviewVisible = function (mode) {
+    if (this._currentView === 'editor' || this._currentView === 'preview') return;
+    this._currentView = mode === 'editor' ? 'editor' : 'preview';
+    this._fileListEl.style.display = 'none';
+    this._previewContainer.style.display = '';
+    if (mode === 'editor') this._panelEl.classList.add('editor-active');
+    this._renderBreadcrumbs();
+    this._adjustTerminal();
+  };
+
   FileBrowserPanel.prototype._showPreviewView = function (item) {
     this._currentView = 'preview';
     this._selectedItem = item;
     this._fileListEl.style.display = 'none';
     this._previewContainer.style.display = '';
-    this._previewPanel.showPreview(item, this._currentPath);
+    // Consume any jump-to-line set by a terminal-link click (systems-engineer's
+    // #7). The flag lives on the panel; clear it now so a subsequent open of a
+    // different file doesn't inherit a stale target line.
+    var jumpTo = this._pendingJumpTo || null;
+    this._pendingJumpTo = null;
+    var tm = this._ensureTabManager();
+    if (tm) {
+      tm.openFile(item.path, 'preview', { item: item, jumpTo: jumpTo });
+    } else {
+      // TabManager unavailable — fall through to the legacy single-pane path
+      // so previewing still works in degraded environments.
+      this._previewPanel.showPreview(item, this._currentPath, { jumpTo: jumpTo });
+    }
     this._renderBreadcrumbs();
     this._announceToScreenReader('Previewing ' + item.name);
   };
@@ -737,7 +1085,22 @@
     this._previewContainer.style.display = '';
     this._panelEl.classList.add('editor-active');
 
-    // Clear preview container and render editor
+    var tm = this._ensureTabManager();
+    if (tm) {
+      // openFile activates the new tab synchronously; getActiveTab() then
+      // hands us back the live tab so we can grab its FileEditorPanel
+      // instance for the legacy `_editorPanel` reference (back-button +
+      // Escape cascade still call `_editorPanel.close()`).
+      tm.openFile(item.path, 'editor', { item: item, content: content, hash: hash });
+      var activeTab = tm.getActiveTab();
+      if (activeTab && activeTab.panel) self._editorPanel = activeTab.panel;
+      this._announceToScreenReader('Editing ' + item.name);
+      this._renderBreadcrumbs();
+      this._adjustTerminal();
+      return;
+    }
+
+    // Legacy single-pane fallback (TabManager unavailable).
     this._previewContainer.innerHTML = '';
 
     if (window.fileEditor && window.fileEditor.FileEditorPanel) {
@@ -755,11 +1118,277 @@
       this._editorPanel.openEditor(item.path, content, hash);
       this._announceToScreenReader('Editing ' + item.name);
     } else {
-      this._previewContainer.innerHTML = '<div class="fb-preview-error">Editor not available. Ace Editor may not have loaded.</div>';
+      this._previewContainer.innerHTML = '<div class="fb-preview-error">Editor not available.</div>';
     }
 
     this._renderBreadcrumbs();
     this._adjustTerminal();
+  };
+
+  // TabManager (file-tabs.js) is created lazily on the first preview/editor
+  // open so panels with no tab activity never pay the construction cost.
+  // Returns null if window.fileTabs hasn't loaded — caller falls back to the
+  // legacy single-pane flow.
+  FileBrowserPanel.prototype._ensureTabManager = function () {
+    if (this._tabManager) return this._tabManager;
+    if (!window.fileTabs || typeof window.fileTabs.TabManager !== 'function') return null;
+    var self = this;
+    var sessionKey = (this.app && this.app.currentClaudeSessionId) ?
+      this.app.currentClaudeSessionId : 'default';
+    try {
+      this._tabManager = new window.fileTabs.TabManager({
+        containerEl: this._previewContainer,
+        authFetch: this.authFetch,
+        sessionKey: sessionKey,
+        iconSet: window.icons || null,
+        // Pass the panel's WatcherClient so TabManager can subscribe
+        // each open tab's path explicitly (handles tabs opened OUTSIDE
+        // the panel's current dir — the v1 limitation from the
+        // pre-pivot per-path wire model). null-safe: TabManager guards
+        // every call with `if (this.fileWatcher && ...)`.
+        getFileWatcher: function () { return self._fileWatcher || null; },
+        onActiveChange: function (info) {
+          // Surface the active editor panel so legacy back-button flows
+          // (which call self._editorPanel.close()) still work.
+          if (info && info.tab && info.tab.mode === 'editor' && info.tab.panel) {
+            self._editorPanel = info.tab.panel;
+          } else {
+            self._editorPanel = null;
+          }
+          // Make sure the preview container (which hosts TabManager's DOM)
+          // is actually visible. Programmatic openFile entry points —
+          // app.openFileInViewer (terminal-link clicks, search-result
+          // clicks), the diff button, the markdown internal-link delegate
+          // — all eventually call tm.openFile directly without going
+          // through _showPreviewView. Without this, the strip + content
+          // are correctly built in the DOM but display:none on
+          // _previewContainer leaves them invisible to the user. Caught
+          // by 16-spec scenario (k) at mobile viewport, but the bug was
+          // present at every viewport — just less visually obvious on
+          // desktop where the panel often opened straight to preview
+          // mode after a click.
+          if (info && info.tab && self._currentView === 'browse') {
+            self._makePreviewVisible(info.tab.mode);
+          }
+        },
+        onAllClosed: function () {
+          self._editorPanel = null;
+          self._showBrowseView();
+        },
+      });
+    } catch (e) {
+      // Construction error (e.g. localStorage broken in private mode) — log
+      // once and fall through to legacy single-pane behaviour.
+      if (typeof console !== 'undefined') console.warn('TabManager init failed:', e);
+      return null;
+    }
+    return this._tabManager;
+  };
+
+  // Single fs-watcher per panel (#41 / ADR-0017, post-ff79038 wire model).
+  // Opens ONE EventSource per session at /api/files/watch?session=<id>&
+  // path=<rootDir>; per-path subscriptions are multiplexed over it via
+  // POST /subscribe + /unsubscribe. The single ES sidesteps Chromium's
+  // 6-EventSource-per-origin cap; refcount-based subscribe in the
+  // WatcherClient lets the listing AND open tabs share paths cleanly.
+  //
+  // Mounted from open() so the SSE is up before the first navigateTo
+  // wants to issue subscribe POSTs (those queue until the server emits
+  // its `start` event so the order is forgiving either way).
+  //
+  // Returns the WatcherClient instance, or a no-op stub if
+  // window.fileWatcherClient never loaded (CSP / vendor-script missing).
+  FileBrowserPanel.prototype._ensureFileWatcher = function () {
+    if (this._fileWatcher) return this._fileWatcher;
+    if (!window.fileWatcherClient ||
+        typeof window.fileWatcherClient.WatcherClient !== 'function') {
+      // Module missing — return a no-op stub so callers don't have to
+      // null-check at every call site (open / navigateTo / TabManager).
+      var stub = {
+        connect: function () { return false; },
+        disconnect: function () {},
+        subscribe: function () { return Promise.resolve(false); },
+        unsubscribe: function () { return Promise.resolve(false); },
+        currentRoot: function () { return null; },
+        currentSession: function () { return null; },
+        isConnected: function () { return false; },
+        isReady: function () { return false; },
+        onEvent: function () { return function () {}; },
+        subscribedPaths: function () { return []; },
+        destroy: function () {},
+      };
+      this._fileWatcher = stub;
+      return stub;
+    }
+    var self = this;
+    try {
+      this._fileWatcher = new window.fileWatcherClient.WatcherClient({
+        authFetch: this.authFetch,
+        // Stable session id resolution — prefer the active claude session
+        // id (matches the storage key used by TabManager #4 + the
+        // FileBrowserPanel.openToFile lifecycle); fall back to 'default'
+        // for harness use without an app singleton.
+        getSessionId: function () {
+          if (self.app && self.app.currentClaudeSessionId) {
+            return self.app.currentClaudeSessionId;
+          }
+          return 'default';
+        },
+      });
+    } catch (e) {
+      if (typeof console !== 'undefined') console.warn('WatcherClient init failed:', e);
+      this._fileWatcher = null;
+      return null;
+    }
+    // Single fan-out handler: fork to TabManager + the dir listing.
+    this._unbindFileWatcher = this._fileWatcher.onEvent(function (evt) {
+      try { self._dispatchWatcherEvent(evt); } catch (_) { /* swallow handler-side errors */ }
+    });
+    // Maintain the listing-recursive-subscription pointer so navigateTo
+    // can unsubscribe the previous dir before subscribing the new one.
+    // Per ce0102e the server treats a recursive subscription as one
+    // entry against the IP-cap; never accumulating across navigateTos
+    // is important for long-running sessions.
+    this._listingDirSubscription = null;
+    return this._fileWatcher;
+  };
+
+  // Snapshot-based listing subscriptions (#41 wire model post-ff79038):
+  // server-side subscriptions support a `recursive` flag: a single
+  // recursive subscription on the panel's current dir delivers events
+  // for any path under that dir — including NEW files the agent
+  // creates after the listing was fetched. So we subscribe the cwd
+  // recursively on every navigateTo and unsubscribe the previous cwd.
+  //
+  // Per ce0102e (server-side recursive=1 subscriptions), this closes
+  // the v1 limitation where new-file add events were missed because
+  // the path wasn't in the exact-path subscription set at event time.
+  FileBrowserPanel.prototype._reconcileListingSubscriptions = function (items) {
+    var watcher = this._fileWatcher;
+    if (!watcher) return;
+    var nextDir = this._currentPath || null;
+    var prevDir = this._listingDirSubscription || null;
+    if (prevDir === nextDir) return; // no-op; already subscribed
+    if (prevDir) {
+      try { watcher.unsubscribe(prevDir, { recursive: true }); } catch (_) { /* swallow */ }
+    }
+    if (nextDir) {
+      try { watcher.subscribe(nextDir, { recursive: true }); } catch (_) { /* swallow */ }
+    }
+    this._listingDirSubscription = nextDir;
+  };
+
+  // Routes an SSE event to the right surface. Server-side subscription
+  // filtering means we only get events for paths we explicitly
+  // subscribed (listing direct children OR open tab paths), so the
+  // dispatcher just routes by event type without re-checking membership.
+  //
+  //   - start / end / error: lifecycle events; consumed by WatcherClient
+  //     internally (visible here only for diagnostics).
+  //   - change / rename: route to TabManager.handleExternalEvent for the
+  //     tab-level dirty/clean reaction.
+  //   - add / unlink: route to TabManager (in case an open tab matches
+  //     OR the listing wants to refresh) AND refresh the dir listing if
+  //     the path is a direct child of _currentPath.
+  FileBrowserPanel.prototype._dispatchWatcherEvent = function (evt) {
+    if (!evt || !evt.type) return;
+    if (evt.type === 'start' || evt.type === 'end' || evt.type === 'error') return;
+
+    var path = evt.path;
+    if (!path) return;
+
+    // Route to TabManager — it filters by open-tab path internally.
+    var tm = this._tabManager;
+    if (tm && typeof tm.handleExternalEvent === 'function') {
+      try { tm.handleExternalEvent(evt); } catch (_) { /* swallow */ }
+    }
+
+    // Listing refresh: fire when the changed path is a DIRECT child of
+    // the panel's current dir. Server-side subscription filtering means
+    // we only see events for paths we subscribed to; for the listing we
+    // explicitly subscribed each direct child via
+    // _reconcileListingSubscriptions, so any add/unlink here that lives
+    // under _currentPath is by definition a direct child.
+    if (this._currentPath && (evt.type === 'add' || evt.type === 'unlink')) {
+      var parent = path.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
+      var here = String(this._currentPath).replace(/\\/g, '/').replace(/\/+$/, '');
+      if (parent === here) {
+        // Cheap re-fetch — chokidar already coalesces 100ms per path on
+        // the server, so a flurry of writes collapses to one refresh.
+        // navigateTo will re-call _reconcileListingSubscriptions so any
+        // newly-added file is picked up into the subscription set.
+        this._refresh();
+      }
+    }
+  };
+
+  // Cross-file search panel (#9) — lazily mounted on first Cmd/Ctrl+Shift+F
+  // press OR header search-button click. The panel sits ABOVE the preview
+  // container (and thus above the tab strip when present) so it overlays
+  // the active view without disrupting the open tabs.
+  FileBrowserPanel.prototype._ensureSearchPanel = function () {
+    if (this._searchPanel) return this._searchPanel;
+    if (!window.fileSearch || typeof window.fileSearch.SearchPanel !== 'function') return null;
+    var self = this;
+    try {
+      this._searchPanel = new window.fileSearch.SearchPanel({
+        containerEl: this._panelEl,
+        getAuthToken: function () {
+          // Server accepts ?token=… as alternative to Authorization header
+          // (server.js:464). Read it from the same place authFetch does.
+          // NOTE: this duplicates AuthManager.appendAuthToUrl-style logic
+          // INTENTIONALLY — file-search.js loads BEFORE auth.js per the
+          // index.html script order, so window.authManager isn't bound at
+          // module-load time. If a future reorder makes authManager
+          // module-eval-safe (or if this getter becomes call-time-only with
+          // a defensive null-check on window.authManager), DRY this out.
+          if (window.auth && window.auth.token) return window.auth.token;
+          try { return window.sessionStorage && window.sessionStorage.getItem('cc-web-token'); }
+          catch (_) { return null; }
+        },
+        getSearchRoot: function () {
+          // Search defaults to the current panel cwd (which honours getCwd
+          // per #14). Server falls back to baseFolder if we pass null.
+          return self._currentPath || null;
+        },
+        onResultClick: function (hit) {
+          if (!hit || !hit.path) return;
+          // Reuse the proven openFileInViewer → _pendingJumpTo →
+          // tabManager preview path established for terminal-link clicks
+          // (cef62bf). The tab gets a Monaco preview with the cursor at
+          // (line, col).
+          if (self.app && typeof self.app.openFileInViewer === 'function') {
+            self.app.openFileInViewer(hit.path, hit.line, hit.col);
+            return;
+          }
+          // Fallback: route directly through the panel if app's helper
+          // isn't reachable (e.g. SearchPanel embedded in a future
+          // standalone harness).
+          self._pendingJumpTo = { line: hit.line, col: hit.col || 1 };
+          self.openToFile(hit.path);
+        },
+        onClose: function () {
+          // Restore focus to the file list / tab strip if the user dismissed
+          // the panel, so keyboard nav continues seamlessly.
+          if (self._fileListEl && self._fileListEl.style.display !== 'none') {
+            try { self._fileListEl.focus(); } catch (_) { /* ignore */ }
+          }
+        },
+      });
+    } catch (e) {
+      if (typeof console !== 'undefined') console.warn('SearchPanel init failed:', e);
+      return null;
+    }
+    return this._searchPanel;
+  };
+
+  // Toggle the search panel, opening + focusing if closed. Public so the
+  // app's command palette / keyboard handler can drive it.
+  FileBrowserPanel.prototype.toggleSearchPanel = function () {
+    var sp = this._ensureSearchPanel();
+    if (!sp) return false;
+    if (sp.isOpen()) sp.close(); else sp.open();
+    return true;
   };
 
   FileBrowserPanel.prototype._handleBack = function () {
@@ -1181,11 +1810,125 @@
     this.containerEl = options.containerEl;
     this.onEdit = options.onEdit || function () {};
     this.onBack = options.onBack || function () {};
+    // Diff-request handler — host (FileBrowserPanel) routes through
+    // TabManager.openFile(path, 'diff', { compareWithRef|compareWithPath }).
+    // Not wired in standalone preview-panel use; the Diff button is hidden
+    // when this is missing.
+    this.onDiffRequest = options.onDiffRequest || null;
+    // Markdown's onInternalLink relative-link click handler routes here.
+    // Set by FileBrowserPanel to app.openFileInViewer; null in standalone
+    // harness use (the markdown render still works, just no in-app navigation).
+    this.onInternalLinkClick = options.onInternalLinkClick || null;
+    // Tear-down hooks for renderers that attach state outside the container
+    // (Panzoom, Monaco, PDF.js etc. wire document-level event listeners that
+    // innerHTML='' won't release). Each renderer pushes a function here;
+    // showPreview() drains them before rendering the next file.
+    this._activeDisposers = [];
   }
 
-  FilePreviewPanel.prototype.showPreview = function (item, currentDir) {
+  // Builds the Diff button + popover with three comparison targets:
+  //   - Compare with HEAD (one-click)
+  //   - Compare with ref… (prompt for any git rev)
+  //   - Compare with another file… (prompt for absolute path)
+  // The popover uses native event delegation; click-outside closes it via a
+  // capture-phase listener installed once per popover lifetime.
+  FilePreviewPanel.prototype._buildDiffMenu = function (item) {
     var self = this;
+    var wrap = document.createElement('div');
+    wrap.className = 'fb-diff-menu-wrap';
+    wrap.style.position = 'relative';
+    wrap.style.display = 'inline-block';
+
+    var btn = document.createElement('button');
+    btn.className = 'btn btn-secondary btn-small fb-diff-menu-btn';
+    btn.type = 'button';
+    btn.setAttribute('aria-haspopup', 'menu');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.textContent = 'Diff ▾';
+    wrap.appendChild(btn);
+
+    var menu = document.createElement('div');
+    menu.className = 'fb-diff-menu';
+    menu.setAttribute('role', 'menu');
+    menu.style.display = 'none';
+    wrap.appendChild(menu);
+
+    function mkItem(label, handler) {
+      var i = document.createElement('button');
+      i.type = 'button';
+      i.className = 'fb-diff-menu-item';
+      i.setAttribute('role', 'menuitem');
+      i.textContent = label;
+      i.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closeMenu();
+        try { handler(); } catch (err) {
+          if (typeof console !== 'undefined') console.error('diff handler:', err);
+        }
+      });
+      menu.appendChild(i);
+    }
+
+    mkItem('Compare with HEAD', function () {
+      self.onDiffRequest({ path: item.path, compareWithRef: 'HEAD' });
+    });
+    mkItem('Compare with ref…', function () {
+      var ref = window.prompt('Compare with which git ref?', 'HEAD');
+      if (ref == null) return;
+      ref = String(ref).trim();
+      if (!ref) return;
+      self.onDiffRequest({ path: item.path, compareWithRef: ref });
+    });
+    mkItem('Compare with another file…', function () {
+      var other = window.prompt('Path of the other file (absolute):');
+      if (other == null) return;
+      other = String(other).trim();
+      if (!other) return;
+      self.onDiffRequest({ path: item.path, compareWithPath: other });
+    });
+
+    var docCloser = null;
+    function openMenu() {
+      menu.style.display = '';
+      btn.setAttribute('aria-expanded', 'true');
+      docCloser = function (e) {
+        if (!wrap.contains(e.target)) closeMenu();
+      };
+      // Capture phase so we beat any inner click handlers that stopPropagation.
+      document.addEventListener('mousedown', docCloser, true);
+    }
+    function closeMenu() {
+      menu.style.display = 'none';
+      btn.setAttribute('aria-expanded', 'false');
+      if (docCloser) {
+        document.removeEventListener('mousedown', docCloser, true);
+        docCloser = null;
+      }
+    }
+
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (menu.style.display === 'none') openMenu(); else closeMenu();
+    });
+    return wrap;
+  };
+
+  FilePreviewPanel.prototype._disposeActive = function () {
+    while (this._activeDisposers.length) {
+      var fn = this._activeDisposers.pop();
+      try { fn(); } catch (_) { /* swallow — disposer should never throw */ }
+    }
+  };
+
+  FilePreviewPanel.prototype.showPreview = function (item, currentDir, options) {
+    var self = this;
+    this._disposeActive();
     this.containerEl.innerHTML = '';
+
+    // Capture per-render options. _jumpTo is consumed once by _renderCode
+    // when Monaco resolves; it's cleared post-consumption so a switch back
+    // and forth between previews doesn't repeat the jump.
+    this._jumpTo = (options && options.jumpTo) ? options.jumpTo : null;
 
     // Header
     var header = document.createElement('div');
@@ -1208,12 +1951,29 @@
       actions.appendChild(editBtn);
     }
 
+    // Diff button — opens a small dropdown with comparison targets. Only
+    // shown for editable text-shaped files (mimeCategory text/code/markdown
+    // /json/csv); the diff editor would render binary content as garbage.
+    // Wired to FilePreviewPanel.onDiffRequest so the FileBrowserPanel can
+    // route through TabManager (mode='diff').
+    if (item.editable && typeof self.onDiffRequest === 'function') {
+      var diffBtn = self._buildDiffMenu(item);
+      if (diffBtn) actions.appendChild(diffBtn);
+    }
+
     // Download button
     var dlBtn = document.createElement('button');
     dlBtn.className = 'btn btn-secondary btn-small';
     dlBtn.textContent = 'Download';
     dlBtn.addEventListener('click', function () {
-      window.open('/api/files/download?path=' + encodeURIComponent(item.path), '_blank');
+      // Same auth thread-through as inline previews: window.open() spawns
+      // a fresh navigation that can't carry an Authorization header, so
+      // we append `?token=` if --auth is on.
+      var dlUrl = '/api/files/download?path=' + encodeURIComponent(item.path);
+      if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+        dlUrl = window.authManager.appendAuthToUrl(dlUrl);
+      }
+      window.open(dlUrl, '_blank');
     });
     actions.appendChild(dlBtn);
 
@@ -1252,23 +2012,171 @@
   };
 
   FilePreviewPanel.prototype._renderImage = function (container, item) {
+    var self = this;
+
+    // Viewport: clips the image at the panel boundary so panning stays
+    // visually contained. The image itself is the panzoom target.
+    var viewport = document.createElement('div');
+    viewport.className = 'fb-img-viewport';
+
     var img = document.createElement('img');
     img.className = 'fb-preview-image';
     img.alt = item.name;
-    img.src = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    img.draggable = false; // browser native drag-image conflicts with pan gesture
+    // Inline asset URL — `<img src>` can't carry custom headers, so the
+    // Bearer token is threaded via `?token=` (auth middleware accepts both,
+    // see appendAuthToUrl). Without this, image preview 401s in --auth mode.
+    var imgUrl = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+      imgUrl = window.authManager.appendAuthToUrl(imgUrl);
+    }
+    img.src = imgUrl;
+    viewport.appendChild(img);
+    container.appendChild(viewport);
+
+    // Dimension readout (preserves the existing UX from before #20).
+    var dims = document.createElement('div');
+    dims.className = 'fb-preview-dims';
+    container.appendChild(dims);
+
+    // Zoom controls \u2014 shown above the viewport. Wired only after Panzoom
+    // initialises so a CDN failure keeps the controls hidden rather than
+    // showing dead buttons.
+    var controls = document.createElement('div');
+    controls.className = 'fb-img-controls';
+    controls.style.display = 'none';
+    var fitBtn = document.createElement('button');
+    fitBtn.type = 'button';
+    fitBtn.className = 'btn btn-secondary btn-small';
+    fitBtn.textContent = 'Fit';
+    fitBtn.title = 'Fit to viewport';
+    var oneToOneBtn = document.createElement('button');
+    oneToOneBtn.type = 'button';
+    oneToOneBtn.className = 'btn btn-secondary btn-small';
+    oneToOneBtn.textContent = '100%';
+    oneToOneBtn.title = 'Actual size';
+    var resetBtn = document.createElement('button');
+    resetBtn.type = 'button';
+    resetBtn.className = 'btn btn-secondary btn-small';
+    resetBtn.textContent = 'Reset';
+    resetBtn.title = 'Reset zoom and position';
+    controls.appendChild(fitBtn);
+    controls.appendChild(oneToOneBtn);
+    controls.appendChild(resetBtn);
+    container.insertBefore(controls, viewport);
+
+    var pz = null;
+    var wheelHandler = null;
+
     img.addEventListener('load', function () {
-      var dims = document.createElement('div');
-      dims.className = 'fb-preview-dims';
       dims.textContent = img.naturalWidth + ' \u00d7 ' + img.naturalHeight + ' px';
-      container.appendChild(dims);
+
+      // Lazy-load Panzoom only on the first image preview of the session.
+      // ~10 KB; if the user never opens an image they never pay it.
+      loadPanzoom().then(function (Panzoom) {
+        if (!viewport.isConnected) return; // user already navigated away
+        pz = Panzoom(img, {
+          maxScale: 10,
+          minScale: 0.1,
+          // Disable focal-point zoom on touch devices so tap-to-fit doesn't
+          // accidentally zoom into the wrong region. Pinch still works.
+          contain: 'outside',
+          startScale: 1,
+          step: 0.3,
+          // panOnlyWhenZoomed: true is too restrictive \u2014 allow free pan.
+        });
+        // Wheel zoom is opt-in in @panzoom/panzoom v4 \u2014 wire it on the
+        // viewport so scrolling outside the image doesn't intercept page
+        // scroll.
+        wheelHandler = function (e) { pz.zoomWithWheel(e); };
+        viewport.addEventListener('wheel', wheelHandler, { passive: false });
+
+        controls.style.display = '';
+        fitBtn.addEventListener('click', function () { pz && pz.reset(); });
+        oneToOneBtn.addEventListener('click', function () {
+          pz && pz.zoom(1, { animate: true });
+          pz && pz.pan(0, 0, { animate: true });
+        });
+        resetBtn.addEventListener('click', function () { pz && pz.reset(); });
+
+        // Register teardown \u2014 removes wheel listener + tears down internal
+        // pointer/touch listeners on document. Without this, switching
+        // previews would leak event handlers per image opened.
+        self._activeDisposers.push(function () {
+          if (wheelHandler) viewport.removeEventListener('wheel', wheelHandler);
+          try { pz && pz.destroy(); } catch (_) { /* ignore */ }
+          pz = null;
+          wheelHandler = null;
+        });
+      }).catch(function (err) {
+        // Degrade gracefully: image stays visible, just no pan/zoom.
+        // Matches the panel's "always render something" contract.
+        console.warn('[file-browser] panzoom unavailable:', err && err.message);
+      });
     });
-    container.appendChild(img);
   };
 
   FilePreviewPanel.prototype._renderPdf = function (container, item) {
+    // Inline asset URL — PDF.js issues fetch() from the worker module
+    // pipeline and `<iframe src>` (the fallback) can't carry custom
+    // headers, so the Bearer token is threaded via `?token=` (auth
+    // middleware accepts both, see appendAuthToUrl). Without this, PDF
+    // preview 401s in --auth mode.
+    var url = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+      url = window.authManager.appendAuthToUrl(url);
+    }
+    var self = this;
+
+    // Lazy PDF.js viewer (canvas-based) for cross-browser support — iOS
+    // Safari refuses inline iframe PDFs and forces a download. PDF.js
+    // bundle (~344KB core + 1.3MB worker) is fetched same-origin only on
+    // first PDF preview, then memoized.
+    if (window.fbPdfViewer && typeof window.fbPdfViewer.render === 'function') {
+      var disposerPushed = false;
+      try {
+        // render() now returns SYNCHRONOUSLY (peer-review MEDIUM-2 on
+        // 913bfdd) — the viewer handle is available immediately and its
+        // .destroy() correctly cancels the in-flight LoadingTask, the
+        // current RenderTask, and disconnects observers. So a disposer
+        // can act mid-load without waiting for page-1 to paint.
+        var viewer = window.fbPdfViewer.render(container, { url: url, fileName: item.name });
+
+        // Push the disposer ONLY AFTER render() returned successfully
+        // (peer-review MEDIUM-3). Pushing before would leave a stale
+        // disposer in the queue if render() threw and execution fell
+        // through to the iframe path.
+        this._activeDisposers.push(function () {
+          if (viewer && typeof viewer.destroy === 'function') {
+            try { viewer.destroy(); } catch (_) {}
+          }
+        });
+        disposerPushed = true;
+
+        // The error UI is rendered into the container by render() itself
+        // on load failure; swallow the rejection here so the unhandled-
+        // rejection warning doesn't fire.
+        if (viewer && viewer.ready && typeof viewer.ready.catch === 'function') {
+          viewer.ready.catch(function () { /* surfaced inline */ });
+        }
+        return;
+      } catch (_err) {
+        // Defensive: if render() threw synchronously AND we already pushed
+        // a disposer (shouldn't happen given the order above, but cheap
+        // insurance against future refactors), pop it back off so a stale
+        // closure doesn't leak into _disposeActive.
+        if (disposerPushed) {
+          this._activeDisposers.pop();
+        }
+        // Fall through to iframe fallback.
+      }
+    }
+
+    // Fallback: legacy iframe path (works on desktop Chrome/Firefox/Safari
+    // but NOT iOS Safari). Better than nothing if PDF.js failed to load.
     var iframe = document.createElement('iframe');
     iframe.className = 'fb-preview-pdf';
-    iframe.src = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    iframe.src = url;
     iframe.title = item.name;
     container.appendChild(iframe);
   };
@@ -1294,12 +2202,30 @@
       .then(function (data) {
         container.innerHTML = '';
 
-        if (item.mimeCategory === 'json') {
-          self._renderJson(container, data.content);
+        if (isIpynbExtension(item.name) || isIpynbExtension(item.path)) {
+          // .ipynb takes precedence over the json mimeCategory the server
+          // assigns — a notebook is JSON shape but the user wants the
+          // rendered cells, not pretty-printed source.
+          self._renderNotebook(container, data.content, item);
+        } else if (item.mimeCategory === 'markdown' ||
+                   isMarkdownExtension(item.name) ||
+                   isMarkdownExtension(item.path)) {
+          // Markdown files render via window.markdownRender.renderInto
+          // (#1) — which produces the .fb-markdown-rendered wrapper the
+          // 16-spec asserts. Without this branch markdown would fall
+          // through to _renderCode (Monaco), making markdown previews
+          // transitively depend on Monaco loading. Branch checked
+          // BEFORE the json branch since some markdown files happen to
+          // be tagged as json by mime-type detectors.
+          self._renderMarkdown(container, data.content, item);
+        } else if (item.mimeCategory === 'json') {
+          self._renderJson(container, data.content, item);
         } else if (item.mimeCategory === 'csv') {
           self._renderCsv(container, data.content);
+        } else if (isHtmlExtension(item.name) || isHtmlExtension(item.path)) {
+          self._renderHtml(container, data.content, item);
         } else {
-          self._renderCode(container, data.content);
+          self._renderCode(container, data.content, item);
         }
 
         if (data.truncated) {
@@ -1315,92 +2241,824 @@
       });
   };
 
-  FilePreviewPanel.prototype._renderCode = function (container, content) {
-    var wrapper = document.createElement('div');
-    wrapper.className = 'fb-code-preview';
+  // Read-only code preview backed by Monaco (ADR-0016). Replaces the prior
+  // hand-rolled <pre>+gutter renderer; that renderer is preserved as
+  // _renderCodePlainFallback for the CDN-blocked degraded path.
+  FilePreviewPanel.prototype._renderCode = function (container, content, item) {
+    var self = this;
+    var languageHint = '';
+    if (item) languageHint = item.path || item.name || '';
 
-    var lines = content.split('\n');
-    var gutter = document.createElement('div');
-    gutter.className = 'fb-code-gutter';
-    var code = document.createElement('pre');
-    code.className = 'fb-code-content';
-
-    for (var i = 0; i < lines.length; i++) {
-      var lineNum = document.createElement('div');
-      lineNum.className = 'fb-line-number';
-      lineNum.textContent = i + 1;
-      gutter.appendChild(lineNum);
+    // Loader module missing — degrade to the prior plain renderer rather
+    // than show an empty pane.
+    if (!window.fileViewerMonaco || typeof window.fileViewerMonaco.createCodeViewer !== 'function') {
+      this._renderCodePlainFallback(container, content);
+      return;
     }
 
-    code.textContent = content;
-    wrapper.appendChild(gutter);
-    wrapper.appendChild(code);
-    container.appendChild(wrapper);
+    // Monaco needs a host element with non-zero dimensions; .fb-code-monaco
+    // gives it a flex/min-height contract via file-browser.css. The inner
+    // legacy gutter+pre DOM (built by _buildPlainCodePreview below) carries
+    // the `.fb-code-content` + `.fb-code-gutter` classes the 14-spec
+    // locators target — no need for an alias on the host itself, which
+    // would cause Playwright strict-mode "locator resolved to 2 elements"
+    // failures.
+    var host = document.createElement('div');
+    host.className = 'fb-code-monaco';
+    container.appendChild(host);
+
+    // Render the file content as plain text IMMEDIATELY so the user sees
+    // it instantly and so e2e tests reading `.fb-code-content`'s textContent
+    // never race against Monaco's CDN fetch (the loader's 15 s timeout
+    // exceeded Playwright's default 10 s test patience in CI; the test saw
+    // the placeholder, not the content). Monaco's createCodeViewer below
+    // sweeps `host` before mounting (per MEDIUM-2 fix in 9c2f6a6), so this
+    // initial DOM is automatically replaced when Monaco resolves; no
+    // explicit cleanup needed on success. On Monaco failure, the .catch
+    // path renders the fuller fallback over the top.
+    //
+    // Use the legacy gutter+content DOM shape (matches what
+    // _renderCodePlainFallback emits for the CDN-blocked case) so the
+    // legacy 14-spec `.fb-code-gutter` + `.fb-code-content` locators
+    // continue to find the same elements they always did. The host's
+    // `.fb-code-content` alias class still satisfies the older locator at
+    // the wrapper level too.
+    _buildPlainCodePreview(host, content);
+
+    // Tracks the resolved Monaco handle so the disposer can tear it down
+    // even if showPreview() switches files mid-load.
+    var resolvedHandle = null;
+    var disposed = false;
+    self._activeDisposers.push(function () {
+      disposed = true;
+      if (resolvedHandle) {
+        try { resolvedHandle.dispose(); } catch (_) { /* ignore */ }
+        resolvedHandle = null;
+      }
+    });
+
+    window.fileViewerMonaco.createCodeViewer(host, {
+      content: content,
+      language: window.fileViewerMonaco.getMonacoLanguage(languageHint),
+      readOnly: true,
+      minimap: false,
+      lineNumbers: 'on',
+      wordWrap: 'off',
+      ariaLabel: 'Read-only preview of ' + (item ? item.name : 'file'),
+      // No context menu in the read-only preview — host UI provides Edit/Download.
+      contextmenu: false,
+    }).then(function (handle) {
+      // Monaco swept `host` (and our initialPre with it) before mounting,
+      // per the MEDIUM-2 fix in the loader. No explicit cleanup needed here.
+      if (disposed) {
+        // Race: showPreview() switched files while Monaco was loading.
+        try { handle.dispose(); } catch (_) { /* ignore */ }
+        return;
+      }
+      resolvedHandle = handle;
+      // Expose the live Monaco editor instance on the panel so the
+      // fs-watcher integration (and tests) can reach it for cursor /
+      // selection / scroll preservation across silent reloads. Same
+      // field name as FileEditorPanel for symmetry — both panel types
+      // surface `_monacoEditor` once their viewer mounts.
+      self._monacoEditor = handle.editor;
+      // Consume any pending jump-to-line set by a terminal-link click (#7).
+      // The line/col are 1-based (Monaco's convention) AND the values from
+      // path tokens like `src/foo.js:42:7` are 1-based, so they map directly.
+      // Out-of-range lines are silently clamped by Monaco; we wrap in a
+      // try just in case the editor was disposed mid-call.
+      var jump = self._jumpTo;
+      self._jumpTo = null;
+      if (jump && jump.line) {
+        var line = parseInt(jump.line, 10);
+        var col  = parseInt(jump.col, 10);
+        if (isFinite(line) && line > 0) {
+          if (!isFinite(col) || col < 1) col = 1;
+          try {
+            handle.editor.revealLineInCenter(line);
+            handle.editor.setPosition({ lineNumber: line, column: col });
+            // Selection at a single point doubles as a visual cursor marker;
+            // helpful when read-only Monaco doesn't draw a blinking caret.
+            if (handle.monaco && handle.monaco.Selection) {
+              handle.editor.setSelection(new handle.monaco.Selection(line, col, line, col));
+            }
+            handle.editor.focus();
+          } catch (_) { /* line out of range or editor disposed — non-fatal */ }
+        }
+      }
+    }).catch(function () {
+      // Monaco failed to load — replace the initialPre with the fuller
+      // fallback chrome (notice + line numbers) so the user sees a deliberate
+      // "fallback active" surface rather than just the bare initialPre we
+      // mounted up front. The pretier loader fallback also matches the
+      // editor pane's CDN-blocked degraded look.
+      if (disposed) return;
+      // CDN failure: prefer the loader's plain-text renderer (consistent
+      // styling with the editor's fallback); degrade further to the local
+      // gutter+<pre> renderer if even that's missing.
+      if (window.fileViewerMonaco && typeof window.fileViewerMonaco.renderPlainTextFallback === 'function') {
+        window.fileViewerMonaco.renderPlainTextFallback(host, {
+          content: content,
+          notice: 'Code viewer unavailable — falling back to plain text.',
+        });
+      } else {
+        host.innerHTML = '';
+        self._renderCodePlainFallback(host, content);
+      }
+    });
   };
 
-  FilePreviewPanel.prototype._renderJson = function (container, content) {
+  FilePreviewPanel.prototype._renderCodePlainFallback = function (container, content) {
+    _buildPlainCodePreview(container, content);
+  };
+
+  // Cursor-preserving silent reload for the preview pane (#41 / ADR-0017).
+  // Symmetric to FileEditorPanel.applyDiskContent — captures + restores
+  // the live Monaco viewer's position/selection/viewState across a
+  // setValue, so when the fs-watcher fires a `change` event for an open
+  // preview tab the new content lands without visibly disrupting the
+  // user's reading position. No dirty/draft state to worry about
+  // (preview is always read-only, no buffer to lose).
+  //
+  // Falls back to a no-op if Monaco hasn't mounted yet (the preview is
+  // still in the initial-pre paint window) — caller can fall through to
+  // a full showPreview re-render in that case.
+  FilePreviewPanel.prototype.applyDiskContent = function (data) {
+    if (!data || !this._monacoEditor) return false;
+    var ed = this._monacoEditor;
+    var content = data.content == null ? '' : String(data.content);
+    var pos = null, selection = null, viewState = null;
+    try { pos = ed.getPosition(); } catch (_) { /* ignore */ }
+    try { selection = ed.getSelection(); } catch (_) { /* ignore */ }
+    try { viewState = ed.saveViewState(); } catch (_) { /* ignore */ }
+    try { ed.setValue(content); } catch (_) { return false; }
+    if (viewState) { try { ed.restoreViewState(viewState); } catch (_) {} }
+    if (selection) {
+      try { ed.setSelection(selection); } catch (_) { /* line may no longer exist */ }
+    } else if (pos) {
+      try { ed.setPosition(pos); } catch (_) { /* line may no longer exist */ }
+    }
+    return true;
+  };
+
+  FilePreviewPanel.prototype._renderJson = function (container, content, item) {
     try {
       var parsed = JSON.parse(content);
       var formatted = JSON.stringify(parsed, null, 2);
-      this._renderCode(container, formatted);
+      this._renderCode(container, formatted, item);
     } catch (e) {
-      this._renderCode(container, content);
+      this._renderCode(container, content, item);
     }
   };
 
+  // HTML preview (#18) — sandboxed iframe by default with a Source⇄Rendered
+  // toggle. The iframe gets `sandbox=""` (strictest: no scripts, no
+  // same-origin, no top-nav, no forms, no popups, no downloads), an
+  // `referrerpolicy="no-referrer"` attribute, and a CSP <meta> injected via
+  // buildSandboxedSrcdoc that further locks down what the (now-inert)
+  // document can fetch.
+  //
+  // Defence in depth:
+  //   - sandbox="" — browser-enforced isolation; document origin is "null".
+  //   - CSP meta — even if a future browser quirk weakens sandbox, the CSP
+  //     blocks every network class except inline data:/blob: assets.
+  //   - <base> + <meta refresh> stripping — closes navigation-shaped tricks.
+  //   - 1 MB cap — beyond which we disable rendering and show source only,
+  //     because srcdoc balloons memory and can hang the renderer.
+  // Notebook (.ipynb) preview (#3) — delegates to notebook-render.js
+  // which lazy-loads kokes/nbviewer.js + DOMPurify on first use, parses
+  // the notebook JSON, renders into a scratch DIV via nbv.render(), then
+  // sanitises the resulting HTML before inserting into the live DOM
+  // (output cells can carry arbitrary HTML).
+  // Markdown preview (#1) — delegates to markdown-render.js which lazy-
+  // loads marked + DOMPurify, parses + sanitises with the relative-link
+  // rewriting hook, then runs Mermaid + KaTeX enrichment passes. Renders
+  // into a `.fb-markdown-rendered` wrapper. ZERO Monaco dependency — the
+  // markdown viewer must continue to work even when the Monaco loader is
+  // unreachable / blocked / cold-starting (which is exactly the CI failure
+  // mode that surfaced this missing dispatch).
+  //
+  // Module-missing fallback: if window.markdownRender never loaded (script
+  // tag missing, CSP block, etc.), fall through to _renderCode so the user
+  // at least sees the source. Better than a blank pane.
+  FilePreviewPanel.prototype._renderMarkdown = function (container, content, item) {
+    var self = this;
+    if (!window.markdownRender || typeof window.markdownRender.renderInto !== 'function') {
+      this._renderCode(container, content, item);
+      return;
+    }
+
+    var host = document.createElement('div');
+    host.className = 'fb-markdown-host';
+    container.appendChild(host);
+
+    // Track teardown so file-switch drains it (matches Panzoom / PDF.js /
+    // Monaco / notebook patterns).
+    var disposed = false;
+    var teardownFn = null;
+    self._activeDisposers.push(function () {
+      disposed = true;
+      if (teardownFn) {
+        try { teardownFn(); } catch (_) { /* ignore */ }
+        teardownFn = null;
+      }
+    });
+
+    // basePath = directory of the source file. The markdown renderer's
+    // afterSanitizeAttributes hook resolves <img src="./foo.png"> against
+    // this and rewrites to /api/files/download?path=…&inline=1.
+    var basePath = null;
+    if (item && item.path) {
+      var n = String(item.path).replace(/\\/g, '/');
+      var i = n.lastIndexOf('/');
+      basePath = i === -1 ? '' : n.slice(0, i);
+    }
+
+    window.markdownRender.renderInto(host, content, {
+      basePath: basePath,
+      // Internal-link click delegation — relative-resolved <a> tags route
+      // through the host's openFileInViewer (proven path; same plumbing
+      // terminal-link clicks and search-result clicks use).
+      onInternalLink: function (resolvedPath) {
+        // Routed through the host's onInternalLinkClick callback (set by
+        // FileBrowserPanel to app.openFileInViewer). FilePreviewPanel
+        // doesn't hold a direct app reference; the callback pattern keeps
+        // the panel reusable in standalone harnesses.
+        if (resolvedPath && typeof self.onInternalLinkClick === 'function') {
+          try { self.onInternalLinkClick(resolvedPath); } catch (_) { /* ignore */ }
+        }
+      },
+    }).then(function (result) {
+      if (disposed) {
+        if (result && typeof result.teardown === 'function') {
+          try { result.teardown(); } catch (_) { /* ignore */ }
+        }
+        return;
+      }
+      if (result && typeof result.teardown === 'function') {
+        teardownFn = result.teardown;
+      }
+    }).catch(function () {
+      // markdown-render.js renders its own .fb-md-fallback inside `host`
+      // on hard-failure. Nothing to do here.
+    });
+  };
+
+  FilePreviewPanel.prototype._renderNotebook = function (container, content, item) {
+    var self = this;
+    if (!window.notebookRender || typeof window.notebookRender.renderInto !== 'function') {
+      // Module never loaded — fall back to JSON-pretty preview so the user
+      // can still inspect the notebook source.
+      this._renderJson(container, content, item);
+      return;
+    }
+
+    var host = document.createElement('div');
+    host.className = 'fb-notebook-host';
+    container.appendChild(host);
+
+    // Track the renderer's teardown so showPreview() drains it on
+    // file-switch (matches the Panzoom / PDF.js / Monaco pattern).
+    var disposed = false;
+    var teardownFn = null;
+    self._activeDisposers.push(function () {
+      disposed = true;
+      if (teardownFn) {
+        try { teardownFn(); } catch (_) { /* ignore */ }
+        teardownFn = null;
+      }
+    });
+
+    window.notebookRender.renderInto(host, content, {}).then(function (result) {
+      if (disposed) {
+        // Race: showPreview() switched files while nbviewer was loading.
+        if (result && typeof result.teardown === 'function') {
+          try { result.teardown(); } catch (_) { /* ignore */ }
+        }
+        return;
+      }
+      if (result && typeof result.teardown === 'function') {
+        teardownFn = result.teardown;
+      }
+    }).catch(function () {
+      // notebook-render.js already renders its own fallback inside `host`.
+      // Nothing to do here.
+    });
+  };
+
+  FilePreviewPanel.prototype._renderHtml = function (container, content, item) {
+    var self = this;
+    var src = String(content == null ? '' : content);
+    var bytes = _measureBytes(src);
+    var oversize = bytes > HTML_PREVIEW_SRCDOC_CAP_BYTES;
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'fb-html-preview';
+    container.appendChild(wrapper);
+
+    // Toggle bar
+    var toggleBar = document.createElement('div');
+    toggleBar.className = 'fb-html-toggle-bar';
+
+    var toggleBtn = document.createElement('button');
+    toggleBtn.className = 'btn btn-secondary btn-small fb-html-toggle-btn';
+    toggleBtn.type = 'button';
+    toggleBar.appendChild(toggleBtn);
+
+    if (oversize) {
+      var notice = document.createElement('span');
+      notice.className = 'fb-html-toggle-notice';
+      notice.textContent = 'Rendered preview disabled (file > ' +
+        formatFileSize(HTML_PREVIEW_SRCDOC_CAP_BYTES) + ')';
+      toggleBar.appendChild(notice);
+    }
+    wrapper.appendChild(toggleBar);
+
+    // View host (swapped between rendered iframe and source Monaco viewer).
+    var view = document.createElement('div');
+    view.className = 'fb-html-view';
+    wrapper.appendChild(view);
+
+    var renderedActive = !oversize;
+
+    // HIGH (reviewer audit of 7e73e6f): every toggle into Source view mounts
+    // a fresh Monaco editor via _renderCode, which APPENDS its disposer to
+    // self._activeDisposers. The pool is only drained by showPreview() →
+    // _disposeActive(). Without per-toggle accounting, repeated Source ⇄
+    // Rendered cycles accumulate orphaned Monaco editors (with their
+    // ResizeObserver + text models + listeners live) until the user finally
+    // navigates to a different file. Fix: track the index of the disposer
+    // we register on each renderSource() call and drain it before mounting
+    // the next editor (or before transitioning to the iframe view).
+    var sourceDisposerIdx = -1;
+
+    function disposeSource() {
+      if (sourceDisposerIdx >= 0 && sourceDisposerIdx < self._activeDisposers.length) {
+        var fn = self._activeDisposers.splice(sourceDisposerIdx, 1)[0];
+        try { fn(); } catch (_) { /* swallow */ }
+      }
+      sourceDisposerIdx = -1;
+    }
+
+    function renderRendered() {
+      // Drain any prior source-view editor before swapping the DOM. Without
+      // this, switching back to Rendered detaches the editor's DOM but
+      // leaves its model + ResizeObserver + listeners alive.
+      disposeSource();
+      view.innerHTML = '';
+      toggleBtn.textContent = 'Source';
+      toggleBtn.setAttribute('aria-label', 'Show source');
+      toggleBtn.setAttribute('aria-pressed', 'false');
+
+      var iframe = document.createElement('iframe');
+      iframe.className = 'fb-html-iframe';
+      // Empty sandbox = strictest. Every restriction is enabled by default;
+      // adding tokens (e.g. allow-scripts) would WEAKEN sandboxing.
+      iframe.setAttribute('sandbox', '');
+      iframe.setAttribute('referrerpolicy', 'no-referrer');
+      iframe.setAttribute('loading', 'lazy');
+      iframe.setAttribute('title', item ? ('Rendered ' + item.name) : 'HTML preview');
+      iframe.setAttribute('aria-label', 'HTML rendered preview, sandboxed');
+      iframe.setAttribute('srcdoc', buildSandboxedSrcdoc(src));
+      view.appendChild(iframe);
+    }
+
+    function renderSource() {
+      // Drain any PREVIOUS source-view editor first. Important on the
+      // back-and-forth case (Source → Rendered → Source); without it we'd
+      // leak the original editor since toggling Source again pushes a new
+      // disposer rather than reusing the prior one.
+      disposeSource();
+      view.innerHTML = '';
+      toggleBtn.textContent = 'Rendered';
+      toggleBtn.setAttribute('aria-label', 'Show rendered preview');
+      toggleBtn.setAttribute('aria-pressed', 'true');
+      // Capture the index BEFORE _renderCode appends its disposer. The
+      // disposer push in _renderCode is synchronous (verify before any
+      // refactor that adds awaits in that path).
+      sourceDisposerIdx = self._activeDisposers.length;
+      // Reuse the Monaco read-only code preview path so HTML source view
+      // gets the same syntax highlighting + chrome as any other code file.
+      self._renderCode(view, src, item);
+    }
+
+    toggleBtn.addEventListener('click', function () {
+      if (oversize) return;
+      if (renderedActive) {
+        renderSource();
+        renderedActive = false;
+      } else {
+        renderRendered();
+        renderedActive = true;
+      }
+    });
+
+    if (oversize) {
+      toggleBtn.disabled = true;
+      toggleBtn.classList.add('disabled');
+      toggleBtn.setAttribute('aria-disabled', 'true');
+      renderSource();
+    } else {
+      renderRendered();
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // CSV parsing — RFC 4180-ish (handles quoted fields, embedded separators,
+  // and "" escape). Multi-line quoted fields are NOT supported in v1; rows
+  // are split on \n before parsing. Per task #5.
+  // ---------------------------------------------------------------------------
+
+  function parseCsvLine(line, sep) {
+    var cells = [];
+    var i = 0;
+    var len = line.length;
+    while (i < len) {
+      var cell;
+      if (line.charAt(i) === '"') {
+        // Quoted field. Process until matching unescaped closing quote.
+        i++;
+        var buf = '';
+        while (i < len) {
+          var c = line.charAt(i);
+          if (c === '"') {
+            if (line.charAt(i + 1) === '"') { buf += '"'; i += 2; }
+            else { i++; break; }
+          } else {
+            buf += c; i++;
+          }
+        }
+        cell = buf;
+        // Skip any trailing junk up to the next separator (defensive).
+        while (i < len && line.charAt(i) !== sep) i++;
+      } else {
+        var start = i;
+        while (i < len && line.charAt(i) !== sep) i++;
+        cell = line.slice(start, i);
+      }
+      cells.push(cell);
+      if (i < len && line.charAt(i) === sep) i++;
+    }
+    // Edge case: a trailing separator means an empty trailing field.
+    if (line.length > 0 && line.charAt(line.length - 1) === sep) cells.push('');
+    return cells;
+  }
+
+  function isNumericCell(s) {
+    if (s == null || s === '') return false;
+    var n = Number(s);
+    return !isNaN(n) && isFinite(n);
+  }
+
+  function detectColumnIsNumeric(rows, colIdx) {
+    // Scan up to 20 rows; treat a column as numeric only if every sampled
+    // non-empty value parses as a number. Empty cells are ignored so a
+    // column with sparse data still sorts numerically.
+    var sample = Math.min(rows.length, 20);
+    var sawAny = false;
+    for (var r = 0; r < sample; r++) {
+      var v = rows[r][colIdx];
+      if (v == null || v === '') continue;
+      sawAny = true;
+      if (!isNumericCell(v)) return false;
+    }
+    return sawAny;
+  }
+
+  // Cap on parsed rows. Beyond this we slice and surface a "showing first N
+  // of M" notice — protects the browser from a multi-MB CSV painting the
+  // whole DOM on first preview. Virtualisation handles render-side sizing
+  // independently; this cap is only about parse + sort cost.
+  var CSV_MAX_ROWS = 1000;
+  var CSV_INITIAL_WINDOW = 50;
+  var CSV_PAGE_SIZE = 50;
+
   FilePreviewPanel.prototype._renderCsv = function (container, content) {
-    var lines = content.split('\n').filter(function (l) { return l.trim(); });
-    if (!lines.length) {
+    var self = this;
+    if (!content || !content.length) {
       container.textContent = 'Empty CSV file';
       return;
     }
 
-    var table = document.createElement('table');
-    table.className = 'fb-csv-table';
+    // Strip BOM if present (Excel-saved CSVs love this).
+    if (content.charCodeAt(0) === 0xFEFF) content = content.slice(1);
 
-    var maxRows = Math.min(lines.length, 101); // 1 header + 100 data rows
-    for (var i = 0; i < maxRows; i++) {
-      var row = document.createElement('tr');
-      var cells = lines[i].split(',');
-      for (var j = 0; j < cells.length; j++) {
-        var cell = document.createElement(i === 0 ? 'th' : 'td');
-        cell.textContent = cells[j].replace(/^"|"$/g, '').trim();
-        row.appendChild(cell);
-      }
-      table.appendChild(row);
+    // Detect separator: tab-separated takes precedence if a tab appears in
+    // the first line (common for .tsv served as text/csv). Otherwise comma.
+    var firstNL = content.indexOf('\n');
+    var firstLine = firstNL === -1 ? content : content.slice(0, firstNL);
+    var sep = firstLine.indexOf('\t') !== -1 ? '\t' : ',';
+
+    // Split on \n and parse. Multi-line quoted fields are NOT supported
+    // in v1 — they'd require row-aware tokenisation across line boundaries.
+    var rawLines = content.split(/\r?\n/);
+    while (rawLines.length && rawLines[rawLines.length - 1] === '') rawLines.pop();
+    if (!rawLines.length) {
+      container.textContent = 'Empty CSV file';
+      return;
     }
 
-    var tableWrapper = document.createElement('div');
-    tableWrapper.className = 'fb-csv-wrapper';
-    tableWrapper.appendChild(table);
-    container.appendChild(tableWrapper);
+    var headerRow = parseCsvLine(rawLines[0], sep);
+    var totalDataRows = rawLines.length - 1;
+    var truncated = totalDataRows > CSV_MAX_ROWS;
+    var dataRowCount = truncated ? CSV_MAX_ROWS : totalDataRows;
 
-    if (lines.length > 101) {
+    var dataRows = new Array(dataRowCount);
+    for (var i = 0; i < dataRowCount; i++) {
+      dataRows[i] = parseCsvLine(rawLines[i + 1], sep);
+    }
+
+    // Cache numeric-column detection up front so repeated sorts don't re-scan.
+    var colIsNumeric = new Array(headerRow.length);
+    for (var c = 0; c < headerRow.length; c++) {
+      colIsNumeric[c] = detectColumnIsNumeric(dataRows, c);
+    }
+
+    var sortState = null;             // null | { col, dir: 'asc'|'desc' }
+    var sortedRows = dataRows.slice();
+    var renderedCount = 0;
+    var observer = null;
+    var sentinel = null;
+    var initialWindow = CSV_INITIAL_WINDOW;
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'fb-csv-wrapper';
+    var table = document.createElement('table');
+    table.className = 'fb-csv-table';
+    var thead = document.createElement('thead');
+    var headerTr = document.createElement('tr');
+    var tbody = document.createElement('tbody');
+
+    function renderHeader() {
+      headerTr.innerHTML = '';
+      headerRow.forEach(function (h, idx) {
+        var th = document.createElement('th');
+        th.className = 'fb-csv-th-sortable';
+        th.tabIndex = 0;
+        th.setAttribute('role', 'columnheader');
+        var label = document.createElement('span');
+        label.className = 'fb-csv-th-label';
+        label.textContent = h;
+        var arrow = document.createElement('span');
+        arrow.className = 'fb-csv-th-arrow';
+        if (sortState && sortState.col === idx) {
+          arrow.textContent = sortState.dir === 'asc' ? ' ▲' : ' ▼';
+          th.setAttribute('aria-sort', sortState.dir === 'asc' ? 'ascending' : 'descending');
+        } else {
+          arrow.textContent = '';
+          th.setAttribute('aria-sort', 'none');
+        }
+        th.appendChild(label);
+        th.appendChild(arrow);
+        function activate() {
+          if (sortState && sortState.col === idx) {
+            // toggle: asc → desc → unsorted (third click)
+            if (sortState.dir === 'asc') sortState = { col: idx, dir: 'desc' };
+            else sortState = null;
+          } else {
+            sortState = { col: idx, dir: 'asc' };
+          }
+          applySort();
+          renderHeader();
+          resetWindow();
+        }
+        th.addEventListener('click', activate);
+        th.addEventListener('keydown', function (e) {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); }
+        });
+        headerTr.appendChild(th);
+      });
+    }
+
+    function applySort() {
+      if (!sortState) {
+        sortedRows = dataRows.slice();
+        return;
+      }
+      var col = sortState.col;
+      var dir = sortState.dir === 'asc' ? 1 : -1;
+      var numeric = colIsNumeric[col];
+      sortedRows = dataRows.slice().sort(function (a, b) {
+        var av = a[col];
+        var bv = b[col];
+        // Empty cells always sort last regardless of direction (matches
+        // user expectation in spreadsheet apps).
+        if (av == null || av === '') return 1;
+        if (bv == null || bv === '') return -1;
+        if (numeric) {
+          var an = Number(av);
+          var bn = Number(bv);
+          return an === bn ? 0 : (an < bn ? -1 : 1) * dir;
+        }
+        return String(av).localeCompare(String(bv)) * dir;
+      });
+    }
+
+    function appendRows(from, to) {
+      var frag = document.createDocumentFragment();
+      for (var r = from; r < to; r++) {
+        var tr = document.createElement('tr');
+        var cells = sortedRows[r];
+        for (var c2 = 0; c2 < headerRow.length; c2++) {
+          var td = document.createElement('td');
+          td.textContent = cells[c2] != null ? cells[c2] : '';
+          tr.appendChild(td);
+        }
+        frag.appendChild(tr);
+      }
+      tbody.appendChild(frag);
+      renderedCount = to;
+      updateSentinel();
+    }
+
+    function updateSentinel() {
+      if (renderedCount >= sortedRows.length) {
+        if (sentinel && sentinel.parentNode) sentinel.parentNode.removeChild(sentinel);
+        if (observer) { try { observer.disconnect(); } catch (_) {} observer = null; }
+      } else if (sentinel && !sentinel.parentNode) {
+        wrapper.appendChild(sentinel);
+      }
+    }
+
+    function resetWindow() {
+      tbody.innerHTML = '';
+      renderedCount = 0;
+      appendRows(0, Math.min(initialWindow, sortedRows.length));
+    }
+
+    sentinel = document.createElement('div');
+    sentinel.className = 'fb-csv-sentinel';
+    sentinel.setAttribute('aria-hidden', 'true');
+
+    if (typeof window.IntersectionObserver === 'function') {
+      observer = new window.IntersectionObserver(function (entries) {
+        for (var e = 0; e < entries.length; e++) {
+          if (entries[e].isIntersecting && renderedCount < sortedRows.length) {
+            appendRows(renderedCount,
+                       Math.min(renderedCount + CSV_PAGE_SIZE, sortedRows.length));
+          }
+        }
+      }, { root: wrapper, rootMargin: '200px 0px' });
+      observer.observe(sentinel);
+    } else {
+      // Old browser fallback — render everything up front.
+      initialWindow = sortedRows.length;
+    }
+
+    renderHeader();
+    thead.appendChild(headerTr);
+    table.appendChild(thead);
+    table.appendChild(tbody);
+    wrapper.appendChild(table);
+    wrapper.appendChild(sentinel);
+    container.appendChild(wrapper);
+
+    appendRows(0, Math.min(initialWindow, sortedRows.length));
+
+    if (truncated) {
       var notice = document.createElement('div');
       notice.className = 'fb-truncated-notice';
-      notice.textContent = 'Showing first 100 rows of ' + (lines.length - 1);
+      notice.textContent = 'Showing first ' + CSV_MAX_ROWS + ' of ' + totalDataRows + ' rows';
       container.appendChild(notice);
+    }
+
+    // Register teardown so navigating to another file releases the
+    // IntersectionObserver. Per the FilePreviewPanel _activeDisposers
+    // contract.
+    if (self._activeDisposers) {
+      self._activeDisposers.push(function () {
+        if (observer) { try { observer.disconnect(); } catch (_) {} observer = null; }
+      });
     }
   };
 
   // ---------------------------------------------------------------------------
-  // TerminalPathDetector — right-click context menu for file paths in terminal
+  // Terminal path linking — TerminalPathDetector (right-click selection menu)
+  // and attachLinkProvider (xterm registerLinkProvider for clickable links).
+  //
+  // Both share the same regex/extraction logic. CRITICAL: the link provider
+  // performs ZERO network I/O inside provideLinks (it scans every visible
+  // line on every render — synchronous regex only). Validation against the
+  // server (/api/files/stat) happens lazily in the click handler.
   // ---------------------------------------------------------------------------
 
-  // Regex patterns for file paths
-  var PATH_PATTERNS = [
-    /(?:^|\s)(\/[\w./-]+\.\w+)/,                         // Unix absolute: /path/to/file.ext
-    /(?:^|\s)(\.\/[\w./-]+)/,                              // Unix relative: ./path/to/file
-    /(?:^|\s)([A-Z]:\\[\w.\\ -]+\.\w+)/i,                 // Windows: C:\path\file.ext
-    /(?:^|\s)([\w-]+\/[\w./-]+\.\w+)/,                    // Bare relative: src/file.ext
+  // Known file-extension allowlist. Used as a precondition so that path-shaped
+  // tokens like `react/jsx-runtime` (npm specifier with no extension) and
+  // `1.2.3` (version) are not flagged as links.
+  var KNOWN_FILE_EXTENSIONS = [
+    // Code
+    'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'd.ts',
+    'py', 'rb', 'go', 'rs', 'java', 'kt', 'kts', 'scala', 'swift',
+    'c', 'cc', 'cpp', 'cxx', 'h', 'hpp', 'hh', 'hxx', 'm', 'mm',
+    'cs', 'fs', 'php', 'pl', 'pm', 'r', 'lua', 'dart', 'ex', 'exs',
+    'erl', 'hs', 'elm', 'clj', 'cljs', 'edn', 'jl', 'nim', 'zig', 'v',
+    // Shell / config
+    'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
+    'env', 'ini', 'cfg', 'conf', 'properties', 'toml',
+    'yaml', 'yml', 'json', 'json5', 'jsonc',
+    // Web
+    'html', 'htm', 'xhtml', 'xml', 'svg',
+    'css', 'scss', 'sass', 'less', 'styl',
+    // Markup / docs
+    'md', 'mdx', 'markdown', 'rst', 'tex', 'org', 'adoc',
+    // Data / DB
+    'csv', 'tsv', 'sql', 'graphql', 'gql', 'proto', 'avsc',
+    // Logs / text
+    'txt', 'log', 'patch', 'diff', 'lock',
+    // Build files
+    'gradle', 'cmake', 'mk', 'make', 'ninja', 'bazel', 'bzl',
+    // Binary previews
+    'pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'ico', 'tiff', 'avif',
+    // Notebooks
+    'ipynb',
   ];
 
+  var EXT_ALT = KNOWN_FILE_EXTENSIONS
+    .map(function (e) { return e.replace(/\./g, '\\.'); })
+    .join('|');
+
+  // Single canonical pattern: a path-shaped token that ends with a known
+  // extension and may have an optional ":line" or ":line:col" suffix.
+  //
+  // Left and right boundaries are matched as separate groups so we can
+  // recover the precise start column of the captured path inside the line.
+  //
+  // Group 1 = leading boundary (single char or empty at line start)
+  // Group 2 = the path text
+  // Group 3 = optional line number
+  // Group 4 = optional column number
+  //
+  // Note: the path body intentionally does NOT permit spaces. Terminal
+  // copy/paste of paths with spaces is uncommon; supporting them would
+  // require quote-aware parsing and isn't worth the false-positive cost.
+  var LINK_BODY = '(?:[A-Za-z]:[\\\\/]|~[\\\\/]|\\.{0,2}[\\\\/])?[\\w./\\\\-]*?\\.(?:' + EXT_ALT + ')';
+  var LINK_TAIL = '(?::(\\d+)(?::(\\d+))?)?';
+  var LINK_LEFT = '(^|[\\s\'"`(\\[<,;])';
+  var LINK_RIGHT = '(?=[\\s\'"`)\\]>,;]|[.:](?:\\s|$)|$)';
+
+  // Single-match version (for the right-click selection extractor).
+  var LINK_RE_SINGLE = new RegExp(LINK_LEFT + '(' + LINK_BODY + ')' + LINK_TAIL + LINK_RIGHT, 'i');
+  // Global version (for the link provider). Each provideLinks call gets a
+  // fresh lastIndex via String.prototype.matchAll for correctness.
+  var LINK_RE_GLOBAL = new RegExp(LINK_LEFT + '(' + LINK_BODY + ')' + LINK_TAIL + LINK_RIGHT, 'gi');
+
+  // Tokens that look like a path but should NEVER be treated as a file link.
+  // (Belt-and-braces: the regex already excludes most via extension allowlist,
+  // but version-like strings ending in digits-with-dots can otherwise sneak
+  // through if a digit happens to match an extension via case insensitivity.)
+  var VERSION_RE = /^v?\d+\.\d+(?:\.\d+)+$/;
+
+  // Legacy export — kept so any existing callers (and tests) still resolve
+  // a usable pattern. Now produces a single tightened pattern.
+  var PATH_PATTERNS = [LINK_RE_SINGLE];
+
+  /**
+   * Extract a file path (and optional line/col) from a free-form string.
+   * Returns null if no match.
+   *
+   * @param {string} text
+   * @returns {{path: string, line: ?number, col: ?number}|null}
+   */
+  function extractPathFromText(text) {
+    if (!text || !text.trim()) return null;
+    var trimmed = text.trim();
+
+    // Strip surrounding matched quotes (single, double, backtick).
+    if ((trimmed[0] === '"' || trimmed[0] === "'" || trimmed[0] === '`') &&
+        trimmed[trimmed.length - 1] === trimmed[0]) {
+      trimmed = trimmed.slice(1, -1);
+    }
+
+    var m = trimmed.match(LINK_RE_SINGLE);
+    if (!m) return null;
+    var pathOnly = m[2];
+    if (VERSION_RE.test(pathOnly)) return null;
+
+    return {
+      path: pathOnly,
+      line: m[3] ? parseInt(m[3], 10) : null,
+      col: m[4] ? parseInt(m[4], 10) : null,
+    };
+  }
+
   function TerminalPathDetector(options) {
-    this.fileBrowserPanel = options.fileBrowserPanel;
+    // Either pass `fileBrowserPanel` (eager) or `getFileBrowserPanel`
+    // (lazy — preferred so we don't create the panel until first use).
+    this._panel = options.fileBrowserPanel || null;
+    this._getPanel = options.getFileBrowserPanel || null;
     this.authFetch = options.authFetch;
     this.terminal = options.terminal;
+    this.app = options.app || null;       // optional, for cwd resolution
     this._menuEl = null;
   }
+
+  TerminalPathDetector.prototype._resolvePanel = function () {
+    if (this._panel) return this._panel;
+    if (typeof this._getPanel === 'function') {
+      this._panel = this._getPanel();
+    }
+    return this._panel;
+  };
 
   TerminalPathDetector.prototype.init = function () {
     if (!this.terminal) return;
@@ -1439,55 +3097,86 @@
     document.body.appendChild(menu);
     this._menuEl = menu;
 
-    // Right-click handler on the terminal element
+    // Right-click handler on the terminal element. We must run BEFORE the
+    // generic terminal context menu (`setupTerminalContextMenu` in app.js,
+    // which is delegated on <main>). When we recognize a path-shaped
+    // selection, stopImmediatePropagation prevents the generic menu from
+    // ALSO appearing on top of ours.
     var termEl = this.terminal.element;
     if (!termEl) return;
 
-    termEl.addEventListener('contextmenu', function (e) {
+    // Hold named references for later removeEventListener — anonymous
+    // closures here would leak the terminal+detector graph forever
+    // (peer-review MEDIUM-1: long-lived sessions that create+destroy
+    // splits accumulate document-level listeners and orphaned menu nodes).
+    this._onContextMenu = function (e) {
       var selection = self.terminal.getSelection();
-      var detectedPath = self._extractPath(selection);
+      var detected = extractPathFromText(selection);
 
-      if (detectedPath) {
+      if (detected) {
         e.preventDefault();
-        self._showMenu(e.clientX, e.clientY, detectedPath);
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === 'function') {
+          e.stopImmediatePropagation();
+        }
+        self._showMenu(e.clientX, e.clientY, detected);
       }
-    });
+    };
+    this._onDocumentClick = function () { self._hideMenu(); };
+    this._onDocumentKeyDown = function (e) { if (e.key === 'Escape') self._hideMenu(); };
 
-    // Dismiss menu on click elsewhere
-    document.addEventListener('click', function () {
-      self._hideMenu();
-    });
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') self._hideMenu();
-    });
+    termEl.addEventListener('contextmenu', this._onContextMenu, true /* capture */);
+    document.addEventListener('click', this._onDocumentClick);
+    document.addEventListener('keydown', this._onDocumentKeyDown);
+    this._termEl = termEl;        // remember for symmetric removeEventListener
   };
 
+  /**
+   * Tear down the path detector: removes the document-level listeners,
+   * removes the contextmenu listener from the terminal element, and
+   * removes the menu node from <body>. Safe to call multiple times.
+   *
+   * Hooked from app._setupTerminalLinking via terminal.onDispose so
+   * disposing a split or session doesn't leak handlers / DOM nodes
+   * (peer-review MEDIUM-1).
+   */
+  TerminalPathDetector.prototype.destroy = function () {
+    if (this._destroyed) return;
+    this._destroyed = true;
+    try {
+      if (this._termEl && this._onContextMenu) {
+        this._termEl.removeEventListener('contextmenu', this._onContextMenu, true);
+      }
+    } catch (_) {}
+    try {
+      if (this._onDocumentClick) document.removeEventListener('click', this._onDocumentClick);
+      if (this._onDocumentKeyDown) document.removeEventListener('keydown', this._onDocumentKeyDown);
+    } catch (_) {}
+    try {
+      if (this._menuEl && this._menuEl.parentNode) {
+        this._menuEl.parentNode.removeChild(this._menuEl);
+      }
+    } catch (_) {}
+    this._menuEl = null;
+    this._termEl = null;
+    this._onContextMenu = null;
+    this._onDocumentClick = null;
+    this._onDocumentKeyDown = null;
+  };
+
+  // Kept for backward compatibility with any external callers / tests.
+  // Returns the path string only (no line/col).
   TerminalPathDetector.prototype._extractPath = function (text) {
-    if (!text || !text.trim()) return null;
-    var trimmed = text.trim();
-
-    // Strip surrounding quotes
-    if ((trimmed[0] === '"' || trimmed[0] === "'") && trimmed[trimmed.length - 1] === trimmed[0]) {
-      trimmed = trimmed.slice(1, -1);
-    }
-
-    // Check against path patterns
-    for (var i = 0; i < PATH_PATTERNS.length; i++) {
-      var match = trimmed.match(PATH_PATTERNS[i]);
-      if (match) return match[1] || match[0];
-    }
-
-    // Fallback: if it looks like a path (contains / or \ and has an extension)
-    if (/[/\\]/.test(trimmed) && /\.\w{1,10}$/.test(trimmed)) {
-      return trimmed;
-    }
-
-    return null;
+    var d = extractPathFromText(text);
+    return d ? d.path : null;
   };
 
-  TerminalPathDetector.prototype._showMenu = function (x, y, filePath) {
+  TerminalPathDetector.prototype._showMenu = function (x, y, detected) {
     var self = this;
     var menu = this._menuEl;
+    // Tolerate legacy callers that pass a bare string.
+    if (typeof detected === 'string') detected = { path: detected, line: null, col: null };
+    var filePath = detected.path;
 
     // Position the menu
     menu.style.left = x + 'px';
@@ -1515,18 +3204,26 @@
         // Wire click handlers
         self._viewItem.onclick = function () {
           self._hideMenu();
-          if (self.fileBrowserPanel) self.fileBrowserPanel.openToFile(filePath);
+          var panel = self._resolvePanel();
+          if (panel) panel.openToFile(filePath);
         };
         self._editItem.onclick = function () {
           self._hideMenu();
-          if (self.fileBrowserPanel) {
-            self.fileBrowserPanel.openToFile(filePath);
+          var panel = self._resolvePanel();
+          if (panel) {
+            panel.openToFile(filePath);
             // The edit will be triggered after preview loads
           }
         };
         self._downloadItem.onclick = function () {
           self._hideMenu();
-          window.open('/api/files/download?path=' + encodeURIComponent(filePath), '_blank');
+          // window.open spawns a fresh navigation; thread the Bearer
+          // token via ?token= so --auth mode doesn't 401 the new tab.
+          var dlUrl = '/api/files/download?path=' + encodeURIComponent(filePath);
+          if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+            dlUrl = window.authManager.appendAuthToUrl(dlUrl);
+          }
+          window.open(dlUrl, '_blank');
         };
 
         // Hide edit for non-editable files
@@ -1562,6 +3259,222 @@
   };
 
   // ---------------------------------------------------------------------------
+  // Path resolution helper (module scope so unit tests can call it directly).
+  // ---------------------------------------------------------------------------
+  // Used by attachLinkProvider's click handler to turn a regex-matched
+  // relative path (e.g. `./src/foo.ts:42`) into an absolute path against
+  // the active session's cwd.
+  //
+  //  - Absolute paths (Unix `/`, Windows `C:\` or `C:/`, `~/`) pass through.
+  //  - Relative paths are joined to cwd; `..` and `.` segments are
+  //    collapsed to avoid leaking ugly paths into the 404 toast/URL.
+  //  - The dominant separator in cwd is honored. When both `/` and `\`
+  //    appear (common for cygwin/git-bash-style cwds), whichever occurs
+  //    first wins. This avoids the MEDIUM-2 mixed-separator footgun
+  //    flagged in the #7 review.
+  function _resolveAgainstCwd(p, cwd) {
+    if (typeof p !== 'string' || !p) return p;
+    if (/^([A-Za-z]:[\\/]|[\\/]|~[\\/])/.test(p)) return p;
+    if (!cwd) return p;
+
+    var firstFwd = cwd.indexOf('/');
+    var firstBwd = cwd.indexOf('\\');
+    var sep = '/';
+    if (firstBwd !== -1 && (firstFwd === -1 || firstBwd < firstFwd)) sep = '\\';
+
+    var trimmedCwd = cwd.replace(/[\\/]+$/, '');
+    var cwdParts = trimmedCwd.split(/[\\/]+/);
+    var pParts = p.split(/[\\/]+/);
+    var stack = cwdParts.slice();
+    for (var i = 0; i < pParts.length; i++) {
+      var seg = pParts[i];
+      if (seg === '' || seg === '.') continue;
+      if (seg === '..') {
+        if (stack.length > 1) stack.pop();
+        continue;
+      }
+      stack.push(seg);
+    }
+    var joined = stack.join(sep);
+    if (sep === '/' && cwdParts[0] === '' && joined[0] !== '/') joined = '/' + joined;
+    return joined;
+  }
+
+  // ---------------------------------------------------------------------------
+  // attachLinkProvider — register an xterm link provider for clickable paths
+  // ---------------------------------------------------------------------------
+  //
+  // Behavior:
+  //  - Scans each visible terminal line synchronously with LINK_RE_GLOBAL.
+  //  - Returns ILink objects with start/end columns. NO network I/O here —
+  //    if we hit /api/files/stat per match, a scrolling `npm install`
+  //    log would self-DDoS the browser's 6-connection cap (peer-review HIGH-1).
+  //  - On click (`activate`), validates lazily via /api/files/stat, then
+  //    calls `openInViewer(path, line, col)`. On 404 → toast.
+  //
+  // Required options:
+  //   terminal       xterm Terminal instance
+  //   authFetch      (url, opts?) => Promise<Response>
+  //   openInViewer   (path, line?, col?) => void
+  //   getCwd         () => string|null   (for resolving relatives)
+  //   feedback       optional { error(msg), info(msg) } notifier
+  //
+  // Returns a disposable: { dispose() }
+  // ---------------------------------------------------------------------------
+  function attachLinkProvider(options) {
+    var terminal = options.terminal;
+    var authFetch = options.authFetch;
+    var openInViewer = options.openInViewer;
+    var getCwd = options.getCwd || function () { return null; };
+    var feedback = options.feedback || (typeof window !== 'undefined' ? window.feedback : null);
+
+    if (!terminal || typeof terminal.registerLinkProvider !== 'function') return null;
+    if (typeof authFetch !== 'function' || typeof openInViewer !== 'function') return null;
+
+    function findLinksInText(text) {
+      // Returns an array of { startCol, endCol, path, line, col } for the line.
+      // Cols are 0-based against the input string; the caller adds +1 for xterm.
+      //
+      // Uses String.prototype.matchAll, which constructs a stateless iterator
+      // over the regex — `LINK_RE_GLOBAL` is module-scoped and shared, so a
+      // manual exec()+lastIndex loop has a latent re-entrancy hazard if any
+      // future async refactor allows two providers to interleave on the same
+      // regex (peer-review LOW-3). matchAll closes that hole.
+      var matches = [];
+      var iter;
+      try {
+        iter = text.matchAll(LINK_RE_GLOBAL);
+      } catch (_) {
+        return matches;
+      }
+      for (var m of iter) {
+        var leadLen = m[1] ? m[1].length : 0;
+        var pathOnly = m[2];
+        if (!pathOnly || VERSION_RE.test(pathOnly)) continue;
+
+        // Suppress git-diff pseudo-paths `a/<file>` and `b/<file>` that
+        // appear in `diff --git` headers. They never resolve to real files
+        // and the user gets two underlined-but-broken links per diff
+        // header otherwise (peer-review LOW-2).
+        if (/^[ab][\\/]/.test(pathOnly)) continue;
+
+        var pathStart = m.index + leadLen;
+        var pathEnd = pathStart + pathOnly.length;       // exclusive
+        var line = m[3] ? parseInt(m[3], 10) : null;
+        var col = m[4] ? parseInt(m[4], 10) : null;
+
+        // Extend the link region to cover the trailing :line[:col] suffix
+        // so the user clicks the whole "path:42:5" rather than just the path.
+        var fullEnd = pathEnd;
+        if (m[3]) {
+          fullEnd += 1 /* ':' */ + m[3].length;
+          if (m[4]) fullEnd += 1 + m[4].length;
+        }
+
+        matches.push({
+          startCol: pathStart,
+          endCol: fullEnd,        // exclusive
+          path: pathOnly,
+          line: line,
+          col: col,
+        });
+      }
+      return matches;
+    }
+
+    /**
+     * Resolve a relative path against the terminal cwd, with consistent
+     * separators and `..` collapsing.
+     *
+     * Fixes peer-review MEDIUM-2 (mixed separators when cwd contains both
+     * `/` and `\` — common on Windows under tooling that normalizes one
+     * way) and LOW-1 (`./` was stripped but `../` was not, leaking
+     * un-collapsed paths into the 404 toast and the URL).
+     *
+     * (Defined at module scope as `_resolveAgainstCwd` for testability;
+     * this local alias exists only so the closure body reads naturally.)
+     */
+    var resolveAgainstCwd = _resolveAgainstCwd;
+
+    function activate(_event, _text, detected) {
+      var p = detected.path;
+      var cwd = getCwd();
+      var resolved = resolveAgainstCwd(p, cwd);
+
+      authFetch('/api/files/stat?path=' + encodeURIComponent(resolved))
+        .then(function (resp) {
+          if (resp.status === 404) {
+            if (feedback && typeof feedback.error === 'function') {
+              feedback.error('File not found: ' + p);
+            }
+            return null;
+          }
+          if (!resp.ok) throw new Error('stat failed: ' + resp.status);
+          return resp.json();
+        })
+        .then(function (stat) {
+          if (!stat) return;
+          openInViewer(resolved, detected.line, detected.col);
+        })
+        .catch(function (err) {
+          if (feedback && typeof feedback.error === 'function') {
+            feedback.error('Could not open ' + p + ': ' + (err && err.message ? err.message : err));
+          }
+        });
+    }
+
+    var provider = {
+      provideLinks: function (bufferLineNumber, callback) {
+        try {
+          // xterm: bufferLineNumber is 1-based row index in the active buffer.
+          var buf = terminal.buffer && terminal.buffer.active;
+          if (!buf || typeof buf.getLine !== 'function') {
+            callback(undefined);
+            return;
+          }
+          var line = buf.getLine(bufferLineNumber - 1);
+          if (!line) {
+            callback(undefined);
+            return;
+          }
+          var text = line.translateToString(false);
+          if (!text) {
+            callback(undefined);
+            return;
+          }
+
+          var found = findLinksInText(text);
+          if (!found.length) {
+            callback(undefined);
+            return;
+          }
+
+          var links = found.map(function (m) {
+            var displayText = text.substring(m.startCol, m.endCol);
+            return {
+              // xterm uses 1-based, inclusive column ranges.
+              range: {
+                start: { x: m.startCol + 1, y: bufferLineNumber },
+                end: { x: m.endCol, y: bufferLineNumber },
+              },
+              text: displayText,
+              decorations: { underline: true, pointerCursor: true },
+              activate: function (e, t) { activate(e, t, m); },
+            };
+          });
+          callback(links);
+        } catch (_err) {
+          // Never let the link provider throw — would disable terminal rendering.
+          callback(undefined);
+        }
+      },
+    };
+
+    var disposable = terminal.registerLinkProvider(provider);
+    return disposable;
+  }
+
+  // ---------------------------------------------------------------------------
   // Exports
   // ---------------------------------------------------------------------------
 
@@ -1569,13 +3482,29 @@
     FileBrowserPanel: FileBrowserPanel,
     FilePreviewPanel: FilePreviewPanel,
     TerminalPathDetector: TerminalPathDetector,
+    attachLinkProvider: attachLinkProvider,
+    extractPathFromText: extractPathFromText,
     // Utilities (for testing)
     getFileIcon: getFileIcon,
+    getMonacoLanguage: getMonacoLanguage,
     getAceMode: getAceMode,
     formatFileSize: formatFileSize,
     buildBreadcrumbs: buildBreadcrumbs,
     isPreviewable: isPreviewable,
     isEditable: isEditable,
+    isHtmlExtension: isHtmlExtension,
+    isIpynbExtension: isIpynbExtension,
+    isMarkdownExtension: isMarkdownExtension,
+    // CSV parsing — exposed for unit tests (task #5)
+    parseCsvLine: parseCsvLine,
+    detectColumnIsNumeric: detectColumnIsNumeric,
+    buildSandboxedSrcdoc: buildSandboxedSrcdoc,
+    HTML_PREVIEW_CSP: HTML_PREVIEW_CSP,
+    HTML_PREVIEW_SRCDOC_CAP_BYTES: HTML_PREVIEW_SRCDOC_CAP_BYTES,
+    KNOWN_FILE_EXTENSIONS: KNOWN_FILE_EXTENSIONS,
+    LINK_RE_SINGLE: LINK_RE_SINGLE,
+    LINK_RE_GLOBAL: LINK_RE_GLOBAL,
+    _resolveAgainstCwd: _resolveAgainstCwd,
   };
 
   if (typeof window !== 'undefined') {

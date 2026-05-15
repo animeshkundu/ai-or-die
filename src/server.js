@@ -5,6 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { execFile } = require('child_process');
+const search = require('./utils/search');
+const FileWatcher = require('./utils/file-watcher');
 const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -259,27 +262,127 @@ class ClaudeCodeWebServer {
       return { valid: false, error: 'Path is required' };
     }
 
-    const resolvedPath = path.resolve(targetPath);
+    let canonicalPath = path.resolve(targetPath);
 
-    if (!this.isPathWithinBase(resolvedPath)) {
+    // Canonicalize symlinks BEFORE the within-base check. Otherwise an input
+    // passed in its pre-symlink form (e.g. `/var/folders/x` where `/var ->
+    // /private/var` on macOS) won't match a baseFolder that came from
+    // `process.cwd()` — which returns the realpath form. Without this,
+    // EVERY /api/files/* request hitting a symlinked tmp dir returns 403
+    // even when the realpath would be inside baseFolder. (This was the
+    // root cause of 28 file-browser-api.test.js failures on macOS; the
+    // tests had effectively never been run end-to-end on a symlinked tmp.)
+    //
+    // For non-existent inputs (new uploads, files about to be created),
+    // canonicalize the parent so a symlinked parent dir doesn't leak past
+    // the within-base check either.
+    //
+    // The post-canonicalize within-base check still defends against the
+    // "user-planted symlink escapes baseFolder" case: realpath follows
+    // the symlink, then we compare the FOLLOWED path against base.
+    try {
+      if (fs.existsSync(canonicalPath)) {
+        canonicalPath = fs.realpathSync(canonicalPath);
+      } else {
+        const parent = path.dirname(canonicalPath);
+        if (parent && parent !== canonicalPath && fs.existsSync(parent)) {
+          canonicalPath = path.join(fs.realpathSync(parent), path.basename(canonicalPath));
+        }
+      }
+    } catch (_) { /* keep the lexical form on realpath failure */ }
+
+    if (!this.isPathWithinBase(canonicalPath)) {
       return {
         valid: false,
         error: 'Access denied: Path is outside the allowed directory'
       };
     }
 
-    // Resolve symlinks to prevent TOCTOU attacks
-    try {
-      if (fs.existsSync(resolvedPath)) {
-        const realPath = fs.realpathSync(resolvedPath);
-        if (!this.isPathWithinBase(realPath)) {
-          return { valid: false, error: 'Access denied: symlink escapes allowed directory' };
-        }
-        return { valid: true, path: realPath };
-      }
-    } catch (e) { /* If realpath fails, fall through to using resolved path */ }
+    return { valid: true, path: canonicalPath };
+  }
 
-    return { valid: true, path: resolvedPath };
+  /**
+   * Walk up from a file path looking for a `.git` entry (directory in a
+   * regular repo, file in a worktree). Returns the absolute path of the
+   * directory containing `.git`, or null if not inside any git repo.
+   *
+   * Bounded by the filesystem root and by the configured baseFolder — we
+   * never walk above baseFolder, which prevents leaking info about repos
+   * outside the served directory.
+   */
+  _findGitRoot(startPath) {
+    let current;
+    try {
+      const stat = fs.statSync(startPath);
+      current = stat.isDirectory() ? startPath : path.dirname(startPath);
+    } catch (_) {
+      current = path.dirname(startPath);
+    }
+
+    // baseFolder may itself be a symlink — resolve to its realpath ONCE so
+    // the lexical equality check below matches the realpath validatePath
+    // returned for the file we're walking up from. Without this, a server
+    // started with `--folder /symlink-to-foo` could keep walking past the
+    // intended boundary because the operator's lexical path !== realpath.
+    // (Reviewer LOW-1 on 2fa99d1.)
+    let baseResolved;
+    try { baseResolved = fs.realpathSync(this.baseFolder); }
+    catch (_) { baseResolved = path.resolve(this.baseFolder); }
+
+    // Defensive cap: walk at most 64 levels up. parent === current already
+    // terminates at the FS root, but the cap defends against pathological
+    // path inputs that pass path.dirname non-lexically (none in stdlib
+    // today, but cheap insurance).
+    for (let i = 0; i < 64; i++) {
+      // lstat (NOT existsSync, which follows symlinks): a user with write
+      // access inside baseFolder could otherwise plant `.git → /etc` and
+      // redirect git's repo discovery to a directory of their choosing.
+      // Worktree pointers are regular files containing `gitdir: ...`, so
+      // we accept either dir or file but explicitly reject symlinks.
+      // (Reviewer MEDIUM-4 on 2fa99d1.)
+      try {
+        const st = fs.lstatSync(path.join(current, '.git'));
+        if (st.isDirectory() || st.isFile()) return current;
+        // Symlink, socket, anything else → skip; keep walking.
+      } catch (_) { /* ENOENT or perm error → keep walking */ }
+
+      const parent = path.dirname(current);
+      if (parent === current) return null;          // hit FS root
+      // Don't walk above the served baseFolder.
+      if (current === baseResolved) return null;
+      current = parent;
+    }
+    return null;
+  }
+
+  /**
+   * Sliding-window per-IP rate limiter. Returns null if the request is
+   * allowed, or { retryAfterMs } if it should be 429'd. Keeps a separate
+   * Map per `bucket` name (so /api/search and /api/files/git-show have
+   * independent budgets). Map size capped at 10k entries — DoS hardening
+   * against floods of new IPs.
+   *
+   * Lifted from the inline /api/search implementation so /api/files/git-show
+   * (and any future endpoint) can share the same primitive without
+   * cargo-culting the boundary logic. Per reviewer MEDIUM-1 on 2fa99d1.
+   */
+  _perIpRateLimit(req, bucket, max, windowMs) {
+    const ip = (req.ip || (req.connection && req.connection.remoteAddress) || 'unknown').toString();
+    if (!this._rateLimitBuckets) this._rateLimitBuckets = new Map();
+    let map = this._rateLimitBuckets.get(bucket);
+    if (!map) { map = new Map(); this._rateLimitBuckets.set(bucket, map); }
+    const now = Date.now();
+    const recent = (map.get(ip) || []).filter((t) => now - t < windowMs);
+    if (recent.length >= max) {
+      return { retryAfterMs: windowMs - (now - recent[0]) };
+    }
+    recent.push(now);
+    map.set(ip, recent);
+    if (map.size > 10_000) {
+      const firstKey = map.keys().next().value;
+      if (firstKey) map.delete(firstKey);
+    }
+    return null;
   }
 
   setupExpress() {
@@ -1127,7 +1230,587 @@ class ClaudeCodeWebServer {
       }
     });
 
-    // PUT /api/files/content — Save edited file with hash conflict detection
+    // GET /api/files/git-show — Returns `git show <ref>:<relpath>` content.
+    //
+    // Use case: file diff view shows the working-tree version vs the version
+    // from git (HEAD by default) so users can see "what changed since last
+    // commit" or "what would Claude's edit revert".
+    //
+    // Security:
+    //   - Path is funnelled through validatePath() (TOCTOU-safe via realpath).
+    //   - git is spawned via execFile with shell:false (NEVER shell:true) so
+    //     argument values can't be reinterpreted as shell metachars.
+    //   - --end-of-options separates options from positional args so a ref
+    //     starting with "-" can't be reinterpreted as a git option.
+    //   - Ref is also character-allowlisted (refs and SHAs only) as defence
+    //     in depth (e.g., reject NUL, semicolons, redirections, --options).
+    //   - Output capped at 5 MB; truncate cleanly with a marker.
+    //   - 404 if the file isn't inside any git repo (no `.git` ancestor).
+    this.app.get('/api/files/git-show', async (req, res) => {
+      const filePath = req.query.path;
+      const ref = req.query.ref || 'HEAD';
+
+      if (!filePath) return res.status(400).json({ error: 'Path is required' });
+
+      // Allowlist for refs: alphanum + a small set of git-rev punctuation.
+      // Covers HEAD, HEAD~3, HEAD^, branch names like main/feat-x, tags
+      // like v1.2.3, and full SHAs. Disallows -options, NUL, ;, |, $, `,
+      // backslash, whitespace, glob chars.
+      if (!/^[A-Za-z0-9_./~^@-]{1,200}$/.test(ref) || ref.startsWith('-')) {
+        return res.status(400).json({ error: 'Invalid ref' });
+      }
+
+      // Per-IP rate limit: 30/min/IP. `git show` on a packed-refs repo with
+      // a 5MB blob is expensive enough that an authenticated client could
+      // saturate CPU with a flood of concurrent requests. Reviewer MEDIUM-1
+      // on 2fa99d1 — bucket separate from /api/search so the diff view
+      // doesn't share a budget with cross-file search.
+      const rl = this._perIpRateLimit(req, 'git-show', 30, 60_000);
+      if (rl) {
+        return res.status(429).json({ error: 'Too many git-show requests', retryAfterMs: rl.retryAfterMs });
+      }
+
+      const validation = this.validatePath(filePath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+      const resolvedPath = validation.path;
+
+      // Walk up from the file's directory to locate the .git directory
+      // (covers nested repos, submodules-as-directories, and worktrees
+      // where .git is a file pointing at the actual git dir).
+      const gitRoot = this._findGitRoot(resolvedPath);
+      if (!gitRoot) {
+        return res.status(404).json({
+          error: 'Not a git repository',
+          message: 'No .git directory found in any parent of the requested path',
+        });
+      }
+
+      // Path relative to the git root, with forward slashes (git's canonical
+      // form). path.relative on Windows yields backslashes — normalize.
+      let relPath = path.relative(gitRoot, resolvedPath);
+      if (process.platform === 'win32') relPath = relPath.replace(/\\/g, '/');
+      if (!relPath || relPath.startsWith('..')) {
+        return res.status(400).json({ error: 'Path is outside the git repository' });
+      }
+
+      // Strip server-absolute paths from any string we send to the client.
+      // git error messages routinely contain `cwd`-resolved absolute paths
+      // (e.g. "fatal: not a git repository: '/Users/.../foo/.git'") which
+      // leak host filesystem layout. Reviewer MEDIUM-2 on 2fa99d1.
+      const sanitize = (s) => {
+        if (!s) return s;
+        let out = String(s);
+        try {
+          const escapeRe = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          if (gitRoot) out = out.replace(new RegExp(escapeRe(gitRoot), 'g'), '<repo>');
+          if (this.baseFolder) out = out.replace(new RegExp(escapeRe(this.baseFolder), 'g'), '<base>');
+        } catch (_) {}
+        // Catch-all: redact long absolute path tokens that survived the prefix
+        // strip (different drive letters, symlink-resolved variants, etc.).
+        out = out.replace(/(['"]?)(\/[^\s'"`]{12,}|[A-Za-z]:[\\/][^\s'"`]{6,})\1/g, '<path>');
+        return out.slice(0, 300);
+      };
+
+      const MAX_BYTES = 5 * 1024 * 1024;
+      // execFile buffers stdout in memory; cap maxBuffer at MAX_BYTES + slack.
+      // shell:false is the default for execFile but make it explicit anyway.
+      const args = ['show', '--end-of-options', `${ref}:${relPath}`];
+      execFile('git', args, {
+        cwd: gitRoot,
+        shell: false,
+        maxBuffer: MAX_BYTES + 1024,
+        timeout: 10_000,        // 10s — git show on a single file is usually <100ms
+        windowsHide: true,
+      }, (err, stdout, stderr) => {
+        if (err) {
+          // Distinguish well-known cases:
+          //   - ENOENT: git not installed
+          //   - exit !== 0: git returned an error (bad ref, file not in tree, etc.)
+          //   - timeout / maxBuffer overflow
+          if (err.code === 'ENOENT') {
+            return res.status(503).json({ error: 'git is not installed on the server' });
+          }
+          if (err.killed && err.signal === 'SIGTERM') {
+            return res.status(504).json({ error: 'git show timed out' });
+          }
+          if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+            return res.status(413).json({ error: 'File too large at this revision (>5MB)' });
+          }
+          // Most likely: bad ref or file doesn't exist at that revision.
+          // Sanitize stderr first so absolute server paths don't leak
+          // (reviewer MEDIUM-2 on 2fa99d1).
+          const firstLine = sanitize((stderr || '').split('\n')[0])
+            || sanitize(err.message)
+            || 'Unknown git error';
+          return res.status(404).json({
+            error: 'git show failed',
+            message: firstLine,
+          });
+        }
+
+        // Truncate at MAX_BYTES on a BYTE boundary (reviewer MEDIUM-3 on
+        // 2fa99d1 — String.prototype.slice cuts on codepoints, but our
+        // cap is in bytes; multibyte UTF-8 → up to 4× MAX_BYTES bytes
+        // through the wire). Buffer.slice + toString('utf8') replaces a
+        // partial codepoint at the cut with U+FFFD instead of producing
+        // malformed UTF-8.
+        let truncated = false;
+        let content = stdout;
+        const buf = Buffer.from(stdout, 'utf8');
+        if (buf.length > MAX_BYTES) {
+          content = buf.slice(0, MAX_BYTES).toString('utf8');
+          truncated = true;
+        }
+
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({
+          path: filePath,
+          ref: ref,
+          relPath: relPath,
+          gitRoot: gitRoot,
+          truncated: truncated,
+          content: content,
+        });
+      });
+    });
+
+    // GET /api/search — SSE-streamed cross-file search via ripgrep (or grep
+    // fallback on Linux). One match per SSE event; capped at 500 matches per
+    // request and 50 matches per file. Rate-limited per IP at 10/minute.
+    //
+    // Query params (all optional except q):
+    //   q             string, required — search query
+    //   regex         '0' | '1' (default '0') — interpret q as regex
+    //   caseSensitive '0' | '1' (default '0') — case-sensitive match
+    //   glob          string — file glob filter (e.g. "*.{ts,tsx}");
+    //                          rejected if it contains shell metachars
+    //   path          string — root directory to search; defaults to baseFolder.
+    //                          Must pass validatePath() (no traversal).
+    //
+    // SSE event shapes (newline-terminated, two-newline-separated):
+    //   data: {"type":"start","backend":"rg"|"grep"}\n\n
+    //   data: {"type":"match","path":"src/foo.js","line":42,"col":5,"text":"..."}\n\n
+    //   data: {"type":"end","matches":7,"truncated":false}\n\n
+    //   data: {"type":"error","message":"..."}\n\n
+    this.app.get('/api/search', (req, res) => {
+      const q = req.query.q;
+      if (!q || typeof q !== 'string') {
+        return res.status(400).json({ error: 'q (query) is required' });
+      }
+      if (q.length > 1024) {
+        return res.status(400).json({ error: 'q is too long (max 1024 chars)' });
+      }
+
+      const useRegex = req.query.regex === '1';
+      const caseSensitive = req.query.caseSensitive === '1';
+      // Normalize Windows-style backslash separators to forward slashes
+      // BEFORE the glob regex check (codex review). Windows users naturally
+      // write globs like `src\public\*.js`; ripgrep + grep both accept
+      // forward-slash globs on every platform, so canonicalizing here is
+      // the cross-platform-safe path. Matches the input-canonicalization
+      // pattern in validatePath() (commit 158c1c2).
+      let glob = req.query.glob ? String(req.query.glob) : null;
+      if (glob !== null) glob = glob.replace(/\\/g, '/');
+
+      // Glob validation: allow letters/digits, wildcard chars (* ? [ ]),
+      // braces ({} ,), dots, slashes, hyphens, underscores. Reject any
+      // shell metachar that might be misinterpreted by a future code
+      // path. Cap at 256 chars. Reject leading '!' (grep --include doesn't
+      // negate; ripgrep --glob does, but we keep semantics consistent).
+      if (glob !== null) {
+        if (glob.length > 256 || !/^[\w./*?[\]{},\-]+$/.test(glob) || glob.startsWith('!')) {
+          return res.status(400).json({ error: 'Invalid glob pattern' });
+        }
+      }
+
+      // Per-IP rate limit: 10 searches/minute. Shared sliding-window
+      // helper (see _perIpRateLimit) — separate bucket from
+      // /api/files/git-show so the diff view doesn't share a budget
+      // with cross-file search.
+      const rl = this._perIpRateLimit(req, 'search', 10, 60_000);
+      if (rl) {
+        return res.status(429).json({
+          error: 'Too many searches',
+          retryAfterMs: rl.retryAfterMs,
+        });
+      }
+
+      // Resolve and validate the search root.
+      const rawPath = req.query.path ? String(req.query.path) : this.baseFolder;
+      const validation = this.validatePath(rawPath);
+      if (!validation.valid) {
+        return res.status(403).json({ error: validation.error });
+      }
+      const cwd = validation.path;
+
+      // SSE response headers — NEVER buffered.
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');     // hint for proxies
+      // Flush headers immediately so the client EventSource opens.
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+      function send(obj) {
+        // SSE frame. Keep it terse — per-match overhead matters for big
+        // result sets. We don't escape `\n` in `text`; we strip CR/LF in
+        // the search util before this point.
+        try { res.write('data: ' + JSON.stringify(obj) + '\n\n'); } catch (_) {}
+      }
+
+      const handle = search.searchStream(q, {
+        cwd: cwd,
+        regex: useRegex,
+        caseSensitive: caseSensitive,
+        glob: glob,
+        maxPerFile: 50,
+        maxTotal: 500,
+        maxFilesize: '10M',
+        onMatch: (m) => {
+          // rg's positional is `.` (relative) — see _buildRgArgs comment.
+          // Resolve relative match paths to absolute against cwd so the
+          // wire shape stays consistent (clients expect absPath absolute).
+          const absMatchPath = path.isAbsolute(m.path)
+            ? m.path
+            : path.resolve(cwd, m.path);
+          // Make path relative to cwd so the client can resolve consistently.
+          const relPath = path.relative(cwd, absMatchPath) || absMatchPath;
+          send({
+            type: 'match',
+            path: relPath,
+            absPath: absMatchPath,
+            line: m.line,
+            col: m.col,
+            text: m.text,
+          });
+        },
+        onError: (err) => {
+          send({ type: 'error', message: err && err.message ? String(err.message).slice(0, 300) : 'search error' });
+        },
+        onEnd: ({ matches, truncated, backend, droppedLines }) => {
+          send({
+            type: 'end',
+            matches: matches,
+            truncated: truncated,
+            backend: backend,
+            droppedLines: droppedLines || 0,
+          });
+          try { res.end(); } catch (_) {}
+        },
+      });
+
+      send({ type: 'start', backend: handle.backend });
+
+      // Client disconnect → kill the child immediately so we don't keep
+      // ripgrep running after the user navigated away.
+      req.on('close', () => { handle.kill(); });
+    });
+
+    // GET /api/files/watch — SSE-streamed file-system change notifications
+    // via chokidar. Per ADR-0017 (#100, amended at 4d047d1): proactive sync
+    // between agent edits and user-open Monaco tabs / file-browser
+    // listings, complementing the hash-based 409-Conflict-on-save backstop
+    // from ADR-0012.
+    //
+    // Session-scoped multiplexing (ADR-0017 §Multiplexing): ONE EventSource
+    // per session, with paths managed via the POST /subscribe + /unsubscribe
+    // control channel. This avoids hitting Chromium's 6-EventSource-per-
+    // origin cap that would otherwise break workflows above ~5 open tabs.
+    //
+    // Wire shape:
+    //   GET  /api/files/watch?session=<id>&path=<rootDir>[&token=<auth>]
+    //     Opens the SSE stream. Watcher rooted at <rootDir> (typically the
+    //     session's workingDir). If an EventSource for this session is
+    //     already open, it is replaced (single-ES-per-session semantics).
+    //
+    //   POST /api/files/watch/subscribe?session=<id>&path=<abs>[&token=<auth>]
+    //     Adds <abs> to the active subscription set. Subsequent SSE events
+    //     for that path arrive on the open EventSource. Returns 204; 404 if
+    //     no EventSource is open for that session; 403 on validatePath fail.
+    //
+    //   POST /api/files/watch/unsubscribe?session=<id>&path=<abs>[&token=<auth>]
+    //     Removes <abs> from the subscription set. 204.
+    //
+    // Auth: ?token= (EventSource cannot carry custom headers; same
+    // constraint as PDF.js worker / `<img src>` / `<iframe src>` per #96).
+    //
+    // Concurrent-watcher cap (ADR-0017 §Rate limiting layer 1):
+    //   5 open watchers per IP. Cleanest mechanic for SSE — open count
+    //   directly maps to active server load (one chokidar watcher + one
+    //   open TCP connection per concurrent watcher). Tracked via
+    //   _activeWatchersByIp Map<ip, count>; decremented on req.on('close').
+    //
+    // Per-session emission cap (ADR-0017 §Rate limiting layer 2):
+    //   100 events/min/session via the existing _perIpRateLimit helper.
+    //   Excess events are dropped silently (NOT queued); the SSE consumer
+    //   treats this as the same kind of event-loss the WebSocket-reconnect
+    //   path already handles via mtime-drift re-check on focus.
+    //
+    // SSE event shapes (newline-terminated, two-newline-separated):
+    //   data: {"type":"start"}\n\n
+    //   data: {"type":"add"|"change"|"unlink"|"rename",
+    //          "path":"<abs>", "relPath":"<rel>",
+    //          "mtime":<ms-or-null>, "hash"?:"<md5>",
+    //          "prevPath"?:"<abs, rename only>"}\n\n
+    //   data: {"type":"error","message":"..."}\n\n
+    //   data: {"type":"end","reason":"client-disconnect"|"replaced"|"watcher-error"}\n\n
+    this.app.get('/api/files/watch', async (req, res) => {
+      const sessionId = req.query.session;
+      const rawPath = req.query.path;
+      if (!sessionId || typeof sessionId !== 'string') {
+        return res.status(400).json({ error: 'session is required' });
+      }
+      if (!rawPath || typeof rawPath !== 'string') {
+        return res.status(400).json({ error: 'path is required' });
+      }
+
+      // Concurrent-watcher cap (5/IP) — must be enforced BEFORE we open
+      // the chokidar watcher, otherwise an attacker could exhaust kernel
+      // file-watch resources by opening 1000 connections faster than they
+      // close.
+      const ip = (req.ip || (req.connection && req.connection.remoteAddress) || 'unknown').toString();
+      if (!this._activeWatchersByIp) this._activeWatchersByIp = new Map();
+      if (!this._fsWatchSessions) this._fsWatchSessions = new Map();
+
+      // If an EventSource already exists for this session, replace it
+      // (single-ES-per-session per ADR-0017). The displaced session
+      // releases its slot in the per-IP counter so this fresh open
+      // doesn't double-count.
+      const existing = this._fsWatchSessions.get(sessionId);
+      if (existing) {
+        try { existing.send && existing.send({ type: 'end', reason: 'replaced' }); } catch (_) {}
+        try { existing.cleanup && existing.cleanup('replaced'); } catch (_) {}
+        // existing.cleanup already decrements the per-IP counter.
+      }
+
+      const currentCount = this._activeWatchersByIp.get(ip) || 0;
+      const MAX_CONCURRENT_WATCHERS = 5;
+      if (currentCount >= MAX_CONCURRENT_WATCHERS) {
+        return res.status(429).json({
+          error: 'Too many concurrent file watchers',
+          activeWatchers: currentCount,
+          maxAllowed: MAX_CONCURRENT_WATCHERS,
+        });
+      }
+
+      // Path validation — same realpath canonicalization as every other
+      // /api/files/* endpoint (commit 158c1c2). Symlinks resolved before
+      // the within-base check; rejects traversal + symlink-escape.
+      const validation = this.validatePath(rawPath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+      const watchRoot = validation.path;
+
+      // Stat the resolved path — must be a directory.
+      try {
+        const st = fs.statSync(watchRoot);
+        if (!st.isDirectory()) {
+          return res.status(400).json({ error: 'path must be a directory' });
+        }
+      } catch (err) {
+        if (err.code === 'ENOENT') return res.status(404).json({ error: 'path not found' });
+        return res.status(500).json({ error: 'stat failed', message: err.message });
+      }
+
+      // Increment the concurrent-watcher counter BEFORE async work so a
+      // burst of simultaneous requests can't all pass the cap check
+      // before any of them increment.
+      this._activeWatchersByIp.set(ip, currentCount + 1);
+
+      // SSE response headers — flush immediately so the client EventSource
+      // resolves its onopen handler.
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache, no-transform, no-store');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+      function send(obj) {
+        try { res.write('data: ' + JSON.stringify(obj) + '\n\n'); } catch (_) {}
+      }
+
+      let watcher;
+      let watcherClosed = false;
+      const debounceMs = parseInt(process.env.FS_WATCHER_DEBOUNCE_MS, 10) || 100;
+      // FS_WATCHER_STABILITY_MS env: defaults to 80ms (the tuned-down
+      // value per ADR-0017 §Coalescing). Setting to 0 DISABLES chokidar's
+      // awaitWriteFinish entirely — useful in tests where sync
+      // writeFileSync races chokidar's poll cycle. Must NOT be 0 in
+      // production (loses read-during-write protection).
+      const rawStability = process.env.FS_WATCHER_STABILITY_MS;
+      const stabilityMs = rawStability !== undefined && rawStability !== ''
+        ? parseInt(rawStability, 10)
+        : 80;
+      const disableAwaitWriteFinish = stabilityMs === 0;
+      const pollIntervalMs = parseInt(process.env.FS_WATCHER_POLL_MS, 10) || 30;
+      // FS_WATCHER_USE_POLLING=1 → chokidar uses fs.stat-loop instead of
+      // FSEvents/inotify. Test-only: bypasses FSEvents flakiness on
+      // macOS with sync writeFileSync. Production stays on native
+      // OS backend.
+      const usePolling = process.env.FS_WATCHER_USE_POLLING === '1';
+      const ignoreFromEnv = (process.env.FS_WATCHER_IGNORE || '').split(',').map((s) => s.trim()).filter(Boolean);
+      const self = this;
+
+      function decrementWatcherCount() {
+        if (!self._activeWatchersByIp) return;
+        const c = self._activeWatchersByIp.get(ip) || 0;
+        if (c <= 1) self._activeWatchersByIp.delete(ip);
+        else self._activeWatchersByIp.set(ip, c - 1);
+      }
+
+      function cleanup(reason) {
+        if (watcherClosed) return;
+        watcherClosed = true;
+        decrementWatcherCount();
+        if (self._fsWatchSessions.get(sessionId) === sessionEntry) {
+          self._fsWatchSessions.delete(sessionId);
+        }
+        if (watcher) {
+          watcher.close().catch(() => {});
+        }
+        try {
+          send({ type: 'end', reason: reason });
+          res.end();
+        } catch (_) {}
+      }
+
+      // Register the session entry BEFORE chokidar startup so concurrent
+      // POST subscribe/unsubscribe calls during startup find it (they'll
+      // race-add to the watcher's subscription set; subscribe() is safe
+      // to call any time after FileWatcher construction).
+      const sessionEntry = {
+        watcher: null,        // assigned after FileWatcher construction
+        send: send,
+        cleanup: cleanup,
+        ip: ip,
+      };
+      this._fsWatchSessions.set(sessionId, sessionEntry);
+
+      try {
+        watcher = new FileWatcher({
+          watchRoot: watchRoot,
+          debounceMs: debounceMs,
+          stabilityMs: stabilityMs,
+          pollIntervalMs: pollIntervalMs,
+          // FS_WATCHER_STABILITY_MS=0 → disable awaitWriteFinish entirely.
+          // For test-only timing-control; production keeps the default tuned
+          // 80/30 for read-during-write protection.
+          awaitWriteFinish: disableAwaitWriteFinish ? false : undefined,
+          // FS_WATCHER_USE_POLLING=1 → chokidar uses fs.stat-loop backend.
+          usePolling: usePolling,
+          ignoreDirs: ignoreFromEnv.length ? ignoreFromEnv : undefined,
+        });
+        sessionEntry.watcher = watcher;
+
+        watcher.on('event', (evt) => {
+          if (watcherClosed) return;
+          // Per-session emission cap (100/min). Bucketed by session id
+          // for accuracy across IP-shared environments (proxy / NAT).
+          const rl = self._perIpRateLimit({
+            ip: 'session:' + sessionId,
+            connection: { remoteAddress: 'session:' + sessionId },
+          }, 'watch-emit', 100, 60_000);
+          if (rl) {
+            // Drop the event silently per ADR-0017 §Rate limiting layer 2.
+            return;
+          }
+          send(evt);
+        });
+
+        watcher.on('error', (err) => {
+          send({ type: 'error', message: (err && err.message) || String(err) });
+          // Don't terminate on transient chokidar errors (perm-denied on
+          // walk, etc.) — surface them but keep the channel open.
+        });
+
+        await watcher.start();
+        send({ type: 'start' });
+      } catch (err) {
+        cleanup('watcher-error');
+        return;
+      }
+
+      // Client disconnect → close the watcher, decrement the per-IP
+      // counter, and free kernel watch resources immediately.
+      req.on('close', () => cleanup('client-disconnect'));
+    });
+
+    // POST /api/files/watch/subscribe — add a path to the active session's
+    // subscription set. Required: ?session=<id>&path=<absolute>.
+    // Optional: ?recursive=1 — subscribes the path AS A DIRECTORY-RECURSIVE
+    // match (events for the dir AND any descendant fire). Used by
+    // FileBrowserPanel for the "auto-refresh listing on agent-create"
+    // case where the new file's path isn't known at subscribe time.
+    // Default (no flag): exact-path subscription.
+    // Returns 204 on success; 404 if no EventSource is open for the session;
+    // 403 if path fails validatePath.
+    this.app.post('/api/files/watch/subscribe', express.json({ limit: '64kb' }), async (req, res) => {
+      const sessionId = req.query.session || (req.body && req.body.session);
+      const rawPath = req.query.path || (req.body && req.body.path);
+      const recursive = req.query.recursive === '1' ||
+                        (req.body && (req.body.recursive === '1' || req.body.recursive === true));
+      if (!sessionId || !rawPath) {
+        return res.status(400).json({ error: 'session and path are required' });
+      }
+
+      if (!this._fsWatchSessions) this._fsWatchSessions = new Map();
+      const entry = this._fsWatchSessions.get(sessionId);
+      if (!entry || !entry.watcher) {
+        return res.status(404).json({ error: 'no active watcher for session; open EventSource first' });
+      }
+
+      const validation = this.validatePath(rawPath);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+
+      try {
+        await entry.watcher.subscribe(validation.path, { recursive: recursive });
+      } catch (err) {
+        return res.status(500).json({ error: 'subscribe failed', message: err.message });
+      }
+      res.status(204).end();
+    });
+
+    // POST /api/files/watch/unsubscribe — remove a path from the active
+    // session's subscription set. Idempotent — returns 204 even if the
+    // path was never subscribed.
+    // Optional: ?recursive=1 — must MATCH the flavour the path was
+    // subscribed with. Calling with the wrong flavour is a no-op (the
+    // exact-flavour subscription stays). This lets clients safely "remove
+    // both flavours" by issuing both calls without prior knowledge.
+    this.app.post('/api/files/watch/unsubscribe', express.json({ limit: '64kb' }), async (req, res) => {
+      const sessionId = req.query.session || (req.body && req.body.session);
+      const rawPath = req.query.path || (req.body && req.body.path);
+      const recursive = req.query.recursive === '1' ||
+                        (req.body && (req.body.recursive === '1' || req.body.recursive === true));
+      if (!sessionId || !rawPath) {
+        return res.status(400).json({ error: 'session and path are required' });
+      }
+
+      if (!this._fsWatchSessions) this._fsWatchSessions = new Map();
+      const entry = this._fsWatchSessions.get(sessionId);
+      if (!entry || !entry.watcher) {
+        // Idempotent: no-op, return 204.
+        return res.status(204).end();
+      }
+
+      // Skip validatePath here — unsubscribe with a path that's outside
+      // baseFolder is a no-op since it could never have been subscribed
+      // in the first place. We still resolve to canonical form to match
+      // however subscribe() stored it.
+      const canonicalPath = path.resolve(rawPath);
+
+      try {
+        await entry.watcher.unsubscribe(canonicalPath, { recursive: recursive });
+      } catch (err) {
+        return res.status(500).json({ error: 'unsubscribe failed', message: err.message });
+      }
+      res.status(204).end();
+    });
+
+
     this.app.put('/api/files/content', async (req, res) => {
       const { path: filePath, content, hash } = req.body;
       if (!filePath) return res.status(400).json({ error: 'Path is required' });
@@ -1349,6 +2032,7 @@ class ClaudeCodeWebServer {
       const mimeTypes = {
         '.html': 'text/html',
         '.js': 'application/javascript',
+        '.mjs': 'application/javascript',
         '.css': 'text/css',
         '.json': 'application/json',
         '.png': 'image/png',
@@ -1374,6 +2058,14 @@ class ClaudeCodeWebServer {
       this.geminiBridge._commandReady,
       this.terminalBridge._commandReady,
     ]);
+
+    // Search-backend startup gate (ADR-0018). Hard-error with actionable
+    // guidance if neither system rg nor the @vscode/ripgrep bundled
+    // binary is usable, instead of letting the broken state surface
+    // later as cryptic "0 matches" UI behaviour. Recovering with a
+    // degraded "search disabled" mode is an explicit non-goal for v1 —
+    // the file-browser feature treats search as load-bearing.
+    search.requireBackendAtStartup();
 
     // Non-blocking STT init — downloads model if needed
     if (this.sttEngine._enabled || this.sttEngine._sttEndpoint) {

@@ -170,8 +170,12 @@ async function run() {
 
   // Verify tarball file count — regression guard for the npm @latest arborist bug
   // (v0.1.49 had 101 files and worked; v0.1.51 had 206 files and broke npx @latest)
+  // Cap raised to 150 in PR #99 — Monaco worker shim + PDF.js vendored module +
+  // panzoom + nbviewer + 9 new file-browser modules pushed the count over 100.
+  // v0.1.51's 206-file regression was a separate issue (different file class);
+  // 150 leaves headroom for normal growth without re-tripping that.
   const entryCount = entry.entryCount || 0;
-  assert(entryCount > 0 && entryCount <= 100, `Tarball file count ${entryCount} <= 100`);
+  assert(entryCount > 0 && entryCount <= 150, `Tarball file count ${entryCount} <= 150`);
 
   // Step 2: Install in temp directory
   console.log('\nStep 2: Installing tarball in temp directory');

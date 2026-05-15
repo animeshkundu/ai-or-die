@@ -35,7 +35,14 @@ File operations (list, read, write, upload, download) follow a request-response 
 
 The file browser opens as a docked panel on the right side of the viewport. The terminal remains visible and interactive alongside it. A modal would block terminal access, which defeats the purpose of a file browser in a terminal application. The panel auto-switches to a full-screen overlay on mobile viewports or when the terminal would be squeezed below 80 columns.
 
-### Ace Editor from CDN (not bundled)
+### Ace Editor from CDN (not bundled) -- [Superseded by ADR-0016]
+
+> **Superseded by [ADR-0016](0016-monaco-based-file-browser-editor.md):** the
+> editor engine is now Monaco, loaded via its AMD loader from cdn.jsdelivr.net
+> with a same-origin worker shim. The CDN-and-no-bundler delivery pattern
+> below is preserved; the engine choice changes. ADR-0012's other decisions
+> (REST API, docked panel, hash concurrency, validatePath, no delete/rename)
+> stand.
 
 Text editing uses the Ace Editor loaded from cdnjs, matching the existing pattern of loading xterm.js from unpkg CDN. This avoids adding npm dependencies for a frontend-only library and keeps the server-side `node_modules` minimal. Ace is lazy-loaded on first editor open, with a loading spinner and a 5-second timeout with fallback error.
 

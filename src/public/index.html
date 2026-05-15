@@ -77,7 +77,10 @@
     <script src="https://unpkg.com/xterm-addon-webgl@0.16.0/lib/xterm-addon-webgl.js"></script>
     <script src="https://unpkg.com/xterm-addon-canvas@0.5.0/lib/xterm-addon-canvas.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
-    <link rel="preload" href="https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.5/ace.min.js" as="script">
+    <!-- Monaco editor is loaded lazily on first file preview/editor open via
+         file-viewer-monaco.js (see ADR-0016). Preconnect above warms the
+         CDN handshake; we don't preload loader.js to avoid charging users
+         who never open the file browser. -->
 </head>
 <body>
     <a href="#terminal" class="skip-to-content">Skip to terminal</a>
@@ -738,8 +741,16 @@
     <script src="heartbeat-watchdog.js"></script>
     <script src="splits.js"></script>
     <script src="icons.js"></script>
+    <script src="file-viewer-monaco.js"></script>
+    <script src="file-pdf-viewer.js"></script>
+    <script src="markdown-render.js"></script>
+    <script src="notebook-render.js"></script>
     <script src="file-browser.js"></script>
     <script src="file-editor.js"></script>
+    <script src="file-diff.js"></script>
+    <script src="file-watcher-client.js"></script>
+    <script src="file-search.js"></script>
+    <script src="file-tabs.js"></script>
     <script src="vscode-tunnel.js"></script>
     <script src="app-tunnel.js"></script>
     <script src="voice-handler.js"></script>

@@ -26,7 +26,7 @@ Before starting any task, consult the relevant documentation:
   - `03-tooling-and-pipelines.md` -- Tooling conventions
   - `04-handoff-protocol.md` -- How to leave the repo clean for the next agent
   - `05-defensive-coding.md` -- Error prevention, cross-platform traps
-  - `06-ci-first-testing.md` -- CI-only testing, E2E debugging, performance budget
+  - `06-local-first-then-ci.md` -- Local-first testing; CI as cross-platform verification, E2E debugging, performance budget
   - `07-docs-hygiene.md` -- Keeping documentation in sync
   - `08-multi-agent-consultation.md` -- When and how to consult expert subagents
 - `docs/adrs/` -- Architecture Decision Records (check before proposing new patterns)
@@ -39,7 +39,7 @@ Before starting any task, consult the relevant documentation:
 2. **ADR compliance**: Never contradict an accepted ADR. To change direction, write a new ADR that supersedes the old one.
 3. **Cross-platform support**: All code must work on both Windows and Linux. Use `path.join()` for file paths, provide `.sh` and `.ps1` script variants, and test on both platforms in CI.
 4. **Test coverage**: Every feature and bug fix requires tests. No exceptions.
-5. **CI-only testing**: All testing happens on GitHub Actions runners. Never test locally. E2E tests are the only true validation. Push → draft PR → CI → iterate.
+5. **Local-first testing**: All tests (unit + integration + e2e for the surface you changed) must pass locally before pushing. CI on GitHub Actions runs the same suites on Windows + Linux + clean-checkout `npm ci` as the final cross-platform verification gate. Local-pass is necessary but not sufficient — CI green is the merge gate. See `docs/agent-instructions/06-local-first-then-ci.md`.
 6. **Document what you solve**: Every solved problem goes in `docs/history/`. LLMs don't carry memories — written docs are the only institutional memory.
 7. **Consult before committing**: For significant decisions, spawn expert subagents (architect, principal engineer, lead QA, PM, designer, user researcher) in parallel. See `docs/agent-instructions/08-multi-agent-consultation.md`.
 

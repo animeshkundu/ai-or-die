@@ -1,47 +1,65 @@
-// file-editor.js — FileEditorPanel (Ace Editor integration for file browser)
-// Dual-export: window.fileEditor (browser) + module.exports (Node.js tests)
+// file-editor.js — FileEditorPanel (Monaco Editor integration; ADR-0016).
+// Dual-export: window.fileEditor (browser) + module.exports (Node.js tests).
+//
+// Public API preserved across the Ace → Monaco migration:
+//   FileEditorPanel { openEditor, save, toggleAutoSave, isDirty, close, destroy }
+// The hash-based 409 conflict flow (Keep / Reload / Compare Changes) is
+// preserved end-to-end. The "Compare Changes" modal swaps its hand-rolled
+// twin-<pre> view for monaco.editor.createDiffEditor — same data path,
+// proper intra-line diff highlighting at zero extra cost.
 
 (function () {
   'use strict';
 
-  var ACE_MODE_MAP = {
-    '.js': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript', '.jsx': 'jsx',
-    '.ts': 'typescript', '.tsx': 'tsx',
-    '.py': 'python', '.rb': 'ruby', '.go': 'golang', '.rs': 'rust',
-    '.java': 'java', '.c': 'c_cpp', '.cpp': 'c_cpp', '.h': 'c_cpp', '.hpp': 'c_cpp',
-    '.cs': 'csharp', '.php': 'php',
-    '.sh': 'sh', '.bash': 'sh', '.zsh': 'sh', '.ps1': 'powershell',
-    '.bat': 'batchfile', '.cmd': 'batchfile',
-    '.yaml': 'yaml', '.yml': 'yaml', '.toml': 'toml',
-    '.xml': 'xml', '.html': 'html', '.htm': 'html',
-    '.css': 'css', '.scss': 'scss', '.less': 'less',
-    '.sql': 'sql', '.graphql': 'graphql',
-    '.swift': 'swift', '.kt': 'kotlin', '.scala': 'scala',
-    '.r': 'r', '.lua': 'lua', '.pl': 'perl',
-    '.md': 'markdown', '.mdx': 'markdown',
-    '.json': 'json', '.json5': 'json5',
-    '.csv': 'text', '.tsv': 'text',
-    '.txt': 'text', '.log': 'text', '.cfg': 'text', '.ini': 'ini',
-    '.env': 'text', '.properties': 'properties',
-  };
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
 
-  var ACE_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/ace/1.36.5/ace.min.js';
-  var _aceScriptInjected = false;
-
-  function getAceMode(ext) { return ext ? (ACE_MODE_MAP[ext.toLowerCase()] || 'text') : 'text'; }
-  function getExtension(p) { var i = p.lastIndexOf('.'); return i === -1 ? '' : p.slice(i); }
-  function getFileName(p) { var s = p.replace(/\\/g, '/').split('/'); return s[s.length - 1] || p; }
-
-  function _getAceTheme() {
-    var t = document.documentElement.getAttribute('data-theme') || 'midnight';
-    var m = { 'midnight': 'tomorrow_night', 'classic-dark': 'tomorrow_night',
-      'classic-light': 'tomorrow', 'monokai': 'monokai', 'nord': 'nord_dark',
-      'solarized-dark': 'solarized_dark', 'solarized-light': 'solarized_light' };
-    return 'ace/theme/' + (m[t] || 'tomorrow_night');
+  function getExtension(p) {
+    if (!p) return '';
+    var i = p.lastIndexOf('.');
+    return i === -1 ? '' : p.slice(i);
   }
 
-  // Reusable modal overlay helper — returns { overlay, closeModal }
+  function getFileName(p) {
+    if (!p) return '';
+    var s = String(p).replace(/\\/g, '/').split('/');
+    return s[s.length - 1] || p;
+  }
+
+  // Resolve the Monaco language id for an extension or path. Delegates to
+  // window.fileViewerMonaco when available (browser); falls back to
+  // require()'ing the loader module directly under Node tests so this file
+  // remains testable without a DOM. Returns 'plaintext' if neither is
+  // available — matches Monaco's default language id.
+  function getMonacoLanguage(extOrPath) {
+    if (typeof window !== 'undefined' && window.fileViewerMonaco &&
+        typeof window.fileViewerMonaco.getMonacoLanguage === 'function') {
+      return window.fileViewerMonaco.getMonacoLanguage(extOrPath);
+    }
+    if (typeof module !== 'undefined' && module.exports && typeof require === 'function') {
+      try {
+        return require('./file-viewer-monaco').getMonacoLanguage(extOrPath);
+      } catch (_) { /* fall through */ }
+    }
+    return 'plaintext';
+  }
+
+  // Backward-compat alias. Pre-migration callers asked for an "Ace mode";
+  // the closest meaningful answer post-migration is the Monaco language id
+  // (used identically for status-bar display and code-coloring decisions).
+  // Intentionally not removed — the public API contract is preserved per
+  // the migration directive.
+  function getAceMode(ext) {
+    return getMonacoLanguage(ext);
+  }
+
+  // Reusable modal overlay helper — returns { overlay, box, close }.
+  // `opts.onClose` is invoked whenever the modal is dismissed (overlay click,
+  // Escape, or programmatic `close()`), letting callers tear down associated
+  // resources (e.g. dispose a Monaco diff editor + its models).
   function _createModal(opts) {
+    opts = opts || {};
     var overlay = document.createElement('div');
     overlay.className = 'image-preview-modal active';
     overlay.style.zIndex = '9999';
@@ -52,7 +70,15 @@
     if (opts.flex) { box.style.display = 'flex'; box.style.flexDirection = 'column'; }
     overlay.appendChild(box);
 
-    function closeModal() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+    var closed = false;
+    function closeModal() {
+      if (closed) return;
+      closed = true;
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (typeof opts.onClose === 'function') {
+        try { opts.onClose(); } catch (_) { /* swallow — user code already ran */ }
+      }
+    }
     overlay.addEventListener('mousedown', function (e) { if (e.target === overlay) closeModal(); });
     overlay.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') { e.stopPropagation(); closeModal(); }
@@ -70,16 +96,28 @@
     this.containerEl = options.containerEl;
     this.onClose = options.onClose || function () {};
     this.onSave = options.onSave || function () {};
-    this._filePath = null;    this._fileHash = null;
+    // Optional notifier for dirty-state transitions (#41 / ADR-0017
+    // cleanup of the original `_wrapDirtyTracking` monkey-patch in
+    // TabManager). Called with `(isDirty)` whenever _dirty toggles —
+    // including via applyDiskContent's reset path, which the
+    // monkey-patch missed because _suppressContentChange skipped the
+    // _onContentChange code path entirely.
+    this.onDirtyChange = options.onDirtyChange || function () {};
+    this._filePath = null;        this._fileHash = null;
     this._lastSavedContent = null;
-    this._aceEditor = null;   this._aceLoaded = false;
-    this._autoSave = true;    this._autoSaveTimer = null;
-    this._saving = false;     this._dirty = false;
-    this._destroyed = false;  this._retryCount = 0;
-    this._toolbarEl = null;   this._editorEl = null;
-    this._statusEl = null;    this._dirtyDot = null;
+    this._editor = null;          // Monaco IStandaloneCodeEditor instance
+    this._monacoEditor = null;    // alias of _editor; see _wireMonaco for rationale
+    this._monacoHandle = null;    // { editor, monaco, dispose } from createCodeViewer
+    this._monacoLoaded = false;
+    this._disposables = [];       // Monaco IDisposable handles to dispose on teardown
+    this._autoSave = true;        this._autoSaveTimer = null;
+    this._saving = false;         this._dirty = false;
+    this._destroyed = false;      this._retryCount = 0;
+    this._toolbarEl = null;       this._editorEl = null;
+    this._statusEl = null;        this._dirtyDot = null;
     this._conflictBanner = null;
-    this._autoSaveBtn = null; this._filenameEl = null;
+    this._autoSaveBtn = null;     this._filenameEl = null;
+    this._loaderSpinnerEl = null;
   }
 
   FileEditorPanel.prototype.openEditor = function (filePath, content, fileHash) {
@@ -89,10 +127,11 @@
     this._dirty = false; this._saving = false;
     this._retryCount = 0; this._destroyed = false;
     this._buildEditorDOM();
-    var draft = localStorage.getItem('fb-draft-' + filePath);
+    var draft = null;
+    try { draft = localStorage.getItem('fb-draft-' + filePath); } catch (_) { /* private mode */ }
     var initial = (draft !== null) ? draft : content;
     if (draft !== null && draft !== content) this._dirty = true;
-    this._loadAce(initial);
+    this._loadMonaco(initial);
   };
 
   FileEditorPanel.prototype.save = function () {
@@ -113,7 +152,7 @@
   };
 
   FileEditorPanel.prototype.isDirty = function () {
-    return this._aceEditor ? this._aceEditor.getValue() !== this._lastSavedContent : false;
+    return this._editor ? this._editor.getValue() !== this._lastSavedContent : false;
   };
 
   FileEditorPanel.prototype.close = function () {
@@ -125,8 +164,21 @@
     if (this._destroyed) return;
     this._destroyed = true;
     if (this._autoSaveTimer) { clearTimeout(this._autoSaveTimer); this._autoSaveTimer = null; }
-    if (this._aceEditor) { this._aceEditor.destroy(); this._aceEditor = null; }
-    if (this._filePath) localStorage.removeItem('fb-draft-' + this._filePath);
+    // Dispose Monaco event listeners FIRST so late-firing callbacks don't
+    // touch a half-disposed editor.
+    for (var i = 0; i < this._disposables.length; i++) {
+      try { this._disposables[i].dispose(); } catch (_) { /* ignore */ }
+    }
+    this._disposables = [];
+    if (this._monacoHandle) {
+      try { this._monacoHandle.dispose(); } catch (_) { /* ignore */ }
+      this._monacoHandle = null;
+      this._editor = null;
+      this._monacoEditor = null;
+    }
+    if (this._filePath) {
+      try { localStorage.removeItem('fb-draft-' + this._filePath); } catch (_) { /* private mode */ }
+    }
     this.containerEl.innerHTML = '';
     this.onClose();
   };
@@ -134,7 +186,6 @@
   // -- DOM construction --
 
   FileEditorPanel.prototype._buildEditorDOM = function () {
-    var self = this;
     this.containerEl.innerHTML = '';
 
     var toolbar = document.createElement('div');
@@ -190,7 +241,7 @@
 
     var editorEl = document.createElement('div');
     editorEl.className = 'file-browser-editor-content';
-    editorEl.id = 'fb-ace-editor-' + Date.now();
+    editorEl.id = 'fb-monaco-editor-' + Date.now();
     this.containerEl.appendChild(editorEl);
     this._editorEl = editorEl;
 
@@ -201,98 +252,164 @@
     this._statusEl = statusEl;
   };
 
-  // -- Ace loading --
+  // -- Monaco loading --
 
-  FileEditorPanel.prototype._loadAce = function (content) {
-    var self = this;
-    if (window.ace) { this._initAce(content); return; }
-
-    // Show spinner
-    this._editorEl.innerHTML = '';
+  FileEditorPanel.prototype._showLoaderSpinner = function () {
     var sp = document.createElement('div');
     sp.className = 'file-browser-loading';
     var s = document.createElement('div');
     s.className = 'file-browser-spinner';
     sp.appendChild(s);
     this._editorEl.appendChild(sp);
-
-    if (!_aceScriptInjected) {
-      _aceScriptInjected = true;
-      var sc = document.createElement('script');
-      sc.src = ACE_CDN; sc.async = true;
-      document.head.appendChild(sc);
-    }
-
-    var elapsed = 0, interval = 100;
-    var poll = setInterval(function () {
-      if (self._destroyed) { clearInterval(poll); return; }
-      elapsed += interval;
-      if (window.ace) { clearInterval(poll); self._initAce(content); }
-      else if (elapsed >= 5000) {
-        clearInterval(poll);
-        self._editorEl.innerHTML = '';
-        var err = document.createElement('div');
-        err.className = 'file-browser-empty';
-        err.textContent = 'Editor could not be loaded. Check your internet connection.';
-        self._editorEl.appendChild(err);
-        self._updateStatus('Load failed', '');
-      }
-    }, interval);
+    this._loaderSpinnerEl = sp;
   };
 
-  FileEditorPanel.prototype._initAce = function (content) {
-    if (this._destroyed) return;
+  FileEditorPanel.prototype._removeLoaderSpinner = function () {
+    if (this._loaderSpinnerEl && this._loaderSpinnerEl.parentNode) {
+      this._loaderSpinnerEl.parentNode.removeChild(this._loaderSpinnerEl);
+    }
+    this._loaderSpinnerEl = null;
+  };
+
+  FileEditorPanel.prototype._loadMonaco = function (content) {
     var self = this;
+
+    // Defensive: if the loader module never registered itself, give the user
+    // an actionable error rather than a blank editor pane.
+    if (!window.fileViewerMonaco || typeof window.fileViewerMonaco.createCodeViewer !== 'function') {
+      this._renderLoaderError(
+        'Code editor is unavailable: Monaco loader script is missing. ' +
+        'Reload the page; if the problem persists, the file-viewer-monaco.js asset failed to ship.'
+      );
+      return;
+    }
+
+    // Clear any prior state, then show a spinner while the CDN load happens.
     this._editorEl.innerHTML = '';
-    this._aceLoaded = true;
-
-    var editor = window.ace.edit(this._editorEl);
-    this._aceEditor = editor;
-
-    editor.setOptions({
-      fontSize: 13,
-      fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
-      tabSize: 2, useSoftTabs: true,
-      showPrintMargin: false, wrap: true,
-      showGutter: true, highlightActiveLine: true,
-    });
-    editor.setTheme(_getAceTheme());
+    this._showLoaderSpinner();
 
     var ext = getExtension(this._filePath);
-    var mode = getAceMode(ext);
-    editor.session.setMode('ace/mode/' + mode);
-    editor.setValue(content, -1);
+    var language = getMonacoLanguage(ext);
 
-    editor.on('change', function () { self._onContentChange(); });
-    editor.selection.on('changeCursor', function () { self._updateCursorPosition(); });
-
-    editor.commands.addCommand({
-      name: 'save', bindKey: { win: 'Ctrl-S', mac: 'Cmd-S' },
-      exec: function () { self.save(); }
-    });
-    editor.commands.addCommand({
-      name: 'closeEditor', bindKey: { win: 'Escape', mac: 'Escape' },
-      exec: function () {
-        var sb = self._editorEl.querySelector('.ace_search');
-        if (sb && sb.style.display !== 'none') { editor.execCommand('find'); return; }
-        self.close();
+    window.fileViewerMonaco.createCodeViewer(this._editorEl, {
+      content: content,
+      language: language,
+      readOnly: false,
+      ariaLabel: 'Editing ' + getFileName(this._filePath),
+      // Editor pane wants the minimap by default; preview will turn it off.
+      minimap: true,
+    }).then(function (handle) {
+      if (self._destroyed) {
+        // Race: caller closed the editor while Monaco was loading.
+        try { handle.dispose(); } catch (_) { /* ignore */ }
+        return;
       }
+      self._removeLoaderSpinner();
+      self._wireMonaco(handle);
+    }).catch(function (err) {
+      if (self._destroyed) return;
+      self._removeLoaderSpinner();
+      var detail = err && err.message ? err.message : 'unknown error';
+      self._renderLoaderError(
+        'Editor could not be loaded: ' + detail + '. ' +
+        'Check your network connection or use the terminal to edit this file.'
+      );
     });
+  };
 
-    this._updateStatus('Ready', mode);
+  FileEditorPanel.prototype._renderLoaderError = function (message) {
+    if (!this._editorEl) return;
+    this._editorEl.innerHTML = '';
+    var err = document.createElement('div');
+    err.className = 'file-browser-empty';
+    err.setAttribute('role', 'alert');
+    err.textContent = message;
+    this._editorEl.appendChild(err);
+    this._updateStatus('Load failed', '', true);
+    this._announceToScreenReader('Editor failed to load');
+  };
+
+  FileEditorPanel.prototype._wireMonaco = function (handle) {
+    var self = this;
+    this._monacoHandle = handle;
+    this._editor = handle.editor;
+    // Friendly alias so e2e tests + future TabManager-side helpers can
+    // read the live Monaco IStandaloneCodeEditor without knowing that the
+    // panel renames it `_editor` internally. Matches the
+    // `_monacoEditor` name fa35745's #11 UI-half scenario (h) reaches
+    // for at `tab.panel._monacoEditor`.
+    this._monacoEditor = handle.editor;
+    this._monacoLoaded = true;
+
+    var monaco = handle.monaco;
+
+    // Content + cursor change observers — collect disposables for clean teardown.
+    this._disposables.push(this._editor.onDidChangeModelContent(function () {
+      self._onContentChange();
+    }));
+    this._disposables.push(this._editor.onDidChangeCursorPosition(function () {
+      self._updateCursorPosition();
+    }));
+
+    // Ctrl+S / Cmd+S — save. addCommand returns a string id, not a disposable,
+    // so the registration is dropped together with the editor on dispose().
+    try {
+      this._editor.addCommand(
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+        function () { self.save(); }
+      );
+    } catch (_) { /* keybinding registration failed — non-fatal */ }
+
+    // Escape behaviour mirrors the prior Ace contract:
+    //   - if the find widget is open, defer to it (it closes itself);
+    //   - otherwise, close the editor (which prompts on unsaved changes).
+    // Monaco's find widget calls preventDefault internally when it consumes
+    // Escape, so the document-level handler in file-browser.js won't double-fire.
+    this._disposables.push(this._editor.onKeyDown(function (e) {
+      if (e.keyCode !== monaco.KeyCode.Escape) return;
+      var findRevealed = false;
+      try {
+        var findCtrl = self._editor.getContribution('editor.contrib.findController');
+        findRevealed = !!(findCtrl && findCtrl.getState && findCtrl.getState().isRevealed);
+      } catch (_) { /* contribution not loaded yet */ }
+      if (findRevealed) return;
+      e.preventDefault();
+      e.stopPropagation();
+      self.close();
+    }));
+
+    // Position the cursor at the start. Monaco places it at (1,1) by default
+    // — explicit setPosition guards against version drift.
+    try { this._editor.setPosition({ lineNumber: 1, column: 1 }); } catch (_) { /* ignore */ }
+
+    var languageId = getMonacoLanguage(getExtension(this._filePath));
+    this._updateStatus('Ready', languageId);
     this._updateCursorPosition();
     if (this._dirty) this._dirtyDot.classList.add('visible');
-    editor.focus();
+    try { this._editor.focus(); } catch (_) { /* ignore */ }
   };
 
   // -- Content change / auto-save --
 
   FileEditorPanel.prototype._onContentChange = function () {
     if (this._destroyed) return;
+    // Suppress writes triggered by our own setValue (e.g. _reloadFile,
+    // future programmatic updates). Without this, Monaco's synchronous
+    // onDidChangeModelContent re-creates the draft we just removed and
+    // sets _dirty=true even though no user input occurred.
+    if (this._suppressContentChange) return;
+    var wasDirty = this._dirty;
     this._dirty = true;
     this._dirtyDot.classList.add('visible');
-    if (this._aceEditor) localStorage.setItem('fb-draft-' + this._filePath, this._aceEditor.getValue());
+    if (this._editor) {
+      try {
+        localStorage.setItem('fb-draft-' + this._filePath, this._editor.getValue());
+      } catch (_) { /* quota or private mode — draft recovery becomes best-effort */ }
+    }
     if (this._autoSave) this._scheduleAutoSave();
+    if (!wasDirty) {
+      try { this.onDirtyChange(true); } catch (_) { /* swallow callback errors */ }
+    }
   };
 
   FileEditorPanel.prototype._scheduleAutoSave = function () {
@@ -308,7 +425,7 @@
 
   FileEditorPanel.prototype._doSave = function () {
     var self = this;
-    var val = this._aceEditor ? this._aceEditor.getValue() : '';
+    var val = this._editor ? this._editor.getValue() : '';
     this.authFetch('/api/files/content', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -319,15 +436,23 @@
         return resp.json().then(function (d) {
           self._fileHash = d.hash || self._fileHash;
           self._lastSavedContent = val;
+          var wasDirtyOnSave = self._dirty;
           self._dirty = false; self._saving = false; self._retryCount = 0;
           self._dirtyDot.classList.remove('visible');
-          localStorage.removeItem('fb-draft-' + self._filePath);
-          self._updateStatus('Saved', getAceMode(getExtension(self._filePath)));
+          try { localStorage.removeItem('fb-draft-' + self._filePath); } catch (_) { /* ignore */ }
+          self._updateStatus('Saved', getMonacoLanguage(getExtension(self._filePath)));
           self._announceToScreenReader('File saved');
           self.onSave();
+          if (wasDirtyOnSave) {
+            try { self.onDirtyChange(false); } catch (_) { /* swallow */ }
+          }
         });
       } else if (resp.status === 409) {
-        return resp.json().then(function (d) { self._saving = false; self._announceToScreenReader('File was modified externally'); self._showConflictDialog(d); });
+        return resp.json().then(function (d) {
+          self._saving = false;
+          self._announceToScreenReader('File was modified externally');
+          self._showConflictDialog(d);
+        });
       } else { throw new Error('HTTP ' + resp.status); }
     }).catch(function () {
       if (self._destroyed) return;
@@ -403,20 +528,84 @@
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function (d) {
         if (self._destroyed) return;
-        self._fileHash = d.hash || null;
-        self._lastSavedContent = d.content;
-        self._dirty = false;
-        self._dirtyDot.classList.remove('visible');
-        localStorage.removeItem('fb-draft-' + self._filePath);
-        if (self._aceEditor) self._aceEditor.setValue(d.content, -1);
-        self._updateStatus('Reloaded', getAceMode(getExtension(self._filePath)));
+        self.applyDiskContent({ content: d.content, hash: d.hash });
+        self._updateStatus('Reloaded', getMonacoLanguage(getExtension(self._filePath)));
       })
       .catch(function (e) { self._updateStatus('Reload failed: ' + e.message, '', true); });
   };
 
+  // Apply already-fetched disk content into the live Monaco model with
+  // cursor + scroll preserved. Public surface used by both the explicit
+  // "Reload File" button (via _reloadFile, which fetches first) AND the
+  // fs-watcher integration (#41) — when an external `change` event arrives
+  // for a clean tab, the SSE handler can call applyDiskContent directly
+  // with the content it already has from the server payload (or a
+  // fresh fetch if `hash` doesn't match `_fileHash`), no need to
+  // re-implement the cursor-preservation pattern at the call site.
+  //
+  // Inputs: { content: string, hash?: string }. Both required for the
+  // optimistic-concurrency invariant — `_fileHash` MUST be advanced or
+  // the next user save will trip a 409 against the new on-disk hash.
+  FileEditorPanel.prototype.applyDiskContent = function (data) {
+    if (this._destroyed || !data) return false;
+    this._fileHash = data.hash || null;
+    this._lastSavedContent = data.content == null ? '' : String(data.content);
+    var wasDirty = this._dirty;
+    this._dirty = false;
+    if (this._dirtyDot) this._dirtyDot.classList.remove('visible');
+    if (this._editor) {
+      // Preserve cursor position + selection + scroll across the reload
+      // where feasible. Cursor + selection survive setValue if we re-apply
+      // them; scroll is tracked via the editor's view state.
+      var pos = null;
+      var selection = null;
+      var viewState = null;
+      try { pos = this._editor.getPosition(); } catch (_) { /* ignore */ }
+      try { selection = this._editor.getSelection(); } catch (_) { /* ignore */ }
+      try { viewState = this._editor.saveViewState(); } catch (_) { /* ignore */ }
+      // Suppress draft writes during the synchronous setValue — Monaco
+      // fires onDidChangeModelContent INSIDE setValue, which would
+      // otherwise re-write the just-loaded server content into the
+      // localStorage draft slot AND set _dirty=true. The suppress flag
+      // covers both paths in _onContentChange.
+      this._suppressContentChange = true;
+      try {
+        this._editor.setValue(this._lastSavedContent);
+      } finally {
+        this._suppressContentChange = false;
+      }
+      // Restore view state first (it includes scroll) then position +
+      // selection on top — restoring viewState alone may stomp the
+      // explicit cursor we just captured if Monaco's saveViewState chose
+      // a different anchor.
+      if (viewState) {
+        try { this._editor.restoreViewState(viewState); } catch (_) { /* ignore */ }
+      }
+      if (selection) {
+        try { this._editor.setSelection(selection); } catch (_) { /* line may no longer exist */ }
+      } else if (pos) {
+        try { this._editor.setPosition(pos); } catch (_) { /* line may no longer exist */ }
+      }
+    }
+    // Drop any stale draft AFTER the setValue + suppress block — this
+    // ordering guarantees no draft slot races back in via a synchronous
+    // onDidChangeModelContent.
+    if (this._filePath) {
+      try { localStorage.removeItem('fb-draft-' + this._filePath); } catch (_) { /* ignore */ }
+    }
+    if (wasDirty) {
+      // Notify the host (TabManager) so the tab-strip dirty dot clears.
+      // The monkey-patched _onContentChange path used to handle this,
+      // but `_suppressContentChange` skips that wrapper entirely, so the
+      // dirty-dot would otherwise stay visible after a silent reload.
+      try { this.onDirtyChange(false); } catch (_) { /* swallow */ }
+    }
+    return true;
+  };
+
   FileEditorPanel.prototype._showCompare = function () {
     var self = this;
-    var mine = this._aceEditor ? this._aceEditor.getValue() : '';
+    var mine = this._editor ? this._editor.getValue() : '';
     this.authFetch('/api/files/content?path=' + encodeURIComponent(this._filePath))
       .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(function (d) { if (!self._destroyed) self._buildCompare(mine, d.content); })
@@ -424,7 +613,35 @@
   };
 
   FileEditorPanel.prototype._buildCompare = function (mine, theirs) {
-    var m = _createModal({ maxWidth: '90vw', maxHeight: '80vh', flex: true });
+    var self = this;
+
+    // Resources to dispose when the modal closes — captured here so the
+    // _createModal onClose hook can tear them down regardless of which
+    // dismiss path the user takes (overlay click, Escape, X button).
+    var diffEditor = null;
+    var originalModel = null;
+    var modifiedModel = null;
+    // Explicit lifecycle flag — replaces the prior `loading.parentNode`
+    // DOM-attachment proxy that the modal-close path used to detect a
+    // bail. The proxy worked today but coupled the async-completion check
+    // to a specific child node; if the spinner UI is ever refactored, the
+    // bail path silently breaks and leaks the diff editor + 2 models per
+    // close. Flag is set inside the onClose hook so every dismiss path
+    // (overlay click, Escape, X button) goes through it.
+    var modalClosed = false;
+
+    var m = _createModal({
+      maxWidth: '90vw',
+      maxHeight: '80vh',
+      flex: true,
+      onClose: function () {
+        modalClosed = true;
+        if (diffEditor) { try { diffEditor.dispose(); } catch (_) { /* ignore */ } }
+        if (originalModel) { try { originalModel.dispose(); } catch (_) { /* ignore */ } }
+        if (modifiedModel) { try { modifiedModel.dispose(); } catch (_) { /* ignore */ } }
+      },
+    });
+
     var hdr = document.createElement('div');
     hdr.className = 'modal-header';
     var t = document.createElement('h2');
@@ -436,8 +653,59 @@
     hdr.appendChild(xb);
     m.box.appendChild(hdr);
 
+    var diffContainer = document.createElement('div');
+    diffContainer.style.cssText =
+      'flex:1;min-height:400px;min-width:0;overflow:hidden;padding:8px';
+    m.box.appendChild(diffContainer);
+
+    var loading = document.createElement('div');
+    loading.className = 'fb-loading';
+    loading.style.cssText = 'padding:24px;text-align:center';
+    loading.textContent = 'Loading diff viewer...';
+    diffContainer.appendChild(loading);
+
+    if (!window.fileViewerMonaco || typeof window.fileViewerMonaco.loadMonaco !== 'function') {
+      diffContainer.removeChild(loading);
+      self._renderFallbackCompare(diffContainer, mine, theirs);
+      return;
+    }
+
+    var language = getMonacoLanguage(getExtension(this._filePath));
+
+    window.fileViewerMonaco.loadMonaco().then(function (monaco) {
+      // Modal could have been closed before Monaco resolved; bail gracefully.
+      if (modalClosed) return;
+      while (diffContainer.firstChild) diffContainer.removeChild(diffContainer.firstChild);
+
+      diffEditor = monaco.editor.createDiffEditor(diffContainer, {
+        readOnly: true,
+        renderSideBySide: true,
+        automaticLayout: true,
+        fontFamily: "var(--font-mono, 'JetBrains Mono', monospace)",
+        fontSize: 13,
+        minimap: { enabled: false },
+        wordWrap: 'on',
+        theme: window.fileViewerMonaco.resolveMonacoTheme(),
+        ariaLabel: 'Diff: server version vs your changes',
+      });
+
+      // Monaco's diff convention: original = baseline (server), modified = working.
+      originalModel = monaco.editor.createModel(theirs, language);
+      modifiedModel = monaco.editor.createModel(mine, language);
+      diffEditor.setModel({ original: originalModel, modified: modifiedModel });
+    }).catch(function () {
+      if (modalClosed) return;
+      while (diffContainer.firstChild) diffContainer.removeChild(diffContainer.firstChild);
+      self._renderFallbackCompare(diffContainer, mine, theirs);
+    });
+  };
+
+  // Fallback compare view used when Monaco is unreachable. Visually inferior
+  // to createDiffEditor (no intra-line highlighting), but preserves the
+  // ability to manually compare server vs editor content.
+  FileEditorPanel.prototype._renderFallbackCompare = function (container, mine, theirs) {
     var body = document.createElement('div');
-    body.style.cssText = 'display:flex;gap:8px;flex:1;min-height:0;overflow:hidden;padding:8px';
+    body.style.cssText = 'display:flex;gap:8px;flex:1;min-height:0;overflow:hidden';
 
     function makePane(label, text) {
       var pane = document.createElement('div');
@@ -455,7 +723,7 @@
     }
     body.appendChild(makePane('Your version', mine));
     body.appendChild(makePane('Server version', theirs));
-    m.box.appendChild(body);
+    container.appendChild(body);
   };
 
   // -- Unsaved changes dialog --
@@ -491,8 +759,15 @@
     btn('btn btn-secondary btn-small', 'Cancel').addEventListener('click', m.close);
     btn('btn btn-secondary btn-small', 'Discard').addEventListener('click', function () {
       m.close();
-      localStorage.removeItem('fb-draft-' + self._filePath);
-      self._dirty = false;
+      // Clear the draft slot before destroy() so any future programmatic
+      // re-open of this same path doesn't see stale draft content. destroy()
+      // already removes it, but doing it here too is cheap and explicit.
+      try { localStorage.removeItem('fb-draft-' + self._filePath); } catch (_) { /* ignore */ }
+      // Note: previously also set `self._dirty = false` here. destroy()
+      // doesn't read _dirty (it unconditionally tears down), so the
+      // assignment was a dead store. Removed to keep the intent obvious
+      // — if a future destroy() variant gates on _dirty, the discard
+      // path must NOT silently mask that gate.
       self.destroy();
     });
     btn('btn btn-primary btn-small', 'Save & Close').addEventListener('click', function () {
@@ -514,17 +789,22 @@
     if (state) parts.push(state);
     if (mode) parts.push(mode);
     parts.push('UTF-8');
-    this._statusEl.textContent = parts.join(' \u00b7 ');
+    this._statusEl.textContent = parts.join(' · ');
     this._statusEl.style.color = isError ? 'var(--status-error)' : '';
   };
 
   FileEditorPanel.prototype._updateCursorPosition = function () {
-    if (!this._aceEditor || !this._statusEl || this._destroyed) return;
-    var pos = this._aceEditor.getCursorPosition();
-    var mode = getAceMode(getExtension(this._filePath));
+    if (!this._editor || !this._statusEl || this._destroyed) return;
+    var pos = null;
+    try { pos = this._editor.getPosition(); } catch (_) { /* ignore */ }
+    var mode = getMonacoLanguage(getExtension(this._filePath));
     var state = this._saving ? 'Saving...' : (this._dirty ? 'Editing' : 'Ready');
-    this._statusEl.textContent = [state, mode, 'UTF-8',
-      'Ln ' + (pos.row + 1) + ', Col ' + (pos.column + 1)].join(' \u00b7 ');
+    var parts = [state, mode, 'UTF-8'];
+    if (pos) {
+      // Monaco positions are 1-based already, no off-by-one adjustment needed.
+      parts.push('Ln ' + pos.lineNumber + ', Col ' + pos.column);
+    }
+    this._statusEl.textContent = parts.join(' · ');
     this._statusEl.style.color = '';
   };
 
@@ -539,6 +819,9 @@
 
   var exports = {
     FileEditorPanel: FileEditorPanel,
+    // Canonical post-migration helper.
+    getMonacoLanguage: getMonacoLanguage,
+    // Backward-compat aliases — preserved so external callers don't break.
     getAceMode: getAceMode,
     getExtension: getExtension,
     getFileName: getFileName,

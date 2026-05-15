@@ -66,7 +66,7 @@ Both rounds of feedback were folded into the plan before any code was written.
 
 Unit tests in `test/heartbeat-watchdog.test.js` cover: immediate-ping on start, recurring interval, pong-timeout force-close, no-close-when-pong-arrives-in-time, idempotent restart, per-socket generation fence (stale ticks must not send pings), per-socket socket-replacement fence (stale callbacks must not close the new socket), `stop()` cancels both timers.
 
-Manual end-to-end checks recommended on a draft PR via CI (per `06-ci-first-testing.md`):
+Manual end-to-end checks recommended on a draft PR via CI (per `06-local-first-then-ci.md`):
 1. Tab-switch idle return after 60s — terminal responsive within ~1.5s.
 2. Network drop for 15s + restore — "Reconnecting" appears within 10s of drop, "Connected" within ~250ms of network return.
 3. Mobile back-button (bfcache) — reconnects without manual refresh.

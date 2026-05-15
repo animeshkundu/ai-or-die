@@ -229,10 +229,37 @@
 }
 
 /* ---- Preview: Image ---- */
+.fb-img-controls {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: center;
+  padding: var(--space-2) 0;
+}
+.fb-img-viewport {
+  position: relative;
+  width: 100%;
+  /* Cap the viewport so a giant image doesn't stretch the panel; panzoom
+     handles overflow inside this box. min/max clipping keeps the controls
+     visible above. */
+  height: clamp(240px, 50vh, 600px);
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--surface-tertiary);
+  /* Hint to the browser that descendants will be transformed often. */
+  contain: layout paint;
+  cursor: grab;
+}
+.fb-img-viewport:active { cursor: grabbing; }
 .fb-preview-image {
-  max-width: 100%; max-height: 300px;
+  max-width: 100%; max-height: 100%;
   object-fit: contain;
   border-radius: var(--radius-md);
+  /* When wrapped in .fb-img-viewport panzoom uses CSS transforms; allow it
+     to position freely without parent flex/grid interference. */
+  display: block;
+  /* Block native image-drag from competing with the pan gesture. */
+  user-select: none;
+  -webkit-user-drag: none;
 }
 .fb-preview-dims {
   font-size: var(--text-xs);
@@ -247,6 +274,94 @@
   min-height: 300px;
   border: none;
   border-radius: var(--radius-md);
+}
+
+/* ---- Preview: PDF.js viewer (lazy, replaces iframe on iOS Safari etc.) ---- */
+.fb-pdf-viewer {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+  background: var(--bg-secondary, #1a1d23);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.fb-pdf-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1, 4px);
+  padding: var(--space-2, 8px);
+  background: var(--bg-tertiary, #14171c);
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  flex-wrap: wrap;
+}
+.fb-pdf-btn {
+  background: transparent;
+  color: var(--text-primary, #e6edf3);
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-sm, 4px);
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  min-height: 28px;
+  user-select: none;
+}
+.fb-pdf-btn:hover:not(:disabled) {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.05));
+}
+.fb-pdf-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.fb-pdf-page-info,
+.fb-pdf-zoom-info {
+  color: var(--text-secondary, #9aa4b1);
+  font-size: 12px;
+  padding: 0 var(--space-2, 8px);
+  min-width: 56px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.fb-pdf-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-subtle, rgba(255, 255, 255, 0.12));
+  margin: 0 var(--space-2, 8px);
+}
+.fb-pdf-viewport {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: var(--space-3, 12px);
+  background: var(--bg-secondary, #0d1117);
+  position: relative;
+  outline: none;
+}
+.fb-pdf-viewport:focus-visible {
+  outline: 2px solid var(--color-blue-400, #58a6ff);
+  outline-offset: -2px;
+}
+.fb-pdf-canvas {
+  display: block;
+  max-width: 100%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  background: white;
+}
+.fb-pdf-status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--text-secondary, #9aa4b1);
+  font-size: 13px;
+  pointer-events: none;
+}
+.fb-pdf-error .fb-preview-error {
+  margin: var(--space-4, 16px);
 }
 
 /* ---- Preview: Binary ---- */
@@ -268,7 +383,7 @@
   text-align: center;
 }
 
-/* ---- Code Preview (gutter + code) ---- */
+/* ---- Code Preview (gutter + code; CDN-blocked Monaco fallback) ---- */
 .fb-code-preview {
   display: flex;
   background: var(--surface-tertiary);
@@ -296,10 +411,187 @@
   line-height: 1.5;
 }
 
+/* ---- Code Preview (Monaco read-only host) ----
+   Monaco's automaticLayout requires a non-zero box; enforce a min-height so
+   the viewer is usable inside short preview panes (mobile, narrow window). */
+.fb-code-monaco {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--surface-tertiary);
+}
+.fb-code-monaco .monaco-editor {
+  flex: 1;
+  min-height: 0;
+}
+/* ---- HTML Preview (sandboxed iframe + Source/Rendered toggle) ---- */
+.fb-html-preview {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fb-html-toggle-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-secondary);
+}
+.fb-html-toggle-btn[disabled],
+.fb-html-toggle-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.fb-html-toggle-notice {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.fb-html-view {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.fb-html-iframe {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border: 0;
+  background: var(--surface-primary);
+  border-radius: var(--radius-md);
+}
+
+/* ---- Multi-file Tabs (file-tabs.js) ----
+   The tab strip sits above the content area inside .fb-preview-container.
+   Active tab uses --accent-soft as a subtle highlight; dirty dot mirrors the
+   editor-toolbar dirty indicator pattern. */
+.fb-tabs-host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fb-tabs-strip {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-secondary);
+  flex-shrink: 0;
+  /* No gap so adjacent tabs share their right-borders cleanly. */
+}
+.fb-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  border-right: 1px solid var(--border-default);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  user-select: none;
+  white-space: nowrap;
+  max-width: 200px;
+  position: relative;
+}
+.fb-tab:hover { background: var(--surface-tertiary); }
+.fb-tab.active {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  border-bottom: 2px solid var(--accent-default);
+  margin-bottom: -1px;
+}
+.fb-tab.dragging { opacity: 0.5; }
+.fb-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fb-tab-dirty-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--status-warning, #e5c07b);
+  flex-shrink: 0;
+}
+.fb-tab-close {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 2px;
+  color: var(--text-muted);
+  line-height: 1;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.fb-tab-close:hover {
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+}
+.fb-tabs-content {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.fb-tab-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* fs-watcher external-change toast (#41 / ADR-0017) — non-blocking
+   informational banner the TabManager emits when an external `change`
+   event arrives for a dirty editor tab. Three escape hatches:
+   Reload-discard / Compare / Keep-mine. Sits at the top of the tab
+   content so it's visible without scrolling but doesn't intercept
+   typing in the editor below. */
+.fb-tab-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-elevated);
+  border-bottom: 1px solid var(--border-default);
+  border-left: 3px solid var(--status-warning, #e5c07b);
+  font-size: var(--text-sm);
+  flex-shrink: 0;
+}
+.fb-tab-toast-msg {
+  flex: 1;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fb-tab-toast-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
 /* ---- CSV Preview ---- */
 .fb-csv-wrapper {
-  overflow-x: auto;
+  /* Scrolls horizontally for wide CSVs and vertically for the
+     virtualisation window. The IntersectionObserver root is set to this
+     wrapper, so its overflow + height define the visible viewport. */
+  overflow: auto;
   border-radius: var(--radius-md);
+  /* Bound the height so the virtualisation actually has somewhere to
+     scroll; the preview content area may itself scroll if this is taller. */
+  max-height: clamp(320px, 60vh, 720px);
 }
 .fb-csv-table {
   width: 100%;
@@ -313,10 +605,40 @@
   text-align: left;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-default);
+  /* Sticky header — works because the wrapper is the scrolling ancestor. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .fb-csv-table td {
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--border-default);
+  /* Cells don't wrap; horizontal overflow handles wide values. */
+  white-space: nowrap;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fb-csv-th-sortable {
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--duration-fast);
+}
+.fb-csv-th-sortable:hover { background: var(--surface-elevated); }
+.fb-csv-th-sortable:focus-visible {
+  outline: 2px solid var(--accent-default);
+  outline-offset: -2px;
+}
+.fb-csv-th-arrow {
+  display: inline-block;
+  margin-left: var(--space-1);
+  color: var(--accent-default);
+  font-size: 0.85em;
+}
+.fb-csv-sentinel {
+  /* Invisible row-shaped target the IntersectionObserver watches. */
+  height: 1px;
+  width: 100%;
 }
 
 /* ---- Truncated Notice ---- */
@@ -589,4 +911,435 @@
   display: flex;
   gap: var(--space-2);
   flex-wrap: wrap;
+}
+
+/* ============================================================
+   Markdown render (markdown-render.js)
+   ============================================================ */
+.fb-markdown-rendered {
+  /* Tight typography for the in-panel markdown viewer; design is reading-
+     centric, not document-centric (the editor is for that). */
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--leading-relaxed);
+  color: var(--text-primary);
+  padding: var(--space-3);
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+.fb-markdown-rendered h1,
+.fb-markdown-rendered h2,
+.fb-markdown-rendered h3,
+.fb-markdown-rendered h4 {
+  margin: var(--space-4) 0 var(--space-2);
+  line-height: var(--leading-tight);
+  font-weight: var(--weight-semibold);
+}
+.fb-markdown-rendered h1 { font-size: var(--text-2xl); border-bottom: 1px solid var(--border-default); padding-bottom: var(--space-1); }
+.fb-markdown-rendered h2 { font-size: var(--text-xl); border-bottom: 1px solid var(--border-default); padding-bottom: var(--space-1); }
+.fb-markdown-rendered h3 { font-size: var(--text-lg); }
+.fb-markdown-rendered h4 { font-size: var(--text-md); }
+.fb-markdown-rendered p { margin: 0 0 var(--space-3); }
+.fb-markdown-rendered a {
+  color: var(--accent-default);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--duration-fast);
+}
+.fb-markdown-rendered a:hover { border-bottom-color: var(--accent-default); }
+.fb-markdown-rendered code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--surface-tertiary);
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-sm);
+}
+.fb-markdown-rendered pre {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--surface-tertiary);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  overflow-x: auto;
+  margin: 0 0 var(--space-3);
+}
+.fb-markdown-rendered pre code {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+}
+.fb-markdown-rendered blockquote {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border-left: 3px solid var(--accent-default);
+  color: var(--text-secondary);
+  background: var(--accent-soft);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.fb-markdown-rendered ul,
+.fb-markdown-rendered ol { margin: 0 0 var(--space-3); padding-left: var(--space-6); }
+.fb-markdown-rendered li { margin-bottom: var(--space-1); }
+.fb-markdown-rendered table {
+  border-collapse: collapse;
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-sm);
+  width: 100%;
+}
+.fb-markdown-rendered th,
+.fb-markdown-rendered td {
+  border: 1px solid var(--border-default);
+  padding: var(--space-1-5) var(--space-2);
+  text-align: left;
+}
+.fb-markdown-rendered th { background: var(--surface-tertiary); font-weight: var(--weight-semibold); }
+.fb-markdown-rendered img {
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+}
+.fb-markdown-rendered hr {
+  border: 0;
+  border-top: 1px solid var(--border-default);
+  margin: var(--space-4) 0;
+}
+.fb-markdown-rendered input[type="checkbox"] {
+  /* Markdown task-list checkboxes — visible but read-only */
+  margin-right: var(--space-1);
+  pointer-events: none;
+}
+
+/* Mermaid diagram blocks — wrapper sized by mermaid SVG */
+.fb-mermaid-block {
+  display: block;
+  margin: var(--space-3) 0;
+  text-align: center;
+}
+.fb-mermaid-block svg { max-width: 100%; height: auto; }
+.fb-mermaid-error {
+  color: var(--status-error);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--surface-tertiary);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--status-error);
+}
+
+/* "Feature unavailable" inline badge — used by the markdown render's KaTeX
+   and Mermaid lazy loaders when the CDN import fails. Tells the user the
+   raw source is still being shown so the page is not silently broken. */
+.fb-md-feature-unavailable {
+  display: inline-block;
+  margin: var(--space-1) 0;
+  padding: var(--space-0-5) var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--surface-tertiary);
+  border: 1px dashed var(--border-default);
+  border-radius: var(--radius-sm);
+}
+
+.fb-md-loading {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  padding: var(--space-3);
+  text-align: center;
+}
+
+.fb-md-fallback {
+  /* Markdown failed to render entirely — show source as <pre>. */
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  white-space: pre-wrap;
+  padding: var(--space-3);
+}
+
+/* ============================================================
+   Monaco loader fallback (file-viewer-monaco.js → renderPlainTextFallback)
+   ============================================================ */
+.fb-monaco-fallback {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.fb-monaco-fallback-notice {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--surface-tertiary);
+  padding: var(--space-1-5) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+}
+.fb-monaco-fallback-pre {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+
+/* ---- Diff Viewer (file-diff.js, mounted by TabManager mode='diff') ---- */
+.fb-diff-host {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.fb-diff-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-secondary);
+  flex-shrink: 0;
+}
+.fb-diff-title {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+}
+.fb-diff-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 320px;
+  overflow: hidden;
+  background: var(--surface-tertiary);
+}
+.fb-diff-body .monaco-diff-editor {
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---- Markdown viewer (markdown-render.js, .md / .mdx / .markdown files) ---- */
+.fb-markdown-host {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ---- Notebook viewer (notebook-render.js, .ipynb files) ---- */
+.fb-notebook-host {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface-secondary);
+  border-radius: var(--radius-md);
+}
+.fb-nb-loading {
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+.fb-notebook-rendered {
+  padding: var(--space-3);
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+.fb-notebook-rendered img {
+  max-width: 100%;
+  height: auto;
+}
+.fb-notebook-rendered pre {
+  background: var(--surface-tertiary);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.fb-notebook-rendered table {
+  border-collapse: collapse;
+  margin: var(--space-2) 0;
+}
+.fb-notebook-rendered td,
+.fb-notebook-rendered th {
+  border: 1px solid var(--border-default);
+  padding: var(--space-1) var(--space-2);
+}
+.fb-nb-fallback {
+  padding: var(--space-2);
+}
+
+/* ---- Diff dropdown menu in the preview header ---- */
+.fb-diff-menu-wrap { position: relative; display: inline-block; }
+.fb-diff-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 220px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  padding: var(--space-1);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+}
+.fb-diff-menu-item {
+  appearance: none;
+  background: none;
+  border: 0;
+  text-align: left;
+  padding: var(--space-1-5) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.fb-diff-menu-item:hover { background: var(--surface-tertiary); }
+.fb-diff-menu-item:focus-visible {
+  outline: 2px solid var(--accent-default);
+  outline-offset: -2px;
+}
+
+/* ---- Cross-file search panel (file-search.js, Cmd+Shift+F) ----
+   Sits ABOVE the file-list / preview area, anchored to the panel itself
+   so it overlays whatever is currently shown. Toggle via Cmd/Ctrl+Shift+F
+   from anywhere in the app, or Esc to dismiss. */
+.fb-search-panel {
+  position: absolute;
+  top: 40px;            /* below the panel header */
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  background: var(--surface-secondary);
+  border-top: 1px solid var(--border-default);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.fb-search-panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-elevated);
+  flex-shrink: 0;
+}
+.fb-search-panel-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  outline: none;
+}
+.fb-search-panel-input:focus { border-color: var(--accent-default); }
+.fb-search-toggle {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+.fb-search-toggle:hover { background: var(--surface-tertiary); }
+.fb-search-toggle.active {
+  background: var(--accent-soft);
+  color: var(--accent-default);
+  border-color: var(--accent-default);
+}
+.fb-search-glob {
+  width: 110px;
+  padding: var(--space-1) var(--space-2);
+  background: var(--surface-tertiary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  outline: none;
+  flex-shrink: 0;
+}
+.fb-search-close {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: var(--radius-sm);
+}
+.fb-search-close:hover {
+  color: var(--text-primary);
+  background: var(--surface-tertiary);
+}
+.fb-search-status {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-secondary);
+  flex-shrink: 0;
+}
+.fb-search-status.busy { color: var(--accent-default); }
+.fb-search-status.error { color: var(--status-error, #f85149); }
+.fb-search-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+  background: var(--surface-secondary);
+}
+.fb-search-result {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border-default);
+  padding: var(--space-1) var(--space-2);
+  cursor: pointer;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+.fb-search-result:hover {
+  background: var(--surface-tertiary);
+}
+.fb-search-result:focus-visible {
+  outline: 2px solid var(--accent-default);
+  outline-offset: -2px;
+}
+.fb-search-result-loc {
+  color: var(--accent-default);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fb-search-result-text {
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

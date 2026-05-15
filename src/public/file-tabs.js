@@ -1,0 +1,1087 @@
+// file-tabs.js — TabManager for the file browser.
+//
+// A horizontal tab strip + per-tab content host that sits above the
+// preview/editor area. Each tab owns its own FilePreviewPanel or
+// FileEditorPanel instance; switching tabs is instant (DOM hide/show)
+// and preserves the underlying Monaco model state (cursor, scroll,
+// selection, undo history).
+//
+// Public API (window.fileTabs.TabManager):
+//   constructor({ containerEl, authFetch, sessionKey, onActiveChange,
+//                 onAllClosed, iconSet, maxTabs })
+//   .openFile(path, mode, options)  → tab        — activate-or-create
+//   .closeTab(id)                   → boolean    — true if closed
+//   .activate(id)                   → boolean
+//   .closeAll()                     → void
+//   .destroy()                      → void
+//   .getTabs()                      → tab[] (snapshot)
+//   .getActiveTab()                 → tab | null
+//
+// `mode` is 'preview' | 'editor'. Diff mode comes in #6.
+//
+// Persistence: open tabs (path + mode + active index) round-trip through
+// localStorage keyed by `fb-tabs-<sessionKey>`, scoped per claude session.
+// Restored on construction; rewritten on every mutation (open/close/reorder/
+// activate). v1 schema is `{ version, tabs: [{path, mode}], activeIndex }`.
+//
+// Keyboard (when the tab strip is the active focus area or via document
+// listener installed by the host):
+//   Cmd/Ctrl+W      — close active tab
+//   Cmd/Ctrl+1..9   — jump to tab N (1-based)
+//
+// Dual-export so pure-JS persistence helpers are testable under Node.
+
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------------
+  // Constants + pure helpers
+  // ---------------------------------------------------------------------------
+
+  var STORAGE_PREFIX = 'fb-tabs-';
+  var STORAGE_VERSION = 2;
+  var DEFAULT_MAX_TABS = 12;
+  var DEFAULT_SESSION_KEY = 'default';
+
+  function storageKey(sessionKey) {
+    return STORAGE_PREFIX + (sessionKey || DEFAULT_SESSION_KEY);
+  }
+
+  function basenameOf(path) {
+    if (!path) return '';
+    var s = String(path).replace(/\\/g, '/');
+    var i = s.lastIndexOf('/');
+    return i === -1 ? s : (s.slice(i + 1) || s);
+  }
+
+  // Compose a stable identity for "this open tab". Same (path, mode) plus
+  // diff-target always resolves to the same tab so reopening a file just
+  // activates it. Diff tabs need the compare-target in the key — otherwise
+  // "diff foo.js vs HEAD" and "diff foo.js vs main" would collide.
+  function tabKey(path, mode, diffTarget) {
+    var dt = '';
+    if (mode === 'diff' && diffTarget) {
+      dt = '|' + (diffTarget.compareWithRef || '') + '|' + (diffTarget.compareWithPath || '');
+    }
+    return mode + ':' + (path || '') + dt;
+  }
+
+  // Serialize a TabManager state for localStorage. Pure transformation —
+  // the real persistence wrappers handle quota/private-mode failures.
+  function serializeState(tabs, activeIndex) {
+    var safe = (tabs || []).map(function (t) {
+      var entry = { path: t.path, mode: t.mode };
+      if (t.mode === 'diff') {
+        if (t.compareWithRef)  entry.compareWithRef  = t.compareWithRef;
+        if (t.compareWithPath) entry.compareWithPath = t.compareWithPath;
+      }
+      return entry;
+    });
+    var idx = (typeof activeIndex === 'number' && activeIndex >= 0 && activeIndex < safe.length)
+      ? activeIndex : (safe.length ? 0 : -1);
+    return { version: STORAGE_VERSION, tabs: safe, activeIndex: idx };
+  }
+
+  // Deserialize defensively — anything unrecognised falls back to an empty
+  // state so a stale or corrupted localStorage entry can't poison the panel.
+  // v1 → v2 migration is a "drop everything and start fresh" — v1 had no
+  // diff tabs, so users lose at most a list of preview/editor tabs (the
+  // files themselves are intact). Cheaper than a real migration path that
+  // would have to re-encode v1 entries into v2 shape, and the cost is
+  // bounded (one session of re-opening files).
+  function deserializeState(raw) {
+    if (!raw || typeof raw !== 'object') return { tabs: [], activeIndex: -1 };
+    if (raw.version !== STORAGE_VERSION) return { tabs: [], activeIndex: -1 };
+    if (!Array.isArray(raw.tabs)) return { tabs: [], activeIndex: -1 };
+    var tabs = [];
+    for (var i = 0; i < raw.tabs.length; i++) {
+      var t = raw.tabs[i];
+      if (!t || typeof t.path !== 'string' || !t.path) continue;
+      var mode = (t.mode === 'editor' || t.mode === 'preview' || t.mode === 'diff')
+        ? t.mode : 'preview';
+      var entry = { path: t.path, mode: mode };
+      if (mode === 'diff') {
+        // Both targets are user-supplied strings; trust validatePath on the
+        // server side, but a basic sanity strip keeps localStorage clean.
+        if (typeof t.compareWithRef  === 'string' && t.compareWithRef.length  <= 200) {
+          entry.compareWithRef  = t.compareWithRef;
+        }
+        if (typeof t.compareWithPath === 'string' && t.compareWithPath.length <= 4096) {
+          entry.compareWithPath = t.compareWithPath;
+        }
+      }
+      tabs.push(entry);
+    }
+    var idx = (typeof raw.activeIndex === 'number' && raw.activeIndex >= 0 && raw.activeIndex < tabs.length)
+      ? raw.activeIndex : (tabs.length ? 0 : -1);
+    return { tabs: tabs, activeIndex: idx };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Browser-only beyond this point
+  // ---------------------------------------------------------------------------
+
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    if (typeof module !== 'undefined' && module.exports) {
+      module.exports = {
+        STORAGE_PREFIX: STORAGE_PREFIX,
+        STORAGE_VERSION: STORAGE_VERSION,
+        storageKey: storageKey,
+        basenameOf: basenameOf,
+        tabKey: tabKey,
+        serializeState: serializeState,
+        deserializeState: deserializeState,
+      };
+    }
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // TabManager
+  // ---------------------------------------------------------------------------
+
+  function TabManager(options) {
+    options = options || {};
+    if (!options.containerEl) {
+      throw new Error('TabManager: options.containerEl is required');
+    }
+    if (typeof options.authFetch !== 'function') {
+      throw new Error('TabManager: options.authFetch is required');
+    }
+
+    this.containerEl = options.containerEl;
+    this.authFetch = options.authFetch;
+    this.sessionKey = options.sessionKey || DEFAULT_SESSION_KEY;
+    this.maxTabs = options.maxTabs || DEFAULT_MAX_TABS;
+    this.iconSet = options.iconSet || (typeof window !== 'undefined' ? window.icons : null);
+    this.onActiveChange = options.onActiveChange || function () {};
+    this.onAllClosed = options.onAllClosed || function () {};
+    // Optional getter — host (FileBrowserPanel) supplies the WatcherClient
+    // so TabManager can subscribe each open tab's path explicitly. null
+    // when the panel has no live watcher (closed, harness-without-watcher,
+    // CSP-blocked module). Refcount-aware in WatcherClient: same path
+    // subscribed by both the panel listing AND a tab is one server-side
+    // subscription with refcount 2; closing the tab decrements but
+    // doesn't unsubscribe until the listing also drops it.
+    this.getFileWatcher = typeof options.getFileWatcher === 'function'
+      ? options.getFileWatcher : function () { return null; };
+
+    this._tabs = [];                  // [{id, path, mode, name, dirty, contentEl, panel, tabEl}]
+    this._activeId = null;
+    this._tabSeq = 0;
+    this._destroyed = false;
+    this._dragSrcId = null;
+    this._docKeyHandler = null;
+
+    this._buildDOM();
+    this._bindKeyboard();
+  }
+
+  TabManager.prototype._buildDOM = function () {
+    this.containerEl.classList.add('fb-tabs-host');
+
+    var strip = document.createElement('div');
+    strip.className = 'fb-tabs-strip';
+    strip.setAttribute('role', 'tablist');
+    strip.setAttribute('aria-label', 'Open files');
+    this._tabStripEl = strip;
+    this.containerEl.appendChild(strip);
+
+    var contentRoot = document.createElement('div');
+    contentRoot.className = 'fb-tabs-content';
+    this._contentRootEl = contentRoot;
+    this.containerEl.appendChild(contentRoot);
+  };
+
+  // ---- Keyboard (document-level Ctrl/Cmd shortcuts) ----
+
+  TabManager.prototype._bindKeyboard = function () {
+    var self = this;
+    this._docKeyHandler = function (e) {
+      if (self._destroyed) return;
+      if (!self._tabs.length) return;
+      // Only fire when the file browser is the active surface (some tab
+      // is actually displayed). The host can decide via containerEl
+      // visibility.
+      if (!self._isHostVisible()) return;
+
+      var meta = e.ctrlKey || e.metaKey;
+      if (!meta) return;
+
+      // Cmd/Ctrl+W — close active tab. Some browsers reserve this for
+      // window-close; users on those browsers won't see this fire, but we
+      // preventDefault when we DO catch it so editor focus stays put.
+      if (e.key === 'w' || e.key === 'W') {
+        e.preventDefault();
+        if (self._activeId) self.closeTab(self._activeId);
+        return;
+      }
+      // Cmd/Ctrl+1..9 — jump to tab N
+      if (e.key >= '1' && e.key <= '9') {
+        var n = parseInt(e.key, 10);
+        if (n <= self._tabs.length) {
+          e.preventDefault();
+          self.activate(self._tabs[n - 1].id);
+        }
+      }
+    };
+    document.addEventListener('keydown', this._docKeyHandler);
+  };
+
+  TabManager.prototype._isHostVisible = function () {
+    if (!this.containerEl) return false;
+    // offsetParent === null when display:none somewhere up the tree.
+    return this.containerEl.offsetParent !== null;
+  };
+
+  // ---- Public API ----
+
+  TabManager.prototype.getTabs = function () {
+    return this._tabs.map(function (t) {
+      return { id: t.id, path: t.path, mode: t.mode, name: t.name, dirty: !!t.dirty };
+    });
+  };
+
+  // fs-watcher integration (#41 / ADR-0017). Receives events from
+  // FileBrowserPanel's WatcherClient and routes them to the matching
+  // open tab(s). Per the ADR's client-side reaction lifecycle:
+  //   - change on a clean editor tab: silent reload preserving cursor +
+  //     scroll + selection via FileEditorPanel.applyDiskContent.
+  //   - change on a dirty editor tab: non-blocking toast with three
+  //     escape hatches (Reload-discard / Compare / Keep mine).
+  //   - change on a preview tab: re-render preview silently (preview is
+  //     always "clean" — no buffer to lose).
+  //   - unlink on any open tab: close the tab and surface a toast so the
+  //     user knows the file is gone.
+  // No-op for events whose path doesn't match any open tab.
+  //
+  // Hash short-circuit: if the event carries a `hash` and matches the
+  // tab's currently-saved hash, the disk content didn't actually change
+  // (chokidar fires `change` on metadata-only writes too) — skip the
+  // round-trip entirely.
+  TabManager.prototype.handleExternalEvent = function (evt) {
+    if (!evt || !evt.path) return;
+    var matches = this._tabsForPath(evt.path);
+    if (!matches.length) return;
+
+    if (evt.type === 'unlink') {
+      for (var u = 0; u < matches.length; u++) this._handleExternalUnlink(matches[u]);
+      return;
+    }
+    if (evt.type === 'change' || evt.type === 'add') {
+      for (var c = 0; c < matches.length; c++) this._handleExternalChange(matches[c], evt);
+      return;
+    }
+  };
+
+  TabManager.prototype._tabsForPath = function (path) {
+    if (!path) return [];
+    var norm = String(path).replace(/\\/g, '/');
+    var hits = [];
+    for (var i = 0; i < this._tabs.length; i++) {
+      var tabPath = String(this._tabs[i].path).replace(/\\/g, '/');
+      if (tabPath === norm) hits.push(this._tabs[i]);
+    }
+    return hits;
+  };
+
+  TabManager.prototype._handleExternalChange = function (tab, evt) {
+    if (!tab || !tab.panel) return;
+    var panel = tab.panel;
+
+    // Hash short-circuit — disk hash matches what we already have, no
+    // refresh needed. This catches the chokidar "metadata-only write"
+    // case (touch foo.js etc.) without bothering Monaco.
+    if (evt.hash && panel._fileHash && evt.hash === panel._fileHash) {
+      return;
+    }
+
+    var self = this;
+
+    // Editor tab: branch on dirty/clean.
+    if (tab.mode === 'editor') {
+      var isDirty = typeof panel.isDirty === 'function' ? panel.isDirty() : !!panel._dirty;
+      if (isDirty) {
+        // Don't auto-reload — the user has unsaved work. Show a
+        // non-blocking toast with three escape hatches. The 409-on-save
+        // backstop catches anything they ignore.
+        this._showExternalChangeToast(tab);
+        return;
+      }
+      // Clean tab — fetch + apply silently, preserving cursor / scroll /
+      // selection via FileEditorPanel.applyDiskContent (extracted from
+      // _reloadFile specifically for this path).
+      this._silentReloadEditorTab(tab);
+      return;
+    }
+
+    // Preview tab: always "clean" (no buffer). Re-render via the
+    // preview panel's own dispatch. Cheap because preview content is
+    // already cached server-side and the network call is small.
+    if (tab.mode === 'preview') {
+      // If the preview panel already has a Monaco viewer mounted AND
+      // exposes applyDiskContent (FilePreviewPanel does, post-#41), use
+      // the cursor-preserving silent reload — fetch fresh content +
+      // hand it to the viewer without rebuilding the surface. Falls
+      // through to a full showPreview re-render when applyDiskContent
+      // isn't available (Monaco hasn't mounted yet) OR the panel is
+      // still in the initial-pre paint window.
+      if (typeof panel.applyDiskContent === 'function' && panel._monacoEditor) {
+        this._silentReloadTab(tab);
+        return;
+      }
+      if (typeof panel.showPreview === 'function') {
+        var item = tab._initialItem || {
+          path: tab.path, name: tab.name,
+          mimeCategory: 'code', previewable: true, editable: true,
+        };
+        try { panel.showPreview(item, undefined, {}); } catch (_) { /* swallow */ }
+      }
+      return;
+    }
+
+    // Diff tab: leave alone — diff is a snapshot comparison; refreshing
+    // would discard the intentional snapshot the user is examining.
+  };
+
+  // Cursor-preserving silent reload, shared between editor + preview
+  // tabs (post-#41). Both panel types implement applyDiskContent with
+  // the same Monaco position/selection/viewState capture-and-restore
+  // pattern, so this helper is panel-type-agnostic — it just fetches
+  // /api/files/content and hands the result over.
+  TabManager.prototype._silentReloadTab = function (tab) {
+    if (!tab || !tab.panel) return;
+    var panel = tab.panel;
+    var path = tab.path;
+    if (typeof panel.applyDiskContent !== 'function' || !this.authFetch) return;
+
+    this.authFetch('/api/files/content?path=' + encodeURIComponent(path))
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        try { panel.applyDiskContent({ content: data.content, hash: data.hash }); } catch (_) {}
+      })
+      .catch(function () { /* best-effort silent refresh; failure leaves the existing buffer */ });
+  };
+
+  // Backward-compat alias — _silentReloadEditorTab was the original
+  // name when only editor tabs supported applyDiskContent. Preview
+  // tabs gained the same surface in the fs-watcher integration; the
+  // alias keeps internal callers stable while the rename lands.
+  TabManager.prototype._silentReloadEditorTab = function (tab) {
+    return this._silentReloadTab(tab);
+  };
+
+  TabManager.prototype._handleExternalUnlink = function (tab) {
+    if (!tab) return;
+    var name = tab.name || (tab.path || 'file');
+    if (typeof window !== 'undefined' && window.feedback &&
+        typeof window.feedback.warning === 'function') {
+      try {
+        window.feedback.warning(name + ' was deleted on disk; closing the tab.');
+      } catch (_) { /* feedback infra missing — silent is unavoidable */ }
+    }
+    // closeTab handles the dirty-prompt for us; if the user chose to keep
+    // their dirty buffer, the tab survives but the path no longer points
+    // at a live file. The next save will create the file fresh, which
+    // matches user intent ("I want to keep my work").
+    try { this.closeTab(tab.id); } catch (_) { /* ignore */ }
+  };
+
+  // Non-blocking inline toast for the dirty-tab external-change case.
+  // Mounted INSIDE the tab's content host so it scrolls with the editor
+  // and is visually bound to the file the agent touched. Three escape
+  // hatches per ADR-0017:
+  //   - Reload (discard): forfeit the buffer; apply disk content.
+  //   - Compare: open the diff viewer (memory-vs-disk via DiffViewerPanel).
+  //   - Keep mine: dismiss the toast; the existing 409 conflict flow
+  //     handles the next save attempt.
+  TabManager.prototype._showExternalChangeToast = function (tab) {
+    if (!tab || !tab.contentEl) return;
+    // Replace any prior toast on this tab so repeated change events
+    // don't stack into a column of identical banners.
+    var prior = tab.contentEl.querySelector('.fb-tab-toast');
+    if (prior && prior.parentNode) prior.parentNode.removeChild(prior);
+
+    var self = this;
+    var toast = document.createElement('div');
+    toast.className = 'fb-tab-toast';
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+
+    var msg = document.createElement('span');
+    msg.className = 'fb-tab-toast-msg';
+    msg.textContent = 'agent modified ' + (tab.name || 'this file') + ' on disk';
+    toast.appendChild(msg);
+
+    var actions = document.createElement('div');
+    actions.className = 'fb-tab-toast-actions';
+
+    function mkBtn(label, handler) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-secondary btn-small';
+      b.textContent = label;
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        try { handler(); } catch (_) { /* ignore */ }
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+      });
+      return b;
+    }
+
+    actions.appendChild(mkBtn('Reload (discard)', function () {
+      self._silentReloadEditorTab(tab);
+    }));
+    actions.appendChild(mkBtn('Compare', function () {
+      var panel = tab.panel;
+      var memContent = panel && panel._editor &&
+        typeof panel._editor.getValue === 'function' ? panel._editor.getValue() : '';
+      // Use a transient DiffViewerPanel mounted inside a scratch container
+      // overlay'd above the tab. Keep it modal-shaped via _createModal-
+      // style positioning. For v1 simplicity, route through TabManager's
+      // openFile diff mode with the new openMemoryVsFile entry point.
+      if (window.fileDiff && typeof window.fileDiff.DiffViewerPanel === 'function') {
+        try {
+          // Mount a transient diff overlay in a temp container appended
+          // to body — matches the existing modal shell pattern. The
+          // overlay closes itself on Esc / click-outside via the
+          // inline-built handlers below.
+          self._showInlineDiffOverlay(memContent, tab.path);
+        } catch (_) { /* ignore; user can re-open via tab strip if needed */ }
+      }
+    }));
+    actions.appendChild(mkBtn('Keep mine', function () { /* dismiss only */ }));
+
+    toast.appendChild(actions);
+    tab.contentEl.appendChild(toast);
+  };
+
+  // Render a transient overlay that hosts a DiffViewerPanel showing the
+  // editor's in-memory buffer vs disk. Lighter-weight than promoting it
+  // to a full diff tab — the user just wants a quick "what did the agent
+  // change vs my buffer" peek before deciding Reload / Keep mine.
+  TabManager.prototype._showInlineDiffOverlay = function (memContent, diskPath) {
+    if (!window.fileDiff || typeof window.fileDiff.DiffViewerPanel !== 'function') return;
+    var overlay = document.createElement('div');
+    overlay.className = 'image-preview-modal active fb-watch-diff-overlay';
+    overlay.style.zIndex = '10000';
+    var box = document.createElement('div');
+    box.className = 'modal-content';
+    box.style.cssText = 'max-width:90vw;max-height:80vh;display:flex;flex-direction:column';
+    overlay.appendChild(box);
+
+    var hdr = document.createElement('div');
+    hdr.className = 'modal-header';
+    var title = document.createElement('h2');
+    title.textContent = 'Compare with disk';
+    hdr.appendChild(title);
+    var close = document.createElement('button');
+    close.className = 'close-btn';
+    close.innerHTML = '&times;';
+    close.addEventListener('click', function () { dismiss(); });
+    hdr.appendChild(close);
+    box.appendChild(hdr);
+
+    var diffHost = document.createElement('div');
+    diffHost.style.cssText = 'flex:1;min-height:400px;min-width:0;padding:8px';
+    box.appendChild(diffHost);
+
+    var diff = new window.fileDiff.DiffViewerPanel({
+      authFetch: this.authFetch,
+      containerEl: diffHost,
+      onClose: function () { /* user-driven via overlay close */ },
+    });
+
+    var dismissed = false;
+    function dismiss() {
+      if (dismissed) return;
+      dismissed = true;
+      try { diff.destroy(); } catch (_) {}
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onEsc, true);
+    }
+    function onEsc(e) { if (e.key === 'Escape') { e.stopPropagation(); dismiss(); } }
+    overlay.addEventListener('mousedown', function (e) {
+      if (e.target === overlay) dismiss();
+    });
+    document.addEventListener('keydown', onEsc, true);
+
+    document.body.appendChild(overlay);
+    diff.openMemoryVsFile(memContent, diskPath);
+  };
+
+  TabManager.prototype.getActiveTab = function () {
+    return this._findTab(this._activeId);
+  };
+
+  // Convenience accessor — returns the active tab id (string) or null.
+  // Used by the e2e suite (16-spec scenario h) which keeps just the id
+  // around between page.evaluate calls (passing the full tab object
+  // through Playwright's JSON marshalling drops DOM refs and is awkward).
+  TabManager.prototype.getActiveId = function () {
+    return this._activeId || null;
+  };
+
+  // Friendly alias for activate(). Accepts either an id string OR a
+  // tab-shaped object (so callers can pass the openFile() return value
+  // verbatim — useful when that value has round-tripped through the
+  // Playwright bridge and arrives back as a plain object).
+  TabManager.prototype.switchTo = function (idOrTab) {
+    if (idOrTab && typeof idOrTab === 'object' && typeof idOrTab.id === 'string') {
+      return this.activate(idOrTab.id);
+    }
+    return this.activate(idOrTab);
+  };
+
+  TabManager.prototype.openFile = function (path, mode, options) {
+    if (!path) return null;
+    mode = (mode === 'editor' || mode === 'diff') ? mode : 'preview';
+    options = options || {};
+
+    // For diff tabs, the identity includes the compare target so
+    // "diff foo.js vs HEAD" and "diff foo.js vs main" are distinct tabs.
+    var diffTarget = mode === 'diff' ? {
+      compareWithRef: options.compareWithRef || null,
+      compareWithPath: options.compareWithPath || null,
+    } : null;
+
+    var existing = this._findByKey(path, mode, diffTarget);
+    if (existing) {
+      this.activate(existing.id);
+      // Even when reactivating, allow the caller to push a fresh jumpTo
+      // (e.g. terminal click on the same file at a new line).
+      if (options.jumpTo && existing.panel && typeof existing.panel.jumpTo === 'function') {
+        try { existing.panel.jumpTo(options.jumpTo); } catch (_) { /* ignore */ }
+      } else if (options.jumpTo) {
+        existing.pendingJumpTo = options.jumpTo;
+        // Re-render preview if the panel doesn't expose a jump method yet.
+        if (existing.mode === 'preview') this._renderPreviewIntoTab(existing);
+      }
+      return existing.id;
+    }
+
+    if (this._tabs.length >= this.maxTabs) {
+      // LRU eviction: drop the oldest non-dirty tab to make room.
+      var evict = null;
+      for (var i = 0; i < this._tabs.length; i++) {
+        if (!this._tabs[i].dirty) { evict = this._tabs[i]; break; }
+      }
+      if (evict) this.closeTab(evict.id, { silent: true });
+    }
+    if (this._tabs.length >= this.maxTabs) {
+      // All tabs are dirty — refuse rather than silently lose work. Show a
+      // visible toast so the user knows why their click had no effect
+      // (search-result / terminal-link / markdown-link entry points all
+      // call openFile in fire-and-forget mode and have nowhere else to
+      // surface the rejection). Codex review #2 caught the silent no-op.
+      if (typeof window !== 'undefined' && window.feedback &&
+          typeof window.feedback.warning === 'function') {
+        try {
+          window.feedback.warning(
+            'Tab limit reached (' + this.maxTabs +
+            '); close a tab to open this file.'
+          );
+        } catch (_) { /* feedback infra missing — silent is unavoidable */ }
+      }
+      return null;
+    }
+
+    var tab = this._createTab(path, mode, options);
+    this._renderStrip();
+    this.activate(tab.id);
+    this._persist();
+    // Return the id (string) — the test contract (16-spec scenario h)
+    // assumes openFile yields an id you can pass through Playwright's
+    // page.evaluate marshalling without losing DOM refs. Internal callers
+    // that need the live tab object use getActiveTab() right after
+    // openFile (the new tab is the active one immediately after activate).
+    return tab.id;
+  };
+
+  TabManager.prototype.closeTab = function (id, opts) {
+    opts = opts || {};
+    var idx = this._indexOf(id);
+    if (idx === -1) return false;
+    var tab = this._tabs[idx];
+
+    if (tab.dirty && !opts.silent && tab.panel && typeof tab.panel.close === 'function') {
+      // Defer to the panel's close logic (FileEditorPanel will prompt).
+      // Replace its onClose with a hook that completes the tab close once
+      // the panel finishes its dirty prompt.
+      var self = this;
+      var prevOnClose = tab.panel.onClose;
+      tab.panel.onClose = function () {
+        if (typeof prevOnClose === 'function') {
+          try { prevOnClose(); } catch (_) { /* ignore */ }
+        }
+        // Re-enter closeTab now that the panel is gone; mark not-dirty so
+        // we skip the re-prompt branch.
+        tab.dirty = false;
+        tab.panel = null;
+        self.closeTab(id, { silent: true });
+      };
+      try { tab.panel.close(); } catch (_) { /* ignore */ }
+      return false; // not yet closed
+    }
+
+    // Hard close: dispose panel + DOM.
+    this._disposeTab(tab);
+    this._tabs.splice(idx, 1);
+
+    // Activation: prefer the tab that was to the right of the closed one,
+    // else the last tab in the strip, else nothing.
+    if (this._activeId === id) {
+      this._activeId = null;
+      var nextActive = this._tabs[idx] || this._tabs[idx - 1] || null;
+      if (nextActive) this.activate(nextActive.id);
+    }
+
+    this._renderStrip();
+    this._persist();
+
+    if (!this._tabs.length) {
+      try { this.onAllClosed(); } catch (_) { /* ignore */ }
+    }
+    return true;
+  };
+
+  TabManager.prototype.activate = function (id) {
+    var tab = this._findTab(id);
+    if (!tab) return false;
+    if (this._activeId === id && tab.contentEl.style.display !== 'none') {
+      // Already active — still re-render strip in case dirty/title changed.
+      this._renderStrip();
+      return true;
+    }
+
+    // Hide all other tab content panes; show this one.
+    for (var i = 0; i < this._tabs.length; i++) {
+      var t = this._tabs[i];
+      t.contentEl.style.display = (t.id === id) ? '' : 'none';
+    }
+    this._activeId = id;
+    this._renderStrip();
+    this._persist();
+
+    // Lazily render the panel into the tab the first time it's activated
+    // (cheap-construction pattern; preview tabs fetch content on first show).
+    if (!tab._rendered) {
+      tab._rendered = true;
+      if (tab.mode === 'preview') {
+        this._renderPreviewIntoTab(tab);
+      } else if (tab.mode === 'editor') {
+        this._renderEditorIntoTab(tab);
+      } else if (tab.mode === 'diff') {
+        this._renderDiffIntoTab(tab);
+      }
+    }
+
+    try { this.onActiveChange({ tab: tab }); } catch (_) { /* ignore */ }
+    return true;
+  };
+
+  TabManager.prototype.closeAll = function () {
+    // Iterate over a snapshot since closeTab mutates _tabs.
+    var ids = this._tabs.map(function (t) { return t.id; });
+    for (var i = 0; i < ids.length; i++) this.closeTab(ids[i], { silent: true });
+  };
+
+  TabManager.prototype.destroy = function () {
+    if (this._destroyed) return;
+    this._destroyed = true;
+    if (this._docKeyHandler) {
+      document.removeEventListener('keydown', this._docKeyHandler);
+      this._docKeyHandler = null;
+    }
+    this.closeAll();
+    if (this.containerEl) {
+      this.containerEl.innerHTML = '';
+      this.containerEl.classList.remove('fb-tabs-host');
+    }
+  };
+
+  // ---- Internal: tab creation, rendering, disposal ----
+
+  TabManager.prototype._createTab = function (path, mode, options) {
+    var contentEl = document.createElement('div');
+    contentEl.className = 'fb-tab-content';
+    contentEl.style.display = 'none'; // hidden until activate() shows it
+    this._contentRootEl.appendChild(contentEl);
+
+    var displayName = basenameOf(path) || path;
+    if (mode === 'diff') {
+      // Render "foo.js ↔ HEAD" or "foo.js ↔ b.js" so the strip shows what's
+      // being compared at a glance.
+      var rhs = (options && options.compareWithRef) ||
+                (options && options.compareWithPath
+                  ? basenameOf(options.compareWithPath) : '') ||
+                'compare';
+      displayName = (basenameOf(path) || path) + ' ↔ ' + rhs;
+    }
+
+    var tab = {
+      id: 't_' + (++this._tabSeq),
+      path: path,
+      mode: mode,
+      name: displayName,
+      dirty: false,
+      contentEl: contentEl,
+      panel: null,
+      tabEl: null,
+      _rendered: false,
+      pendingJumpTo: options && options.jumpTo ? options.jumpTo : null,
+      _initialContent: options && options.content != null ? options.content : null,
+      _initialHash: options && options.hash != null ? options.hash : null,
+      _initialItem: options && options.item ? options.item : null,
+      // Diff-mode targets — surfaced for both render-on-activate and
+      // localStorage persistence. Either compareWithRef OR compareWithPath
+      // is set (not both); the absence of both = "compare with HEAD".
+      compareWithRef: options && options.compareWithRef ? options.compareWithRef : null,
+      compareWithPath: options && options.compareWithPath ? options.compareWithPath : null,
+    };
+    this._tabs.push(tab);
+    // fs-watcher subscribe (#41 / ADR-0017): explicit per-path subscribe
+    // so the tab gets change/unlink events even when opened OUTSIDE the
+    // panel's current dir. Refcount-aware in WatcherClient — listing +
+    // tab subscribing the same path yields one server-side subscription
+    // with refcount 2.
+    var watcher = this.getFileWatcher();
+    if (watcher && typeof watcher.subscribe === 'function') {
+      try { watcher.subscribe(path); } catch (_) { /* swallow */ }
+    }
+    return tab;
+  };
+
+  TabManager.prototype._renderDiffIntoTab = function (tab) {
+    if (!window.fileDiff || !window.fileDiff.DiffViewerPanel) {
+      tab.contentEl.innerHTML = '<div class="fb-preview-error">Diff viewer not available.</div>';
+      return;
+    }
+    var self = this;
+    if (!tab.panel) {
+      tab.panel = new window.fileDiff.DiffViewerPanel({
+        authFetch: this.authFetch,
+        containerEl: tab.contentEl,
+        onClose: function () {
+          tab.panel = null;
+          self.closeTab(tab.id, { silent: true });
+        },
+      });
+    }
+    // Pick the comparison target from the tab's persisted state.
+    if (tab.compareWithPath) {
+      tab.panel.openFileVsFile(tab.compareWithPath, tab.path);
+    } else {
+      tab.panel.openRefVsWorking(tab.path, tab.compareWithRef || 'HEAD');
+    }
+  };
+
+  TabManager.prototype._renderPreviewIntoTab = function (tab) {
+    if (!window.fileBrowser || !window.fileBrowser.FilePreviewPanel) {
+      tab.contentEl.innerHTML = '<div class="fb-preview-error">Preview not available.</div>';
+      return;
+    }
+    // Reuse the existing preview panel implementation per-tab. Each tab
+    // owns its own panel instance so disposers (Monaco/Panzoom/PDF.js)
+    // stay scoped to the tab.
+    if (!tab.panel) {
+      tab.panel = new window.fileBrowser.FilePreviewPanel({
+        authFetch: this.authFetch,
+        containerEl: tab.contentEl,
+        onEdit: function () { /* TabManager-level edit toggle is a follow-up */ },
+        onBack: function () { /* no-op inside a tab */ },
+      });
+    }
+    var item = tab._initialItem || {
+      path: tab.path,
+      name: tab.name,
+      mimeCategory: 'code',
+      previewable: true,
+      editable: true,
+    };
+    var jumpTo = tab.pendingJumpTo || null;
+    tab.pendingJumpTo = null;
+    try {
+      tab.panel.showPreview(item, undefined, { jumpTo: jumpTo });
+    } catch (_) {
+      tab.contentEl.innerHTML = '<div class="fb-preview-error">Preview failed.</div>';
+    }
+  };
+
+  TabManager.prototype._renderEditorIntoTab = function (tab) {
+    var self = this;
+    if (!window.fileEditor || !window.fileEditor.FileEditorPanel) {
+      tab.contentEl.innerHTML = '<div class="fb-preview-error">Editor not available.</div>';
+      return;
+    }
+    var ensureContent = (tab._initialContent != null && tab._initialHash != null)
+      ? Promise.resolve({ content: tab._initialContent, hash: tab._initialHash })
+      : this.authFetch('/api/files/content?path=' + encodeURIComponent(tab.path))
+          .then(function (r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.json();
+          });
+
+    ensureContent.then(function (data) {
+      if (self._destroyed || !self._findTab(tab.id)) return;
+      tab.panel = new window.fileEditor.FileEditorPanel({
+        authFetch: self.authFetch,
+        containerEl: tab.contentEl,
+        onClose: function () {
+          // FileEditorPanel.destroy() invokes its onClose AFTER the editor
+          // is gone; collapse this into a tab close.
+          tab.panel = null;
+          self.closeTab(tab.id, { silent: true });
+        },
+        onSave: function () {
+          tab.dirty = false;
+          self._renderStrip();
+        },
+        // Explicit dirty-state notifier (#41 cleanup of the original
+        // _wrapDirtyTracking monkey-patch). Fires on every transition
+        // INCLUDING the silent-reload path (applyDiskContent), which
+        // the monkey-patch missed because _suppressContentChange skipped
+        // _onContentChange. Tab strip dirty dot now stays in sync after
+        // an external write → Reload-discard cycle.
+        onDirtyChange: function (isDirty) {
+          if (tab.dirty !== isDirty) {
+            tab.dirty = isDirty;
+            self._renderStrip();
+            self._persist();
+          }
+        },
+      });
+      tab.panel.openEditor(tab.path, data.content, data.hash);
+    }).catch(function (err) {
+      tab.contentEl.innerHTML = '<div class="fb-preview-error">Failed to open editor: ' +
+        (err && err.message ? _esc(err.message) : 'unknown') + '</div>';
+    });
+  };
+
+  TabManager.prototype._disposeTab = function (tab) {
+    if (!tab) return;
+    // fs-watcher unsubscribe (#41) — refcount-aware in WatcherClient,
+    // so this is safe even when the listing is also subscribed to the
+    // same path. Symmetric to the subscribe in _createTab.
+    var watcher = this.getFileWatcher();
+    if (watcher && typeof watcher.unsubscribe === 'function' && tab.path) {
+      try { watcher.unsubscribe(tab.path); } catch (_) { /* swallow */ }
+    }
+    if (tab.panel) {
+      try {
+        if (typeof tab.panel.destroy === 'function') tab.panel.destroy();
+      } catch (_) { /* ignore */ }
+      tab.panel = null;
+    }
+    if (tab.contentEl && tab.contentEl.parentNode) {
+      tab.contentEl.parentNode.removeChild(tab.contentEl);
+    }
+    if (tab.tabEl && tab.tabEl.parentNode) {
+      tab.tabEl.parentNode.removeChild(tab.tabEl);
+    }
+  };
+
+  // ---- Tab strip rendering ----
+
+  TabManager.prototype._renderStrip = function () {
+    var self = this;
+    this._tabStripEl.innerHTML = '';
+    this._tabs.forEach(function (tab) {
+      var btn = document.createElement('div');
+      btn.className = 'fb-tab' + (tab.id === self._activeId ? ' active' : '');
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-selected', tab.id === self._activeId ? 'true' : 'false');
+      btn.setAttribute('tabindex', tab.id === self._activeId ? '0' : '-1');
+      btn.setAttribute('draggable', 'true');
+      btn.setAttribute('data-tab-id', tab.id);
+      btn.title = tab.path;
+
+      var name = document.createElement('span');
+      name.className = 'fb-tab-name';
+      name.textContent = tab.name;
+      btn.appendChild(name);
+
+      if (tab.dirty) {
+        var dot = document.createElement('span');
+        dot.className = 'fb-tab-dirty-dot';
+        dot.setAttribute('aria-label', 'Unsaved changes');
+        btn.appendChild(dot);
+      }
+
+      var close = document.createElement('button');
+      close.className = 'fb-tab-close';
+      close.type = 'button';
+      close.setAttribute('aria-label', 'Close ' + tab.name);
+      close.innerHTML = self.iconSet ? self.iconSet.x(12) : '&times;';
+      close.addEventListener('click', function (e) {
+        e.stopPropagation();
+        self.closeTab(tab.id);
+      });
+      btn.appendChild(close);
+
+      btn.addEventListener('click', function () { self.activate(tab.id); });
+      btn.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          self.activate(tab.id);
+        }
+      });
+
+      // HTML5 drag-reorder
+      btn.addEventListener('dragstart', function (e) {
+        self._dragSrcId = tab.id;
+        try { e.dataTransfer.setData('text/plain', tab.id); } catch (_) {}
+        e.dataTransfer.effectAllowed = 'move';
+        btn.classList.add('dragging');
+      });
+      btn.addEventListener('dragend', function () {
+        btn.classList.remove('dragging');
+        self._dragSrcId = null;
+      });
+      btn.addEventListener('dragover', function (e) {
+        if (!self._dragSrcId || self._dragSrcId === tab.id) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+      });
+      btn.addEventListener('drop', function (e) {
+        if (!self._dragSrcId || self._dragSrcId === tab.id) return;
+        e.preventDefault();
+        self._reorder(self._dragSrcId, tab.id);
+      });
+
+      tab.tabEl = btn;
+      self._tabStripEl.appendChild(btn);
+    });
+  };
+
+  TabManager.prototype._reorder = function (srcId, dstId) {
+    var srcIdx = this._indexOf(srcId);
+    var dstIdx = this._indexOf(dstId);
+    if (srcIdx === -1 || dstIdx === -1 || srcIdx === dstIdx) return;
+    var moved = this._tabs.splice(srcIdx, 1)[0];
+    this._tabs.splice(dstIdx, 0, moved);
+    this._renderStrip();
+    this._persist();
+  };
+
+  // ---- Persistence ----
+
+  TabManager.prototype._persist = function () {
+    var key = storageKey(this.sessionKey);
+    var idx = this._indexOf(this._activeId);
+    var state = serializeState(this._tabs, idx);
+    try {
+      localStorage.setItem(key, JSON.stringify(state));
+    } catch (_) { /* quota / private mode — persistence becomes best-effort */ }
+  };
+
+  TabManager.prototype.restoreFromStorage = function () {
+    var key = storageKey(this.sessionKey);
+    var raw = null;
+    try { raw = localStorage.getItem(key); } catch (_) { return false; }
+    if (!raw) return false;
+    var parsed;
+    try { parsed = JSON.parse(raw); } catch (_) { return false; }
+    var state = deserializeState(parsed);
+    if (!state.tabs.length) return false;
+    for (var i = 0; i < state.tabs.length; i++) {
+      var t = state.tabs[i];
+      // Lazy: don't fetch content yet — let activate() trigger render.
+      // Diff tabs need the persisted compare-target threaded through to
+      // _createTab so they restore as the SAME diff (foo.js vs ref X)
+      // rather than collapsing to the default HEAD-vs-working diff. Codex
+      // review #1 caught the lost context — `_createTab(path, mode, {})`
+      // dropped both compareWithRef and compareWithPath silently.
+      var initOpts = {};
+      if (t.mode === 'diff') {
+        if (t.compareWithRef)  initOpts.compareWithRef  = t.compareWithRef;
+        if (t.compareWithPath) initOpts.compareWithPath = t.compareWithPath;
+      }
+      this._createTab(t.path, t.mode, initOpts);
+    }
+    this._renderStrip();
+    var idx = state.activeIndex >= 0 ? state.activeIndex : 0;
+    if (this._tabs[idx]) this.activate(this._tabs[idx].id);
+    return true;
+  };
+
+  // ---- Internal helpers ----
+
+  TabManager.prototype._findTab = function (id) {
+    if (!id) return null;
+    for (var i = 0; i < this._tabs.length; i++) {
+      if (this._tabs[i].id === id) return this._tabs[i];
+    }
+    return null;
+  };
+
+  TabManager.prototype._findByKey = function (path, mode, diffTarget) {
+    var key = tabKey(path, mode, diffTarget || null);
+    for (var i = 0; i < this._tabs.length; i++) {
+      var t = this._tabs[i];
+      var theirTarget = t.mode === 'diff' ? {
+        compareWithRef: t.compareWithRef,
+        compareWithPath: t.compareWithPath,
+      } : null;
+      if (tabKey(t.path, t.mode, theirTarget) === key) return t;
+    }
+    return null;
+  };
+
+  TabManager.prototype._indexOf = function (id) {
+    if (!id) return -1;
+    for (var i = 0; i < this._tabs.length; i++) {
+      if (this._tabs[i].id === id) return i;
+    }
+    return -1;
+  };
+
+  // ---- Module-private utilities ----
+
+  function _esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // Wrap FileEditorPanel._onContentChange to surface dirty transitions to a
+  // callback. The editor panel doesn't expose an onDirtyChange option today
+  // (~3 lines could add one), so we monkey-patch to keep this commit
+  // self-contained — clearly noted so a future cleanup pulls it inside the
+  // editor module.
+  function _wrapDirtyTracking(panel, callback) {
+    if (!panel || typeof panel._onContentChange !== 'function') return;
+    var prior = panel._onContentChange;
+    panel._onContentChange = function () {
+      var wasDirty = !!panel._dirty;
+      prior.call(panel);
+      var nowDirty = !!panel._dirty;
+      if (wasDirty !== nowDirty) {
+        try { callback(nowDirty); } catch (_) { /* ignore */ }
+      }
+    };
+    // Fire once with the initial state (an editor opened with a draft is
+    // already dirty).
+    try { callback(!!panel._dirty); } catch (_) { /* ignore */ }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Exports
+  // ---------------------------------------------------------------------------
+
+  var exportsObj = {
+    TabManager: TabManager,
+    // Pure helpers exposed for tests.
+    storageKey: storageKey,
+    basenameOf: basenameOf,
+    tabKey: tabKey,
+    serializeState: serializeState,
+    deserializeState: deserializeState,
+    STORAGE_PREFIX: STORAGE_PREFIX,
+    STORAGE_VERSION: STORAGE_VERSION,
+  };
+
+  window.fileTabs = exportsObj;
+  if (typeof module !== 'undefined' && module.exports) module.exports = exportsObj;
+})();

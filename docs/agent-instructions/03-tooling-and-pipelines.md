@@ -20,7 +20,7 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on every push and PR. It runs 
 - **Browser E2E tests**: 6 Playwright job types (golden-path, functional-core, functional-extended, mobile, visual-regression, new-features)
 - **Binary build**: SEA binary compilation + smoke tests
 
-See `06-ci-first-testing.md` for the full CI job map, artifact details, and debugging workflow. CI is the only authority on whether code works (see ADR-0008 for the parallelization strategy).
+See `06-local-first-then-ci.md` for the full CI job map, artifact details, and debugging workflow. Local tests gate the push; CI is the final cross-platform verification (see ADR-0008 for the parallelization strategy).
 
 ### Release Pipeline
 

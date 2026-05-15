@@ -12,6 +12,12 @@ const {
   isBinaryFile,
 } = require('../src/utils/file-utils');
 
+// file-browser.js is a browser module (window.fileBrowser) but is dual-exported
+// via module.exports so its pure helpers (regex, extractPathFromText) are
+// directly testable in Node. The window-only DOM constructors are not invoked
+// here — we only touch the synchronous string parsing surface.
+const fileBrowser = require('../src/public/file-browser');
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -408,6 +414,260 @@ describe('file-utils', function () {
       const filePath = createTmpFile('magic.bin', buf);
       const result = await isBinaryFile(filePath);
       assert.strictEqual(result, true);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// file-browser link detection (regex + extractPathFromText)
+//
+// These cover the synchronous parsing surface used by both the right-click
+// TerminalPathDetector and the xterm registerLinkProvider attached in
+// app._setupTerminalLinking. They DO NOT instantiate any DOM constructors.
+// ---------------------------------------------------------------------------
+describe('file-browser link detection', function () {
+
+  describe('extractPathFromText (right-click selection)', function () {
+    const { extractPathFromText } = fileBrowser;
+
+    it('matches Unix absolute path with extension', function () {
+      const r = extractPathFromText('/Users/me/code/file.js');
+      assert.ok(r);
+      assert.strictEqual(r.path, '/Users/me/code/file.js');
+      assert.strictEqual(r.line, null);
+      assert.strictEqual(r.col, null);
+    });
+
+    it('matches Unix relative ./ path', function () {
+      const r = extractPathFromText('./src/foo.ts');
+      assert.ok(r);
+      assert.strictEqual(r.path, './src/foo.ts');
+    });
+
+    it('matches bare relative path (src/foo.js)', function () {
+      const r = extractPathFromText('src/foo.js');
+      assert.ok(r);
+      assert.strictEqual(r.path, 'src/foo.js');
+    });
+
+    it('matches just a filename with known extension', function () {
+      const r = extractPathFromText('package.json');
+      assert.ok(r);
+      assert.strictEqual(r.path, 'package.json');
+    });
+
+    it('matches Windows absolute path', function () {
+      const r = extractPathFromText('C:\\Users\\me\\file.txt');
+      assert.ok(r);
+      assert.strictEqual(r.path, 'C:\\Users\\me\\file.txt');
+    });
+
+    it('captures :line suffix', function () {
+      const r = extractPathFromText('src/app.js:42');
+      assert.ok(r);
+      assert.strictEqual(r.path, 'src/app.js');
+      assert.strictEqual(r.line, 42);
+      assert.strictEqual(r.col, null);
+    });
+
+    it('captures :line:col suffix (Claude/Codex emit these)', function () {
+      const r = extractPathFromText('src/app.js:42:5');
+      assert.ok(r);
+      assert.strictEqual(r.path, 'src/app.js');
+      assert.strictEqual(r.line, 42);
+      assert.strictEqual(r.col, 5);
+    });
+
+    it('strips matched single-quote wrappers', function () {
+      const r = extractPathFromText("'src/foo.js'");
+      assert.ok(r);
+      assert.strictEqual(r.path, 'src/foo.js');
+    });
+
+    it('strips matched double-quote wrappers', function () {
+      const r = extractPathFromText('"src/foo.js"');
+      assert.ok(r);
+      assert.strictEqual(r.path, 'src/foo.js');
+    });
+
+    it('rejects version-shaped tokens like 1.2.3', function () {
+      assert.strictEqual(extractPathFromText('1.2.3'), null);
+      assert.strictEqual(extractPathFromText('v1.2.3'), null);
+      assert.strictEqual(extractPathFromText('1.2.3.4'), null);
+    });
+
+    it('rejects npm specifiers without an extension (react/jsx-runtime)', function () {
+      // Bare identifier with slash but no known extension at the end.
+      assert.strictEqual(extractPathFromText('react/jsx-runtime'), null);
+      assert.strictEqual(extractPathFromText('@scope/pkg'), null);
+    });
+
+    it('rejects CLI flags (--foo=bar/baz)', function () {
+      assert.strictEqual(extractPathFromText('--foo=bar/baz'), null);
+    });
+
+    it('rejects plain identifiers with no extension', function () {
+      assert.strictEqual(extractPathFromText('hello world'), null);
+      assert.strictEqual(extractPathFromText('foo'), null);
+      assert.strictEqual(extractPathFromText(''), null);
+      assert.strictEqual(extractPathFromText(null), null);
+    });
+
+    it('rejects unknown extension (.xyzzy not in allowlist)', function () {
+      // No separator AND no known extension → must reject.
+      assert.strictEqual(extractPathFromText('foo.xyzzy'), null);
+    });
+
+    it('handles common code extensions in the allowlist', function () {
+      const exts = ['js', 'mjs', 'ts', 'tsx', 'jsx', 'py', 'go', 'rs', 'java',
+        'sh', 'css', 'html', 'svg', 'md', 'json', 'yaml', 'yml', 'toml', 'pdf',
+        'png', 'jpg', 'jpeg', 'gif'];
+      exts.forEach((ext) => {
+        const text = 'foo.' + ext;
+        const r = extractPathFromText(text);
+        assert.ok(r, 'expected match for ' + text);
+        assert.strictEqual(r.path, text);
+      });
+    });
+  });
+
+  describe('LINK_RE_GLOBAL (xterm registerLinkProvider scan)', function () {
+    const { LINK_RE_GLOBAL } = fileBrowser;
+
+    function findAll(text) {
+      LINK_RE_GLOBAL.lastIndex = 0;
+      const out = [];
+      let m;
+      while ((m = LINK_RE_GLOBAL.exec(text)) !== null) {
+        out.push({ path: m[2], line: m[3] || null, col: m[4] || null });
+        if (m.index === LINK_RE_GLOBAL.lastIndex) LINK_RE_GLOBAL.lastIndex++;
+      }
+      return out;
+    }
+
+    it('finds multiple paths on a single line', function () {
+      const matches = findAll('see src/app.js and test/app.test.js for details');
+      assert.strictEqual(matches.length, 2);
+      assert.strictEqual(matches[0].path, 'src/app.js');
+      assert.strictEqual(matches[1].path, 'test/app.test.js');
+    });
+
+    it('captures path with line/col in error stack format', function () {
+      const matches = findAll('    at Module._compile (src/app.js:42:5)');
+      assert.strictEqual(matches.length, 1);
+      assert.strictEqual(matches[0].path, 'src/app.js');
+      assert.strictEqual(matches[0].line, '42');
+      assert.strictEqual(matches[0].col, '5');
+    });
+
+    it('does NOT match version tokens during npm install scrolling', function () {
+      const text = 'added react@18.2.0, react-dom@18.2.0, lodash@4.17.21 in 5s';
+      const matches = findAll(text);
+      // None of these are file paths.
+      assert.strictEqual(matches.length, 0);
+    });
+
+    it('does NOT flag npm specifiers like react/jsx-runtime', function () {
+      const matches = findAll('imported "react/jsx-runtime"');
+      assert.strictEqual(matches.length, 0);
+    });
+
+    it('does NOT match URLs (URLs are handled by WebLinksAddon)', function () {
+      // We require a known file extension; "example.com" matches no extension.
+      const matches = findAll('See https://example.com/docs/page for info');
+      assert.strictEqual(matches.length, 0);
+    });
+
+    it('matches absolute Windows paths', function () {
+      const matches = findAll('Output: C:\\Users\\me\\file.txt was written');
+      assert.strictEqual(matches.length, 1);
+      assert.ok(matches[0].path.startsWith('C:'));
+      assert.ok(matches[0].path.endsWith('file.txt'));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // _resolveAgainstCwd — relative-path resolution + separator normalization
+  // (Reviewer fixes for #7: MEDIUM-2 mixed separators, LOW-1 ../ collapse.)
+  // -------------------------------------------------------------------------
+  describe('_resolveAgainstCwd', function () {
+    const { _resolveAgainstCwd: resolve } = fileBrowser;
+
+    it('passes Unix absolute paths through unchanged', function () {
+      assert.strictEqual(resolve('/abs/path/file.js', '/cwd'), '/abs/path/file.js');
+    });
+
+    it('passes Windows absolute paths through unchanged', function () {
+      assert.strictEqual(resolve('C:\\Users\\me\\file.js', 'C:\\Users'), 'C:\\Users\\me\\file.js');
+      assert.strictEqual(resolve('C:/Users/me/file.js', 'C:/Users'), 'C:/Users/me/file.js');
+    });
+
+    it('passes ~/ prefixed paths through unchanged', function () {
+      assert.strictEqual(resolve('~/foo.js', '/cwd'), '~/foo.js');
+    });
+
+    it('joins a relative path against a Unix cwd', function () {
+      assert.strictEqual(resolve('src/foo.js', '/Users/me/proj'), '/Users/me/proj/src/foo.js');
+    });
+
+    it('strips a leading ./ from the relative path', function () {
+      assert.strictEqual(resolve('./src/foo.js', '/Users/me/proj'), '/Users/me/proj/src/foo.js');
+    });
+
+    it('collapses ../ segments (LOW-1 fix)', function () {
+      assert.strictEqual(
+        resolve('../sibling/foo.js', '/Users/me/proj'),
+        '/Users/me/sibling/foo.js'
+      );
+    });
+
+    it('collapses multiple ../ segments', function () {
+      assert.strictEqual(
+        resolve('../../up/foo.js', '/a/b/c'),
+        '/a/up/foo.js'
+      );
+    });
+
+    it('does not pop past the leading slash on Unix', function () {
+      // /a + ../../foo.js: first pop removes "a", second pop is blocked
+      // (stack.length === 1), so we stay anchored at "/" and append foo.js.
+      assert.strictEqual(resolve('../../foo.js', '/a'), '/foo.js');
+    });
+
+    it('honors a Windows cwd separator (MEDIUM-2 fix)', function () {
+      // cwd uses backslash → joined path also uses backslash even when
+      // the user clicked a forward-slashed relative path like `src/foo.js`.
+      assert.strictEqual(
+        resolve('src/foo.js', 'C:\\Users\\me\\proj'),
+        'C:\\Users\\me\\proj\\src\\foo.js'
+      );
+    });
+
+    it('honors a forward-slash cwd separator on Windows-style cwds', function () {
+      // Cygwin / git-bash typically yields `/c/Users/me/proj` style.
+      assert.strictEqual(
+        resolve('src\\foo.js', '/c/Users/me/proj'),
+        '/c/Users/me/proj/src/foo.js'
+      );
+    });
+
+    it('picks the FIRST separator when cwd contains both (no mixing)', function () {
+      // `C:/Users\me` — backslash appears at index 8, forward slash at 2.
+      // First separator is `/`, so result uses `/`.
+      assert.strictEqual(
+        resolve('src/foo.js', 'C:/Users\\me'),
+        'C:/Users/me/src/foo.js'
+      );
+    });
+
+    it('returns the bare path when cwd is null/undefined', function () {
+      assert.strictEqual(resolve('src/foo.js', null), 'src/foo.js');
+      assert.strictEqual(resolve('src/foo.js', undefined), 'src/foo.js');
+    });
+
+    it('strips trailing separators from cwd', function () {
+      assert.strictEqual(resolve('foo.js', '/Users/me/proj/'), '/Users/me/proj/foo.js');
+      assert.strictEqual(resolve('foo.js', 'C:\\Users\\me\\'), 'C:\\Users\\me\\foo.js');
     });
   });
 });

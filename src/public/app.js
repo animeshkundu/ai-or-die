@@ -672,6 +672,7 @@ class ClaudeCodeWebInterface {
 
         this.setupTerminalSearch();
         this.setupTerminalContextMenu();
+        this._setupTerminalLinking(this.terminal);
 
         this.terminal.onData((data) => {
             if (this._ctrlModifierPending) {
@@ -714,11 +715,20 @@ class ClaudeCodeWebInterface {
             }
         });
 
-        // Sync terminal colors when the CSS theme changes (data-theme attribute)
+        // Sync terminal colors AND any live Monaco instances when the CSS
+        // theme changes (data-theme attribute on documentElement).
         const themeObserver = new MutationObserver((mutations) => {
             for (const m of mutations) {
-                if (m.attributeName === 'data-theme' && this.terminal) {
-                    this.syncTerminalTheme();
+                if (m.attributeName === 'data-theme') {
+                    if (this.terminal) this.syncTerminalTheme();
+                    // Editor pane + read-only code preview re-theme live so
+                    // they don't get stuck on whatever theme was active when
+                    // they were created. Loader reads the new data-theme via
+                    // resolveMonacoTheme() internally.
+                    if (window.fileViewerMonaco &&
+                        typeof window.fileViewerMonaco.applyThemeToAll === 'function') {
+                        try { window.fileViewerMonaco.applyThemeToAll(); } catch (_) { /* swallow */ }
+                    }
                 }
             }
         });
@@ -1052,6 +1062,34 @@ class ClaudeCodeWebInterface {
             if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'V') {
                 e.preventDefault();
                 this.toggleVSCodeTunnel();
+            }
+        });
+
+        // Ctrl/Cmd+Shift+F → toggle the file browser's cross-file search panel.
+        // Opens the file browser (if closed) and the search panel together so
+        // the user can hit one shortcut from anywhere in the app and start
+        // typing a query immediately. Mirrors the VS Code/JetBrains binding.
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+                // Don't steal the shortcut from a focused editor that owns
+                // its own find — Monaco's find-in-files for the editor pane
+                // is handled inside the editor surface; the file-browser
+                // search is for the project-wide case.
+                const tag = (e.target && e.target.tagName) || '';
+                const isEditableField = (tag === 'INPUT' || tag === 'TEXTAREA' ||
+                    (e.target && e.target.isContentEditable));
+                // Allow the shortcut when typing in our OWN search panel
+                // input (it'll just refocus); skip for any other text field.
+                const insideSearchPanel = e.target &&
+                    typeof e.target.closest === 'function' &&
+                    e.target.closest('.fb-search-panel');
+                if (isEditableField && !insideSearchPanel) return;
+
+                e.preventDefault();
+                const panel = this._ensureFileBrowser ? this._ensureFileBrowser() : this._fileBrowserPanel;
+                if (!panel) return;
+                if (!panel.isOpen()) panel.open();
+                if (typeof panel.toggleSearchPanel === 'function') panel.toggleSearchPanel();
             }
         });
 
@@ -2914,6 +2952,81 @@ class ClaudeCodeWebInterface {
         });
     }
 
+    /**
+     * Wire up clickable file paths in a terminal:
+     *   1. xterm registerLinkProvider for hover-underline + click-to-open
+     *      (synchronous regex only — NO network I/O on render).
+     *   2. TerminalPathDetector for the right-click "Open in File Viewer /
+     *      Edit / Download" context menu (selection-driven).
+     *
+     * Safe to call multiple times for the same terminal — each call returns a
+     * disposable that we track on the terminal object so we can clean up if
+     * the terminal is destroyed.
+     */
+    _setupTerminalLinking(terminal) {
+        if (!terminal || !window.fileBrowser) return;
+
+        // 1) Link provider — clickable links for paths/filenames in output.
+        if (typeof window.fileBrowser.attachLinkProvider === 'function' &&
+            typeof terminal.registerLinkProvider === 'function' &&
+            !terminal._fbLinkProvider) {
+            try {
+                terminal._fbLinkProvider = window.fileBrowser.attachLinkProvider({
+                    terminal: terminal,
+                    authFetch: (url, opts) => this.authFetch(url, opts),
+                    openInViewer: (path, line, col) => this.openFileInViewer(path, line, col),
+                    getCwd: () => this.getCurrentWorkingDir(),
+                    feedback: window.feedback,
+                });
+            } catch (err) {
+                console.warn('[file-browser] link provider attach failed:', err);
+            }
+        }
+
+        // 2) Right-click selection-based context menu (lazy panel via getter).
+        if (typeof window.fileBrowser.TerminalPathDetector === 'function' &&
+            !terminal._fbPathDetector) {
+            try {
+                terminal._fbPathDetector = new window.fileBrowser.TerminalPathDetector({
+                    getFileBrowserPanel: () => this._ensureFileBrowser(),
+                    authFetch: (url, opts) => this.authFetch(url, opts),
+                    terminal: terminal,
+                    app: this,
+                });
+                terminal._fbPathDetector.init();
+            } catch (err) {
+                console.warn('[file-browser] path detector init failed:', err);
+            }
+        }
+
+        // 3) Lifecycle: on terminal disposal, release the link provider, the
+        //    path-detector handlers, and the floating menu DOM node. Without
+        //    this, splitting + closing terminals leaks document-level
+        //    listeners and orphaned <div class="fb-terminal-context-menu">
+        //    nodes (peer-review MEDIUM-1 on commit 9a05963).
+        if (typeof terminal.onDispose === 'function' && !terminal._fbLinkingDisposeWired) {
+            terminal._fbLinkingDisposeWired = true;
+            try {
+                terminal.onDispose(() => {
+                    try {
+                        if (terminal._fbLinkProvider && typeof terminal._fbLinkProvider.dispose === 'function') {
+                            terminal._fbLinkProvider.dispose();
+                        }
+                    } catch (_) {}
+                    try {
+                        if (terminal._fbPathDetector && typeof terminal._fbPathDetector.destroy === 'function') {
+                            terminal._fbPathDetector.destroy();
+                        }
+                    } catch (_) {}
+                    terminal._fbLinkProvider = null;
+                    terminal._fbPathDetector = null;
+                });
+            } catch (err) {
+                console.warn('[file-browser] onDispose wiring failed:', err);
+            }
+        }
+    }
+
     setupTerminalContextMenu() {
         const menu = document.getElementById('termContextMenu');
         if (!menu) return;
@@ -3632,17 +3745,24 @@ class ClaudeCodeWebInterface {
     }
 
     // File Browser Methods
-    toggleFileBrowser() {
+    _ensureFileBrowser() {
         if (!this._fileBrowserPanel && window.fileBrowser) {
             this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({
                 app: this,
                 authFetch: (url, opts) => this.authFetch(url, opts),
+                // initialPath kept as a back-compat fallback; getCwd is the
+                // source of truth on each open() so a session switch between
+                // opens picks up the new cwd (per ADR-0016 / task #14).
                 initialPath: this.getCurrentWorkingDir(),
+                getCwd: () => this.getCurrentWorkingDir(),
             });
         }
-        if (this._fileBrowserPanel) {
-            this._fileBrowserPanel.toggle();
-        }
+        return this._fileBrowserPanel;
+    }
+
+    toggleFileBrowser() {
+        const panel = this._ensureFileBrowser();
+        if (panel) panel.toggle();
     }
 
     // VS Code Tunnel Methods
@@ -3686,16 +3806,15 @@ class ClaudeCodeWebInterface {
         }
     }
 
-    openFileInViewer(filePath) {
-        if (!this._fileBrowserPanel && window.fileBrowser) {
-            this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({
-                app: this,
-                authFetch: (url, opts) => this.authFetch(url, opts),
-                initialPath: this.getCurrentWorkingDir(),
-            });
-        }
-        if (this._fileBrowserPanel) {
-            this._fileBrowserPanel.openToFile(filePath);
+    openFileInViewer(filePath, line, col) {
+        const panel = this._ensureFileBrowser();
+        if (panel) {
+            panel.openToFile(filePath);
+            // Future: pass {line, col} to Monaco viewer for cursor placement
+            // (Stage 1.5 work — for now we just open the file).
+            if (line && this._fileBrowserPanel) {
+                this._fileBrowserPanel._pendingJumpTo = { line: line, col: col || 1 };
+            }
         }
     }
 

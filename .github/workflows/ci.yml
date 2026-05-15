@@ -26,6 +26,13 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
       - run: npm ci
+      # Verify the @vscode/ripgrep postinstall succeeded — fail CI fast
+      # with an actionable message instead of letting 50 spec failures
+      # downstream obscure the root cause (corp proxy blocked the
+      # postinstall fetch, --ignore-scripts ran, antivirus quarantined
+      # the binary, etc.). See ADR-0018.
+      - name: Verify bundled ripgrep
+        run: node -e "const p = require('@vscode/ripgrep').rgPath; require('fs').accessSync(p, require('fs').constants.X_OK); console.log('rg OK:', p)"
       - run: npm test
       - run: npm audit --audit-level=moderate
         continue-on-error: true

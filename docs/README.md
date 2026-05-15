@@ -42,7 +42,7 @@ Central documentation for the ai-or-die project -- a Node.js web application tha
 - [Tooling & Pipelines](agent-instructions/03-tooling-and-pipelines.md)
 - [Handoff Protocol](agent-instructions/04-handoff-protocol.md)
 - [Defensive Coding](agent-instructions/05-defensive-coding.md)
-- [CI-First Testing](agent-instructions/06-ci-first-testing.md)
+- [Local-First, Then CI](agent-instructions/06-local-first-then-ci.md)
 - [Documentation Hygiene](agent-instructions/07-docs-hygiene.md)
 - [Multi-Agent Consultation](agent-instructions/08-multi-agent-consultation.md)
 
