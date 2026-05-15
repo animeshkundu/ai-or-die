@@ -185,6 +185,57 @@ function request(port, method, urlPath, body) {
       'fd → format-date.js: ' + JSON.stringify(basenames));
   });
 
+  // QA journey P1 finding #5 (task #14): typing a path-separator query
+  // (e.g. `lib/router`) used to score 0 because fuzzysort was scoring
+  // against basename only — basenames never contain `/`. Real users type
+  // `path/file` to disambiguate among many same-named files (the natural
+  // VS Code Quick Open pattern). The fix scores against BOTH basename and
+  // relative path; fuzzysort's multi-key API picks the best per-target
+  // score automatically.
+  it('matches a path-separator query against the relative path (e.g. `utils/format` → format-date.js)', async function () {
+    const sessionId = await freshSession();
+    // Our fixture has src/utils/format-date.js and src/utils/format-currency.js.
+    // Typing `utils/format` is the canonical "I want one of those" query.
+    const r = await request(port, 'GET',
+      '/api/files/find?q=' + encodeURIComponent('utils/format') +
+      '&session=' + encodeURIComponent(sessionId));
+    assert.strictEqual(r.status, 200);
+    const basenames = r.body.matches.map((m) => m.basename);
+    assert.ok(
+      basenames.includes('format-date.js') || basenames.includes('format-currency.js'),
+      'path-separator query failed to match either format-* file: ' + JSON.stringify(r.body.matches)
+    );
+  });
+
+  it('matches a deep path-separator query against the full relative path (e.g. `src/components/UserProfile`)', async function () {
+    const sessionId = await freshSession();
+    // Type a query that ONLY matches via the path component — the basename
+    // alone (`UserProfile.tsx`) has no slash anywhere. Confirms the multi-
+    // key fuzzysort fix sources matches from BOTH keys, not just basename.
+    const r = await request(port, 'GET',
+      '/api/files/find?q=' + encodeURIComponent('components/UserProfile') +
+      '&session=' + encodeURIComponent(sessionId));
+    assert.strictEqual(r.status, 200);
+    const basenames = r.body.matches.map((m) => m.basename);
+    assert.ok(basenames.includes('UserProfile.tsx'),
+      'deep path-separator query did not match UserProfile.tsx: ' + JSON.stringify(r.body.matches));
+  });
+
+  it('basename-only query still wins when no path qualifier is given', async function () {
+    // Regression guard: the multi-key fix must not REGRESS the existing
+    // basename-only flow. Typing `app` should still surface app.js + app.test.js
+    // and rank app.js (tighter basename match) first.
+    const sessionId = await freshSession();
+    const r = await request(port, 'GET', '/api/files/find?q=app&session=' + encodeURIComponent(sessionId));
+    assert.strictEqual(r.status, 200);
+    const basenames = r.body.matches.map((m) => m.basename);
+    assert.ok(basenames.indexOf('app.js') !== -1, 'app.js found: ' + basenames);
+    assert.ok(
+      basenames.indexOf('app.js') < basenames.indexOf('app.test.js'),
+      'app.js still outranks app.test.js: ' + basenames
+    );
+  });
+
   // ── .gitignore awareness ─────────────────────────────────────────────────
 
   it('respects .gitignore (does not surface node_modules/ entries)', async function () {

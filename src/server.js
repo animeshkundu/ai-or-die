@@ -1789,18 +1789,31 @@ class ClaudeCodeWebServer {
           // accepts a key-extraction wrapper. We do this by hand because
           // we want score+basename in the response.
           const fuzzysort = require('fuzzysort');
-          // Prepare targets: basename strings. fuzzysort.prepare() builds
-          // an internal index per target — worth doing for the cap-sized
-          // candidate list since we re-run it per query (no cache for v1).
+          // Prepare targets with BOTH basename AND relative-path keys.
+          // fuzzysort's multi-key API (via `keys` in go() below) scores
+          // each target against every listed key and surfaces the best
+          // per-target score. This is what makes path-separator queries
+          // like `utils/format` or `components/UserProfile` work — the
+          // basename never contains a slash, so basename-only scoring
+          // would collapse to 0 the moment the user types `/`. Real users
+          // type `path/file` to disambiguate among same-named files in
+          // monorepos (the canonical VS Code Quick Open pattern). Per
+          // QA journey P1 finding #5 (task #14).
           const prepared = files.map((rel) => {
             const abs = path.isAbsolute(rel) ? rel : path.join(root, rel);
             const base = path.basename(rel);
-            return { abs, base, prep: fuzzysort.prepare(base) };
+            return {
+              abs,
+              base,
+              rel,
+              prepBase: fuzzysort.prepare(base),
+              prepRel: fuzzysort.prepare(rel),
+            };
           });
 
           // fuzzysort.go returns matches sorted by score descending.
           const scored = fuzzysort.go(trimmed, prepared, {
-            key: 'prep',
+            keys: ['prepBase', 'prepRel'],
             limit,
             // threshold is fuzzysort's "minimum score" knob — anything
             // below is filtered out. -10000 = "include even weak partials"
