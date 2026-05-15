@@ -312,18 +312,26 @@ test.describe('File browser — fs-watcher reactive sync (#100, ADR-0017)', () =
     // Open 5 watchers from the page context (same IP), then attempt a 6th.
     // Use page.request for the 6th so we can synchronously observe the
     // status code without EventSource's async lifecycle.
+    // Per ff79038, GET /api/files/watch requires BOTH ?session=<id> AND
+    // ?path=<rootDir>; sending only session returns 400 before the
+    // rate-limit check runs. Use the test session's own cwd ('.') as the
+    // watch root — server resolves it via validatePath/realpathSync.
     const result = await page.evaluate(async () => {
       const opened = [];
+      const path = '.';
       // Open 5 EventSources to distinct session ids.
       for (let i = 0; i < 5; i++) {
         const sid = 'watcher-cap-test-' + i + '-' + Date.now();
-        const es = new EventSource('/api/files/watch?session=' + encodeURIComponent(sid));
+        const es = new EventSource('/api/files/watch?session=' + encodeURIComponent(sid)
+          + '&path=' + encodeURIComponent(path));
         opened.push(es);
       }
       // Wait briefly for them to actually establish.
       await new Promise((r) => setTimeout(r, 500));
-      // The 6th attempt should be rejected with 429.
-      const res = await fetch('/api/files/watch?session=watcher-cap-test-OVERFLOW', {
+      // The 6th attempt should be rejected with 429 (rate-limit), not 400
+      // (missing param) — that's why path= must be present.
+      const res = await fetch('/api/files/watch?session=watcher-cap-test-OVERFLOW'
+        + '&path=' + encodeURIComponent(path), {
         method: 'GET',
         headers: { Accept: 'text/event-stream' },
       });
