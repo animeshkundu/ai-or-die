@@ -743,17 +743,28 @@ Inside the Terminal bridge's `onData` hook (per the `processOutput` extension po
 
 ### Cross-platform path handling
 
-`url.fileURLToPath()` is the reference implementation. Test fixtures cover:
+`url.fileURLToPath()` is the reference implementation, with a host-strip fallback on POSIX (see below). Test fixtures cover:
 
 | Input URI | Platform | Expected output |
 |-----------|----------|-----------------|
 | `file:///Users/foo/code` | POSIX | `/Users/foo/code` |
 | `file://localhost/Users/foo` | POSIX | `/Users/foo` |
+| `file://my-mac/Users/foo` | POSIX | `/Users/foo` (host stripped — see below) |
 | `file:///C:/Users/foo` | Windows | `C:\Users\foo` |
-| `file://server/share/foo` | Windows | `\\server\share\foo` (UNC) |
+| `file://server/share/foo` | Windows | `\\server\share\foo` (UNC — host kept) |
 | `file:///Users/foo/my%20code` | any | `/Users/foo/my code` (percent decode) |
 
-No platform-specific branches in production code — the heavy lifting is in `url.fileURLToPath()`.
+**Host-strip fallback (POSIX only).** Node's [`url.fileURLToPath()`](https://nodejs.org/api/url.html#urlfileurltopathurl) throws `ERR_INVALID_FILE_URL_HOST` on POSIX for any host segment that isn't exactly empty or `localhost`. But every documented shell hook above emits the local machine's hostname (`$HOSTNAME` / `$HOST` / `$env:COMPUTERNAME`) — `file://my-mac/Users/foo`, not `file:///Users/foo` — because that's what the OSC 7 protocol historically encodes (the URI carries the host so consumers can distinguish local vs remote SSH sessions). Without compensation, the parser would silently reject every emit from the documented setup.
+
+The parser (`src/osc7-parser.js`) handles this transparently:
+
+1. Try `url.fileURLToPath(body)` first. Succeeds when the URI is `file:///path` or `file://localhost/path` (or, on Windows, a valid UNC).
+2. On POSIX, when that throws `ERR_INVALID_FILE_URL_HOST`, strip the host segment (`file://my-mac/Users/foo` → `file:///Users/foo`) and re-parse. The hostname is treated as informational and discarded — the same posture iTerm2, GNOME Terminal, and WezTerm take.
+3. On Windows, the host segment is meaningful (UNC paths). It is **never** stripped; a non-localhost host on Windows continues to mean a UNC server name.
+
+This makes the documented bash/zsh/pwsh hooks work out of the box on macOS / Linux without users having to know about the `$HOSTNAME` vs `localhost` mismatch.
+
+No platform-specific branches in production code beyond this single fallback — the heavy lifting is in `url.fileURLToPath()`.
 
 ### Shell hooks (one-line user setup)
 
@@ -763,7 +774,7 @@ The terminal bridge listens for OSC 7 — every modern terminal protocol speaks 
   ```bash
   PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
   ```
-- **zsh** (`~/.zshrc`):
+- **zsh** (`~/.zshrc`) — bare zsh (5.x) does **not** emit OSC 7 natively. Many distros and frameworks (Oh My Zsh, prezto, zsh-newuser-install on Fedora/Ubuntu desktop, macOS Terminal.app's default profile) ship a `chpwd` hook by default; otherwise add the one-liner:
   ```zsh
   function chpwd() { printf "\e]7;file://%s%s\e\\" "$HOST" "$PWD" }
   ```
@@ -783,6 +794,8 @@ The terminal bridge listens for OSC 7 — every modern terminal protocol speaks 
 - **Windows cmd.exe** — out of scope; no clean way to emit OSC 7 from a `prompt` definition. Recommend pwsh.
 
 Many distro defaults already emit OSC 7 (Fedora's `/etc/profile.d/vte.sh`, Ubuntu desktop, macOS Terminal.app's default zshrc, Git Bash on Windows when configured). **Hooks are not auto-injected** into user `~/.bashrc` / `$PROFILE` — user shell config is sacrosanct, and the documented one-line snippet is the right boundary.
+
+**Note on `$HOSTNAME` / `$HOST` / `$env:COMPUTERNAME`**: every documented hook above emits the local machine's hostname (`file://my-mac/Users/foo/...`), not `localhost`. The parser handles this transparently — see [Cross-platform path handling](#cross-platform-path-handling) above for the host-strip fallback.
 
 ### Client integration
 
@@ -807,7 +820,7 @@ OSC 7 has none of these failure modes. See [ADR-0019](../adrs/0019-osc7-cwd-trac
 - Live CWD for AI CLI bridges (Claude/Codex/Gemini) — they don't `chdir`; concept doesn't map.
 - Auto-injecting OSC 7 hooks into user shell rc files.
 - Windows `cmd.exe` support.
-- Per-pane CWD for tmux / screen.
+- **tmux / screen — OSC 7 is swallowed.** Confirmed against tmux 3.x on macOS: tmux intercepts OSC 7 from the inner shell and does **not** forward it to the outer PTY. tmux runs its own multiplexer protocol (it advertises `OSC 1337 ; CurrentDir` as its own channel) but does not re-emit standard OSC 7 outbound. Result: a Terminal session running inside tmux gets `liveCwd === undefined` and stays there. Parsing tmux's `OSC 1337 ; CurrentDir` extension is deferred — users who want live-CWD in tmux should run their shell directly in the bridge for now.
 - Re-rooting the chokidar fs-watcher on `cd` (the watcher stays pinned to `session.workingDir`; only the panel display moves).
 
 ## Editor
@@ -1169,6 +1182,7 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 - **Notebook (`.ipynb`) preview** falls through to JSON until `nbviewer.js` integration lands (task #3).
 - **Reactive sync is best-effort, not guaranteed.** The fs-watcher channel (ADR-0017) delivers events for the common case in <200ms but can miss events on EventSource reconnect, network partitions, platform watcher gaps (network filesystems, FUSE mounts), or coalescing-window edge cases. The hash-based 409-Conflict-on-save flow (ADR-0012) remains active as the correctness backstop. `.gitignore` is not parsed by the watcher; static `EXCLUDE_DIRS` list applies (deferred follow-up).
 - **Live CWD tracking only on Terminal-bridge sessions.** Per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md), AI CLI bridges (Claude / Codex / Gemini) do not `chdir` their host process and so report `liveCwd === null`. Their panel stays at `session.workingDir`; users who want to navigate elsewhere use the breadcrumbs.
-- **OSC 7 requires shell-side cooperation.** `bash` and `zsh` need a one-line hook (`PROMPT_COMMAND` / `chpwd`) on shells that don't ship with one; `fish` emits OSC 7 unconditionally. Windows `cmd.exe` has no clean way to emit OSC 7 from a `prompt` definition; the recommended Windows shell for live-CWD tracking is `pwsh`. Documented snippets in the [Live CWD tracking (OSC 7)](#live-cwd-tracking-osc-7) section above.
+- **OSC 7 requires shell-side cooperation.** `bash` and `zsh` need a one-line hook (`PROMPT_COMMAND` / `chpwd`) on shells that don't ship with one; `fish` emits OSC 7 unconditionally. Bare zsh 5.x does not emit OSC 7 natively — the framework or distro provides it. Windows `cmd.exe` has no clean way to emit OSC 7 from a `prompt` definition; the recommended Windows shell for live-CWD tracking is `pwsh`. Documented snippets in the [Live CWD tracking (OSC 7)](#live-cwd-tracking-osc-7) section above.
+- **tmux / screen swallow OSC 7.** Confirmed against tmux 3.x on macOS: tmux intercepts OSC 7 from the inner shell and does **not** forward it to the outer PTY (tmux speaks its own `OSC 1337 ; CurrentDir` multiplexer protocol instead). Sessions running a shell inside tmux get `liveCwd === undefined`. Workaround: run the shell directly in the Terminal bridge (don't wrap in tmux) when live-CWD matters. Parsing tmux's `OSC 1337 ; CurrentDir` extension is deferred to a future iteration.
 - **Cmd-P fuzzy file-find is uncached.** Each query re-runs `rg --files` over the active root. Performant for repos under ~50k files (50–150 ms typical); above 50k, the response truncates at the 10k file enumeration cap and surfaces a "refine your search" hint. A real index is a follow-up only if user feedback shows pathological repos.
 - **Generic file drop targets `<workingDir>/.claude-attachments/`.** Dropped files live in the user's working directory, not a temp dir. The directory is auto-`.gitignore`d on first write and swept (>24 h files only) on session delete + server shutdown; per-session cap is 100 MB. Dirty-repo or disk-fill UX gaps are bounded by the cap + sweep rather than eliminated.

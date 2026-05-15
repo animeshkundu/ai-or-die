@@ -38,7 +38,7 @@ This decision was drafted with three lab critics weighing in on the plan ([gemin
 
 ### What we're choosing between, restated
 
-- **(a) OSC 7** is the protocol every modern terminal already uses, costs ~zero at runtime, fires on `cd` instead of on a wall-clock interval, and works uniformly across POSIX + Windows drive paths + Windows UNC via Node's built-in `url.fileURLToPath()`. The cost is one shell-hook line of user setup on shells that don't emit by default — `bash` requires `PROMPT_COMMAND`, `zsh` requires `chpwd`, `pwsh` requires a `prompt` function. Modern distro defaults already emit it on bash / zsh / fish.
+- **(a) OSC 7** is the protocol every modern terminal already uses, costs ~zero at runtime, fires on `cd` instead of on a wall-clock interval, and works uniformly across POSIX + Windows drive paths + Windows UNC via Node's built-in `url.fileURLToPath()` (with a small POSIX host-strip fallback for the real-shell `$HOSTNAME` case — see Parser semantics). The cost is one shell-hook line of user setup on shells that don't emit by default — `bash` requires `PROMPT_COMMAND`, bare `zsh` requires `chpwd` (many distros and frameworks ship one), `pwsh` requires a `prompt` function. Modern distro defaults already emit it on bash + fish; zsh varies by framework.
 - **(b) PID polling** has three independent failure modes (false data on CLI bridges, real CPU cost on macOS, user-visible latency) and one orthogonal cost (Windows requires a native shim).
 - **(c) Static-only** is what we have today. Loses the central UX win this iteration is for.
 
@@ -47,7 +47,7 @@ This decision was drafted with three lab critics weighing in on the plan ([gemin
 - **Live CWD for AI CLI bridges (`claude`, `codex`, `gemini`).** These bridges do not chdir; the concept doesn't map. Their `liveCwd` stays `null`. If those CLIs ever expose a "current selected directory" via their own protocols, that's a different ADR.
 - **Auto-injecting OSC 7 hooks into the user's shell rc files.** Footgun-prone (we'd be editing user `~/.bashrc`); the user-visible cost of the documented one-liner is acceptable given how many distros emit OSC 7 by default already.
 - **Windows `cmd.exe` support.** There is no clean way to emit OSC 7 from a `cmd.exe` `prompt` definition without a doskey or a wrapper. Recommend pwsh on Windows; `cmd.exe` users get static `workingDir` and can re-open the panel manually.
-- **Multi-pane shells (tmux / screen).** Those multiplexers manage their own per-pane state; OSC 7 from a tmux'd shell still fires through the outer PTY but interleaves across panes. v1 treats whatever the most recent OSC 7 says as authoritative.
+- **Multi-pane shells (tmux / screen).** Confirmed against tmux 3.x on macOS: tmux **swallows** OSC 7 from the inner shell — it intercepts the sequence and does not forward it to the outer PTY. tmux runs its own `OSC 1337 ; CurrentDir` multiplexer protocol but does not re-emit standard OSC 7 outbound. v1 does not parse the tmux-specific extension; users who want live-CWD inside tmux should run their shell directly in the bridge.
 
 ## Decision
 
@@ -61,6 +61,7 @@ Adopt **(a)**: parse OSC 7 inside the Terminal bridge's PTY data stream, decode 
 
 - Match the `OSC 7;file://...` prefix; capture the URI starting at the first `/` after the host segment.
 - Pass the full `file://host/path` URI to Node's built-in [`url.fileURLToPath()`](https://nodejs.org/api/url.html#urlfileurltopathurl) — it handles POSIX, Windows drive paths (`file:///C:/Users/foo` → `C:\Users\foo`), and UNC paths (`file://server/share/foo` → `\\server\share\foo`) uniformly. Wrap in try/catch; treat any malformed URI as "no update" (silent drop, optional `DEBUG=1` log).
+- **Host-strip fallback (POSIX only).** `url.fileURLToPath()` throws `ERR_INVALID_FILE_URL_HOST` on POSIX for any host segment that isn't exactly empty or `localhost`. Every documented shell hook in the spec emits the local machine's hostname (`$HOSTNAME` / `$HOST` / `$env:COMPUTERNAME`) — `file://my-mac/Users/foo`, not `file:///Users/foo` — because that's what the OSC 7 protocol historically encodes (the URI carries the host so consumers can distinguish local vs remote SSH sessions). Without compensation, the parser would silently reject every emit from the documented copy-paste hooks. Systems-engineer caught this in real-shell validation (task #7 → fix `e878c77`). The parser now: (1) tries `fileURLToPath(body)` first; (2) on POSIX, when that throws `ERR_INVALID_FILE_URL_HOST`, strips the host segment and re-parses; (3) on Windows, the host segment is meaningful (UNC paths) and is **never** stripped. This matches iTerm2 / GNOME Terminal / WezTerm posture: the hostname is informational and discarded for local sessions.
 - Run the resolved path through the existing `validatePath()` (`src/server.js:260`); reject anything outside the sandbox silently.
 - Update `session.liveCwd` only on change. Emit `{ type: 'cwd_changed', sessionId, cwd, prev, source: 'osc7' }` over WebSocket.
 - **Buffer-boundary safety**: OSC 7 sequences can split across PTY chunks (`onData` is byte-boundary unaware). Maintain a small per-session pending-OSC buffer (cap 4 KB, flushed on terminator or buffer-full) so a sequence delivered as `\x1b]7;file://h/Users/fo` + `o\x07` resolves correctly.
@@ -69,15 +70,16 @@ Adopt **(a)**: parse OSC 7 inside the Terminal bridge's PTY data stream, decode 
 
 ### Cross-platform path handling
 
-`url.fileURLToPath()` is the reference implementation. Test fixtures cover:
+`url.fileURLToPath()` is the reference implementation, with a host-strip fallback on POSIX (described in Parser semantics above). Test fixtures cover:
 
 - POSIX: `file:///Users/foo/code` → `/Users/foo/code`; `file://localhost/Users/foo` → `/Users/foo`
+- POSIX with hostname (the real-shell case): `file://my-mac/Users/foo` → `/Users/foo` (host stripped + re-parsed)
 - Windows drive: `file:///C:/Users/foo` → `C:\Users\foo`
-- Windows UNC: `file://server/share/foo` → `\\server\share\foo`
+- Windows UNC: `file://server/share/foo` → `\\server\share\foo` (host **kept** — UNC server name is meaningful)
 - Percent-encoded paths: `file:///Users/foo/my%20code` → `/Users/foo/my code`
 - Both terminators: `\x07` (BEL) and `\x1b\\` (ST)
 
-No platform-specific branches in production code — the heavy lifting is in `url.fileURLToPath()`. This contains the cross-platform surface to a single Node API call audited across the Node release cycle.
+The cross-platform surface is contained to `url.fileURLToPath()` plus the POSIX-only host-strip fallback. No further per-platform branches in production code.
 
 ### Shell hooks (documented, not auto-injected)
 
@@ -140,7 +142,7 @@ Existing `getCwd` callback signature is unchanged; it returns the new resolution
 
 - **Shell-side setup required for shells that don't emit by default.** bash + zsh on most distros need a one-line `PROMPT_COMMAND` / `chpwd` snippet. Documented in the spec; not auto-injected (user shell config is sacrosanct). Users who don't add the hook get static behaviour — same as today, no regression.
 - **Windows cmd.exe gap.** No clean way to emit OSC 7 from `cmd.exe`'s `prompt` definition. Recommend pwsh; `cmd.exe` users keep static `workingDir`. Documented as a Limitation in `file-browser.md`.
-- **Multi-pane / multiplexer ambiguity.** tmux / screen panes interleave OSC 7 from multiple shells through one PTY. v1 treats the most recent sequence as authoritative; users who want per-pane awareness will need a future iteration.
+- **Multi-pane / multiplexer ambiguity.** tmux 3.x **swallows** OSC 7 outright — sessions wrapped in tmux get `liveCwd === undefined` and stay there. Documented in the Limitations section of `file-browser.md`; workaround is to run the shell directly in the bridge (no tmux). Parsing tmux's `OSC 1337 ; CurrentDir` extension is deferred.
 - **Spoofing surface.** A program running inside the user's PTY can emit OSC 7 with an arbitrary path. Mitigated by `validatePath()` (the resolved path must be inside `baseFolder`); a malicious sequence pointing outside the sandbox is silently dropped. The remaining surface — moving the panel to a *valid* but unintended sandbox path — is bounded by what the user could already type at the shell prompt.
 - **CLI bridges left out.** Claude/Codex/Gemini bridges report `liveCwd === null`; their panel stays at `session.workingDir`. This is the right answer for v1 (those CLIs don't chdir) but means the "panel follows my work" UX only lands for Terminal sessions in this iteration.
 
@@ -164,6 +166,6 @@ Existing `getCwd` callback signature is unchanged; it returns the new resolution
   - **Live CWD for AI CLI bridges (Claude/Codex/Gemini).** Those CLIs don't chdir; concept doesn't map. Re-evaluate only if a CLI exposes a "selected directory" protocol of its own.
   - **Auto-injecting OSC 7 hooks into user shell rc files.** User shell config is sacrosanct; the documented one-liner is the right boundary.
   - **Windows cmd.exe support.** No clean emit path; recommend pwsh.
-  - **Per-pane CWD for tmux / screen.** Multiplexer-aware tracking is its own ADR.
+  - **Per-pane CWD for tmux / screen.** tmux 3.x swallows OSC 7 outright (does not forward to the outer PTY); parsing its proprietary `OSC 1337 ; CurrentDir` extension is its own ADR.
   - **OSC 7 + watcher root co-tracking** (re-rooting the chokidar watcher on `cd`). v1 keeps the watcher pinned to `session.workingDir`; live CWD only moves the panel display.
   - **Subprocess CWD tracking** (a `vim` opened from the shell that itself navigates internally). Out of scope; OSC 7 is a shell-level protocol.
