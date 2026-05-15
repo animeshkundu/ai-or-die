@@ -3414,6 +3414,19 @@
     }
   };
 
+  // Strip git-diff `a/` or `b/` prefix from a path hint. Per Part C of
+  // the file-browser-v2 iteration: the regex no longer excludes git-diff
+  // pseudo-paths; instead, the click-time resolver strips the prefix and
+  // tries the working-tree file. Returns the input unchanged when no
+  // prefix is present.
+  function stripGitDiffPrefix(p) {
+    if (typeof p !== 'string' || p.length < 2) return p;
+    if (p.charAt(1) !== '/' && p.charAt(1) !== '\\') return p;
+    var c = p.charAt(0);
+    if (c !== 'a' && c !== 'b') return p;
+    return p.slice(2);
+  }
+
   // ---------------------------------------------------------------------------
   // Path resolution helper (module scope so unit tests can call it directly).
   // ---------------------------------------------------------------------------
@@ -3457,6 +3470,48 @@
   }
 
   // ---------------------------------------------------------------------------
+  // resolveCandidates — build the ordered candidate-path chain for a hint
+  // ---------------------------------------------------------------------------
+  //
+  // Returns the ordered list of absolute paths to try at click-time
+  // against `/api/files/stat`. Order matches docs/specs/file-browser.md
+  // "Client-side resolver chain":
+  //   1. path.isAbsolute(hint)        → hint
+  //   2. join(liveCwd, hint)
+  //   3. join(workingDir, hint)
+  //   4. join(repoRoot, hint)
+  //
+  // Git-diff `a/` / `b/` prefixes are stripped before joining (the
+  // working-tree path is the open target). Duplicate candidates are
+  // deduped while preserving order. Returned even when steps yield no
+  // value (e.g. liveCwd null) — those steps are simply absent.
+  //
+  // Pure function — testable under Node, no DOM / no fetch.
+  function resolveCandidates(hint, ctx) {
+    if (typeof hint !== 'string' || !hint) return [];
+    ctx = ctx || {};
+    var stripped = stripGitDiffPrefix(hint);
+    var out = [];
+    var seen = Object.create(null);
+    function push(p) {
+      if (!p) return;
+      if (seen[p]) return;
+      seen[p] = true;
+      out.push(p);
+    }
+    // Step 1: absolute paths (Unix `/`, Windows drive `C:\` or `C:/`,
+    // UNC `\\server\share`, `~/` shortcut, expanded later by stat).
+    if (/^([A-Za-z]:[\\/]|[\\/]|~[\\/]|\\\\[^\\]+\\)/.test(stripped)) {
+      push(stripped);
+    }
+    // Steps 2-4: join against each context root.
+    if (ctx.liveCwd) push(_resolveAgainstCwd(stripped, ctx.liveCwd));
+    if (ctx.workingDir) push(_resolveAgainstCwd(stripped, ctx.workingDir));
+    if (ctx.repoRoot) push(_resolveAgainstCwd(stripped, ctx.repoRoot));
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------
   // attachLinkProvider — register an xterm link provider for clickable paths
   // ---------------------------------------------------------------------------
   //
@@ -3482,10 +3537,49 @@
     var authFetch = options.authFetch;
     var openInViewer = options.openInViewer;
     var getCwd = options.getCwd || function () { return null; };
+    // New (Part C): callbacks supplying the resolver chain context.
+    // getLiveCwd returns the OSC 7 cwd (null when not tracked); getWorkingDir
+    // returns the session's spawn dir; getRepoRoot returns the cached git
+    // toplevel for the active session (null when not in a git repo). All
+    // optional — the resolver chain skips absent steps gracefully.
+    var getLiveCwd = options.getLiveCwd || function () { return null; };
+    var getWorkingDir = options.getWorkingDir || function () { return null; };
+    var getRepoRoot = options.getRepoRoot || function () { return null; };
     var feedback = options.feedback || (typeof window !== 'undefined' ? window.feedback : null);
 
     if (!terminal || typeof terminal.registerLinkProvider !== 'function') return null;
     if (typeof authFetch !== 'function' || typeof openInViewer !== 'function') return null;
+
+    // Per-session resolution cache (LRU, 256 entries) so re-clicking a path
+    // emitted in many log lines doesn't re-spam /api/files/stat. Per spec
+    // "Each step caches its 200/404 result in a small per-session
+    // resolution cache (LRU, 256 entries)".
+    var statCache = new Map();
+    var STAT_CACHE_MAX = 256;
+    function cachedStat(absPath) {
+      if (statCache.has(absPath)) {
+        // LRU bump: re-insert to make it most-recent.
+        var v = statCache.get(absPath);
+        statCache.delete(absPath);
+        statCache.set(absPath, v);
+        return Promise.resolve(v);
+      }
+      return authFetch('/api/files/stat?path=' + encodeURIComponent(absPath))
+        .then(function (resp) {
+          if (resp.status === 404) return false;
+          if (!resp.ok) throw new Error('stat failed: ' + resp.status);
+          return true;
+        })
+        .then(function (exists) {
+          // Eviction: oldest entry first when at cap.
+          if (statCache.size >= STAT_CACHE_MAX) {
+            var firstKey = statCache.keys().next().value;
+            if (firstKey !== undefined) statCache.delete(firstKey);
+          }
+          statCache.set(absPath, exists);
+          return exists;
+        });
+    }
 
     function findLinksInText(text) {
       // Returns an array of { startCol, endCol, path, line, col } for the line.
@@ -3508,11 +3602,10 @@
         var pathOnly = m[2];
         if (!pathOnly || VERSION_RE.test(pathOnly)) continue;
 
-        // Suppress git-diff pseudo-paths `a/<file>` and `b/<file>` that
-        // appear in `diff --git` headers. They never resolve to real files
-        // and the user gets two underlined-but-broken links per diff
-        // header otherwise (peer-review LOW-2).
-        if (/^[ab][\\/]/.test(pathOnly)) continue;
+        // NOTE: previously git-diff pseudo-paths (`a/<file>`, `b/<file>`)
+        // were skipped here. Per Part C of the file-browser-v2 iteration
+        // the prefix is now PRESERVED — the click-time resolver chain
+        // strips it and tries the working-tree file via stripGitDiffPrefix.
 
         var pathStart = m.index + leadLen;
         var pathEnd = pathStart + pathOnly.length;       // exclusive
@@ -3553,30 +3646,85 @@
     var resolveAgainstCwd = _resolveAgainstCwd;
 
     function activate(_event, _text, detected) {
-      var p = detected.path;
-      var cwd = getCwd();
-      var resolved = resolveAgainstCwd(p, cwd);
+      var hint = detected.path;
+      // Build the resolver chain (Part C). When liveCwd is missing we
+      // fall back to getCwd() — preserves the v1 single-cwd behaviour
+      // for hosts that don't supply the new callbacks.
+      var liveCwd = null, workingDir = null, repoRoot = null;
+      try { liveCwd = getLiveCwd(); } catch (_) { liveCwd = null; }
+      try { workingDir = getWorkingDir(); } catch (_) { workingDir = null; }
+      try { repoRoot = getRepoRoot(); } catch (_) { repoRoot = null; }
+      // Back-compat: if no liveCwd / workingDir callback supplied OR they
+      // both returned null, use the legacy getCwd() return as workingDir
+      // so the resolver still has *something* to join against. This keeps
+      // tests that only set { getCwd } working.
+      if (!liveCwd && !workingDir) {
+        try { workingDir = getCwd(); } catch (_) { workingDir = null; }
+      }
 
-      authFetch('/api/files/stat?path=' + encodeURIComponent(resolved))
-        .then(function (resp) {
-          if (resp.status === 404) {
-            if (feedback && typeof feedback.error === 'function') {
-              feedback.error('File not found: ' + p);
-            }
-            return null;
-          }
-          if (!resp.ok) throw new Error('stat failed: ' + resp.status);
-          return resp.json();
-        })
-        .then(function (stat) {
-          if (!stat) return;
-          openInViewer(resolved, detected.line, detected.col);
-        })
-        .catch(function (err) {
-          if (feedback && typeof feedback.error === 'function') {
-            feedback.error('Could not open ' + p + ': ' + (err && err.message ? err.message : err));
-          }
+      var candidates = resolveCandidates(hint, {
+        liveCwd: liveCwd, workingDir: workingDir, repoRoot: repoRoot,
+      });
+      if (!candidates.length) {
+        if (feedback && typeof feedback.error === 'function') {
+          feedback.error('Could not resolve: ' + hint);
+        }
+        return;
+      }
+
+      // Stat every candidate in parallel; surface a picker when more
+      // than one resolves. Per spec: NEVER silently auto-pick across
+      // multiple hits — this is the explicit anti-footgun rule from
+      // adversarial review.
+      Promise.all(candidates.map(function (p) {
+        return cachedStat(p).then(function (exists) {
+          return { path: p, exists: !!exists };
+        }, function () {
+          return { path: p, exists: false };
         });
+      })).then(function (results) {
+        var hits = results.filter(function (r) { return r.exists; });
+        if (hits.length === 0) {
+          if (feedback && typeof feedback.error === 'function') {
+            feedback.error('File not found: ' + hint);
+          }
+          return;
+        }
+        if (hits.length === 1) {
+          openInViewer(hits[0].path, detected.line, detected.col);
+          return;
+        }
+        // Multiple hits → picker. Defer rendering to the host so the
+        // panel can position the lozenge near the click site (xterm
+        // doesn't surface an originating-DOM-event in `activate`).
+        var pickerPaths = hits.map(function (r) { return r.path; });
+        if (typeof options.onAmbiguous === 'function') {
+          try {
+            options.onAmbiguous({
+              hint: hint,
+              line: detected.line,
+              col: detected.col,
+              candidates: pickerPaths,
+              choose: function (chosen) {
+                if (chosen) openInViewer(chosen, detected.line, detected.col);
+              },
+            });
+            return;
+          } catch (_) { /* fall through to the no-picker default */ }
+        }
+        // Default behaviour without a host-supplied picker: refuse to
+        // pick, surface a toast listing the matches. Matches spec's
+        // "never silently auto-pick" rule.
+        if (feedback && typeof feedback.warning === 'function') {
+          feedback.warning(hits.length + ' matches for ' + hint +
+            ' — open the file browser to disambiguate.');
+        }
+      }).catch(function (err) {
+        if (feedback && typeof feedback.error === 'function') {
+          feedback.error('Could not open ' + hint + ': ' +
+            (err && err.message ? err.message : err));
+        }
+      });
     }
 
     var provider = {
@@ -3661,6 +3809,8 @@
     LINK_RE_SINGLE: LINK_RE_SINGLE,
     LINK_RE_GLOBAL: LINK_RE_GLOBAL,
     _resolveAgainstCwd: _resolveAgainstCwd,
+    stripGitDiffPrefix: stripGitDiffPrefix,
+    resolveCandidates: resolveCandidates,
   };
 
   if (typeof window !== 'undefined') {

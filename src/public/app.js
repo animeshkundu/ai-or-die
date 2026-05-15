@@ -3023,7 +3023,27 @@ class ClaudeCodeWebInterface {
                     terminal: terminal,
                     authFetch: (url, opts) => this.authFetch(url, opts),
                     openInViewer: (path, line, col) => this.openFileInViewer(path, line, col),
+                    // Legacy single-cwd callback — kept so the back-compat
+                    // path inside attachLinkProvider has a fallback when
+                    // getLiveCwd/getWorkingDir both return null.
                     getCwd: () => this.getCurrentWorkingDir(),
+                    // Part C resolver-chain callbacks. liveCwd is the OSC 7
+                    // tracked cwd (null for non-Terminal-bridge sessions);
+                    // workingDir is the session spawn dir; repoRoot is the
+                    // cached git toplevel for the active session.
+                    getLiveCwd: () => {
+                        var sid = this.currentClaudeSessionId;
+                        if (!sid || !this._liveCwd) return null;
+                        return this._liveCwd.get(sid) || null;
+                    },
+                    getWorkingDir: () => {
+                        var sid = this.currentClaudeSessionId;
+                        if (!sid || !this.claudeSessions) return null;
+                        var s = this.claudeSessions.find(x => x.id === sid);
+                        return s && s.workingDir ? s.workingDir : null;
+                    },
+                    getRepoRoot: () => this._getRepoRootCached(),
+                    onAmbiguous: (info) => this._showAmbiguityPicker(info),
                     feedback: window.feedback,
                 });
             } catch (err) {
@@ -3928,6 +3948,160 @@ class ClaudeCodeWebInterface {
             }
         }
         return this.currentFolderPath || null;
+    }
+
+    /**
+     * Return the cached git repo-root for the active session, kicking off
+     * a one-shot fetch if not yet cached. Reads `null` until the first
+     * fetch resolves; subsequent calls return the cached value (cached
+     * for the session's lifetime per the spec). Used by the link
+     * provider's resolver chain (Part C).
+     */
+    _getRepoRootCached() {
+        var sid = this.currentClaudeSessionId;
+        if (!sid) return null;
+        if (!this._repoRootCache) this._repoRootCache = new Map();
+        if (!this._repoRootInFlight) this._repoRootInFlight = new Map();
+        if (this._repoRootCache.has(sid)) return this._repoRootCache.get(sid);
+        // Kick off the fetch (idempotent — concurrent callers all get the
+        // same in-flight promise). Returns null synchronously while the
+        // fetch is pending; the resolver chain still has liveCwd /
+        // workingDir candidates to fall back on.
+        if (!this._repoRootInFlight.has(sid)) {
+            var self = this;
+            var p = this.authFetch('/api/sessions/' + encodeURIComponent(sid) + '/repo-root')
+                .then(function (resp) {
+                    if (!resp.ok) return null;
+                    return resp.json();
+                })
+                .then(function (data) {
+                    var root = (data && typeof data.root === 'string') ? data.root : null;
+                    self._repoRootCache.set(sid, root);
+                    self._repoRootInFlight.delete(sid);
+                    return root;
+                })
+                .catch(function () {
+                    self._repoRootCache.set(sid, null);
+                    self._repoRootInFlight.delete(sid);
+                    return null;
+                });
+            this._repoRootInFlight.set(sid, p);
+        }
+        return null;
+    }
+
+    /**
+     * Render the inline ambiguity picker for terminal-link clicks that
+     * resolve to multiple files (Part C). Anchored near the active
+     * terminal — xterm doesn't surface the originating click event in
+     * `activate`, so we float the lozenge near the terminal cursor or
+     * top-left of the terminal container as a fallback. Keyboard nav
+     * (Up/Down/Enter/Esc); cancels on outside click.
+     */
+    _showAmbiguityPicker(info) {
+        if (!info || !Array.isArray(info.candidates) || !info.candidates.length) return;
+        // Tear down any prior picker first (stacking would be confusing).
+        if (this._ambiguityPickerEl && this._ambiguityPickerEl.parentNode) {
+            this._ambiguityPickerEl.parentNode.removeChild(this._ambiguityPickerEl);
+        }
+
+        var picker = document.createElement('div');
+        picker.className = 'fb-ambiguity-picker';
+        picker.setAttribute('role', 'listbox');
+        picker.setAttribute('aria-label', info.candidates.length + ' matches for ' + info.hint);
+
+        var header = document.createElement('div');
+        header.className = 'fb-ambiguity-header';
+        header.textContent = info.candidates.length + ' matches — pick one';
+        picker.appendChild(header);
+
+        var rows = [];
+        var focusedIdx = 0;
+
+        info.candidates.forEach(function (path, idx) {
+            var row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'fb-ambiguity-row' + (idx === focusedIdx ? ' focused' : '');
+            row.setAttribute('role', 'option');
+            row.setAttribute('aria-selected', idx === focusedIdx ? 'true' : 'false');
+
+            // Split path into basename + parent (VS Code convention).
+            var lastSep = -1;
+            for (var i = path.length - 1; i >= 0; i--) {
+                var c = path.charCodeAt(i);
+                if (c === 47 || c === 92) { lastSep = i; break; }
+            }
+            var basename = lastSep === -1 ? path : path.slice(lastSep + 1);
+            var parent = lastSep === -1 ? '' : path.slice(0, lastSep);
+
+            var bn = document.createElement('span');
+            bn.className = 'fb-ambiguity-basename';
+            bn.textContent = basename;
+            row.appendChild(bn);
+            if (parent) {
+                var pn = document.createElement('span');
+                pn.className = 'fb-ambiguity-parent';
+                pn.textContent = ' ' + parent;
+                row.appendChild(pn);
+            }
+
+            row.addEventListener('click', function () { choose(idx); });
+            picker.appendChild(row);
+            rows.push(row);
+        });
+
+        function setFocus(idx) {
+            if (idx < 0) idx = 0;
+            if (idx >= rows.length) idx = rows.length - 1;
+            rows[focusedIdx].classList.remove('focused');
+            rows[focusedIdx].setAttribute('aria-selected', 'false');
+            focusedIdx = idx;
+            rows[focusedIdx].classList.add('focused');
+            rows[focusedIdx].setAttribute('aria-selected', 'true');
+            try { rows[focusedIdx].scrollIntoView({ block: 'nearest' }); } catch (_) {}
+        }
+
+        var self = this;
+        function close() {
+            try { document.removeEventListener('keydown', onKey, true); } catch (_) {}
+            try { document.removeEventListener('click', onClickOutside, true); } catch (_) {}
+            if (picker.parentNode) picker.parentNode.removeChild(picker);
+            self._ambiguityPickerEl = null;
+        }
+        function choose(idx) {
+            var p = info.candidates[idx];
+            close();
+            try { info.choose(p); } catch (_) {}
+        }
+        function onKey(e) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); setFocus(focusedIdx + 1); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); setFocus(focusedIdx - 1); }
+            else if (e.key === 'Enter') { e.preventDefault(); choose(focusedIdx); }
+            else if (e.key === 'Escape') { e.preventDefault(); close(); }
+        }
+        function onClickOutside(e) {
+            if (e.target && picker.contains(e.target)) return;
+            close();
+        }
+
+        // Anchor — top-left of the active terminal as a sane default.
+        var termEl = (this.terminal && this.terminal.element) ||
+            document.querySelector('.terminal-container') ||
+            document.body;
+        var rect = (termEl.getBoundingClientRect && termEl.getBoundingClientRect()) ||
+            { left: 80, top: 80 };
+        picker.style.position = 'fixed';
+        picker.style.left = (rect.left + 16) + 'px';
+        picker.style.top = (rect.top + 16) + 'px';
+        document.body.appendChild(picker);
+        this._ambiguityPickerEl = picker;
+
+        document.addEventListener('keydown', onKey, true);
+        // Defer the outside-click listener to next tick so the click that
+        // opened the picker (xterm's link click) doesn't immediately close it.
+        setTimeout(function () {
+            document.addEventListener('click', onClickOutside, true);
+        }, 0);
     }
 
     // Folder Browser Methods
