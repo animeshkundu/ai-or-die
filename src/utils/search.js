@@ -295,7 +295,15 @@ function searchStream(query, opts) {
           const evt = JSON.parse(line);
           if (evt && evt.type === 'match' && evt.data) {
             const d = evt.data;
-            const filePath = d.path && (d.path.text || d.path.bytes);
+            let filePath = d.path && (d.path.text || d.path.bytes);
+            // rg now emits paths relative to the cwd (since we pass `.`
+            // as the positional in _buildRgArgs). Resolve to absolute so
+            // downstream consumers (server-side `path.relative(cwd, m.path)`,
+            // openInTab, etc.) get a stable absolute contract independent
+            // of the CWD-trick.
+            if (filePath && !path.isAbsolute(filePath) && opts.cwd) {
+              filePath = path.resolve(opts.cwd, filePath);
+            }
             const lineNum = d.line_number;
             const text = (d.lines && d.lines.text) || '';
             // Use first submatch start as col if present.
