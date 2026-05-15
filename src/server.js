@@ -414,6 +414,101 @@ class ClaudeCodeWebServer {
     return null;
   }
 
+  // ------------------------------------------------------------------------
+  // Generic-drop attachment helpers (file-browser.md §"Generic file drop").
+  // Used by POST /api/files/upload to enforce the per-session size cap on
+  // .claude-attachments/, append the .gitignore guard on first write, and
+  // sweep stale attachments on session delete + server shutdown.
+  // ------------------------------------------------------------------------
+
+  /** 100 MB per-session cap on .claude-attachments/ totals. */
+  _attachmentSessionCapBytes() {
+    return 100 * 1024 * 1024;
+  }
+
+  /**
+   * Sum of bytes for all top-level files inside an attachments directory.
+   * Top-level only — generic drop never creates subdirectories there, and
+   * walking deep would let a user-side `ln -s /` symlink balloon the
+   * computation. Robust to a missing directory (returns 0).
+   */
+  _attachmentDirBytes(attachmentsDir) {
+    let total = 0;
+    let entries;
+    try {
+      entries = fs.readdirSync(attachmentsDir, { withFileTypes: true });
+    } catch (_) {
+      return 0; // missing dir → 0 bytes used
+    }
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      try {
+        const st = fs.statSync(path.join(attachmentsDir, ent.name));
+        total += st.size;
+      } catch (_) { /* file vanished mid-readdir — skip */ }
+    }
+    return total;
+  }
+
+  /**
+   * Idempotent .gitignore guard: append `.claude-attachments/` to
+   * <workingDir>/.gitignore IF the file exists and the line is not already
+   * present. Best-effort — never throws (callers do not need to wrap).
+   *
+   * Per spec: NOT auto-created when missing. The user's repo hygiene is
+   * theirs to manage; we only piggy-back on an existing convention.
+   */
+  _ensureAttachmentsGitignore(workingDir) {
+    try {
+      const gi = path.join(workingDir, '.gitignore');
+      if (!fs.existsSync(gi)) return; // best-effort — no auto-create.
+      const current = fs.readFileSync(gi, 'utf-8');
+      // Match `.claude-attachments/` as an exact line (with or without
+      // trailing newline). Avoid false matches on substrings like
+      // `# .claude-attachments/foo`.
+      const lines = current.split(/\r?\n/);
+      if (lines.some((l) => l.trim() === '.claude-attachments/')) return;
+      const sep = current.endsWith('\n') ? '' : '\n';
+      fs.appendFileSync(gi, sep + '.claude-attachments/\n');
+    } catch (err) {
+      if (this.dev) {
+        console.warn('attachment .gitignore append failed:', err && err.message);
+      }
+    }
+  }
+
+  /**
+   * Sweep <workingDir>/.claude-attachments/ for top-level files older
+   * than `maxAgeMs` (default 24 h). Invoked on session delete + server
+   * shutdown so stale generic-drop attachments don't accumulate forever
+   * inside the user's project. Synchronous + best-effort; safe to call
+   * with a missing or empty directory.
+   *
+   * Exposed as an instance method (underscore-prefixed) so unit tests can
+   * drive it without waiting 24 h.
+   */
+  _sweepAttachments(workingDir, opts) {
+    if (!workingDir) return;
+    const maxAgeMs = (opts && opts.maxAgeMs) || (24 * 60 * 60 * 1000);
+    const dir = path.join(workingDir, '.claude-attachments');
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (_) {
+      return; // missing dir → nothing to do
+    }
+    const cutoff = Date.now() - maxAgeMs;
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      const fp = path.join(dir, ent.name);
+      try {
+        const st = fs.statSync(fp);
+        if (st.mtimeMs < cutoff) fs.unlinkSync(fp);
+      } catch (_) { /* tolerate races */ }
+    }
+  }
+
+
 
   setupExpress() {
     this.app.use(cors());
@@ -728,6 +823,11 @@ class ClaudeCodeWebServer {
 
       // Clean up temp images
       this.cleanupSessionImages(session);
+
+      // Sweep stale generic-drop attachments older than 24 h. The user
+      // may still need younger ones for an in-flight conversation, so
+      // we keep recent files.
+      try { this._sweepAttachments(session.workingDir); } catch (_) { /* ignore */ }
 
       this.claudeSessions.delete(sessionId);
       this.activityBroadcastTimestamps.delete(sessionId);
@@ -2149,7 +2249,24 @@ class ClaudeCodeWebServer {
       }
     });
 
-    // POST /api/files/upload — Upload file (base64 JSON, route-specific limit)
+    // POST /api/files/upload — Upload file (base64 JSON, route-specific limit).
+    //
+    // Generic-drop reinforcements (file-browser.md §"Generic file drop"):
+    //
+    //   - Per-session size cap: when the upload targets a `.claude-attachments/`
+    //     directory, total bytes in that dir cannot exceed 100 MB. Over-cap
+    //     attempts return 413 with `code: "attachment_cap_exceeded"` so the
+    //     client can switch on that to show the specific toast (vs the
+    //     generic >10MB message).
+    //
+    //   - .gitignore append: on a successful upload to `.claude-attachments/`,
+    //     append `.claude-attachments/` to the parent directory's .gitignore
+    //     IF that file exists and the line isn't already present. Best-effort
+    //     — never fails the upload on .gitignore errors. Idempotent (line is
+    //     not duplicated). The .gitignore is NOT auto-created when missing,
+    //     per spec ("user shell config is sacrosanct" applies to .gitignore
+    //     too — we don't want to silently introduce a new tracked-by-default
+    //     side effect on the user's repo).
     this.app.post('/api/files/upload', express.json({ limit: '10mb' }), async (req, res) => {
       const { targetDir, fileName, content, overwrite } = req.body;
       if (!targetDir || !fileName || !content) {
@@ -2199,8 +2316,30 @@ class ClaudeCodeWebServer {
           return res.status(413).json({ error: 'File too large (>10MB)' });
         }
 
+        // Generic-drop per-session cap (.claude-attachments/ only). The cap
+        // applies whenever the resolved target dir's basename matches the
+        // `.claude-attachments` convention — that's the namespace the
+        // generic-drop client owns. Other targetDirs are unaffected.
+        const isAttachmentDir = path.basename(dirValidation.path) === '.claude-attachments';
+        if (isAttachmentDir) {
+          const currentSize = this._attachmentDirBytes(dirValidation.path);
+          if (currentSize + buffer.length > this._attachmentSessionCapBytes()) {
+            return res.status(413).json({
+              error: 'Attachment cap reached for this session — delete some via terminal or wait for the 24 h sweep',
+              code: 'attachment_cap_exceeded',
+              capBytes: this._attachmentSessionCapBytes(),
+              currentBytes: currentSize,
+            });
+          }
+        }
+
         await fs.promises.writeFile(targetPath, buffer);
         const stat = await fs.promises.stat(targetPath);
+
+        // Best-effort .gitignore guard — never fails the upload on error.
+        if (isAttachmentDir) {
+          this._ensureAttachmentsGitignore(path.dirname(dirValidation.path));
+        }
 
         res.json({
           name: safeName,
@@ -2214,6 +2353,7 @@ class ClaudeCodeWebServer {
         res.status(500).json({ error: 'Failed to upload file', message: error.message });
       }
     });
+
 
     this.app.post('/api/set-working-dir', (req, res) => {
       const { path: selectedPath } = req.body;
@@ -3326,6 +3466,14 @@ class ClaudeCodeWebServer {
     // Clean up temp images for all sessions
     for (const [, session] of this.claudeSessions) {
       this.cleanupSessionImages(session);
+    }
+
+    // Sweep stale generic-drop attachments across every known session
+    // (file-browser.md §"Generic file drop" lifecycle). 24 h cutoff —
+    // drops files left behind by previous sessions while preserving
+    // anything the user just added before the shutdown.
+    for (const [, session] of this.claudeSessions) {
+      try { this._sweepAttachments(session.workingDir); } catch (_) { /* ignore */ }
     }
 
     if (this.wss) {
