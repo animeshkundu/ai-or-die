@@ -267,6 +267,22 @@ class AuthManager {
     }
 
     /**
+     * Return the current token (or null when none is set). Mirrors the
+     * shape app.js's FindPanel + generic-drop wiring expects — both call
+     * `window.authManager.getToken()` to populate their `getAuthToken`
+     * callbacks so request URLs carry `?token=` under `--auth` mode.
+     *
+     * Added in response to QA #17: previously the method didn't exist
+     * and the callbacks returned undefined, so request URLs were token-
+     * less and the server 401'd — Cmd-P returned 0 results and generic
+     * drop uploads broke under auth. Default mode hid it (tokenless
+     * requests are tolerated there).
+     */
+    getToken() {
+        return this.token || null;
+    }
+
+    /**
      * Append the auth token as a `?token=` query param.
      *
      * Use this for asset URLs that the browser fetches WITHOUT being able

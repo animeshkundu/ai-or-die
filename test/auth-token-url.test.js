@@ -352,4 +352,57 @@ describe('auth.js — URL-token + log-sanitization regressions (QA #13)', functi
       assert.strictEqual(typeof auth.AuthManager.extractAndStripUrlToken, 'function');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // getToken() — QA #17 regression.
+  //
+  // app.js wires FindPanel's getAuthToken + generic-drop's getAuthToken
+  // callbacks via `window.authManager.getToken()`. Before this method
+  // existed, those callbacks returned undefined under `--auth`, leaving
+  // request URLs token-less and the server 401'ing — Cmd-P showed 0
+  // results, generic drop uploads broke. Cover the contract directly.
+  // ---------------------------------------------------------------------------
+
+  describe('AuthManager.getToken() (QA #17)', function () {
+    before(function () { installBrowserStubs(); });
+    after(restoreBrowserStubs);
+
+    it('exists on the AuthManager prototype', function () {
+      var auth = loadAuth();
+      assert.strictEqual(typeof auth.AuthManager.prototype.getToken, 'function',
+        'AuthManager.prototype.getToken must be defined (app.js call sites depend on it)');
+    });
+
+    it('returns null when no token has been set', function () {
+      var auth = loadAuth();
+      var mgr = new auth.AuthManager();
+      // Fresh manager, empty sessionStorage → null. Note: getItem returns
+      // null for missing keys, NOT undefined, so this is the correct
+      // shape the FindPanel + drop handler need.
+      assert.strictEqual(mgr.getToken(), null);
+    });
+
+    it('returns the token set by verifyToken()', function () {
+      installBrowserStubs({
+        fetchHandler: function () {
+          return { ok: true, status: 200, json: () => Promise.resolve({ valid: true }) };
+        },
+      });
+      var auth = loadAuth();
+      var mgr = new auth.AuthManager();
+      return mgr.verifyToken('abc123').then(function (ok) {
+        assert.strictEqual(ok, true);
+        assert.strictEqual(mgr.getToken(), 'abc123',
+          'getToken() must echo the token verifyToken just stored');
+      });
+    });
+
+    it('returns the sessionStorage token loaded at construction', function () {
+      installBrowserStubs();
+      ssMap.setItem('cc-web-token', 'preloaded');
+      var auth = loadAuth();
+      var mgr = new auth.AuthManager();
+      assert.strictEqual(mgr.getToken(), 'preloaded');
+    });
+  });
 });
