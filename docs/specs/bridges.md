@@ -215,3 +215,6 @@ Opens a raw shell session rather than an AI agent.
 - Async shell resolution via `resolveFullPathAsync()`
 - No `dangerouslySkipPermissions` or AI-specific flags
 - Useful for running manual commands alongside agent sessions
+- **Live CWD tracking via OSC 7** (per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md)). The bridge parses `\x1b]7;file://<host><path>\x07` (and the `\x1b\\`-terminated variant) out of the PTY data stream, validates the resolved path via `validatePath()`, and on change updates `session.liveCwd` and emits a `cwd_changed` WebSocket frame: `{ type: 'cwd_changed', sessionId, cwd, prev, source: 'osc7' }`. The OSC bytes are not stripped from the output forwarded to xterm.js. Buffer-boundary safety: a 4 KB per-session pending buffer reassembles sequences split across PTY chunks.
+
+The other bridges (`ClaudeBridge`, `CodexBridge`, `CopilotBridge`, `GeminiBridge`) do **not** parse OSC 7 — those CLIs do not `chdir` their host process and the on-disk `cwd` is not a useful signal. Their `session.liveCwd === null`; they never emit `cwd_changed` frames. Documented per ADR-0019.

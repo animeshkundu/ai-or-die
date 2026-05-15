@@ -15,6 +15,9 @@ A web-based file manager that provides browsing, previewing, editing, uploading,
 | Command palette | `Ctrl+K` then "Toggle File Browser" | Toggle file browser panel |
 | Terminal context menu | Right-click on a file path in terminal output | Open file browser navigated to that file |
 | Open by path | `Ctrl+Shift+O` or command palette "Open File by Path..." | Prompt for a file path, open directly |
+| Fuzzy file-find | `Ctrl/Cmd+P` | Open the "Go to File" panel; type to filter, Enter to open in preview tab |
+| Click any path in terminal output | Single-click on a detected path token | Resolve via the candidate chain (absolute → liveCwd → workingDir → repoRoot); on a single hit open in preview tab; on multiple hits show an inline picker. See [Universal terminal-path detection](#terminalpathdetector-and-xterm-link-provider). |
+| Drop *any* file onto the page | Drag-drop a non-image file onto the terminal | Upload to `<workingDir>/.claude-attachments/`; inject `@<absolute-path>` into the terminal as bracketed paste. See [Generic file drop](#generic-file-drop). |
 
 ### Data Flow
 
@@ -28,6 +31,10 @@ Download: GET /api/files/download?path=<file>          -> Content-Disposition: a
 Watch:    GET /api/files/watch?session=<id>            -> SSE stream of {type,path,relPath,mtime,hash?,prevPath?}
           POST /api/files/watch/subscribe?path=<abs>   -> add path to active set
           POST /api/files/watch/unsubscribe?path=<abs> -> remove from active set
+Find:     GET /api/files/find?q=&path=&limit=          -> fuzzy filename search; rg --files + fuzzysort
+RepoRoot: GET /api/sessions/:id/repo-root              -> { root: <abs|null> } (git rev-parse --show-toplevel, cached per session)
+LiveCwd:  WebSocket frame {type:'cwd_changed',sessionId,cwd,prev,source:'osc7'}
+          (Terminal-bridge sessions only; emitted by the OSC 7 parser)
 ```
 
 Reactive sync (the Watch channel) keeps open editor tabs and the directory listing in step with on-disk reality without user-driven refresh — the central architectural piece for an AI-driven coding UI where the agent edits files concurrently with the user. See "Reactive file-system sync" below and [ADR-0017](../adrs/0017-fs-watcher-push-channel.md).
@@ -306,6 +313,77 @@ Remove a path from the active subscription set.
 
 **Errors:** 401, 403, 404 (no open SSE stream for that session).
 
+#### `GET /api/files/find`
+
+Fuzzy filename search over the active root. Backs the Cmd-P "Go to File" panel.
+
+**Query params:**
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `q` | string | required | Fuzzy query string. Empty / whitespace-only returns 400. |
+| `path` | string | `liveCwd ?? session.workingDir` | Directory to enumerate. Funnelled through `validatePath()`. |
+| `limit` | number | `50` | Max matches returned. Cap: `200`. |
+| `session` | string | required | Session id; used for per-session rate limiting and live-CWD lookup. |
+
+**Pipeline:**
+
+1. Run `rg --files --hidden --glob '!.git'` rooted at `path` (via the same backend selected in [ADR-0018](../adrs/0018-bundled-ripgrep-search-backend.md): system `rg` → bundled `@vscode/ripgrep` → Linux `grep -rIn` → hard-error). On a 50k-file repo `rg --files` returns in ~50–150 ms. **No cache** — cache invalidation under chokidar + cd-induced root changes is more complexity than the round-trip cost justifies for v1.
+2. Score the candidate list with [`fuzzysort`](https://github.com/farzher/fuzzysort) (~5 KB MIT runtime dep). Acronym matches, contiguous bonuses, basename boosts, case folding all come out of the box; this is the deliberate trade against a custom 60-LOC ranker.
+3. Hard cap: enumerate up to **10,000 files**. Above that, return `{ truncated: true, totalFound }` so the UI can render a "Refine your search — N files in this tree" hint instead of blocking the event loop on a giant fuzzysort sweep.
+4. Sort by score desc; limit; return.
+
+**Response (200):**
+
+```json
+{
+  "matches": [
+    { "path": "/abs/src/app.js", "basename": "app.js", "score": -120, "mtimeMs": 1715692800123 }
+  ],
+  "truncated": false,
+  "totalFound": 4231,
+  "queryMs": 87
+}
+```
+
+`score` is `fuzzysort`'s native score (higher is better; negative when partial). `truncated` is `true` only when enumeration hit the 10k cap.
+
+**Errors:** 400 (empty `q`), 403 (`validatePath` rejects `path`), 429 (per-session rate limit exceeded), 503 (search backend unavailable per ADR-0018).
+
+**Rate limit:** **5 queries / second / session** (state-based, sliding window). Per-session — not per-IP — because IP rate limiting is the wrong granularity behind reverse proxies and shared deployments. Excess returns 429 immediately.
+
+#### `GET /api/sessions/:id/repo-root`
+
+Resolve the git repository root for a session's working directory. Used by the client-side path resolver chain (see [Universal terminal-path detection](#terminalpathdetector-and-xterm-link-provider)) so that paths like `src/app.js` inside a stack trace can be tried against the repo root in addition to `liveCwd` and `workingDir`.
+
+**Response (200):**
+
+```json
+{ "root": "/abs/path/to/repo" }
+```
+
+If the session's `workingDir` is not inside a git repo, returns `{ "root": null }`.
+
+**Implementation:** `git rev-parse --show-toplevel` rooted at `session.workingDir`, with stdout trimmed and the result cached per session for the session's lifetime (invalidated only on session delete; the repo root does not move during a session). Output goes through `validatePath()` before the response is sent.
+
+**Errors:** 403 (session's workingDir not inside the sandbox), 404 (no such session id), 503 (`git` binary not available).
+
+#### WebSocket frame: `cwd_changed`
+
+Terminal-bridge sessions only. Emitted by the OSC 7 parser whenever `session.liveCwd` changes (post-validation). Subscribers update their `_liveCwd` map and, for the panel that owns the session, optionally re-root.
+
+```json
+{
+  "type": "cwd_changed",
+  "sessionId": "uuid",
+  "cwd": "/Users/foo/code/other-repo",
+  "prev": "/Users/foo/code",
+  "source": "osc7"
+}
+```
+
+`source` is reserved for future signal types (`'cli-protocol'`, `'manual'`, ...); v1 only ever emits `'osc7'`. See [ADR-0019](../adrs/0019-osc7-cwd-tracking.md) for the parser contract, the `_followsTerminal` toggle UX, and the cross-platform path-handling rationale.
+
 ---
 
 ## Client Architecture
@@ -322,6 +400,8 @@ Remove a path from the active subscription set.
 | `file-diff.js` | `src/public/file-diff.js` | `DiffViewerPanel` — `monaco.editor.createDiffEditor` wrapper. Side-by-side read-only diff with intra-line highlighting. Convenience helpers `openHeadVsWorking(path)` / `openRefVsWorking(path, ref)` / `openFileVsFile(a, b)` / `openMemoryVsFile(memContent, diskPath)` (the last entry point for the dirty-tab toast's Compare button per ADR-0017). Mounted by TabManager mode `'diff'`. |
 | `notebook-render.js` | `src/public/notebook-render.js` | Read-only Jupyter `.ipynb` viewer. Lazy-loads kokes/nbviewer.js (~50 KB) on first use, parses + renders into a scratch DIV, then sanitises through DOMPurify (same FORBID_ATTR/FORBID_TAGS profile as `markdown-render.js`) before inserting into the live DOM. |
 | `file-search.js` | `src/public/file-search.js` | `SearchPanel` — cross-file search panel toggled via `Cmd/Ctrl+Shift+F`. Streams matches from `GET /api/search` (SSE; ripgrep via system PATH or bundled `@vscode/ripgrep` per [ADR-0018](../adrs/0018-bundled-ripgrep-search-backend.md), grep belt-and-suspenders on Linux). Result-row click routes through `app.openFileInViewer(path, line, col)` → `_pendingJumpTo` → Monaco preview tab at the matched line. |
+| `file-find.js` | `src/public/file-find.js` | `FindPanel` — Cmd-P "Go to File" fuzzy filename picker. Reuses `SearchPanel`'s shell (input, results list, keyboard nav). Calls `GET /api/files/find` with 120 ms debounce + `AbortController` on every keystroke. Enter opens preview tab; Cmd/Ctrl+Enter opens editor tab. Basename bold + parent dimmed (VS Code convention). |
+| `generic-drop-handler.js` | `src/public/generic-drop-handler.js` | Non-image drop pipeline. Sibling to `image-handler.js` (the image flow stays as-is per [ADR-0016](../adrs/0016-monaco-based-file-browser-editor.md)'s just-shipped surface). Dispatches by MIME at the terminal container; image MIMEs delegate to `attachImageHandler`, all others upload to `<workingDir>/.claude-attachments/` and inject `@<absolute-path>` as bracketed paste. See [Generic file drop](#generic-file-drop). |
 | `file-pdf-viewer.js` | `src/public/file-pdf-viewer.js` | PDF.js wrapper with thin viewer chrome (prev/next/zoom/fit) |
 | `monaco-worker-shim.js` | `src/public/vendor/monaco-worker-shim.js` | Same-origin Web Worker; bootstraps Monaco's CDN worker via `importScripts` (gated by exact-prefix base-URL allowlist; ADR-0016) |
 | `panzoom.min.js` | `src/public/vendor/panzoom.min.js` | Vendored `@panzoom/panzoom` 4.6.0 (~10 KB MIT) |
@@ -352,14 +432,27 @@ The navigation panel that displays directory listings and handles file selection
 | `app` | object | Host app instance — gives access to terminals, sessions, fitAddon |
 | `authFetch` | function | Authenticated fetch wrapper (`(url, opts) => Promise<Response>`) |
 | `initialPath` | string \| null | Captured at construction. Used as a final fallback in `open()`; kept for tests and tooling that don't have a session context |
-| `getCwd` | function \| null | Optional callback returning the active session's working directory. **Invoked on every `open()`** so a session switch between opens picks up the new cwd. A throwing or null-returning callback falls through to `initialPath`. |
+| `getCwd` | function \| null | Optional callback returning the active session's effective working directory. **Invoked on every `open()`** so a session switch between opens picks up the new cwd. The callback resolves `liveCwd ?? session.workingDir`, where `liveCwd` is the OSC 7-tracked CWD for Terminal-bridge sessions (per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md)) and is `null` for AI CLI bridges. A throwing or null-returning callback falls through to `initialPath`. |
 
 **`open(startPath)` resolution order:**
 
 1. Explicit `startPath` argument from the caller (e.g. `openToFile`).
-2. `getCwd()` return value, if `getCwd` is configured and returns a truthy string.
+2. `getCwd()` return value, if `getCwd` is configured and returns a truthy string. This already encodes the `liveCwd ?? session.workingDir` precedence — see ADR-0019 for the live-CWD contract.
 3. `initialPath` captured at construction.
 4. `null` — `navigateTo` falls back to the server's default base folder.
+
+**Live CWD follow-toggle (per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md)):**
+
+`FileBrowserPanel` maintains a per-session `_followsTerminal` boolean (default `true`). Behaviour:
+
+- On WebSocket `cwd_changed` for the panel's active session:
+  - `_followsTerminal === true` → `navigateTo(cwd)` immediately (re-roots the panel).
+  - `_followsTerminal === false` → update `_liveCwd` map silently; refresh the toggle button's tooltip (`"📍 follow terminal — currently at <cwd>"`).
+- Any manual breadcrumb navigation flips `_followsTerminal` to `false` for that session.
+- A small "📍 follow terminal" toggle button in the panel header (highlighted when `true`, dimmed when `false`):
+  - Click when `false` → flips to `true` and immediately `navigateTo(_liveCwd)`.
+  - Click when `true` → flips to `false`; panel stops re-rooting on `cwd_changed`.
+- Hidden (or shown disabled) for sessions whose bridge type does not emit OSC 7 (Claude/Codex/Gemini).
 
 **File list rendering:**
 - Directories listed first, then files, alphabetically within each group.
@@ -397,15 +490,62 @@ Two parallel mechanisms surface file paths inside terminal output as actionable 
 
 **`TerminalPathDetector` — right-click on selected text.**
 - Hooks the xterm.js `contextmenu` event. On right-click, the context menu appears immediately with grayed-out file items; an async `GET /api/files/stat` enables them once the path is validated.
-- Regex matches Unix paths (`/home/user/file.js`), Windows paths (`C:\Users\file.js`), relative paths (`./src/index.js`), and bare relative paths with a known extension (`src/foo.js`). `path:line` and `path:line:col` suffixes (Claude/Codex emit these) are captured separately and used for cursor placement.
+- Regex covers the patterns enumerated in [Detection patterns](#detection-patterns) below. `path:line` and `path:line:col` suffixes (Claude/Codex/Node/Python/V8 stack traces all emit these) are captured separately and used for cursor placement.
 - Context menu items: "Open in File Browser", "Open in Editor", "Download".
 - Reuses the existing `#termContextMenu` and `.ctx-item` CSS patterns.
 
 **`attachLinkProvider` — hover-and-click on every emitted line.**
 - Wires `xterm.registerLinkProvider({ provideLinks(bufferLineNumber, callback) { ... } })`. **No network I/O happens inside `provideLinks`** — every visible line gets scanned on every render. Validation against `/api/files/stat` is deferred to the click handler. Without this, an `npm install` log scrolling hundreds of lines per second would saturate the browser's six-connection-per-host cap and freeze the terminal (peer-review HIGH-1).
-- Same regex as `TerminalPathDetector` plus an extension allowlist precondition that excludes version-shaped tokens (`1.2.3`), npm specifiers without an extension (`react/jsx-runtime`), and CLI flags (`--foo=bar/baz`).
+- Same regex coverage as `TerminalPathDetector` (see [Detection patterns](#detection-patterns) below) plus an extension allowlist precondition that excludes version-shaped tokens (`1.2.3`), npm specifiers without an extension (`react/jsx-runtime`), and CLI flags (`--foo=bar/baz`).
 - `WebLinksAddon` continues to handle URL detection; this provider is additive (paths only).
-- Click handler: resolve relatives against the active session cwd, call `/api/files/stat`; on 200 → `app.openFileInViewer(path, line, col)`; on 404 → small toast.
+- Click handler: walk the [Resolver chain](#client-side-resolver-chain) below; on a single resolved hit, call `app.openFileInViewer(path, line, col)`; on multiple hits, surface the [Ambiguity picker](#ambiguity-picker) inline near the click site; on zero hits, surface a small "no match — try Cmd-P" toast.
+
+#### Detection patterns
+
+`provideLinks` runs **regex only** (no I/O). The patterns below are all matched against each visible line; resolution happens on click.
+
+| # | Pattern | Examples | Notes |
+|---|---------|----------|-------|
+| 1 | Absolute paths | `/Users/foo/file.js`, `C:\Users\foo\file.js`, `\\server\share\file.js` | Both POSIX and Windows drive + UNC. |
+| 2 | Explicit relative | `./src/index.js`, `../shared/util.go` | Marked relative by the leading `./` or `../`. |
+| 3 | Bare relative paths with allowlisted extension | `src/app.js`, `package.json`, `Cargo.toml` | Matched only when the extension is in the existing allowlist. |
+| 4 | Stack-trace formats | Node `at Function (path:line:col)`, Python `File "path", line N`, V8 `at path:line:col`, Rust/Go `path:line:col` | Captures `:line[:col]` separately for cursor placement. |
+| 5 | Quoted paths | `"src/app.js"`, `'src/app.js'` | Quotes stripped on capture. |
+| 6 | Markdown links | `[text](path)`, `[text](path:line)` | Text label discarded; path captured. |
+| 7 | Git-diff `a/`, `b/` prefixes | `a/src/app.js`, `b/src/app.js` | Stripped during resolution; the working-tree file is the open target. |
+
+**Out of scope (cut after adversarial review):** dotless basenames like `Makefile`, `Dockerfile`, `Jenkinsfile`. The false-positive rate in real logs is too high (`Dockerfile` matches `Dockerfile.production.staging`-shaped log noise, prose mentions, etc.). Users who need these can use Cmd-P.
+
+#### Client-side resolver chain
+
+Resolution runs on **click**, not in `provideLinks` (per the I/O-free guarantee above). The handler walks the candidate chain in order, calling the existing `GET /api/files/stat?path=<abs>` for each (which already runs through `validatePath()` server-side, so existence is the only remaining question):
+
+1. `path.isAbsolute(hint)` → `stat(hint)` → exists?
+2. `stat(path.join(liveCwd, hint))` → exists? (`liveCwd` from the OSC 7-tracked map; falls back to `session.workingDir` if `null`.)
+3. `stat(path.join(workingDir, hint))` → exists? (Always tried even when `liveCwd` is set, to catch paths emitted by tools that haven't followed `cd`.)
+4. `stat(path.join(repoRoot, hint))` → exists? (`repoRoot` cached per session, fetched once via `GET /api/sessions/:id/repo-root`. Skipped silently when the repo root is `null`.)
+
+Each step caches its 200/404 result in a small per-session resolution cache (LRU, 256 entries) so re-clicking a path emitted in many log lines doesn't re-spam `/api/files/stat`.
+
+**Why client-side, not a new endpoint:** the existing `/api/files/stat` already runs through `validatePath()`, so trust is preserved. Saves an endpoint, its rate limiter, its tests, and its failure-mode permutations. (Codex's exact recommendation in adversarial review.)
+
+#### Ambiguity picker
+
+When more than one step in the resolver chain returns 200 — or when step 4's `repoRoot` enumeration finds multiple basename matches for a path that survived steps 1-3 with no hit — the click handler renders an inline lozenge near the click site:
+
+```
+3 matches — pick one
+  ./src/utils.js
+  ./packages/shared/utils.js
+  ./test/fixtures/utils.js
+```
+
+- Keyboard-navigable (Up/Down + Enter); Esc cancels.
+- Each row shows the basename + the directory dimmed (same VS Code convention as the file-find panel).
+- **Never silently auto-pick.** This is the explicit anti-footgun rule from adversarial review: a wrong silent open trains users to distrust the link provider.
+- Open path: same `app.openFileInViewer(path, line, col)` entry point as the single-hit path.
+
+When the chosen path carries a `:line[:col]` suffix, the open call passes line + col through to Monaco's `editor.revealLineInCenter(line)` + `editor.setPosition({ lineNumber: line, column: col })`.
 
 ---
 
@@ -497,6 +637,38 @@ The SSE wire contract is unchanged regardless of which backend is selected: same
 
 ---
 
+## Fuzzy file-find (Cmd-P)
+
+A "Go to File" picker that opens with `Cmd/Ctrl+P` and lets the user type a partial filename to jump to a file inside the active root. Modeled on VS Code / Sublime Text's Cmd-P. Backed by `GET /api/files/find` (see Server API above).
+
+### Activation + UX
+
+- **Keybinding**: `Cmd/Ctrl+P` (avoids the existing `Ctrl+Shift+O` "open by path" prompt; both stay available).
+- **Panel surface**: reuses `SearchPanel`'s shell layout (input, scrollable results list, keyboard nav). If markup duplication grows, extract a shared `result-row.js` helper covering both panels.
+- **Active root**: the panel queries with `path = liveCwd ?? session.workingDir`, so on Terminal sessions Cmd-P follows the user's `cd` automatically (per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md)).
+- **Result rendering**: basename **bold**, parent directory dimmed (VS Code convention). Score not surfaced in v1.
+- **Empty input**: empty-state hint about gitignore-respecting behaviour ("Hidden by `.gitignore` — toggle in settings (TBD)").
+- **Truncation banner**: when the response sets `truncated: true`, render a sticky top banner: `"Showing top 50 of 50000 files — refine your search to narrow."`
+- **Latency / cancellation**: 120 ms debounce on input; in-flight `fetch` is aborted on each new keystroke via `AbortController` so the panel never renders stale results.
+
+### Open semantics
+
+| Trigger | Action |
+|---------|--------|
+| `Enter` | Open selected match in the **preview** tab (`tabManager.openFile(path, 'preview')`). |
+| `Cmd/Ctrl+Enter` | Open selected match in the **editor** tab (`tabManager.openFile(path, 'editor')`). |
+| `Esc` | Close the panel without opening anything. |
+| `Up`/`Down` | Move selection. |
+| Click on a row | Same as `Enter`. |
+
+These match the existing `TabManager` open-mode contract used by `SearchPanel` and the right-click "Open in Editor" path on terminal-detected paths.
+
+### Server-side notes
+
+See `GET /api/files/find` under [Server API](#endpoints) for the wire shape, the rg + fuzzysort pipeline, the 10k file enumeration cap, and the per-session 5 queries/sec rate limit. No new ADR — the design is straightforward and the `@vscode/ripgrep` backend choice is already covered by [ADR-0018](../adrs/0018-bundled-ripgrep-search-backend.md).
+
+---
+
 ## Reactive file-system sync
 
 Per [ADR-0017](../adrs/0017-fs-watcher-push-channel.md). The architectural piece that makes the file browser first-class for an AI-driven coding UI: **open editor tabs and the directory listing reflect on-disk reality in near-real-time, without user-driven refresh.** When the agent (Claude / Codex / Gemini) edits a file the user has open, the user sees the new content within ~100-200ms instead of finding out at save time via the existing 409-Conflict modal.
@@ -543,6 +715,100 @@ The dirty-tab toast's "Compare" button needs to diff the user's in-memory buffer
 ### CSS
 
 `.fb-tab-toast` chrome on the tab strip — non-blocking inline banner with the three action buttons. Positioned over the tab to which the toast applies; auto-dismisses on user action or after 30s.
+
+---
+
+## Live CWD tracking (OSC 7)
+
+Per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md). Terminal-bridge sessions emit OSC 7 escape sequences from the shell prompt; the bridge parses them, validates, and pushes a `cwd_changed` WebSocket frame so the file browser panel can re-root automatically when the user `cd`s to a new directory.
+
+### Bridge contract
+
+| Bridge | Live CWD source | Notes |
+|--------|-----------------|-------|
+| `TerminalBridge` (raw shell) | OSC 7 parser on the PTY data stream | Emits `cwd_changed` on each post-validated change. `session.liveCwd` reflects the latest. |
+| `ClaudeBridge`, `CodexBridge`, `CopilotBridge`, `GeminiBridge` | none | These CLIs don't `chdir` — they manage "current directory" as application state. `session.liveCwd === null`; no `cwd_changed` frames emitted. Documented in [`bridges.md`](bridges.md). |
+
+### Parser
+
+Inside the Terminal bridge's `onData` hook (per the `processOutput` extension point in `base-bridge.js`):
+
+1. Append the chunk to a small per-session pending buffer (cap 4 KB; flushed on terminator or buffer-full so a sequence split across PTY chunks resolves correctly).
+2. Match `\x1b]7;file://[^/]*(/[^\x07\x1b]+)(?:\x07|\x1b\\)`. Both `BEL` (`\x07`) and `ST` (`\x1b\\`) terminators accepted per the spec.
+3. Pass the full `file://host/path` URI to Node's [`url.fileURLToPath()`](https://nodejs.org/api/url.html#urlfileurltopathurl). Wrap in try/catch; treat malformed as "no update" (silent drop, optional `DEBUG=1` log).
+4. Run the resolved path through `validatePath()` (`src/server.js:260`); reject anything outside the sandbox silently.
+5. If the resolved path differs from `session.liveCwd`, update and broadcast `{ type: 'cwd_changed', sessionId, cwd, prev, source: 'osc7' }` to all WebSocket clients joined to the session.
+
+**Do not strip OSC 7 from the output forwarded to xterm.js** — the byte sequence is preserved for parity with native terminals and so client-side addons (e.g., a future "show CWD in terminal title" overlay) can re-parse it. xterm.js silently ignores unknown OSC sequences by default.
+
+### Cross-platform path handling
+
+`url.fileURLToPath()` is the reference implementation. Test fixtures cover:
+
+| Input URI | Platform | Expected output |
+|-----------|----------|-----------------|
+| `file:///Users/foo/code` | POSIX | `/Users/foo/code` |
+| `file://localhost/Users/foo` | POSIX | `/Users/foo` |
+| `file:///C:/Users/foo` | Windows | `C:\Users\foo` |
+| `file://server/share/foo` | Windows | `\\server\share\foo` (UNC) |
+| `file:///Users/foo/my%20code` | any | `/Users/foo/my code` (percent decode) |
+
+No platform-specific branches in production code — the heavy lifting is in `url.fileURLToPath()`.
+
+### Shell hooks (one-line user setup)
+
+The terminal bridge listens for OSC 7 — every modern terminal protocol speaks it. The user must run a shell that emits it. Many do by default; otherwise, one-line setup:
+
+- **bash** (`~/.bashrc`):
+  ```bash
+  PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
+  ```
+- **zsh** (`~/.zshrc`):
+  ```zsh
+  function chpwd() { printf "\e]7;file://%s%s\e\\" "$HOST" "$PWD" }
+  ```
+- **fish** — emits OSC 7 unconditionally; no setup needed.
+- **PowerShell** (`$PROFILE` — works on Windows + macOS + Linux pwsh):
+  ```powershell
+  function prompt {
+      $loc = $executionContext.SessionState.Path.CurrentLocation
+      $out = "PS $loc> "
+      if ($loc.Provider.Name -eq 'FileSystem') {
+          $p = $loc.ProviderPath -replace '\\','/'
+          $out += "$([char]27)]7;file://$env:COMPUTERNAME/$p$([char]7)"
+      }
+      $out
+  }
+  ```
+- **Windows cmd.exe** — out of scope; no clean way to emit OSC 7 from a `prompt` definition. Recommend pwsh.
+
+Many distro defaults already emit OSC 7 (Fedora's `/etc/profile.d/vte.sh`, Ubuntu desktop, macOS Terminal.app's default zshrc, Git Bash on Windows when configured). **Hooks are not auto-injected** into user `~/.bashrc` / `$PROFILE` — user shell config is sacrosanct, and the documented one-line snippet is the right boundary.
+
+### Client integration
+
+Per the [FileBrowserPanel "Live CWD follow-toggle"](#filebrowserpanel) section above. In short:
+
+- `app.js` keeps a `_liveCwd` map keyed by session id, populated by the WebSocket `cwd_changed` handler.
+- `FileBrowserPanel._followsTerminal` (per-session boolean, default `true`) governs whether incoming `cwd_changed` re-roots the panel.
+- A "📍 follow terminal" toggle button in the panel header lets the user re-engage following after manual navigation.
+
+### Why not PID polling
+
+Adversarial review (gemini, codex, opus) converged on rejecting PID polling for three independent reasons:
+
+1. **Useless for AI CLI bridges.** Claude/Codex/Gemini don't `chdir` their host process; `/proc/<pid>/cwd` returns the static start dir forever.
+2. **Real CPU cost on macOS.** `lsof -p <pid>` is ~120–180 ms per call (subprocess fork + per-process file table scan); ~1.5 cores burned at N=20 sessions × 0.5 Hz polling.
+3. **Polling latency is user-visible.** OSC 7 is event-driven (re-roots in the prompt-render cycle); a 500 ms poll lags 0–500 ms behind every `cd`.
+
+OSC 7 has none of these failure modes. See [ADR-0019](../adrs/0019-osc7-cwd-tracking.md) for the full tradeoff record.
+
+### Out of scope
+
+- Live CWD for AI CLI bridges (Claude/Codex/Gemini) — they don't `chdir`; concept doesn't map.
+- Auto-injecting OSC 7 hooks into user shell rc files.
+- Windows `cmd.exe` support.
+- Per-pane CWD for tmux / screen.
+- Re-rooting the chokidar fs-watcher on `cd` (the watcher stays pinned to `session.workingDir`; only the panel display moves).
 
 ## Editor
 
@@ -665,6 +931,65 @@ When uploading a file that already exists:
 
 ---
 
+## Generic file drop
+
+A page-wide drop target that accepts **any** file MIME type (not just images). Cross-link with [`image-paste.md`](image-paste.md) — the image flow is unchanged; this section adds the generic flow that runs alongside it.
+
+### Dispatcher
+
+`app.js` wires a single `drop` handler at the terminal container that dispatches by MIME on the dropped file(s):
+
+| MIME prefix | Pipeline |
+|-------------|----------|
+| `image/*` | Existing `attachImageHandler` flow (preview modal → WebSocket `image_upload` → temp dir → bracketed paste of quoted path). Unchanged from [`image-paste.md`](image-paste.md). |
+| Anything else | New generic flow (below). |
+
+`image-handler.js` is **not renamed** — the image flow just shipped, the rename buys nothing functional, and adversarial review (codex) flagged the rename as unjustified blast radius. The new code lives in a sibling module `generic-drop-handler.js` that exports an `attachGenericDropHandler` and an internal `_isImageMime(file)` helper used by the dispatcher.
+
+### Generic upload pipeline
+
+For each non-image file dropped:
+
+1. Upload to `path.join(session.workingDir, '.claude-attachments', '<uuid>-<sanitized-basename>')` via the existing `POST /api/files/upload` (which already enforces base64 JSON, 10 MB cap, blocked-extension list, sanitization, and `validatePath()`).
+2. On 201, inject **`@<absolute-path>`** into the terminal as bracketed paste — Claude's native file reference syntax. Avoids shell-quoting hazards entirely. Codex/Gemini bridges accept the same `@<path>` form (or can branch on `bridgeType` for variant syntaxes if those CLIs diverge in future).
+3. On per-file failure, surface a toast with the basename + the server's error code (size / blocked / 4xx).
+
+### Multi-file drop
+
+| Constraint | Value |
+|------------|-------|
+| Max files per drop | 10 (gate against accidentally dropping a folder of thousands) |
+| Concurrent uploads | 4 (`Promise.allSettled`) |
+| Cancellation | A floating chip near the prompt: `"Uploading 3 files… [cancel]"`. Cancel aborts in-flight uploads via `AbortController`; already-uploaded files keep their `@<path>` injection. |
+| Failure behaviour | Per-file toast + inject only successful paths in the order their uploads completed. |
+
+### `.claude-attachments/` lifecycle
+
+| Trigger | Action |
+|---------|--------|
+| First attachment write per session | If `<workingDir>/.gitignore` exists and does not already list `.claude-attachments/`, append the line. Idempotent; best-effort (no error if the file is missing or read-only). |
+| Session delete | Sweep `<workingDir>/.claude-attachments/` for files older than 24 h. Files newer than 24 h are preserved (the user may still need them for an in-flight conversation). |
+| Server shutdown | Same 24 h sweep across every known session. |
+| Per-session size cap | **100 MB total** across the session's `.claude-attachments/` directory. New uploads exceeding the cap are refused with a toast (`"Attachment cap reached — delete some via terminal or wait for the 24 h sweep"`). |
+
+The 24 h window is a deliberate softer policy than the image-paste flow's session-deletion-only cleanup: generic attachments live in the user's **workingDir**, not a temp dir, so they're already visible in the file browser and the user has a clearer mental model of what's there. The auto-sweep + `.gitignore` guard cover the disk-fill DoS and dirty-repo UX surfaces that adversarial review (opus) flagged.
+
+### Why `@<path>` injection
+
+Per the user direction (and adversarial review): `@<path>` is Claude's native file reference syntax and parses correctly downstream. Compared to alternatives:
+
+- **Quoting + bracketed paste of bare path** (the image flow): works for image arguments because the CLI knows to interpret them as image references; doesn't generalise to "this is a file the agent should consider."
+- **`@<path>` injection**: directly tells Claude (and the CLIs that copied the convention) "this is a file reference"; bypasses shell-quoting entirely; works in agent context (the only context generic drops actually target).
+- **Stuffing the file's content into the prompt**: rejected — defeats the lazy-load semantics of `@<path>` and breaks for binary attachments.
+
+### Out of scope
+
+- A visual attachment chip near the prompt before Enter (the `@<path>` injection is sufficient signal for v1).
+- Drop on directories inside the file browser panel (uploads still target `<workingDir>/.claude-attachments/`).
+- Per-CLI variant injection (Codex/Gemini get the same `@<path>` form).
+
+---
+
 ## Security
 
 ### Path Validation
@@ -710,11 +1035,14 @@ Write operations (`PUT /api/files/content`, `POST /api/files/upload`) are rate-l
 | `Ctrl+B` | Global | Toggle file browser panel |
 | `Ctrl+S` | Editor open | Save file |
 | `Ctrl+Shift+O` | Global | Open file by path (prompt) |
-| `Ctrl+Shift+F` | File browser focused | Open cross-file search panel (TBD — task #9) |
+| `Ctrl/Cmd+P` | Global | Open the Cmd-P fuzzy file-find panel |
+| `Ctrl+Shift+F` | File browser focused | Open cross-file search panel |
 | `Ctrl/Cmd+1..9` | File browser focused | Switch to tab N |
 | `Ctrl/Cmd+W` | File browser focused | Close current tab |
 | `Ctrl/Cmd+Tab` | File browser focused | Next tab |
 | `Ctrl/Cmd+Shift+Tab` | File browser focused | Previous tab |
+| `Enter` | Cmd-P panel | Open match in preview tab |
+| `Ctrl/Cmd+Enter` | Cmd-P panel | Open match in editor tab |
 | `Escape` | Editor popups | Close Monaco find/replace widget first |
 | `Escape` | Editor | Close editor (prompts for unsaved changes) |
 | `Escape` | Preview | Close preview, return to file list |
@@ -784,7 +1112,12 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 | File | Coverage |
 |------|----------|
 | `test/file-browser.test.js` | `getFileInfo()` MIME categorisation, `sanitizeFileName()`, `isBinaryFile()` (null-byte sniff), `computeFileHash()`, link regex precision (`path:line:col`, version-token exclusion, extension allowlist), `extractPathFromText()` |
-| `test/file-browser-getcwd.test.js` | `FileBrowserPanel.open()` resolution order (`startPath > getCwd() > initialPath > null`); `getCwd` invoked per-`open()` (not memoised); throwing-callback fallthrough |
+| `test/file-browser-getcwd.test.js` | `FileBrowserPanel.open()` resolution order (`startPath > getCwd() > initialPath > null`); `getCwd` invoked per-`open()` (not memoised); throwing-callback fallthrough; `liveCwd ?? workingDir` precedence inside the `getCwd` factory |
+| `test/osc7-parser.test.js` | OSC 7 parser (table-driven, no PTY): POSIX (`file:///Users/foo`, `file://localhost/Users/foo`), Windows drive (`file:///C:/Users/foo` → `C:\Users\foo`), Windows UNC (`file://server/share/foo` → `\\server\share\foo`), BEL vs ST terminators, percent-encoded paths, malformed sequences silently dropped, paths outside sandbox rejected, sequences split across PTY chunks (buffer-boundary safety). Uses `url.fileURLToPath()` semantics as the reference. |
+| `test/files-find.test.js` | Populates a temp dir + `.gitignore`; asserts `rg --files` respects ignore, fuzzysort ordering matches expectations, truncation at 10k, per-session 5/sec rate limit returns 429 |
+| `test/repo-root.test.js` | `git init` in a temp dir; resolves; asserts non-git dir returns `{ root: null }`; arg-injection on session id rejected |
+| `test/upload-generic.test.js` | Generic-drop upload: `.pdf` (success → 201), `.exe` (blocked → 422), >10 MB (rejected → 413), at session size cap (rejected with toast-able error code), 24 h sweep deletes only files older than threshold, `.gitignore` append is idempotent |
+| `test/link-provider-regex.test.js` | All 7 detection patterns (table-driven) + the rejection set (no dotless basenames, no version strings, no `http://` URLs, no CLI flags, no npm specifiers without an extension) |
 | `test/file-viewer-monaco.test.js` | Monaco language map (extensions + extensionless filenames + case folding + path input); theme map covers every app theme; CDN base alignment with the worker shim's `ALLOWED_BASES` (drift breaks the test); SRI hash format + script-tag wiring guard |
 | `test/monaco-worker-shim.test.js` | Shim source evaluated in a sandboxed Node `vm`; positive (canonical base, trailing-slash normalisation) + 8 negative attack vectors covering HIGH-1 (attacker npm pkg, look-alike package, downgraded version, root path, cdnjs/unpkg, attacker origin, userinfo bypass) |
 | `test/file-tabs.test.js` | TabManager open/close/switch/reorder; localStorage persistence; dirty-state propagation |
@@ -816,6 +1149,12 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 - "Compare with HEAD" opens diff editor with intra-line highlights.
 - `Ctrl+Shift+F` cross-file search streams results; click opens file at matched line.
 - Mobile viewport: panel auto-overlays; Monaco loads; tabs collapse to dropdown.
+- **OSC 7 follow** (`test/e2e/cwd-osc7.test.js`): start a Terminal-bridge session in `/tmp/foo`; emit OSC 7 for `/tmp/bar` from the shell; assert browser re-roots when the follow toggle is on, doesn't when off; assert the toggle's hover-tooltip surfaces the latest `liveCwd` even when not following.
+- **Cmd-P** (`test/e2e/cmd-p.test.js`): `Cmd/Ctrl+P` → type partial → Enter opens preview tab; `Cmd/Ctrl+Enter` opens editor tab; `Esc` cancels.
+- **Click stack-trace** (`test/e2e/click-stack-trace.test.js`): print `at Function (src/app.js:42:8)` → click → opens at line 42 col 8.
+- **Ambiguous click** (`test/e2e/click-ambiguous.test.js`): print `utils.js` when 3 exist on disk → click → ambiguity picker shows; Up/Down + Enter selects.
+- **Generic drop — PDF** (`test/e2e/drop-pdf.test.js`): drop a PDF onto the terminal → upload toast → `@/abs/.../<uuid>-name.pdf` appears as bracketed paste in terminal input.
+- **Generic drop — multi + cancel** (`test/e2e/drop-multi-cancel.test.js`): drop 5 files; cancel mid-upload via the floating chip; assert only successfully-uploaded paths got injected.
 
 ---
 
@@ -829,3 +1168,7 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 - **CSV preview cap is 1000 parsed rows.** Beyond that a "showing first 1000 of N" notice surfaces and the user is expected to filter/edit the file in a real spreadsheet tool. Multi-line quoted CSV fields are also not supported in v1.
 - **Notebook (`.ipynb`) preview** falls through to JSON until `nbviewer.js` integration lands (task #3).
 - **Reactive sync is best-effort, not guaranteed.** The fs-watcher channel (ADR-0017) delivers events for the common case in <200ms but can miss events on EventSource reconnect, network partitions, platform watcher gaps (network filesystems, FUSE mounts), or coalescing-window edge cases. The hash-based 409-Conflict-on-save flow (ADR-0012) remains active as the correctness backstop. `.gitignore` is not parsed by the watcher; static `EXCLUDE_DIRS` list applies (deferred follow-up).
+- **Live CWD tracking only on Terminal-bridge sessions.** Per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md), AI CLI bridges (Claude / Codex / Gemini) do not `chdir` their host process and so report `liveCwd === null`. Their panel stays at `session.workingDir`; users who want to navigate elsewhere use the breadcrumbs.
+- **OSC 7 requires shell-side cooperation.** `bash` and `zsh` need a one-line hook (`PROMPT_COMMAND` / `chpwd`) on shells that don't ship with one; `fish` emits OSC 7 unconditionally. Windows `cmd.exe` has no clean way to emit OSC 7 from a `prompt` definition; the recommended Windows shell for live-CWD tracking is `pwsh`. Documented snippets in the [Live CWD tracking (OSC 7)](#live-cwd-tracking-osc-7) section above.
+- **Cmd-P fuzzy file-find is uncached.** Each query re-runs `rg --files` over the active root. Performant for repos under ~50k files (50–150 ms typical); above 50k, the response truncates at the 10k file enumeration cap and surfaces a "refine your search" hint. A real index is a follow-up only if user feedback shows pathological repos.
+- **Generic file drop targets `<workingDir>/.claude-attachments/`.** Dropped files live in the user's working directory, not a temp dir. The directory is auto-`.gitignore`d on first write and swept (>24 h files only) on session delete + server shutdown; per-session cap is 100 MB. Dirty-repo or disk-fill UX gaps are bounded by the cap + sweep rather than eliminated.
