@@ -132,6 +132,13 @@ module.exports = defineConfig({
       name: 'ux-features',
       testMatch: /5[1-5]-.*\.spec\.js/,
     },
+    // File browser v2: OSC 7 CWD tracking, Cmd-P fuzzy find, terminal-path
+    // click resolution, generic file drop. Specs 56–66.
+    {
+      name: 'file-browser-v2',
+      testMatch: /5[6-9]-.*\.spec\.js|6[0-6]-.*\.spec\.js/,
+      timeout: 90000,
+    },
     // Server restart feature tests
     {
       name: 'restart',
