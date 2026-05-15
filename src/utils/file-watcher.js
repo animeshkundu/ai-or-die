@@ -116,7 +116,14 @@ class FileWatcher extends EventEmitter {
     if (!opts.watchRoot || typeof opts.watchRoot !== 'string') {
       throw new TypeError('FileWatcher: opts.watchRoot is required');
     }
-    this._watchRoot = path.resolve(opts.watchRoot);
+    // Canonicalize watchRoot via realpath so the relPath computation
+    // (path.relative on emit) matches what chokidar emits — both sides
+    // canonical. Without this, on macOS where /var → /private/var,
+    // a watchRoot of `/var/...` would yield the wrong relPath because
+    // chokidar walks the realpath and emits canonical paths.
+    let resolvedRoot = path.resolve(opts.watchRoot);
+    try { resolvedRoot = fs.realpathSync(resolvedRoot); } catch (_) {}
+    this._watchRoot = resolvedRoot;
     this._debounceMs = typeof opts.debounceMs === 'number' ? opts.debounceMs : 100;
     this._addChangeDedupMs = typeof opts.addChangeDedupMs === 'number' ? opts.addChangeDedupMs : 50;
     this._renameDetectMs = typeof opts.renameDetectMs === 'number' ? opts.renameDetectMs : 50;
@@ -125,6 +132,14 @@ class FileWatcher extends EventEmitter {
     this._ignoreDirs = Array.isArray(opts.ignoreDirs) ? opts.ignoreDirs : DEFAULT_IGNORE_DIRS;
     this._ignoreRegexes = buildIgnoreRegexes(this._ignoreDirs);
     this._includeHash = opts.includeHash !== false;
+    // Allow callers to disable awaitWriteFinish entirely (for tests where
+    // sync writeFileSync races chokidar's poll cycle). Default = on with
+    // tuned-down values per ADR-0017.
+    this._awaitWriteFinishDisabled = opts.awaitWriteFinish === false;
+    // usePolling — falls back to fs.stat-based polling instead of
+    // FSEvents/inotify. Slower but bypasses FSEvents flakiness with
+    // sync writes in tests.
+    this._usePolling = !!opts.usePolling;
 
     this._watcher = null;
     this._closed = false;
@@ -186,7 +201,15 @@ class FileWatcher extends EventEmitter {
       // alwaysStat: true is required for inode-based rename detection
       // (ADR-0017 §Rename detection — same-inode unlink+add coalescing).
       alwaysStat: true,
-      awaitWriteFinish: { stabilityThreshold: this._stabilityMs, pollInterval: this._pollIntervalMs },
+      awaitWriteFinish: this._awaitWriteFinishDisabled
+        ? false
+        : { stabilityThreshold: this._stabilityMs, pollInterval: this._pollIntervalMs },
+      // usePolling enables a fs.stat-loop watcher backend instead of
+      // FSEvents/inotify. Used in tests on macOS to bypass FSEvents
+      // flakiness with sync writeFileSync; production stays on the
+      // OS-native backend.
+      usePolling: this._usePolling,
+      interval: this._usePolling ? 50 : undefined,
       atomic: false,
     });
 
@@ -210,6 +233,42 @@ class FileWatcher extends EventEmitter {
   }
 
   /**
+   * Canonicalize a path so subscriptions match the form chokidar emits
+   * for events.
+   *
+   * The bug we're defending against: `path.resolve()` does NOT follow
+   * symlinks. On macOS `/var → /private/var`; on any platform an operator
+   * may pass `--folder /symlink-to-foo` or set the watcher's watchRoot
+   * via a symlinked path. chokidar walks the realpath of its watchRoot
+   * and emits canonical paths in events. If we store subscription paths
+   * in lexical (path.resolve) form, the Set lookup in _onChokidar misses,
+   * events get silently dropped, and recursive subscriptions appear
+   * broken even for files INSIDE the subscribed dir.
+   *
+   * Same shape as the validatePath fix in 158c1c2 — canonicalize via
+   * realpath when the path exists; for paths that don't yet exist
+   * (subscribe-before-create — common for new files in a watched dir),
+   * canonicalize the parent and re-attach the basename.
+   */
+  _canonicalize(absPath) {
+    let resolved = path.resolve(absPath);
+    try {
+      return fs.realpathSync(resolved);
+    } catch (_) {
+      // Path doesn't exist yet — try parent realpath + basename so the
+      // subscribe-before-create case still matches when chokidar later
+      // emits the canonical form of the created path.
+      try {
+        const parent = path.dirname(resolved);
+        if (parent && parent !== resolved && fs.existsSync(parent)) {
+          return path.join(fs.realpathSync(parent), path.basename(resolved));
+        }
+      } catch (_) {}
+      return resolved;
+    }
+  }
+
+  /**
    * Add a path to the active subscription set. Events for this path will
    * now flow through the consumer's 'event' listener. The path does not
    * need to exist at subscribe time — chokidar already watches the
@@ -227,7 +286,7 @@ class FileWatcher extends EventEmitter {
   async subscribe(absPath, opts) {
     if (this._closed) throw new Error('FileWatcher: cannot subscribe on a closed watcher');
     if (!this._watcher) throw new Error('FileWatcher: must call start() before subscribe()');
-    const canonical = path.resolve(absPath);
+    const canonical = this._canonicalize(absPath);
     if (opts && opts.recursive) {
       // Store with a trailing path separator so the prefix-match in
       // _onChokidar via `startsWith(dir + sep)` works without false
@@ -252,7 +311,7 @@ class FileWatcher extends EventEmitter {
    */
   async unsubscribe(absPath, opts) {
     if (this._closed) return;
-    const canonical = path.resolve(absPath);
+    const canonical = this._canonicalize(absPath);
     if (opts && opts.recursive) {
       this._dirSubscriptions.delete(canonical + path.sep);
     } else {
@@ -264,6 +323,14 @@ class FileWatcher extends EventEmitter {
    * Returns true iff the path matches an active subscription — either an
    * exact-path entry in _subscriptions, or a recursive entry in
    * _dirSubscriptions whose dir is an ancestor of `absPath`.
+   *
+   * Inputs are NOT re-canonicalized here. chokidar emits paths already in
+   * canonical form (because the constructor canonicalized watchRoot via
+   * realpath, and chokidar walks from that canonical root). Doing
+   * realpathSync per event would add a syscall to the hot path on every
+   * single fs change AND introduce timing variance that flakes tests
+   * under load. Subscribe/unsubscribe canonicalize at registration time
+   * so both sides of the comparison are already in canonical form.
    */
   hasSubscription(absPath) {
     const canonical = path.resolve(absPath);

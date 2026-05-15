@@ -1117,23 +1117,60 @@ function encodeParam(val) {
       try { return fs.realpathSync(tmpDir); } catch (_) { return tmpDir; }
     }
 
+    // chokidar's FSEvents backend on macOS races with sync writeFileSync
+    // (the file appears stable on chokidar's first poll BEFORE the write
+    // completes). Switching to the polling backend (`usePolling: true`)
+    // bypasses FSEvents entirely and uses fs.stat-loop change detection
+    // — slower (50ms interval) but reliable for the sync-write tests.
+    // Combined with awaitWriteFinish disabled (stability=0), this makes
+    // tests deterministic. Production keeps both defaults for native-OS
+    // performance + read-during-write protection.
+    const _origStabilityMs = process.env.FS_WATCHER_STABILITY_MS;
+    const _origPollMs = process.env.FS_WATCHER_POLL_MS;
+    const _origUsePolling = process.env.FS_WATCHER_USE_POLLING;
+    before(function () {
+      process.env.FS_WATCHER_STABILITY_MS = '0';
+      process.env.FS_WATCHER_USE_POLLING = '1';
+    });
+    after(function () {
+      if (_origStabilityMs === undefined) delete process.env.FS_WATCHER_STABILITY_MS;
+      else process.env.FS_WATCHER_STABILITY_MS = _origStabilityMs;
+      if (_origPollMs === undefined) delete process.env.FS_WATCHER_POLL_MS;
+      else process.env.FS_WATCHER_POLL_MS = _origPollMs;
+      if (_origUsePolling === undefined) delete process.env.FS_WATCHER_USE_POLLING;
+      else process.env.FS_WATCHER_USE_POLLING = _origUsePolling;
+    });
+
     // Reset the server's per-IP watcher counter + active-session map
     // BEFORE each test. SSE close-handlers race with test teardown when
     // many watch tests run in sequence — a leaked count from a prior
     // test's destroy() can push a fresh test past the 5/IP cap. Clearing
     // server state here guarantees each test starts from a known baseline
     // without making each individual test wait 500ms+ for TCP teardown.
-    beforeEach(function () {
+    //
+    // Async to await chokidar's close() — closing is otherwise fire-and-
+    // forget in the cleanup() handler, and an in-flight close from a
+    // prior test can interfere with the next test's chokidar instance
+    // (FSEvents handles overlap, intermittent missed events).
+    beforeEach(async function () {
       if (server && server._activeWatchersByIp) {
         server._activeWatchersByIp.clear();
       }
       if (server && server._fsWatchSessions) {
-        // Try to gracefully close any leftover watchers from a prior test
-        // before clearing the map, so chokidar releases its kernel handles.
+        const closes = [];
         for (const entry of server._fsWatchSessions.values()) {
+          if (entry && entry.watcher && typeof entry.watcher.close === 'function') {
+            closes.push(entry.watcher.close().catch(() => {}));
+          }
           try { entry.cleanup && entry.cleanup('test-reset'); } catch (_) {}
         }
         server._fsWatchSessions.clear();
+        await Promise.all(closes);
+        // Small additional settle: chokidar's FSEvents stream takes a
+        // few ms after close to release. Without this, a fresh watcher
+        // in the next test sometimes shares state with the old one
+        // and misses events.
+        await new Promise((r) => setTimeout(r, 50));
       }
     });
 
@@ -1387,6 +1424,15 @@ function encodeParam(val) {
       const sub2 = await postJson(port,
         `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(targetB)}`);
       assert.strictEqual(sub2.status, 204, 'expected 204 on second subscribe');
+
+      // Small wait before sync writeFileSync — chokidar's awaitWriteFinish
+      // poll cycle (30ms) sometimes happens BEFORE the write completes,
+      // and then never re-polls because the file appears stable. Real-
+      // user writes (network, editor, agent) take long enough that this
+      // race doesn't apply, but a sync 5-byte writeFileSync immediately
+      // after subscribe DOES race. 80ms is enough to land between two
+      // chokidar polls so the change is detected.
+      await new Promise((r) => setTimeout(r, 80));
 
       // Write to BOTH; events for BOTH should arrive on the single SSE.
       fs.writeFileSync(targetA, 'one');
@@ -1759,6 +1805,64 @@ function encodeParam(val) {
       try { sse.request.destroy(); } catch (_) {}
       await new Promise((r) => setTimeout(r, 100));
       fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    // Regression for the path-canonicalization bug team-lead caught on
+    // ce0102e: subscribe paths were stored via path.resolve() (lexical),
+    // but chokidar emits the realpath form for events. On macOS where
+    // /var → /private/var, the prefix-match in _dirSubscriptions missed
+    // → recursive subs silently dropped events even for paths INSIDE
+    // the subscribed dir. The fix in FileWatcher._canonicalize() runs
+    // realpathSync (with parent-realpath fallback for non-existent
+    // paths) so subscriptions and events compare in the same form.
+    //
+    // This test exercises the bug directly via a symlinked subscribe
+    // path: an event on the realpath-form must match a subscription
+    // submitted in the symlinked-form.
+    it('recursive=1: subscription via symlinked path still receives events (canonicalization)', async function () {
+      const realDir = path.join(realTmpDirW(), 'watch-rec-realdir');
+      fs.mkdirSync(realDir, { recursive: true });
+      const symlinkDir = path.join(realTmpDirW(), 'watch-rec-symlink');
+      try {
+        fs.symlinkSync(realDir, symlinkDir, 'dir');
+      } catch (e) {
+        // Symlinks may not be supported in the test sandbox (e.g.
+        // some Windows configurations) — skip rather than fail.
+        this.skip();
+        return;
+      }
+
+      const sessionId = 'rec-sym-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, realTmpDirW());
+      assert.strictEqual(sse.status, 200);
+
+      // Subscribe via the SYMLINK form. Event will arrive on the
+      // canonical (realpath) form. Without the canonicalization fix,
+      // the prefix-match would miss and the test would time out.
+      const sub = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(symlinkDir)}&recursive=1`);
+      assert.strictEqual(sub.status, 204);
+
+      // Settle wait — chokidar's awaitWriteFinish poll cycle (30ms) can
+      // race with sync writeFileSync on freshly-created files; without
+      // this wait the test is flaky (passes ~2/3 runs locally on macOS).
+      // Real-user writes (network, editor, agent) take long enough that
+      // the race doesn't apply in production.
+      await new Promise((r) => setTimeout(r, 80));
+
+      // Write a fresh file via the REAL path; chokidar emits canonical.
+      const target = path.join(realDir, 'symlinked-sub.txt');
+      fs.writeFileSync(target, 'agent created');
+
+      const evt = await waitForEvent(sse.events,
+        (e) => e.type === 'add' && e.path && e.path.endsWith('/symlinked-sub.txt'),
+        3000);
+      assert.ok(evt, 'event must arrive even though sub used the symlinked path');
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      try { fs.unlinkSync(symlinkDir); } catch (_) {}
+      fs.rmSync(realDir, { recursive: true, force: true });
     });
 
     it('recursive + exact subs at once: one event per file (no double-fire)', async function () {

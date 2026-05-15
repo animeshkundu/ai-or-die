@@ -1629,8 +1629,22 @@ class ClaudeCodeWebServer {
       let watcher;
       let watcherClosed = false;
       const debounceMs = parseInt(process.env.FS_WATCHER_DEBOUNCE_MS, 10) || 100;
-      const stabilityMs = parseInt(process.env.FS_WATCHER_STABILITY_MS, 10) || 80;
+      // FS_WATCHER_STABILITY_MS env: defaults to 80ms (the tuned-down
+      // value per ADR-0017 §Coalescing). Setting to 0 DISABLES chokidar's
+      // awaitWriteFinish entirely — useful in tests where sync
+      // writeFileSync races chokidar's poll cycle. Must NOT be 0 in
+      // production (loses read-during-write protection).
+      const rawStability = process.env.FS_WATCHER_STABILITY_MS;
+      const stabilityMs = rawStability !== undefined && rawStability !== ''
+        ? parseInt(rawStability, 10)
+        : 80;
+      const disableAwaitWriteFinish = stabilityMs === 0;
       const pollIntervalMs = parseInt(process.env.FS_WATCHER_POLL_MS, 10) || 30;
+      // FS_WATCHER_USE_POLLING=1 → chokidar uses fs.stat-loop instead of
+      // FSEvents/inotify. Test-only: bypasses FSEvents flakiness on
+      // macOS with sync writeFileSync. Production stays on native
+      // OS backend.
+      const usePolling = process.env.FS_WATCHER_USE_POLLING === '1';
       const ignoreFromEnv = (process.env.FS_WATCHER_IGNORE || '').split(',').map((s) => s.trim()).filter(Boolean);
       const self = this;
 
@@ -1675,6 +1689,12 @@ class ClaudeCodeWebServer {
           debounceMs: debounceMs,
           stabilityMs: stabilityMs,
           pollIntervalMs: pollIntervalMs,
+          // FS_WATCHER_STABILITY_MS=0 → disable awaitWriteFinish entirely.
+          // For test-only timing-control; production keeps the default tuned
+          // 80/30 for read-during-write protection.
+          awaitWriteFinish: disableAwaitWriteFinish ? false : undefined,
+          // FS_WATCHER_USE_POLLING=1 → chokidar uses fs.stat-loop backend.
+          usePolling: usePolling,
           ignoreDirs: ignoreFromEnv.length ? ignoreFromEnv : undefined,
         });
         sessionEntry.watcher = watcher;
