@@ -1117,6 +1117,26 @@ function encodeParam(val) {
       try { return fs.realpathSync(tmpDir); } catch (_) { return tmpDir; }
     }
 
+    // Reset the server's per-IP watcher counter + active-session map
+    // BEFORE each test. SSE close-handlers race with test teardown when
+    // many watch tests run in sequence — a leaked count from a prior
+    // test's destroy() can push a fresh test past the 5/IP cap. Clearing
+    // server state here guarantees each test starts from a known baseline
+    // without making each individual test wait 500ms+ for TCP teardown.
+    beforeEach(function () {
+      if (server && server._activeWatchersByIp) {
+        server._activeWatchersByIp.clear();
+      }
+      if (server && server._fsWatchSessions) {
+        // Try to gracefully close any leftover watchers from a prior test
+        // before clearing the map, so chokidar releases its kernel handles.
+        for (const entry of server._fsWatchSessions.values()) {
+          try { entry.cleanup && entry.cleanup('test-reset'); } catch (_) {}
+        }
+        server._fsWatchSessions.clear();
+      }
+    });
+
     /**
      * Open an SSE connection that stays open until `predicate(events)` returns
      * truthy or `timeoutMs` elapses, then closes the connection and resolves
@@ -1535,6 +1555,241 @@ function encodeParam(val) {
       const r = await postJson(port,
         `/api/files/watch/unsubscribe?session=ghost&path=${encodeParam(target)}`);
       assert.strictEqual(r.status, 204);
+    });
+
+    // ── Recursive subscriptions (engineer's a5e57d7 gap) ──────────────────
+    //
+    // Without recursive=1, the server's exact-path filter drops events
+    // for paths that weren't subscribed at the time of the event — which
+    // breaks the "external add → file list refreshes" case (the new
+    // file's path can't be subscribed because it didn't exist when the
+    // panel mounted). recursive=1 stores the subscription as a directory
+    // prefix-match so any descendant fires the event.
+
+    it('recursive=1: emits add event for fresh file in subscribed dir', async function () {
+      const subDir = path.join(realTmpDirW(), 'watch-rec-add');
+      fs.mkdirSync(subDir, { recursive: true });
+
+      const sessionId = 'rec-add-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(sse.status, 200);
+
+      const sub = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}&recursive=1`);
+      assert.strictEqual(sub.status, 204);
+
+      // File path was NOT subscribed exactly — only the parent dir was,
+      // recursively. The exact-path filter would drop this event; the
+      // recursive filter must accept it.
+      const target = path.join(subDir, 'fresh-from-agent.txt');
+      fs.writeFileSync(target, 'agent created me');
+
+      const evt = await waitForEvent(sse.events,
+        (e) => e.type === 'add' && e.path && e.path.endsWith('/fresh-from-agent.txt'),
+        3000);
+      assert.ok(evt, 'expected add event for newly-created file inside recursive sub');
+      assert.strictEqual(evt.relPath, 'fresh-from-agent.txt');
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    it('recursive=1: emits change event for nested file in subscribed dir', async function () {
+      const subDir = path.join(realTmpDirW(), 'watch-rec-nested');
+      fs.mkdirSync(path.join(subDir, 'a', 'b'), { recursive: true });
+      const nested = path.join(subDir, 'a', 'b', 'deep.txt');
+      fs.writeFileSync(nested, 'initial');
+
+      const sessionId = 'rec-nested-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(sse.status, 200);
+
+      const sub = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}&recursive=1`);
+      assert.strictEqual(sub.status, 204);
+
+      // Modify the deeply-nested file. Exact-path filter would drop this
+      // (the deep file wasn't subscribed); recursive must accept it.
+      await new Promise((r) => setTimeout(r, 150));   // let watcher settle
+      fs.writeFileSync(nested, 'modified by agent');
+
+      const evt = await waitForEvent(sse.events,
+        (e) => e.type === 'change' && e.path && e.path.endsWith('/a/b/deep.txt'),
+        3000);
+      assert.ok(evt, 'expected change event for nested file inside recursive sub');
+      assert.strictEqual(evt.relPath, 'a/b/deep.txt');
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    it('recursive=1: events for paths OUTSIDE the subscribed dir are suppressed', async function () {
+      const root = path.join(realTmpDirW(), 'watch-rec-outside');
+      const inside = path.join(root, 'inside');
+      const outside = path.join(root, 'outside');
+      fs.mkdirSync(inside, { recursive: true });
+      fs.mkdirSync(outside, { recursive: true });
+
+      const sessionId = 'rec-out-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, root);
+      assert.strictEqual(sse.status, 200);
+
+      // Subscribe ONLY the inside dir.
+      const sub = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(inside)}&recursive=1`);
+      assert.strictEqual(sub.status, 204);
+
+      fs.writeFileSync(path.join(inside, 'in.txt'), 'inside');
+      fs.writeFileSync(path.join(outside, 'out.txt'), 'outside');
+
+      // Wait for the inside event so we know events have had time to flow.
+      await waitForEvent(sse.events,
+        (e) => e.type === 'add' && e.path && e.path.endsWith('/inside/in.txt'),
+        3000);
+
+      // Outside event must NOT have arrived.
+      const outsideEvts = sse.events.filter((e) => e.path && e.path.endsWith('/outside/out.txt'));
+      assert.strictEqual(outsideEvts.length, 0,
+        'outside-dir events leaked through recursive sub: ' + JSON.stringify(outsideEvts));
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('recursive=1: prefix-match precision — /a/b should NOT match /a/bc', async function () {
+      // Defends against the classic "string startsWith" bug. /a/bc is NOT
+      // inside /a/b — the trailing-separator storage in _dirSubscriptions
+      // is the load-bearing detail.
+      const root = path.join(realTmpDirW(), 'watch-rec-prefix');
+      fs.mkdirSync(path.join(root, 'b'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'bc'), { recursive: true });
+
+      const sessionId = 'rec-pre-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, root);
+      assert.strictEqual(sse.status, 200);
+
+      // Subscribe /a/b recursively. Files in /a/bc must NOT trigger.
+      const sub = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(path.join(root, 'b'))}&recursive=1`);
+      assert.strictEqual(sub.status, 204);
+
+      fs.writeFileSync(path.join(root, 'b', 'in.txt'), 'in');
+      fs.writeFileSync(path.join(root, 'bc', 'out.txt'), 'out');
+
+      // Wait for the in event.
+      await waitForEvent(sse.events,
+        (e) => e.type === 'add' && e.path && e.path.endsWith('/b/in.txt'),
+        3000);
+
+      // /bc/out.txt must NOT have triggered.
+      const outEvts = sse.events.filter((e) => e.path && e.path.endsWith('/bc/out.txt'));
+      assert.strictEqual(outEvts.length, 0,
+        'sibling /bc/out.txt event leaked via /b prefix match: ' + JSON.stringify(outEvts));
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it('recursive=1: unsubscribe with recursive=1 stops events; events resume silent', async function () {
+      const subDir = path.join(realTmpDirW(), 'watch-rec-unsub');
+      fs.mkdirSync(subDir, { recursive: true });
+
+      const sessionId = 'rec-unsub-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(sse.status, 200);
+
+      const sub = await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}&recursive=1`);
+      assert.strictEqual(sub.status, 204);
+
+      fs.writeFileSync(path.join(subDir, 'first.txt'), 'a');
+      await waitForEvent(sse.events,
+        (e) => e.type === 'add' && e.path && e.path.endsWith('/first.txt'), 3000);
+
+      // Unsubscribe with the SAME flavour we subscribed with.
+      const us = await postJson(port,
+        `/api/files/watch/unsubscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}&recursive=1`);
+      assert.strictEqual(us.status, 204);
+
+      await new Promise((r) => setTimeout(r, 200));   // let any in-flight settle
+      const before = sse.events.length;
+      fs.writeFileSync(path.join(subDir, 'silent.txt'), 'b');
+      await new Promise((r) => setTimeout(r, 250));
+      const newEvents = sse.events.slice(before).filter((e) => e.path && e.path.endsWith('/silent.txt'));
+      assert.strictEqual(newEvents.length, 0,
+        'recursive unsubscribe failed; got events: ' + JSON.stringify(newEvents));
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    it('recursive=1: wrong-flavour unsubscribe is a no-op (recursive sub stays)', async function () {
+      // A client that issues unsubscribe(path) without recursive=1 against
+      // a path that was subscribed WITH recursive=1 should NOT remove the
+      // recursive sub (and vice versa). This lets clients safely "unsub
+      // both flavours" without prior knowledge.
+      const subDir = path.join(realTmpDirW(), 'watch-rec-mismatch');
+      fs.mkdirSync(subDir, { recursive: true });
+
+      const sessionId = 'rec-mis-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(sse.status, 200);
+
+      // Subscribe recursive.
+      await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}&recursive=1`);
+
+      // Wrong-flavour unsubscribe (no recursive=1) → 204 but doesn't
+      // affect the recursive subscription.
+      const wrong = await postJson(port,
+        `/api/files/watch/unsubscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}`);
+      assert.strictEqual(wrong.status, 204);
+
+      // Recursive sub should still fire.
+      fs.writeFileSync(path.join(subDir, 'should-fire.txt'), 'still subscribed');
+      const evt = await waitForEvent(sse.events,
+        (e) => e.type === 'add' && e.path && e.path.endsWith('/should-fire.txt'), 3000);
+      assert.ok(evt, 'wrong-flavour unsubscribe must not affect recursive sub');
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(subDir, { recursive: true, force: true });
+    });
+
+    it('recursive + exact subs at once: one event per file (no double-fire)', async function () {
+      const subDir = path.join(realTmpDirW(), 'watch-rec-coexist');
+      fs.mkdirSync(subDir, { recursive: true });
+      const target = path.join(subDir, 'twice.txt');
+
+      const sessionId = 'rec-coex-' + Date.now();
+      const sse = await openSseAndWaitForStart(port, sessionId, subDir);
+      assert.strictEqual(sse.status, 200);
+
+      // Subscribe BOTH the parent dir (recursive) AND the file (exact).
+      // The same change event should emit ONCE, not twice.
+      await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}&recursive=1`);
+      await postJson(port,
+        `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(target)}`);
+
+      fs.writeFileSync(target, 'first');
+      // Wait > debounce window so any duplicates would have surfaced.
+      await new Promise((r) => setTimeout(r, 350));
+
+      const matchingEvts = sse.events.filter(
+        (e) => e.type === 'add' && e.path && e.path.endsWith('/twice.txt'));
+      assert.strictEqual(matchingEvts.length, 1,
+        'expected exactly one add event despite double-subscription; got ' +
+        matchingEvts.length + ': ' + JSON.stringify(matchingEvts));
+
+      try { sse.request.destroy(); } catch (_) {}
+      await new Promise((r) => setTimeout(r, 100));
+      fs.rmSync(subDir, { recursive: true, force: true });
     });
   });
 });

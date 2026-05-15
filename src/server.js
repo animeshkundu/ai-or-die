@@ -1714,11 +1714,18 @@ class ClaudeCodeWebServer {
 
     // POST /api/files/watch/subscribe — add a path to the active session's
     // subscription set. Required: ?session=<id>&path=<absolute>.
+    // Optional: ?recursive=1 — subscribes the path AS A DIRECTORY-RECURSIVE
+    // match (events for the dir AND any descendant fire). Used by
+    // FileBrowserPanel for the "auto-refresh listing on agent-create"
+    // case where the new file's path isn't known at subscribe time.
+    // Default (no flag): exact-path subscription.
     // Returns 204 on success; 404 if no EventSource is open for the session;
     // 403 if path fails validatePath.
     this.app.post('/api/files/watch/subscribe', express.json({ limit: '64kb' }), async (req, res) => {
       const sessionId = req.query.session || (req.body && req.body.session);
       const rawPath = req.query.path || (req.body && req.body.path);
+      const recursive = req.query.recursive === '1' ||
+                        (req.body && (req.body.recursive === '1' || req.body.recursive === true));
       if (!sessionId || !rawPath) {
         return res.status(400).json({ error: 'session and path are required' });
       }
@@ -1733,7 +1740,7 @@ class ClaudeCodeWebServer {
       if (!validation.valid) return res.status(403).json({ error: validation.error });
 
       try {
-        await entry.watcher.subscribe(validation.path);
+        await entry.watcher.subscribe(validation.path, { recursive: recursive });
       } catch (err) {
         return res.status(500).json({ error: 'subscribe failed', message: err.message });
       }
@@ -1743,9 +1750,15 @@ class ClaudeCodeWebServer {
     // POST /api/files/watch/unsubscribe — remove a path from the active
     // session's subscription set. Idempotent — returns 204 even if the
     // path was never subscribed.
+    // Optional: ?recursive=1 — must MATCH the flavour the path was
+    // subscribed with. Calling with the wrong flavour is a no-op (the
+    // exact-flavour subscription stays). This lets clients safely "remove
+    // both flavours" by issuing both calls without prior knowledge.
     this.app.post('/api/files/watch/unsubscribe', express.json({ limit: '64kb' }), async (req, res) => {
       const sessionId = req.query.session || (req.body && req.body.session);
       const rawPath = req.query.path || (req.body && req.body.path);
+      const recursive = req.query.recursive === '1' ||
+                        (req.body && (req.body.recursive === '1' || req.body.recursive === true));
       if (!sessionId || !rawPath) {
         return res.status(400).json({ error: 'session and path are required' });
       }
@@ -1764,7 +1777,7 @@ class ClaudeCodeWebServer {
       const canonicalPath = path.resolve(rawPath);
 
       try {
-        await entry.watcher.unsubscribe(canonicalPath);
+        await entry.watcher.unsubscribe(canonicalPath, { recursive: recursive });
       } catch (err) {
         return res.status(500).json({ error: 'unsubscribe failed', message: err.message });
       }

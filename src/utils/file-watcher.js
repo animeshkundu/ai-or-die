@@ -131,7 +131,16 @@ class FileWatcher extends EventEmitter {
 
     // Subscription set: absolute paths the consumer cares about.
     // Events for paths NOT in this set are dropped on emit.
+    // Two flavours of subscription:
+    //   _subscriptions     — exact-path match (existing behavior)
+    //   _dirSubscriptions  — directory-recursive: matches the dir AND any
+    //                        descendant. Stored with native-separator
+    //                        trailing path-sep for cheap startsWith()
+    //                        prefix-match in _onChokidar.
+    // Both can coexist; an event matching either set is emitted exactly
+    // once (Set semantics + early return on first match).
     this._subscriptions = new Set();
+    this._dirSubscriptions = new Set();
 
     // Watched parent directory set (chokidar add()/unwatch() targets).
     // We watch parent dirs (not files directly) so add events fire when
@@ -205,36 +214,73 @@ class FileWatcher extends EventEmitter {
    * now flow through the consumer's 'event' listener. The path does not
    * need to exist at subscribe time — chokidar already watches the
    * watchRoot subtree, so add events fire when the file is created.
+   *
+   * @param {string} absPath
+   * @param {object} [opts]
+   *   - recursive: boolean — if true, the subscription is treated as a
+   *                directory-recursive match: events for `absPath` AND
+   *                any descendant fire. Used by FileBrowserPanel for
+   *                the "auto-refresh listing on agent-create" case
+   *                where the new file's path isn't known at subscribe
+   *                time. Default false (exact-path match).
    */
-  async subscribe(absPath) {
+  async subscribe(absPath, opts) {
     if (this._closed) throw new Error('FileWatcher: cannot subscribe on a closed watcher');
     if (!this._watcher) throw new Error('FileWatcher: must call start() before subscribe()');
     const canonical = path.resolve(absPath);
-    this._subscriptions.add(canonical);
+    if (opts && opts.recursive) {
+      // Store with a trailing path separator so the prefix-match in
+      // _onChokidar via `startsWith(dir + sep)` works without false
+      // positives (e.g. /a/b should NOT match /a/bc).
+      this._dirSubscriptions.add(canonical + path.sep);
+    } else {
+      this._subscriptions.add(canonical);
+    }
   }
 
   /**
    * Remove a path from the active subscription set. Subsequent events for
    * this path will be dropped on emit (chokidar continues to fire them
-   * internally — cheap to discard).
+   * internally — cheap to discard). Idempotent: removing a non-subscribed
+   * path is a no-op.
+   *
+   * The `recursive` opt must match the flavour the path was subscribed
+   * with — calling unsubscribe(path, {recursive:true}) on an exact-
+   * subscribed path is a no-op (and vice versa). Mismatched-flavour
+   * unsubscribes are intentionally non-error so client code can safely
+   * "unsubscribe everything" with both calls without prior knowledge.
    */
-  async unsubscribe(absPath) {
+  async unsubscribe(absPath, opts) {
     if (this._closed) return;
     const canonical = path.resolve(absPath);
-    this._subscriptions.delete(canonical);
+    if (opts && opts.recursive) {
+      this._dirSubscriptions.delete(canonical + path.sep);
+    } else {
+      this._subscriptions.delete(canonical);
+    }
   }
 
   /**
-   * Returns true iff the path has been subscribed (and not unsubscribed).
+   * Returns true iff the path matches an active subscription — either an
+   * exact-path entry in _subscriptions, or a recursive entry in
+   * _dirSubscriptions whose dir is an ancestor of `absPath`.
    */
   hasSubscription(absPath) {
-    return this._subscriptions.has(path.resolve(absPath));
+    const canonical = path.resolve(absPath);
+    if (this._subscriptions.has(canonical)) return true;
+    for (const dirWithSep of this._dirSubscriptions) {
+      // dirWithSep already ends with path.sep. Match the dir itself
+      // (canonical + sep === dirWithSep) OR any descendant.
+      if (canonical + path.sep === dirWithSep) return true;
+      if (canonical.startsWith(dirWithSep)) return true;
+    }
+    return false;
   }
 
   /**
-   * The set of currently-subscribed absolute paths (for diagnostics / tests).
+   * Total active subscription count (exact + recursive). For diagnostics.
    */
-  get subscriptionCount() { return this._subscriptions.size; }
+  get subscriptionCount() { return this._subscriptions.size + this._dirSubscriptions.size; }
 
   // -------------------------------------------------------------------------
   // chokidar event handler — applies the 3 coalescing layers + rename detect.
@@ -254,8 +300,10 @@ class FileWatcher extends EventEmitter {
     if (this._closed) return;
 
     // Subscription filter — chokidar fires on the parent dir's whole subtree,
-    // but we only emit events for paths the consumer subscribed to.
-    if (!this._subscriptions.has(absPath)) return;
+    // but we only emit events for paths the consumer subscribed to. Two
+    // match modes (see subscribe/_dirSubscriptions): exact-path or
+    // directory-recursive prefix-match.
+    if (!this.hasSubscription(absPath)) return;
 
     const inode = stat ? stat.ino : null;
     const now = Date.now();
@@ -396,6 +444,7 @@ class FileWatcher extends EventEmitter {
     this._recentAdds.clear();
     this._recentUnlinks.clear();
     this._subscriptions.clear();
+    this._dirSubscriptions.clear();
     this._dirRefcount.clear();
     this._watchedDirs.clear();
     if (this._watcher) {
