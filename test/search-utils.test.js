@@ -475,16 +475,24 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
     }
   });
 
-  it('skips global.__SEA_RG_PATH__ when the extracted file is unexecutable (corrupt asset / quarantine)', function () {
+  it('skips global.__SEA_RG_PATH__ when the extracted file is unexecutable / missing (corrupt asset / quarantine)', function () {
     // Even though sea-bootstrap.js chmods +x, an antivirus quarantine
     // of the just-extracted binary or a corrupted SEA asset could
-    // leave it non-readable. Detection must surface that as fall-
-    // through to grep / null instead of a per-request spawn failure.
+    // leave it non-readable / missing. Detection must surface that as
+    // fall-through to grep / null instead of a per-request spawn
+    // failure.
+    //
+    // We exercise the contract via a NON-EXISTENT path because POSIX
+    // file modes (0o644 vs 0o755) don't translate on Windows — the
+    // CRT treats X_OK as F_OK on Windows, so a non-executable-by-mode
+    // file still passes accessSync(X_OK) there. ENOENT is the only
+    // failure mode that's portable across all three platforms; it
+    // exercises the same try/catch fall-through path as a real
+    // quarantine would.
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sea-rg-bad-'));
-    const fakeRg = path.join(tmpDir, 'rg');
-    fs.writeFileSync(fakeRg, '#!/bin/sh\nexit 0\n');
-    fs.chmodSync(fakeRg, 0o644);    // NOT executable
-    global.__SEA_RG_PATH__ = fakeRg;
+    const missingRg = path.join(tmpDir, 'rg-was-quarantined');
+    // Deliberately do NOT create the file — accessSync will throw ENOENT.
+    global.__SEA_RG_PATH__ = missingRg;
 
     const ctx = loadSearchWithStubbedExec(function (cmd, args) {
       if (cmd === 'which' && args[0] === 'rg') {
@@ -494,7 +502,7 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
     }, 'darwin', { bundledAvailable: false });
     try {
       assert.strictEqual(ctx.search.detectBackend(), null,
-        'SEA-extracted rg without exec bit MUST fall through; macOS has no grep fallback');
+        'SEA-extracted rg that fails accessSync MUST fall through; macOS has no grep fallback');
     } finally {
       ctx.restore();
       delete global.__SEA_RG_PATH__;
