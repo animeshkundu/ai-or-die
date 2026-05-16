@@ -77,7 +77,18 @@ class ClaudeCodeWebServer {
     this.keyFile = options.key;
     this.folderMode = options.folderMode !== false; // Default to true
     this.selectedWorkingDir = null;
-    this.baseFolder = process.cwd(); // The folder where the app runs from
+    // Canonicalize baseFolder via realpathSync at construction so the
+    // sandbox check in isPathWithinBase (which is purely lexical via
+    // path.relative) compares apples-to-apples with realpath'd target
+    // paths. On Windows this matters because the test runner's tmpdir
+    // may be in 8.3-short form (C:\Users\RUNNER~1\...) while realpathSync
+    // returns the long form (C:\Users\runneradmin\...). Without
+    // canonicalizing baseFolder, validatePath silently rejects any
+    // realpath'd target that crosses the short-vs-long boundary — which
+    // broke the /api/sessions/:id/repo-root test on windows-latest.
+    let _baseFolder = process.cwd();
+    try { _baseFolder = fs.realpathSync(_baseFolder); } catch (_) { /* keep cwd on failure */ }
+    this.baseFolder = _baseFolder; // The folder where the app runs from
     // Session duration in hours (default to 5 hours from first message)
     this.sessionDurationHours = parseFloat(process.env.CLAUDE_SESSION_HOURS || options.sessionHours || 5);
     
@@ -1903,12 +1914,20 @@ class ClaudeCodeWebServer {
           session._repoRootCache = null;
           return res.json({ root: null });
         }
+        // Normalize separators before validation — `git rev-parse
+        // --show-toplevel` returns POSIX-style forward slashes on Windows
+        // (`C:/Users/...`). validatePath calls path.resolve which DOES
+        // normalize to backslashes on win32, but the test-fixture
+        // comparison (fs.realpathSync) returns backslashes, so we want
+        // the cached value to match without relying on each consumer
+        // re-normalizing.
+        const normalizedRoot = path.normalize(root);
         // Validate the resolved root is inside the sandbox before caching
         // and returning — git could theoretically resolve to something
         // outside baseFolder if the session's workingDir is a deep path
         // into a repo whose root sits above baseFolder (the served
         // sub-directory case).
-        const rootValidation = this.validatePath(root);
+        const rootValidation = this.validatePath(normalizedRoot);
         if (!rootValidation.valid) {
           session._repoRootCache = null;
           return res.json({ root: null });
