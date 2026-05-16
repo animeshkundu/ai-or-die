@@ -23,6 +23,7 @@ const assert = require('assert');
 // ---------------------------------------------------------------------------
 
 let _origWindow, _origDocument, _origURLSearchParams, _origFetch, _origSessionStorage;
+let _stubsActive = false;
 let history, location, ssMap, fetchCalls, fetchHandler;
 
 function makeFakeStorage() {
@@ -38,11 +39,20 @@ function makeFakeStorage() {
 
 function installBrowserStubs(opts) {
   opts = opts || {};
-  _origWindow = global.window;
-  _origDocument = global.document;
-  _origURLSearchParams = global.URLSearchParams;
-  _origFetch = global.fetch;
-  _origSessionStorage = global.sessionStorage;
+  // Capture originals only on the FIRST install since the last restore.
+  // Re-install (e.g. an `it()` calling install() under a describe whose
+  // `before(install)` already ran) must NOT overwrite the captured
+  // originals with the already-stubbed values — that bug caused
+  // restoreBrowserStubs to leak the stub objects globally, polluting
+  // unrelated tests (test/image-upload.test.js was the loudest victim).
+  if (!_stubsActive) {
+    _origWindow = global.window;
+    _origDocument = global.document;
+    _origURLSearchParams = global.URLSearchParams;
+    _origFetch = global.fetch;
+    _origSessionStorage = global.sessionStorage;
+    _stubsActive = true;
+  }
 
   ssMap = makeFakeStorage();
   fetchCalls = [];
@@ -89,11 +99,13 @@ function installBrowserStubs(opts) {
 }
 
 function restoreBrowserStubs() {
+  if (!_stubsActive) return;
   if (_origWindow === undefined) delete global.window; else global.window = _origWindow;
   if (_origDocument === undefined) delete global.document; else global.document = _origDocument;
   if (_origURLSearchParams === undefined) delete global.URLSearchParams; else global.URLSearchParams = _origURLSearchParams;
   if (_origFetch === undefined) delete global.fetch; else global.fetch = _origFetch;
   if (_origSessionStorage === undefined) delete global.sessionStorage; else global.sessionStorage = _origSessionStorage;
+  _stubsActive = false;
 }
 
 function loadAuth() {
@@ -403,6 +415,35 @@ describe('auth.js — URL-token + log-sanitization regressions (QA #13)', functi
       var auth = loadAuth();
       var mgr = new auth.AuthManager();
       assert.strictEqual(mgr.getToken(), 'preloaded');
+    });
+  });
+
+  // Regression guard for the test-pollution bug that broke
+  // test/image-upload.test.js when run in the same mocha process. Earlier
+  // describe blocks call installBrowserStubs() multiple times (nested
+  // before(install) + inline it() install() with custom fetchHandler).
+  // The pre-fix code overwrote _origWindow/_origDocument/_origSessionStorage
+  // on each install, capturing the already-stubbed values. The final
+  // after(restore) then re-assigned the stub objects as "originals",
+  // permanently polluting global.window/document/sessionStorage for
+  // every subsequent test in the same mocha run.
+  //
+  // Narrow assertion: globals must not be any of the stub OBJECTS this
+  // file constructs (broader "must be undefined" would false-positive
+  // on legitimate JSDOM-style stubs another test file installed
+  // independently — that's not our pollution to assert on).
+  describe('this file does not leak its own stubs (test-pollution regression)', function () {
+    it('does not leak _origWindow capture as the stub object', function () {
+      // After all suites, _origWindow should hold the TRUE original
+      // (typeof === 'undefined' on Node) — not the stub we installed.
+      // If _origWindow holds our stub, the next mocha process would
+      // restore-to-stub and pollute downstream tests.
+      assert.notStrictEqual(_origWindow && _origWindow.location && _origWindow.location.search, '',
+        '_origWindow leaked as an auth-test stub (has .location.search). installBrowserStubs() captured an already-stubbed value as the "original".');
+    });
+    it('does not leak _origSessionStorage capture as the stub map', function () {
+      assert.notStrictEqual(_origSessionStorage && typeof _origSessionStorage._map, 'object',
+        '_origSessionStorage leaked as an auth-test stub (has _map). Same root cause as above.');
     });
   });
 });
