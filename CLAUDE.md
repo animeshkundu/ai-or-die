@@ -8,6 +8,18 @@ Claude Code Web is a web-based interface for the Claude Code CLI that enables br
 
 The project uses the **ai-or-die** agent infrastructure for AI-assisted development. See `AGENTS.md` for the full team roster and handoff protocol.
 
+### Primary deployment target
+
+**Windows 11 is the primary deployment target for both the server (Node.js process) and the client (browser).** All design decisions, default configurations, regression-test coverage, and bug-fix priority must lead with Windows 11 + PowerShell 7 / `cmd.exe` correctness. macOS and Linux are first-class secondary targets (CI runs both), but anywhere a tradeoff arises, **Windows wins by default**.
+
+Practical implications:
+- Cross-platform path handling (`path.join`, separators) is mandatory but the test corpus must include Windows-specific shapes: drive letters (`C:\`, `C:/`, `/C:/`), UNC (`\\server\share`), 8.3 short names (`C:\Users\RUNNER~1\...`), `\\?\` long-path prefix.
+- `validatePath` and any sandbox boundary check must canonicalize via `realpathSync.native` (handles 8.3 expansion) AND strip `\\?\` prefix BEFORE lexical compare; do this on BOTH sides.
+- Native subprocesses (`@vscode/ripgrep`, node-pty, `git`, `lsof`, `pwsh.exe` vs `powershell.exe`) require Windows-specific binary detection + argv shapes.
+- Shells: PowerShell 7 (`pwsh.exe`) is preferred but not always present; `powershell.exe` (Windows PowerShell 5.1) ships in box and is the safe fallback; `cmd.exe` cannot emit OSC 7 from `prompt` and should surface a switch-to-PowerShell hint instead of "install the hook."
+- OSC 7 / live-CWD: cmd.exe users need a different UX than POSIX shell users; gracefully degrade.
+- Output paths returned to the client should be normalized to forward slashes for consistency; storage form is whatever the platform produces.
+
 ## Agent Infrastructure
 
 ### Agent Personas
@@ -37,7 +49,7 @@ Before starting any task, consult the relevant documentation:
 ### Mandatory Rules
 1. **Spec updates with code changes**: When code behavior changes, the corresponding spec in `docs/specs/` must be updated in the same commit or PR.
 2. **ADR compliance**: Never contradict an accepted ADR. To change direction, write a new ADR that supersedes the old one.
-3. **Cross-platform support**: All code must work on both Windows and Linux. Use `path.join()` for file paths, provide `.sh` and `.ps1` script variants, and test on both platforms in CI.
+3. **Cross-platform support, Windows-first**: All code must work on Windows 11 + macOS + Linux. **Windows is the primary target — when a tradeoff arises, Windows wins.** Use `path.join()` for file paths; provide `.sh` and `.ps1` script variants; canonicalize paths via `realpathSync.native` + `\\?\` strip BEFORE any lexical compare; CI runs all three OS in matrix; the Windows tests are the gate, not the optional pass.
 4. **Test coverage**: Every feature and bug fix requires tests. No exceptions.
 5. **Local-first testing**: All tests (unit + integration + e2e for the surface you changed) must pass locally before pushing. CI on GitHub Actions runs the same suites on Windows + Linux + clean-checkout `npm ci` as the final cross-platform verification gate. Local-pass is necessary but not sufficient — CI green is the merge gate. See `docs/agent-instructions/06-local-first-then-ci.md`.
 6. **Document what you solve**: Every solved problem goes in `docs/history/`. LLMs don't carry memories — written docs are the only institutional memory.
