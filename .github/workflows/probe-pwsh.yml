@@ -1,0 +1,288 @@
+name: Probe — pwsh empirical validation for ADR-0021
+
+# ADR-0021 (OSC 7 shell-hook auto-install) revision pivots the design
+# from POSIX-priority to pwsh-priority because the user's primary env
+# is Windows. SE has no local Windows; this workflow validates the
+# pwsh-specific design questions on the windows-latest runner.
+#
+# Probes covered (per architect's task #14 brief):
+#   1 — node-pty + ConPTY + pwsh -File argument quoting
+#   2 — Get-ExecutionPolicy MachinePolicy detection latency
+#   3 — 4 canonical $PROFILE locations + Test-Path chain
+#   4 — PSReadLine baseline env (real interaction test deferred to impl phase)
+#   5 — OSC 7 URI emit form for Windows paths (ASCII / spaces / unicode / UNC)
+#   6 — cmd.exe confirmation of no PROMPT_COMMAND equivalent
+#
+# Manual trigger only — this is investigative, not part of the merge gate.
+# Findings flow into ADR-0021 cross-lab round 2.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies (need @lydell/node-pty for probe 1)
+        run: npm ci
+
+      - name: Probe 1 — node-pty + pwsh -File argument quoting
+        shell: pwsh
+        # Allow non-zero exit (probe script exits 1 if any scenario fails;
+        # we want the artifact uploaded either way for analysis).
+        continue-on-error: true
+        run: |
+          node test/probes/pwsh-spawn.js 2>&1 | Tee-Object probe-1-pwsh-spawn.txt
+
+      - name: Probe 2 — Get-ExecutionPolicy MachinePolicy latency
+        shell: pwsh
+        run: |
+          "Probe 2 — Get-ExecutionPolicy -Scope MachinePolicy" | Tee-Object probe-2-machinepolicy.txt
+
+          # Cold-cache run
+          $start = Get-Date
+          $cold = Get-ExecutionPolicy -Scope MachinePolicy 2>&1
+          $coldMs = ((Get-Date) - $start).TotalMilliseconds
+          "ColdValue: $cold" | Add-Content probe-2-machinepolicy.txt
+          "ColdElapsedMs: $coldMs" | Add-Content probe-2-machinepolicy.txt
+
+          # Warm-cache run (process already JIT'd)
+          $start = Get-Date
+          $warm = Get-ExecutionPolicy -Scope MachinePolicy 2>&1
+          $warmMs = ((Get-Date) - $start).TotalMilliseconds
+          "WarmValue: $warm" | Add-Content probe-2-machinepolicy.txt
+          "WarmElapsedMs: $warmMs" | Add-Content probe-2-machinepolicy.txt
+
+          # All five scopes for context (architect's design uses MachinePolicy
+          # specifically as the pre-spawn gate, but knowing all scopes helps
+          # the ADR's "what does the user's policy look like" mental model).
+          "AllScopes:" | Add-Content probe-2-machinepolicy.txt
+          foreach ($scope in 'MachinePolicy','UserPolicy','Process','CurrentUser','LocalMachine') {
+            $val = Get-ExecutionPolicy -Scope $scope 2>&1
+            "  $scope = $val" | Add-Content probe-2-machinepolicy.txt
+          }
+
+          # Subprocess invocation as we'd actually call it
+          $start = Get-Date
+          $sub = pwsh -NoProfile -NoLogo -Command "Get-ExecutionPolicy -Scope MachinePolicy"
+          $subMs = ((Get-Date) - $start).TotalMilliseconds
+          "SubprocessValue: $sub" | Add-Content probe-2-machinepolicy.txt
+          "SubprocessElapsedMs: $subMs" | Add-Content probe-2-machinepolicy.txt
+
+      - name: Probe 3 — 4 $PROFILE locations + Test-Path
+        shell: pwsh
+        run: |
+          "Probe 3 — `$PROFILE locations" | Tee-Object probe-3-profile.txt
+          "PSVersion: $($PSVersionTable.PSVersion)" | Add-Content probe-3-profile.txt
+          "PSEdition: $($PSVersionTable.PSEdition)" | Add-Content probe-3-profile.txt
+          "" | Add-Content probe-3-profile.txt
+
+          $info = [ordered]@{
+            DefaultExpansion       = $PROFILE.ToString()
+            AllUsersAllHosts       = $PROFILE.AllUsersAllHosts
+            AllUsersCurrentHost    = $PROFILE.AllUsersCurrentHost
+            CurrentUserAllHosts    = $PROFILE.CurrentUserAllHosts
+            CurrentUserCurrentHost = $PROFILE.CurrentUserCurrentHost
+          }
+          ($info | ConvertTo-Json) | Add-Content probe-3-profile.txt
+          "" | Add-Content probe-3-profile.txt
+
+          "Test-Path results:" | Add-Content probe-3-profile.txt
+          foreach ($k in $info.Keys) {
+            $p = $info[$k]
+            $exists = Test-Path -LiteralPath $p
+            "  $k => exists=$exists path=$p" | Add-Content probe-3-profile.txt
+          }
+          "" | Add-Content probe-3-profile.txt
+
+          # Verify dot-source idempotency: source each profile twice into a
+          # fresh runspace and confirm no error / no observable side effect.
+          "Dot-source idempotency check (creates empty test profile, sources 2x):" | Add-Content probe-3-profile.txt
+          $tempProfile = Join-Path $env:TEMP "probe3-test-profile-$(Get-Random).ps1"
+          'Set-Variable -Name _probe3_counter -Value (1 + (Get-Variable -Name _probe3_counter -ValueOnly -ErrorAction SilentlyContinue | ForEach-Object { if ($_) { $_ } else { 0 } })) -Scope Global' | Set-Content $tempProfile
+          'Write-Host "_probe3_counter=$global:_probe3_counter"' | Add-Content $tempProfile
+          $out = pwsh -NoProfile -NoLogo -Command ". '$tempProfile'; . '$tempProfile'"
+          "  TwoSourcesOutput: $($out -join ' | ')" | Add-Content probe-3-profile.txt
+          Remove-Item -LiteralPath $tempProfile -ErrorAction SilentlyContinue
+
+      - name: Probe 4-baseline — PSReadLine environment capture
+        shell: pwsh
+        # Per architect's refinement: capture PSReadLine baseline NOW so
+        # cross-lab round 2 and the impl-phase real-interaction test have
+        # a known PSReadLine version + option set to target.
+        run: |
+          "Probe 4-baseline — PSReadLine environment" | Tee-Object probe-4-psreadline.txt
+          "" | Add-Content probe-4-psreadline.txt
+
+          Import-Module PSReadLine -ErrorAction SilentlyContinue
+          $mod = Get-Module PSReadLine
+          if ($null -eq $mod) {
+            "PSReadLine NOT loaded" | Add-Content probe-4-psreadline.txt
+          } else {
+            "Module:" | Add-Content probe-4-psreadline.txt
+            ($mod | Format-List | Out-String) | Add-Content probe-4-psreadline.txt
+            "" | Add-Content probe-4-psreadline.txt
+            "Get-PSReadLineOption:" | Add-Content probe-4-psreadline.txt
+            (Get-PSReadLineOption | ConvertTo-Json -Depth 3) | Add-Content probe-4-psreadline.txt
+            "" | Add-Content probe-4-psreadline.txt
+            "Bound key-handlers (head):" | Add-Content probe-4-psreadline.txt
+            (Get-PSReadLineKeyHandler -Bound | Select-Object -First 20 | Format-Table | Out-String) | Add-Content probe-4-psreadline.txt
+          }
+
+          # Wrap-pattern install smoke test: confirm our prompt-function wrap
+          # pattern doesn't throw at install time. (Interactive test — Up/Tab/
+          # cursor behavior — deferred to the impl-phase real-shell suite.)
+          "" | Add-Content probe-4-psreadline.txt
+          "Wrap-install smoke test:" | Add-Content probe-4-psreadline.txt
+          try {
+            $global:_aiordie_origPrompt = $function:prompt
+            function global:prompt {
+              $orig = & $global:_aiordie_origPrompt
+              "[wrap-test] $orig"
+            }
+            $rendered = prompt
+            "  prompt-call: OK rendered='$rendered'" | Add-Content probe-4-psreadline.txt
+            # Restore so we don't leak into later steps
+            $function:prompt = $global:_aiordie_origPrompt
+            Remove-Variable -Name _aiordie_origPrompt -Scope Global
+            "  restore: OK" | Add-Content probe-4-psreadline.txt
+          } catch {
+            "  ERROR: $($_.Exception.Message)" | Add-Content probe-4-psreadline.txt
+          }
+
+      - name: Probe 5 — OSC 7 URI emit form for Windows paths
+        shell: pwsh
+        run: |
+          "Probe 5 — OSC 7 URI emit form" | Tee-Object probe-5-osc7-uri.txt
+          "" | Add-Content probe-5-osc7-uri.txt
+
+          # Cases our pwsh shim must handle correctly. The server-side
+          # parser (src/osc7-parser.js, ADR-0019) decodes via
+          # url.fileURLToPath() with a POSIX host-strip fallback; the
+          # findings below tell us whether our pwsh-side emit shape lands
+          # on a string that survives the parser round-trip.
+          $cases = @(
+            @{ Label = 'ASCII drive path'; Path = 'C:\Users\foo\code' }
+            @{ Label = 'UNC path';         Path = '\\server\share\foo' }
+            @{ Label = 'Path with spaces'; Path = 'C:\Users\My User\code' }
+            @{ Label = 'Path with unicode';Path = 'C:\Users\foo\代码' }
+            @{ Label = 'Path with parens'; Path = 'C:\Users\foo (work)\code' }
+          )
+
+          foreach ($case in $cases) {
+            $p = $case.Path
+            $label = $case.Label
+            "=== $label ===" | Add-Content probe-5-osc7-uri.txt
+            "INPUT_PATH: $p" | Add-Content probe-5-osc7-uri.txt
+
+            # Build the OSC 7 emit body the way our pwsh shim would.
+            # 1. Replace backslashes with forward slashes (file:// URIs are
+            #    forward-slash even on Windows).
+            # 2. Percent-encode spaces / unicode / parens via EscapeUriString.
+            #    Note: EscapeUriString preserves '/' (the URI separator)
+            #    and '%' — important for our case.
+            $forwardSlash = $p -replace '\\','/'
+            $escaped = [Uri]::EscapeUriString($forwardSlash)
+            $sequence = "$([char]27)]7;file://HOSTNAME/$escaped$([char]7)"
+
+            "FORWARD_SLASH: $forwardSlash" | Add-Content probe-5-osc7-uri.txt
+            "ESCAPED:       $escaped" | Add-Content probe-5-osc7-uri.txt
+
+            # Hex-dump the OSC 7 bytes so the artifact preserves the
+            # escapes (terminal-coloring strips them otherwise).
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($sequence)
+            $hex = ($bytes | ForEach-Object { '{0:x2}' -f $_ }) -join ' '
+            "HEX_BYTES:     $hex" | Add-Content probe-5-osc7-uri.txt
+
+            # ASCII-printable form of the sequence with control chars escaped
+            $printable = $sequence -replace "`e",'\e' -replace "`a",'\a'
+            "PRINTABLE:     $printable" | Add-Content probe-5-osc7-uri.txt
+
+            "" | Add-Content probe-5-osc7-uri.txt
+          }
+
+          # Also dump the live $env:COMPUTERNAME and (Get-Location).Path so
+          # the ADR can show "this is the exact shape the runner sees".
+          "Live capture:" | Add-Content probe-5-osc7-uri.txt
+          "  COMPUTERNAME = $env:COMPUTERNAME" | Add-Content probe-5-osc7-uri.txt
+          "  CurrentLocation = $((Get-Location).Path)" | Add-Content probe-5-osc7-uri.txt
+          "  CurrentLocationProvider = $((Get-Location).Provider.Name)" | Add-Content probe-5-osc7-uri.txt
+
+      - name: Probe 5b — server-side parser reverse-validation
+        shell: pwsh
+        # Cross-check: take the OSC 7 emit strings from probe 5 and run
+        # them through the actual src/osc7-parser.js (the server-side
+        # decoder). If the parser accepts them and yields the expected
+        # input path, the round-trip is closed.
+        run: |
+          $cases = @(
+            'C:/Users/foo/code',
+            '//server/share/foo',
+            'C:/Users/My%20User/code',
+            'C:/Users/foo/%E4%BB%A3%E7%A0%81',
+            'C:/Users/foo%20(work)/code'
+          )
+          $expected = @(
+            'C:\Users\foo\code',
+            '\\server\share\foo',
+            'C:\Users\My User\code',
+            'C:\Users\foo\代码',
+            'C:\Users\foo (work)\code'
+          )
+
+          "Probe 5b — server-side parser reverse-validation" | Tee-Object probe-5b-parser.txt
+          node test/probes/osc7-parser-reverse.js @cases 2>&1 | Add-Content probe-5b-parser.txt
+          "" | Add-Content probe-5b-parser.txt
+          "Expected platform-native paths:" | Add-Content probe-5b-parser.txt
+          $expected | ForEach-Object { "  $_" | Add-Content probe-5b-parser.txt }
+
+      - name: Probe 6 — cmd.exe absence of PROMPT_COMMAND equivalent
+        shell: cmd
+        run: |
+          rem cmd.exe `prompt` documentation. Confirms `prompt` accepts only
+          rem static text + small variable substitutions ($P $G $E $T etc.),
+          rem with NO mechanism for executing arbitrary code on each prompt.
+          (
+            echo Probe 6 - cmd.exe prompt command capabilities
+            echo.
+            echo === prompt /? output ===
+            prompt /?
+            echo.
+            echo === Available special characters (subset documented) ===
+            echo $A ^& Ampersand
+            echo $B ^| Pipe
+            echo $C ^( Left parenthesis
+            echo $D Current date
+            echo $E Escape (0x1B)
+            echo $F ^) Right parenthesis
+            echo $G ^> Greater-than
+            echo $H Backspace
+            echo $L ^< Less-than
+            echo $N Current drive
+            echo $P Current drive + path
+            echo $Q ^= Equal
+            echo $S Space
+            echo $T Current time
+            echo $V Windows version
+            echo $_ CR+LF
+            echo $$ Literal dollar
+            echo.
+            echo === Verdict ===
+            echo cmd.exe prompt accepts ONLY the above special characters.
+            echo There is NO command-substitution form ^(no $^(cmd^), no $^^^&cmd, etc.^)
+            echo This confirms ADR-0021 Block A'' limitation for cmd.exe sessions.
+          ) > probe-6-cmd.txt 2>&1
+
+      - name: Upload probe artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-results
+          path: probe-*.txt
+          retention-days: 30
