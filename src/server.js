@@ -77,25 +77,20 @@ class ClaudeCodeWebServer {
     this.keyFile = options.key;
     this.folderMode = options.folderMode !== false; // Default to true
     this.selectedWorkingDir = null;
-    // Canonicalize baseFolder so the sandbox check in isPathWithinBase
-    // (which is purely lexical via path.relative) compares apples-to-apples
-    // with realpath'd target paths.
-    //
-    // On Windows this is especially fiddly because:
-    //   (a) The test runner's tmpdir may be in 8.3-short form
-    //       (C:\Users\RUNNER~1\...) while git rev-parse and Windows
-    //       native APIs return the long form (C:\Users\runneradmin\...).
-    //   (b) Pure-JS fs.realpathSync does NOT expand 8.3 short names on
-    //       Node 22 Windows — only fs.realpathSync.native does (via
-    //       libuv's uv_fs_realpath → GetFinalPathNameByHandleW).
-    //   (c) But .native sometimes returns a \\?\-prefixed long path,
-    //       which then breaks the lexical compare in the OTHER direction.
-    //
-    // _canonicalizePathSync handles all three: prefers .native (so 8.3
-    // shorts expand), strips any \\?\ prefix back to its plain form,
-    // falls back to JS realpath on POSIX legacy paths. See its definition
-    // below.
-    this.baseFolder = this._canonicalizePathSync(process.cwd());
+    // Capture baseFolder via fs.realpathSync so symlinked tmp dirs
+    // (notably macOS /var → /private/var) match canonicalized targets
+    // in validatePath. Critically: we use the pure-JS realpathSync, NOT
+    // fs.realpathSync.native, because the latter expands Windows 8.3 short
+    // names to long form — which would propagate the long form to every
+    // path validatePath returns, breaking downstream comparisons that
+    // expect the short form they sent (file-browser-api, generic-drop,
+    // file-watcher subscriptions, etc.). The 8.3 short/long mismatch
+    // problem is handled DEFENSIVELY at the comparison site inside
+    // isPathWithinBase (see _canonicalizePathSync), without leaking the
+    // .native form to callers.
+    let _baseFolder = process.cwd();
+    try { _baseFolder = fs.realpathSync(_baseFolder); } catch (_) { /* keep cwd on failure */ }
+    this.baseFolder = _baseFolder;
     // Session duration in hours (default to 5 hours from first message)
     this.sessionDurationHours = parseFloat(process.env.CLAUDE_SESSION_HOURS || options.sessionHours || 5);
     
@@ -322,14 +317,17 @@ class ClaudeCodeWebServer {
 
   isPathWithinBase(targetPath) {
     try {
-      // Canonicalize BOTH sides at compare time. Storage form (whatever
-      // baseFolder was captured as, whatever the caller hands in) is
-      // irrelevant — only the canonical form is compared. This collapses
-      // 8.3 short / long, `\\?\` prefix presence/absence, and symlink
-      // variance into a single deterministic key per filesystem entity.
-      // Defence-in-depth: callers also canonicalize via _canonicalizePathSync
-      // upstream, but re-doing it here means a future caller that forgets
-      // to canonicalize still gets the right answer.
+      // Canonicalize BOTH sides at compare time using _canonicalizePathSync
+      // (which expands Windows 8.3 short names and strips \\?\ prefix).
+      // This collapses short/long, prefix-presence/absence, and symlink
+      // variance into a single deterministic key per filesystem entity —
+      // so the lexical compare below works regardless of which form the
+      // caller's path was in.
+      //
+      // We deliberately do NOT propagate the canonicalized form back to
+      // callers (validatePath returns the JS-realpath form, NOT the
+      // .native form); .native is only used HERE, where it can't leak
+      // into response paths or watcher-subscription keys.
       const resolvedTarget = this._canonicalizePathSync(targetPath);
       const resolvedBase = this._canonicalizePathSync(this.baseFolder);
       // Use path.relative instead of startsWith to avoid prefix-matching false positives
@@ -349,33 +347,34 @@ class ClaudeCodeWebServer {
 
     let canonicalPath = path.resolve(targetPath);
 
-    // Canonicalize symlinks AND Windows 8.3 short names BEFORE the
-    // within-base check. Otherwise an input passed in its pre-symlink
-    // form (e.g. `/var/folders/x` where `/var -> /private/var` on macOS)
-    // won't match a baseFolder that came from `process.cwd()` — which
-    // returns the realpath form. Without this, EVERY /api/files/* request
-    // hitting a symlinked tmp dir returns 403 even when the realpath
-    // would be inside baseFolder. (This was the root cause of 28
-    // file-browser-api.test.js failures on macOS; the tests had
-    // effectively never been run end-to-end on a symlinked tmp.)
-    //
-    // On Windows the same logic also expands 8.3 short forms — see
-    // _canonicalizePathSync for the full rationale.
+    // Canonicalize symlinks BEFORE the within-base check. Otherwise an input
+    // passed in its pre-symlink form (e.g. `/var/folders/x` where `/var ->
+    // /private/var` on macOS) won't match a baseFolder that came from
+    // `process.cwd()` — which returns the realpath form. Without this,
+    // EVERY /api/files/* request hitting a symlinked tmp dir returns 403
+    // even when the realpath would be inside baseFolder. (This was the
+    // root cause of 28 file-browser-api.test.js failures on macOS; the
+    // tests had effectively never been run end-to-end on a symlinked tmp.)
     //
     // For non-existent inputs (new uploads, files about to be created),
-    // canonicalize the parent so a symlinked / short-named parent dir
-    // doesn't leak past the within-base check either.
+    // canonicalize the parent so a symlinked parent dir doesn't leak past
+    // the within-base check either.
     //
     // The post-canonicalize within-base check still defends against the
     // "user-planted symlink escapes baseFolder" case: realpath follows
     // the symlink, then we compare the FOLLOWED path against base.
+    //
+    // We use fs.realpathSync (pure JS), NOT .native, so the returned
+    // canonicalPath preserves the form the caller submitted on Windows
+    // (SHORT vs LONG). The 8.3 short/long mismatch in the sandbox check
+    // is handled at the comparison site inside isPathWithinBase.
     try {
       if (fs.existsSync(canonicalPath)) {
-        canonicalPath = this._canonicalizePathSync(canonicalPath);
+        canonicalPath = fs.realpathSync(canonicalPath);
       } else {
         const parent = path.dirname(canonicalPath);
         if (parent && parent !== canonicalPath && fs.existsSync(parent)) {
-          canonicalPath = path.join(this._canonicalizePathSync(parent), path.basename(canonicalPath));
+          canonicalPath = path.join(fs.realpathSync(parent), path.basename(canonicalPath));
         }
       }
     } catch (_) { /* keep the lexical form on realpath failure */ }
@@ -408,13 +407,19 @@ class ClaudeCodeWebServer {
       current = path.dirname(startPath);
     }
 
-    // baseFolder may itself be a symlink or in Windows 8.3 short form —
-    // use _canonicalizePathSync so the lexical equality check below matches
-    // the canonical form validatePath returned for the file we're walking
-    // up from. Without this, a server started with `--folder /symlink-to-foo`
-    // could keep walking past the intended boundary because the operator's
-    // lexical path !== realpath. (Reviewer LOW-1 on 2fa99d1.)
-    const baseResolved = this._canonicalizePathSync(this.baseFolder);
+    // baseFolder may itself be a symlink — resolve to its realpath ONCE so
+    // the lexical equality check below matches the realpath validatePath
+    // returned for the file we're walking up from. Without this, a server
+    // started with `--folder /symlink-to-foo` could keep walking past the
+    // intended boundary because the operator's lexical path !== realpath.
+    // (Reviewer LOW-1 on 2fa99d1.)
+    //
+    // Uses fs.realpathSync (NOT .native) so the form matches what
+    // validatePath returns. The 8.3 short/long mismatch is handled
+    // separately inside isPathWithinBase.
+    let baseResolved;
+    try { baseResolved = fs.realpathSync(this.baseFolder); }
+    catch (_) { baseResolved = path.resolve(this.baseFolder); }
 
     // Defensive cap: walk at most 64 levels up. parent === current already
     // terminates at the FS root, but the cap defends against pathological

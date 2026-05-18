@@ -108,17 +108,19 @@ function gitAvailable() {
     assert.strictEqual(r.status, 200);
     assert.notStrictEqual(r.body.root, null,
       'expected non-null root for session inside git repo, got null (server validation rejected git output?)');
-    // Compare via realpath of BOTH sides so we don't trip on Windows 8.3
-    // short vs long form (CI runner exposes tmpdir as `C:\Users\RUNNER~1`
-    // but git rev-parse returns the long form `C:\Users\runneradmin`).
-    // Both calls go through the same canonicalization pipe, so they
-    // collapse to the same form regardless of which form the caller
-    // started in. Matters on macOS too (where /var → /private/var).
-    const canonicalActual = fs.realpathSync(r.body.root);
-    const canonicalExpected = fs.realpathSync(repoDir);
-    assert.strictEqual(canonicalActual, canonicalExpected,
-      'expected ' + canonicalExpected + ', got ' + canonicalActual +
-      ' (server returned ' + r.body.root + ')');
+    // Compare via inode (st_ino) rather than path string. On Windows CI
+    // the tmpdir is exposed in 8.3 short form (C:\Users\RUNNER~1\...) but
+    // git rev-parse returns the Windows-API long form (C:\Users\runneradmin\...).
+    // Both refer to the same filesystem entity — `ino` is stable per
+    // file/dir on both POSIX (inode) and Windows (NTFS file index), so
+    // comparing those is the form-agnostic robust test. Also defends
+    // against macOS /var → /private/var symlink form variance.
+    const actualStat = fs.statSync(r.body.root);
+    const expectedStat = fs.statSync(repoDir);
+    assert.strictEqual(actualStat.ino, expectedStat.ino,
+      'expected server-returned root to refer to the same dir as repoDir; ' +
+      'server returned ' + r.body.root + ', repoDir is ' + repoDir +
+      ' (st_ino ' + actualStat.ino + ' vs ' + expectedStat.ino + ')');
   });
 
   it('returns root: null for a session whose workingDir is not inside a git repo', async function () {
