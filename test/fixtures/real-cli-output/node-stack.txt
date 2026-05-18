@@ -1,0 +1,8 @@
+TypeError: Cannot read properties of undefined (reading 'foo')
+    at processOne (src/worker.js:42:18)
+    at /Users/kundus/Software/ai-or-die/scripts/main.js:120:5
+    at Module._compile (node:internal/modules/cjs/loader:1295:14)
+    at Object..js (node:internal/modules/cjs/loader:1349:10)
+    at Module.load (node:internal/modules/cjs/loader:1131:32)
+    at Module._load (node:internal/modules/cjs/loader:972:12)
+    at /Users/kundus/Software/ai-or-die/test/runner.js:10:1

@@ -1,0 +1,23 @@
+=== git diff --stat (samples) ===
+ e2e/helpers/file-browser-v2-helpers.js      | 210 +++++++++++++++++++++++++++
+ e2e/playwright.config.js                    |   7 +
+ e2e/tests/56-cwd-osc7.spec.js               | 218 ++++++++++++++++++++++++++++
+ e2e/tests/57-cmd-p.spec.js                  | 192 ++++++++++++++++++++++++
+ src/public/app.js                           |  23 +--
+ src/public/file-browser.js                  |  18 ++-
+ src/public/file-find.js                     |  49 +++++++
+
+=== git diff (real --- +++ +@@ form) ===
+diff --git a/src/public/file-browser.js b/src/public/file-browser.js
+index abc123..def456 100644
+--- a/src/public/file-browser.js
++++ b/src/public/file-browser.js
+@@ -1234,5 +1234,8 @@ function attachLinkProvider(options) {
+   var statCache = new Map();
++  var STAT_CACHE_MAX = 256;
+   function cachedStat(absPath) {
+diff --git a/src/public/app.js b/src/public/app.js
+index 111aaa..222bbb 100644
+--- a/src/public/app.js
++++ b/src/public/app.js
+@@ -3900,7 +3900,7 @@ class ClaudeCodeWebUI {

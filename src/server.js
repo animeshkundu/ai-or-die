@@ -77,7 +77,20 @@ class ClaudeCodeWebServer {
     this.keyFile = options.key;
     this.folderMode = options.folderMode !== false; // Default to true
     this.selectedWorkingDir = null;
-    this.baseFolder = process.cwd(); // The folder where the app runs from
+    // Capture baseFolder via fs.realpathSync so symlinked tmp dirs
+    // (notably macOS /var → /private/var) match canonicalized targets
+    // in validatePath. Critically: we use the pure-JS realpathSync, NOT
+    // fs.realpathSync.native, because the latter expands Windows 8.3 short
+    // names to long form — which would propagate the long form to every
+    // path validatePath returns, breaking downstream comparisons that
+    // expect the short form they sent (file-browser-api, generic-drop,
+    // file-watcher subscriptions, etc.). The 8.3 short/long mismatch
+    // problem is handled DEFENSIVELY at the comparison site inside
+    // isPathWithinBase (see _canonicalizePathSync), without leaking the
+    // .native form to callers.
+    let _baseFolder = process.cwd();
+    try { _baseFolder = fs.realpathSync(_baseFolder); } catch (_) { /* keep cwd on failure */ }
+    this.baseFolder = _baseFolder;
     // Session duration in hours (default to 5 hours from first message)
     this.sessionDurationHours = parseFloat(process.env.CLAUDE_SESSION_HOURS || options.sessionHours || 5);
     
@@ -160,16 +173,23 @@ class ClaudeCodeWebServer {
     // Sweep old temp images every 30 minutes
     this.imageSweepInterval = setInterval(() => this.sweepOldTempImages(), 30 * 60 * 1000);
 
-    // Evict stale inactive sessions older than 7 days every 5 minutes
+    // Evict stale inactive sessions older than 7 days every 5 minutes.
+    // Body is extracted into _evictStaleSessions so it has a clean unit-test
+    // seam (the timer body is otherwise unreachable from outside the class).
     this.sessionEvictionInterval = setInterval(() => {
-      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      for (const [id, session] of this.claudeSessions) {
-        if (!session.active && session.connections.size === 0 && new Date(session.lastActivity || session.created).getTime() < sevenDaysAgo) {
-          this.claudeSessions.delete(id);
-          this.activityBroadcastTimestamps.delete(id);
-          this.sessionStore.markDirty();
-        }
-      }
+      this._evictStaleSessions().catch((err) => {
+        console.warn('Eviction sweep failed:', err && err.message);
+      });
+    }, 5 * 60 * 1000);
+
+    // Diagnostics heartbeat: log a structured snapshot of leak-relevant
+    // resources every 5 minutes. Lets an operator `grep '[diagnostics]'
+    // server.log | tail -100` to see resource growth over time without
+    // running a profiler. Counts only — no PII.
+    this.diagnosticsHeartbeatInterval = setInterval(() => {
+      try {
+        console.log('[diagnostics]', JSON.stringify(this._collectDiagnostics()));
+      } catch (_) { /* never break the timer */ }
     }, 5 * 60 * 1000);
 
     // Also save on process exit
@@ -243,10 +263,96 @@ class ClaudeCodeWebServer {
     process.exit(exitCode);
   }
 
+  /**
+   * Canonicalize a filesystem path to a single deterministic form so the
+   * lexical sandbox check in isPathWithinBase compares apples-to-apples
+   * regardless of which "flavour" of the path the input started in.
+   *
+   * Windows specifics (this is the load-bearing OS):
+   *   - `fs.realpathSync` (pure JS) does NOT expand 8.3 short names on
+   *     Node 22. Inputs like `C:\Users\RUNNER~1\...` stay short. Inputs
+   *     like `C:\Users\runneradmin\...` stay long. So two paths to the
+   *     same dir can lexically disagree.
+   *   - `fs.realpathSync.native` delegates to libuv → GetFinalPathNameByHandleW
+   *     which DOES expand 8.3 — but sometimes returns a `\\?\`-prefixed
+   *     long path. The `\\?\` prefix is a Windows API hint, not part of
+   *     the canonical path, and breaks lexical comparison against
+   *     paths that don't carry it.
+   *
+   * Strategy: prefer `.native` (so 8.3 shorts always expand). Strip any
+   * `\\?\` prefix the native call adds (handle both DOS-drive and UNC
+   * forms). Fall back to pure-JS `realpathSync` on any error (e.g. a
+   * non-existent path on POSIX where .native throws ENOENT but JS
+   * fallback can still resolve the parent).
+   *
+   * POSIX: `.native` is a thin wrapper around realpath(3); behaviour
+   * matches `realpathSync` for existing paths. No `\\?\` prefix
+   * concern. Returns the same value either way.
+   *
+   * Returns the input unchanged when both calls fail (e.g. neither
+   * the path nor its parent exists). Callers that need an existence
+   * guarantee should `fs.existsSync` first.
+   *
+   * @param {string} p Absolute or relative path. Resolved against cwd
+   *   before canonicalization.
+   * @returns {string} Canonical absolute path, or the resolved input
+   *   on canonicalization failure.
+   */
+  _canonicalizePathSync(p) {
+    if (!p) return p;
+    const resolved = path.resolve(p);
+    // Prefer .native — only it expands Windows 8.3 short names.
+    try {
+      let out = fs.realpathSync.native(resolved);
+      // Strip the Windows long-path `\\?\` prefix that .native sometimes
+      // adds. Two forms:
+      //   `\\?\C:\Users\...`       → `C:\Users\...`
+      //   `\\?\UNC\server\share\…` → `\\server\share\…`
+      // Without this, baseFolder (resolved before the prefix was added)
+      // and the realpath'd target would still lexically disagree.
+      if (process.platform === 'win32' && out.startsWith('\\\\?\\')) {
+        out = out.startsWith('\\\\?\\UNC\\') ? '\\\\' + out.slice(8) : out.slice(4);
+      }
+      return out;
+    } catch (_) {
+      // Path doesn't exist — recurse on the parent (which usually does)
+      // and append the basename. This propagates the 8.3 / symlink
+      // expansion from the closest existing ancestor down to the
+      // non-existent leaf, so the lexical compare against an existing
+      // baseFolder still resolves correctly.
+      //
+      // Without this, a brand-new upload destination (e.g. a file path
+      // about to be created, or a directory that hasn't been mkdir'd
+      // yet) would canonicalize to its input form (SHORT on Windows
+      // CI) while baseFolder canonicalizes to LONG — and the lexical
+      // compare in isPathWithinBase would reject it as out-of-sandbox.
+      try {
+        const parent = path.dirname(resolved);
+        if (parent && parent !== resolved) {
+          return path.join(this._canonicalizePathSync(parent), path.basename(resolved));
+        }
+      } catch (__) { /* recursion fell through — fall through to plain JS realpath */ }
+      // Last-ditch: pure-JS realpath (may resolve some POSIX symlinks
+      // that .native couldn't, e.g. broken-symlink edge cases).
+      try { return fs.realpathSync(resolved); } catch (___) { return resolved; }
+    }
+  }
+
   isPathWithinBase(targetPath) {
     try {
-      const resolvedTarget = path.resolve(targetPath);
-      const resolvedBase = path.resolve(this.baseFolder);
+      // Canonicalize BOTH sides at compare time using _canonicalizePathSync
+      // (which expands Windows 8.3 short names and strips \\?\ prefix).
+      // This collapses short/long, prefix-presence/absence, and symlink
+      // variance into a single deterministic key per filesystem entity —
+      // so the lexical compare below works regardless of which form the
+      // caller's path was in.
+      //
+      // We deliberately do NOT propagate the canonicalized form back to
+      // callers (validatePath returns the JS-realpath form, NOT the
+      // .native form); .native is only used HERE, where it can't leak
+      // into response paths or watcher-subscription keys.
+      const resolvedTarget = this._canonicalizePathSync(targetPath);
+      const resolvedBase = this._canonicalizePathSync(this.baseFolder);
       // Use path.relative instead of startsWith to avoid prefix-matching false positives
       // (e.g. /home/user-admin would match /home/user with startsWith)
       const relative = path.relative(resolvedBase, resolvedTarget);
@@ -280,6 +386,11 @@ class ClaudeCodeWebServer {
     // The post-canonicalize within-base check still defends against the
     // "user-planted symlink escapes baseFolder" case: realpath follows
     // the symlink, then we compare the FOLLOWED path against base.
+    //
+    // We use fs.realpathSync (pure JS), NOT .native, so the returned
+    // canonicalPath preserves the form the caller submitted on Windows
+    // (SHORT vs LONG). The 8.3 short/long mismatch in the sandbox check
+    // is handled at the comparison site inside isPathWithinBase.
     try {
       if (fs.existsSync(canonicalPath)) {
         canonicalPath = fs.realpathSync(canonicalPath);
@@ -325,6 +436,10 @@ class ClaudeCodeWebServer {
     // started with `--folder /symlink-to-foo` could keep walking past the
     // intended boundary because the operator's lexical path !== realpath.
     // (Reviewer LOW-1 on 2fa99d1.)
+    //
+    // Uses fs.realpathSync (NOT .native) so the form matches what
+    // validatePath returns. The 8.3 short/long mismatch is handled
+    // separately inside isPathWithinBase.
     let baseResolved;
     try { baseResolved = fs.realpathSync(this.baseFolder); }
     catch (_) { baseResolved = path.resolve(this.baseFolder); }
@@ -385,6 +500,131 @@ class ClaudeCodeWebServer {
     return null;
   }
 
+  /**
+   * Sliding-window per-SESSION rate limiter. Same shape as _perIpRateLimit
+   * but keyed on a sessionId rather than an IP — the right granularity for
+   * /api/files/find (and any future endpoint scoped to a single user's
+   * working session) since IP buckets collapse legitimate users behind a
+   * shared reverse proxy or NAT.
+   *
+   * Bucket maps are kept small (cap 10k entries with LRU-ish eviction) so
+   * a flood of fake session ids can't OOM the limiter.
+   */
+  _perSessionRateLimit(sessionId, bucket, max, windowMs) {
+    if (!sessionId) return null;
+    if (!this._sessionRateLimitBuckets) this._sessionRateLimitBuckets = new Map();
+    let map = this._sessionRateLimitBuckets.get(bucket);
+    if (!map) { map = new Map(); this._sessionRateLimitBuckets.set(bucket, map); }
+    const now = Date.now();
+    const recent = (map.get(sessionId) || []).filter((t) => now - t < windowMs);
+    if (recent.length >= max) {
+      return { retryAfterMs: windowMs - (now - recent[0]) };
+    }
+    recent.push(now);
+    map.set(sessionId, recent);
+    if (map.size > 10_000) {
+      const firstKey = map.keys().next().value;
+      if (firstKey) map.delete(firstKey);
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------------------------
+  // Generic-drop attachment helpers (file-browser.md §"Generic file drop").
+  // Used by POST /api/files/upload to enforce the per-session size cap on
+  // .claude-attachments/, append the .gitignore guard on first write, and
+  // sweep stale attachments on session delete + server shutdown.
+  // ------------------------------------------------------------------------
+
+  /** 100 MB per-session cap on .claude-attachments/ totals. */
+  _attachmentSessionCapBytes() {
+    return 100 * 1024 * 1024;
+  }
+
+  /**
+   * Sum of bytes for all top-level files inside an attachments directory.
+   * Top-level only — generic drop never creates subdirectories there, and
+   * walking deep would let a user-side `ln -s /` symlink balloon the
+   * computation. Robust to a missing directory (returns 0).
+   */
+  _attachmentDirBytes(attachmentsDir) {
+    let total = 0;
+    let entries;
+    try {
+      entries = fs.readdirSync(attachmentsDir, { withFileTypes: true });
+    } catch (_) {
+      return 0; // missing dir → 0 bytes used
+    }
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      try {
+        const st = fs.statSync(path.join(attachmentsDir, ent.name));
+        total += st.size;
+      } catch (_) { /* file vanished mid-readdir — skip */ }
+    }
+    return total;
+  }
+
+  /**
+   * Idempotent .gitignore guard: append `.claude-attachments/` to
+   * <workingDir>/.gitignore IF the file exists and the line is not already
+   * present. Best-effort — never throws (callers do not need to wrap).
+   *
+   * Per spec: NOT auto-created when missing. The user's repo hygiene is
+   * theirs to manage; we only piggy-back on an existing convention.
+   */
+  _ensureAttachmentsGitignore(workingDir) {
+    try {
+      const gi = path.join(workingDir, '.gitignore');
+      if (!fs.existsSync(gi)) return; // best-effort — no auto-create.
+      const current = fs.readFileSync(gi, 'utf-8');
+      // Match `.claude-attachments/` as an exact line (with or without
+      // trailing newline). Avoid false matches on substrings like
+      // `# .claude-attachments/foo`.
+      const lines = current.split(/\r?\n/);
+      if (lines.some((l) => l.trim() === '.claude-attachments/')) return;
+      const sep = current.endsWith('\n') ? '' : '\n';
+      fs.appendFileSync(gi, sep + '.claude-attachments/\n');
+    } catch (err) {
+      if (this.dev) {
+        console.warn('attachment .gitignore append failed:', err && err.message);
+      }
+    }
+  }
+
+  /**
+   * Sweep <workingDir>/.claude-attachments/ for top-level files older
+   * than `maxAgeMs` (default 24 h). Invoked on session delete + server
+   * shutdown so stale generic-drop attachments don't accumulate forever
+   * inside the user's project. Synchronous + best-effort; safe to call
+   * with a missing or empty directory.
+   *
+   * Exposed as an instance method (underscore-prefixed) so unit tests can
+   * drive it without waiting 24 h.
+   */
+  _sweepAttachments(workingDir, opts) {
+    if (!workingDir) return;
+    const maxAgeMs = (opts && opts.maxAgeMs) || (24 * 60 * 60 * 1000);
+    const dir = path.join(workingDir, '.claude-attachments');
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (_) {
+      return; // missing dir → nothing to do
+    }
+    const cutoff = Date.now() - maxAgeMs;
+    for (const ent of entries) {
+      if (!ent.isFile()) continue;
+      const fp = path.join(dir, ent.name);
+      try {
+        const st = fs.statSync(fp);
+        if (st.mtimeMs < cutoff) fs.unlinkSync(fp);
+      } catch (_) { /* tolerate races */ }
+    }
+  }
+
+
+
   setupExpress() {
     this.app.use(cors());
     this.app.use(express.json());
@@ -409,6 +649,26 @@ class ClaudeCodeWebServer {
     } else {
       this.app.use(express.static(path.join(__dirname, 'public')));
     }
+
+    // Static-serve project docs at /docs for in-app deep links —
+    // specifically the Layer 5 resolver-failure toast's "Show me how →"
+    // CTA which opens the OSC 7 shell-hooks section of the file-browser
+    // spec. Path-traversal protection: express.static + the dotfiles:
+    // 'ignore' option below + Express's path-normalization mean the
+    // mount can only serve descendants of repo/docs. (Round-2 peer
+    // review #2: prior CTA URL was broken because docs/ wasn't
+    // exposed.)
+    //
+    // NOTE: in SEA-packaged builds, docs/ isn't bundled — _sendSeaAsset
+    // would need a 'docs' asset path. For now, the CTA gracefully
+    // 404s in SEA mode; the toast body still carries the actionable
+    // text ("install the OSC 7 hook"). The full snippets live in
+    // docs/specs/file-browser.md regardless.
+    this.app.use('/docs', express.static(path.join(__dirname, '..', 'docs'), {
+      dotfiles: 'ignore',
+      index: false,
+      fallthrough: false,
+    }));
 
     // PWA Icon routes - generate ai-or-die brain/terminal icon dynamically
     const iconSizes = [16, 32, 144, 180, 192, 512];
@@ -489,13 +749,29 @@ class ClaudeCodeWebServer {
     // Commands API removed
 
     this.app.get('/api/health', (req, res) => {
-      res.json({ 
-        status: 'ok', 
+      res.json({
+        status: 'ok',
         claudeSessions: this.claudeSessions.size,
-        activeConnections: this.webSocketConnections.size 
+        activeConnections: this.webSocketConnections.size
       });
     });
-    
+
+    // Resource diagnostics for long-running-process leak detection.
+    //
+    // Returns memory + handle + per-resource-Map counts so an operator can
+    // grep a heartbeat log (or curl this endpoint on demand) and tell which
+    // resource is leaking when the server eventually goes unresponsive.
+    // Counts only — no paths, no usernames, no session content — so it is
+    // safe to expose without auth on the same posture as /api/health.
+    //
+    // History: added during PR #108 after a weeks-long-unresponsive incident
+    // where the team had to guess the resource class because no instrumentation
+    // existed. Companion heartbeat logger runs every 5 minutes (see
+    // setupAutoSave). Future hardening: gate behind auth for shared deploys.
+    this.app.get('/api/diagnostics', (req, res) => {
+      res.json(this._collectDiagnostics());
+    });
+
     // App-level tunnel status
     this.app.get('/api/tunnel/status', (req, res) => {
       if (!this.tunnelManager) {
@@ -572,6 +848,7 @@ class ClaudeCodeWebServer {
         name: session.name,
         created: session.created,
         active: session.active,
+        agent: session.agent || null,
         workingDir: session.workingDir,
         connectedClients: session.connections.size,
         lastActivity: session.lastActivity
@@ -670,11 +947,20 @@ class ClaudeCodeWebServer {
         return res.status(404).json({ error: 'Session not found' });
       }
       
-      // Stop running process if active
+      // Stop running process if active. Must `await` so the PTY teardown
+      // (listener disposal + kill + bounded wait) completes BEFORE we
+      // remove the session from claudeSessions. Without the await, the
+      // PTY exit callback raced session map mutation: callers landing
+      // mid-teardown saw a session that was "gone" from the map but
+      // whose ptyProcess was still alive holding FDs.
       if (session.active) {
         const bridge = this.getBridgeForAgent(session.agent);
         if (bridge) {
-          bridge.stopSession(sessionId);
+          try {
+            await bridge.stopSession(sessionId);
+          } catch (err) {
+            console.warn(`stopSession failed during DELETE for ${sessionId}: ${err && err.message}`);
+          }
         }
       }
       
@@ -698,6 +984,22 @@ class ClaudeCodeWebServer {
 
       // Clean up temp images
       this.cleanupSessionImages(session);
+
+      // Sweep stale generic-drop attachments older than 24 h. The user
+      // may still need younger ones for an in-flight conversation, so
+      // we keep recent files.
+      try { this._sweepAttachments(session.workingDir); } catch (_) { /* ignore */ }
+
+      // Tear down any orphan fs-watch SSE for this session BEFORE the
+      // session map deletion. Without this, chokidar watchers leaked
+      // (PR #99 regression) — kernel inotify-watch + FD exhaustion after
+      // weeks of uptime. See _cleanupFsWatchSession.
+      this._cleanupFsWatchSession(sessionId, 'session_deleted');
+
+      // Drop the voice-upload rate-limit history for this session. Map
+      // grew unbounded across session-create/delete churn on long-lived
+      // servers (smaller cousin of the _fsWatchSessions leak).
+      this._voiceUploadCounts.delete(sessionId);
 
       this.claudeSessions.delete(sessionId);
       this.activityBroadcastTimestamps.delete(sessionId);
@@ -1508,7 +1810,299 @@ class ClaudeCodeWebServer {
       req.on('close', () => { handle.kill(); });
     });
 
-    // GET /api/files/watch — SSE-streamed file-system change notifications
+    // GET /api/files/find — fuzzy filename search ("Cmd-P" Go-to-File).
+    //
+    // Pipeline (per docs/specs/file-browser.md §"GET /api/files/find"):
+    //   1. validatePath() the requested root (defaults to liveCwd ?? session.workingDir).
+    //   2. Spawn `rg --files --hidden --glob '!.git'` rooted at that path.
+    //      Backend selection re-uses the same chain as /api/search via
+    //      utils/search.js (system rg → bundled @vscode/ripgrep → SEA path).
+    //      grep is NOT a viable fallback here (it has no --files mode); if
+    //      the backend chain returns null we 503 with a clear hint.
+    //   3. Hard-cap enumeration at 10,000 files. Above that, return
+    //      { truncated: true, totalFound } so the UI can render a "refine
+    //      your search" hint instead of blocking the event loop on a giant
+    //      fuzzysort sweep.
+    //   4. Score with fuzzysort (acronym + contiguous + basename boosts).
+    //   5. Sort desc by score, slice to limit (default 50, max 200).
+    //
+    // Per-session 5 queries/sec rate limit (per spec — IP rate limiting is
+    // wrong granularity behind reverse proxies).
+    //
+    // Response shape: { matches: [{ path, basename, score, mtimeMs }],
+    //                   truncated, totalFound, queryMs }.
+    this.app.get('/api/files/find', async (req, res) => {
+      const t0 = Date.now();
+
+      const q = typeof req.query.q === 'string' ? req.query.q : '';
+      const trimmed = q.trim();
+      if (!trimmed) {
+        return res.status(400).json({ error: 'q (query) is required' });
+      }
+      if (q.length > 1024) {
+        return res.status(400).json({ error: 'q is too long (max 1024 chars)' });
+      }
+
+      const sessionId = typeof req.query.session === 'string' ? req.query.session : '';
+      if (!sessionId) {
+        return res.status(400).json({ error: 'session is required' });
+      }
+      const session = this.claudeSessions.get(sessionId);
+      // session may be missing (the client sometimes calls find before any
+      // session is created — e.g. fresh tab); we still allow that, but
+      // then `path` MUST be supplied explicitly because there is no
+      // workingDir / liveCwd to default to.
+
+      // Per-session rate limit: 5 queries/sec sliding window.
+      const rl = this._perSessionRateLimit(sessionId, 'files-find', 5, 1000);
+      if (rl) {
+        return res.status(429).json({
+          error: 'Too many find queries for this session',
+          retryAfterMs: rl.retryAfterMs,
+        });
+      }
+
+      // Resolve the search root: explicit `path` > liveCwd > workingDir > 400.
+      let rawPath = typeof req.query.path === 'string' ? req.query.path : '';
+      if (!rawPath && session) {
+        rawPath = session.liveCwd || session.workingDir || '';
+      }
+      if (!rawPath) {
+        return res.status(400).json({ error: 'path is required (no session workingDir to default to)' });
+      }
+
+      const validation = this.validatePath(rawPath);
+      if (!validation.valid) {
+        return res.status(403).json({ error: validation.error });
+      }
+      const root = validation.path;
+
+      // limit: default 50, hard cap 200.
+      let limit = parseInt(req.query.limit, 10);
+      if (!Number.isFinite(limit) || limit <= 0) limit = 50;
+      if (limit > 200) limit = 200;
+
+      // Enumeration: spawn `rg --files --hidden --glob '!.git'`. We reuse
+      // the search-backend detection from utils/search.js so the bundled
+      // @vscode/ripgrep path (the primary backend on Windows + corporate
+      // installs) is honoured the same way as /api/search.
+      const backend = search.detectBackend();
+      if (backend !== 'rg') {
+        // grep can't enumerate files (it can list with `find . -type f` but
+        // that has different .gitignore semantics; v1 hard-requires rg).
+        return res.status(503).json({
+          error: 'ripgrep is required for fuzzy file find but is not available',
+        });
+      }
+
+      const rgPath = search.detectRgPath() || 'rg';
+
+      let stdoutBuf = '';
+      let totalFound = 0;
+      let truncated = false;
+      const ENUMERATION_CAP = 10_000;
+
+      const { spawn } = require('child_process');
+      let proc;
+      try {
+        proc = spawn(rgPath, ['--files', '--hidden', '--glob', '!.git', '--no-messages'], {
+          cwd: root,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        return res.status(503).json({ error: 'failed to spawn ripgrep', message: err.message });
+      }
+
+      let killed = false;
+      const killForCap = () => {
+        if (killed) return;
+        killed = true;
+        truncated = true;
+        try { proc.kill('SIGTERM'); } catch (_) {}
+      };
+
+      // Buffer-and-split stdout. rg --files emits one path per line, no
+      // structured framing — cheap to parse and skip the JSON overhead.
+      const files = [];
+      proc.stdout.on('data', (chunk) => {
+        if (killed) return;
+        stdoutBuf += chunk.toString('utf-8');
+        let nl;
+        while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+          const line = stdoutBuf.slice(0, nl);
+          stdoutBuf = stdoutBuf.slice(nl + 1);
+          if (!line) continue;
+          totalFound++;
+          if (totalFound > ENUMERATION_CAP) {
+            killForCap();
+            break;
+          }
+          // Normalize separators to '/' so path-separator queries
+          // (`utils/format`) match on Windows where ripgrep emits
+          // native '\' separators. The fuzzysort target shape is what
+          // the user types against, not what the OS reports.
+          files.push(process.platform === 'win32' ? line.replace(/\\/g, '/') : line);
+        }
+      });
+
+      // Drain stderr to avoid backpressure deadlock — rg can write to it
+      // for permission warnings, etc. We don't surface them; --no-messages
+      // already silences most.
+      proc.stderr.resume();
+
+      proc.on('error', (err) => {
+        // Process never started or died catastrophically. Surface as 503.
+        if (!res.headersSent) {
+          res.status(503).json({ error: 'ripgrep error', message: err.message });
+        }
+      });
+
+      proc.on('close', () => {
+        try {
+          // Score each file with fuzzysort. We score against the BASENAME
+          // for the primary key (matches user mental model — they type
+          // the filename, not the directory) but `fuzzysort.go` also
+          // accepts a key-extraction wrapper. We do this by hand because
+          // we want score+basename in the response.
+          const fuzzysort = require('fuzzysort');
+          // Prepare targets with BOTH basename AND relative-path keys.
+          // fuzzysort's multi-key API (via `keys` in go() below) scores
+          // each target against every listed key and surfaces the best
+          // per-target score. This is what makes path-separator queries
+          // like `utils/format` or `components/UserProfile` work — the
+          // basename never contains a slash, so basename-only scoring
+          // would collapse to 0 the moment the user types `/`. Real users
+          // type `path/file` to disambiguate among same-named files in
+          // monorepos (the canonical VS Code Quick Open pattern). Per
+          // QA journey P1 finding #5 (task #14).
+          const prepared = files.map((rel) => {
+            const abs = path.isAbsolute(rel) ? rel : path.join(root, rel);
+            const base = path.basename(rel);
+            return {
+              abs,
+              base,
+              rel,
+              prepBase: fuzzysort.prepare(base),
+              prepRel: fuzzysort.prepare(rel),
+            };
+          });
+
+          // fuzzysort.go returns matches sorted by score descending.
+          const scored = fuzzysort.go(trimmed, prepared, {
+            keys: ['prepBase', 'prepRel'],
+            limit,
+            // threshold is fuzzysort's "minimum score" knob — anything
+            // below is filtered out. -10000 = "include even weak partials"
+            // (matches the VS Code Cmd-P feel).
+            threshold: -10000,
+          });
+
+          const matches = [];
+          for (const s of scored) {
+            const item = s.obj;
+            let mtimeMs = 0;
+            try {
+              mtimeMs = fs.statSync(item.abs).mtimeMs;
+            } catch (_) {
+              // File vanished between rg enumeration and the stat — skip
+              // mtime but include the match.
+            }
+            matches.push({
+              path: item.abs,
+              basename: item.base,
+              score: s.score,
+              mtimeMs,
+            });
+          }
+
+          res.json({
+            matches,
+            truncated,
+            totalFound,
+            queryMs: Date.now() - t0,
+          });
+        } catch (err) {
+          if (!res.headersSent) {
+            res.status(500).json({ error: 'find failed', message: err.message });
+          }
+        }
+      });
+
+      // Client disconnect → kill the child immediately.
+      req.on('close', () => {
+        try { proc.kill('SIGTERM'); } catch (_) {}
+      });
+    });
+
+    // GET /api/sessions/:sessionId/repo-root — resolve git repo root for
+    // a session's working directory. Used by the client-side terminal-path
+    // resolver chain (file-browser.js TerminalPathDetector) so paths like
+    // "src/app.js" inside a stack trace can be tried against the repo root
+    // in addition to liveCwd and workingDir. See spec
+    // docs/specs/file-browser.md §"GET /api/sessions/:id/repo-root".
+    //
+    // Cached per session for the session lifetime (the repo root doesn't
+    // move during a session). Cache is invalidated only when the session
+    // is deleted.
+    this.app.get('/api/sessions/:sessionId/repo-root', (req, res) => {
+      const sessionId = req.params.sessionId;
+      const session = this.claudeSessions.get(sessionId);
+      if (!session) return res.status(404).json({ error: 'session not found' });
+
+      // Cached?
+      if (Object.prototype.hasOwnProperty.call(session, '_repoRootCache')) {
+        return res.json({ root: session._repoRootCache });
+      }
+
+      const startDir = session.liveCwd || session.workingDir;
+      if (!startDir) return res.json({ root: null });
+
+      const validation = this.validatePath(startDir);
+      if (!validation.valid) return res.status(403).json({ error: validation.error });
+
+      // Use git rev-parse rather than the local _findGitRoot walk so we
+      // correctly handle worktrees (where .git is a file, not a dir
+      // pointing into the main repo). _findGitRoot also handles worktrees
+      // but git's own resolver is the definitive answer.
+      execFile('git', ['rev-parse', '--show-toplevel'], {
+        cwd: validation.path,
+        timeout: 5000,
+      }, (err, stdout) => {
+        if (err) {
+          // Most common: not in a git repo (`fatal: not a git repository`).
+          // Cache null so we don't re-spawn git on every link click.
+          session._repoRootCache = null;
+          return res.json({ root: null });
+        }
+        const root = String(stdout).trim();
+        if (!root) {
+          session._repoRootCache = null;
+          return res.json({ root: null });
+        }
+        // Normalize separators before validation — `git rev-parse
+        // --show-toplevel` returns POSIX-style forward slashes on Windows
+        // (`C:/Users/...`). validatePath calls path.resolve which DOES
+        // normalize to backslashes on win32, but the test-fixture
+        // comparison (fs.realpathSync) returns backslashes, so we want
+        // the cached value to match without relying on each consumer
+        // re-normalizing.
+        const normalizedRoot = path.normalize(root);
+        // Validate the resolved root is inside the sandbox before caching
+        // and returning — git could theoretically resolve to something
+        // outside baseFolder if the session's workingDir is a deep path
+        // into a repo whose root sits above baseFolder (the served
+        // sub-directory case).
+        const rootValidation = this.validatePath(normalizedRoot);
+        if (!rootValidation.valid) {
+          session._repoRootCache = null;
+          return res.json({ root: null });
+        }
+        session._repoRootCache = rootValidation.path;
+        res.json({ root: session._repoRootCache });
+      });
+    });
+
+
     // via chokidar. Per ADR-0017 (#100, amended at 4d047d1): proactive sync
     // between agent edits and user-open Monaco tabs / file-browser
     // listings, complementing the hash-based 409-Conflict-on-save backstop
@@ -1575,15 +2169,10 @@ class ClaudeCodeWebServer {
       if (!this._fsWatchSessions) this._fsWatchSessions = new Map();
 
       // If an EventSource already exists for this session, replace it
-      // (single-ES-per-session per ADR-0017). The displaced session
-      // releases its slot in the per-IP counter so this fresh open
-      // doesn't double-count.
-      const existing = this._fsWatchSessions.get(sessionId);
-      if (existing) {
-        try { existing.send && existing.send({ type: 'end', reason: 'replaced' }); } catch (_) {}
-        try { existing.cleanup && existing.cleanup('replaced'); } catch (_) {}
-        // existing.cleanup already decrements the per-IP counter.
-      }
+      // (single-ES-per-session per ADR-0017). Delegate to the central
+      // cleanup helper so the displaced session frees its per-IP slot,
+      // closes its chokidar watcher, and emits one end-event (not two).
+      this._cleanupFsWatchSession(sessionId, 'replaced');
 
       const currentCount = this._activeWatchersByIp.get(ip) || 0;
       const MAX_CONCURRENT_WATCHERS = 5;
@@ -1611,6 +2200,36 @@ class ClaudeCodeWebServer {
       } catch (err) {
         if (err.code === 'ENOENT') return res.status(404).json({ error: 'path not found' });
         return res.status(500).json({ error: 'stat failed', message: err.message });
+      }
+
+      // Race guard: if the parent claudeSession was deleted (or never
+      // existed) between request arrival and now, do not register an
+      // orphan watcher entry — it would never be cleaned up because the
+      // session-delete handler has nothing to key off. Reply 200 + SSE
+      // end-event with reason='session_missing' so the EventSource client
+      // closes cleanly, but DO NOT consume a per-IP slot (otherwise a
+      // burst of bogus sessionIds would block legitimate watchers and
+      // mask the rate-limit cap behaviour).
+      //
+      // Runs AFTER path validation (so callers still see 400/403/404 for
+      // bad paths even with bogus sessionIds — the same observable
+      // surface that test/file-browser-api.test.js asserts) and BEFORE
+      // the counter increment (so bogus sessionIds do not consume slots
+      // that get released on cleanup, which is what previously cycled
+      // the per-IP counter back to 0 and broke the cap test).
+      if (!this.claudeSessions.has(sessionId)) {
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache, no-transform, no-store');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        if (typeof res.flushHeaders === 'function') res.flushHeaders();
+        try {
+          res.write('data: ' + JSON.stringify({ type: 'end', reason: 'session_missing' }) + '\n\n');
+          res.end();
+        } catch (_) { /* ignore — client may have already disconnected */ }
+        return;
       }
 
       // Increment the concurrent-watcher counter BEFORE async work so a
@@ -1686,7 +2305,21 @@ class ClaudeCodeWebServer {
         send: send,
         cleanup: cleanup,
         ip: ip,
+        res: res,             // for manual-fallback teardown in _cleanupFsWatchSession
       };
+
+      // Race guard: if the parent claudeSession was deleted (or never
+      // existed) between request arrival and now, do not register an
+      // orphan watcher entry — it would never be cleaned up because the
+      // session-delete handler has nothing to key off. Run cleanup
+      // immediately and bail out. This is the load-bearing fix for the
+      // PR #99 leak: every entry in _fsWatchSessions now corresponds to
+      // a live claudeSession.
+      if (!this.claudeSessions.has(sessionId)) {
+        cleanup('session_missing');
+        return;
+      }
+
       this._fsWatchSessions.set(sessionId, sessionEntry);
 
       try {
@@ -1852,7 +2485,24 @@ class ClaudeCodeWebServer {
       }
     });
 
-    // POST /api/files/upload — Upload file (base64 JSON, route-specific limit)
+    // POST /api/files/upload — Upload file (base64 JSON, route-specific limit).
+    //
+    // Generic-drop reinforcements (file-browser.md §"Generic file drop"):
+    //
+    //   - Per-session size cap: when the upload targets a `.claude-attachments/`
+    //     directory, total bytes in that dir cannot exceed 100 MB. Over-cap
+    //     attempts return 413 with `code: "attachment_cap_exceeded"` so the
+    //     client can switch on that to show the specific toast (vs the
+    //     generic >10MB message).
+    //
+    //   - .gitignore append: on a successful upload to `.claude-attachments/`,
+    //     append `.claude-attachments/` to the parent directory's .gitignore
+    //     IF that file exists and the line isn't already present. Best-effort
+    //     — never fails the upload on .gitignore errors. Idempotent (line is
+    //     not duplicated). The .gitignore is NOT auto-created when missing,
+    //     per spec ("user shell config is sacrosanct" applies to .gitignore
+    //     too — we don't want to silently introduce a new tracked-by-default
+    //     side effect on the user's repo).
     this.app.post('/api/files/upload', express.json({ limit: '10mb' }), async (req, res) => {
       const { targetDir, fileName, content, overwrite } = req.body;
       if (!targetDir || !fileName || !content) {
@@ -1902,8 +2552,30 @@ class ClaudeCodeWebServer {
           return res.status(413).json({ error: 'File too large (>10MB)' });
         }
 
+        // Generic-drop per-session cap (.claude-attachments/ only). The cap
+        // applies whenever the resolved target dir's basename matches the
+        // `.claude-attachments` convention — that's the namespace the
+        // generic-drop client owns. Other targetDirs are unaffected.
+        const isAttachmentDir = path.basename(dirValidation.path) === '.claude-attachments';
+        if (isAttachmentDir) {
+          const currentSize = this._attachmentDirBytes(dirValidation.path);
+          if (currentSize + buffer.length > this._attachmentSessionCapBytes()) {
+            return res.status(413).json({
+              error: 'Attachment cap reached for this session — delete some via terminal or wait for the 24 h sweep',
+              code: 'attachment_cap_exceeded',
+              capBytes: this._attachmentSessionCapBytes(),
+              currentBytes: currentSize,
+            });
+          }
+        }
+
         await fs.promises.writeFile(targetPath, buffer);
         const stat = await fs.promises.stat(targetPath);
+
+        // Best-effort .gitignore guard — never fails the upload on error.
+        if (isAttachmentDir) {
+          this._ensureAttachmentsGitignore(path.dirname(dirValidation.path));
+        }
 
         res.json({
           name: safeName,
@@ -1917,6 +2589,7 @@ class ClaudeCodeWebServer {
         res.status(500).json({ error: 'Failed to upload file', message: error.message });
       }
     });
+
 
     this.app.post('/api/set-working-dir', (req, res) => {
       const { path: selectedPath } = req.body;
@@ -2622,7 +3295,12 @@ class ClaudeCodeWebServer {
         console.log(`startToolSession(${toolName}): already running in session ${sessionId}, sending success`);
         this.sendToWebSocket(wsInfo.ws, {
           type: `${toolName}_started`,
-          sessionId: sessionId
+          sessionId: sessionId,
+          // Mirror the broadcast shape so the client always gets workingDir
+          // from a started frame, even on the idempotent already-running
+          // re-entry path. (Otherwise a client that joined post-start would
+          // miss the resolver-chain prime.)
+          workingDir: session.workingDir,
         });
         return;
       }
@@ -2654,10 +3332,38 @@ class ClaudeCodeWebServer {
 
     try {
       console.log(`startToolSession(${toolName}): spawning in session ${sessionId}, workingDir=${session.workingDir}`);
+
+      // Per ADR-0019: only the Terminal bridge parses OSC 7 → live CWD.
+      // Claude/Codex/Copilot/Gemini bridges don't `chdir` their host
+      // process; their session.liveCwd stays null. We pass the OSC 7
+      // hooks only when starting a Terminal session so the other bridges
+      // remain a true no-op.
+      const osc7Hooks = (toolName === 'terminal') ? {
+        validatePath: (p) => this.validatePath(p),
+        onCwdChange: (cwd, prev) => {
+          // Mirror onto the session record so the find/repo-root endpoints
+          // (which take session id → workingDir) can reach for liveCwd
+          // without going through the bridge map.
+          const s = this.claudeSessions.get(sessionId);
+          if (s) {
+            s.liveCwd = cwd;
+            this.sessionStore.markDirty();
+          }
+          this.broadcastToSession(sessionId, {
+            type: 'cwd_changed',
+            sessionId,
+            cwd,
+            prev,
+            source: 'osc7',
+          });
+        },
+      } : {};
+
       await bridge.startSession(sessionId, {
         workingDir: session.workingDir,
         cols: cols || 80,
         rows: rows || 24,
+        ...osc7Hooks,
         onOutput: (data) => {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;
@@ -2706,7 +3412,17 @@ class ClaudeCodeWebServer {
 
       this.broadcastToSession(sessionId, {
         type: `${toolName}_started`,
-        sessionId: sessionId
+        sessionId: sessionId,
+        // Carry workingDir on the started frame so the client's
+        // resolver-chain `getWorkingDir()` callback has a deterministic
+        // per-session signal without racing /api/sessions/list refresh.
+        // Matches the shape of `session_created` and `session_joined`,
+        // which already include this field. Architect-approved fix for
+        // click-to-open failures where the cached claudeSessions array
+        // lagged the user's first click after session start.
+        // (Per ADR-0019, we do NOT also emit a synthesized cwd_changed
+        // here — `liveCwd` must stay null for non-Terminal bridges.)
+        workingDir: session.workingDir,
       });
       this.broadcastSessionActivity(sessionId, 'session_started', { agent: toolName });
 
@@ -2897,6 +3613,195 @@ class ClaudeCodeWebServer {
     }
   }
 
+  /**
+   * Sweep stale inactive sessions older than 7 days. Extracted from the
+   * setInterval body for testability — pre-fix this method did NOT tear
+   * down the PTY process via bridge.stopSession, so an evicted session
+   * whose `active` flag was stale (PTY exited but flag never updated, or
+   * mid-flight teardown) would orphan its node-pty wrapper. With the
+   * listener-disposal fix in base-bridge.js this also leaked the onData/
+   * onExit closures + their dataBuffer refs — a slow EMFILE bleed on
+   * long-running production servers.
+   *
+   * Idempotent and safe to invoke from tests directly.
+   * @returns {Promise<number>} count of sessions evicted
+   */
+  async _evictStaleSessions() {
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let evictedCount = 0;
+    // Snapshot keys first — claudeSessions is mutated inside the loop and we
+    // would otherwise risk Map-iterator UB on V8.
+    const entries = Array.from(this.claudeSessions.entries());
+    for (const [id, session] of entries) {
+      if (!session) continue;
+      const connections = session.connections;
+      const connCount = connections && typeof connections.size === 'number' ? connections.size : 0;
+      const lastActivity = new Date(session.lastActivity || session.created).getTime();
+      if (session.active) continue;
+      if (connCount !== 0) continue;
+      if (lastActivity >= sevenDaysAgo) continue;
+
+      // Drive PTY teardown for the evicted session. stopSession is
+      // idempotent — if the bridge already lost the session (PTY exited
+      // by itself, hadn't been started, etc.) the call is a cheap no-op.
+      // The bridge owns the FD-leak prevention (listener disposal); calling
+      // it on eviction is the only chance a hung/zombie PTY gets to be
+      // cleaned up before its parent session disappears from claudeSessions.
+      const bridge = this.getBridgeForAgent(session.agent);
+      if (bridge && typeof bridge.stopSession === 'function') {
+        try {
+          await bridge.stopSession(id);
+        } catch (err) {
+          console.warn(`Eviction stopSession failed for ${id}: ${err && err.message}`);
+        }
+      }
+
+      // Same per-session cleanup contract as the DELETE handler:
+      // tear down any orphan fs-watch SSE + voice-upload history
+      // BEFORE removing the parent session entry, otherwise the
+      // chokidar watcher leaks (PR #99 regression).
+      try { this._cleanupFsWatchSession(id, 'session_evicted'); } catch (_) { /* ignore */ }
+      try { this._voiceUploadCounts.delete(id); } catch (_) { /* ignore */ }
+      this.claudeSessions.delete(id);
+      this.activityBroadcastTimestamps.delete(id);
+      try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
+      evictedCount++;
+    }
+    return evictedCount;
+  }
+
+  /**
+   * Centralized cleanup for a session's fs-watch SSE entry. Idempotent —
+   * safe to call from session-delete, eviction-sweep, server-close, and
+   * the SSE replace path without double-closing.
+   *
+   * Background: PR #99 introduced _fsWatchSessions but only cleared
+   * entries via the SSE req.on('close') path. If the client never
+   * disconnected (browser tab kept open, network black-holed, etc.) and
+   * the session was deleted server-side, the chokidar watcher leaked —
+   * each carrying ~10 inotify watches plus an open TCP connection.
+   * After weeks of uptime on Windows-primary production this exhausted
+   * the per-process FD limit (EMFILE) and the server stopped accepting
+   * new connections, so a browser refresh appeared to hang.
+   *
+   * @param {string} sessionId
+   * @param {string} reason — diagnostic tag for logs ('session_deleted',
+   *                          'session_evicted', 'server_close', 'replaced',
+   *                          'session_missing', etc.)
+   * @returns {boolean} true if an entry existed and cleanup ran; false otherwise.
+   */
+  _cleanupFsWatchSession(sessionId, reason) {
+    if (!this._fsWatchSessions) return false;
+    const entry = this._fsWatchSessions.get(sessionId);
+    if (!entry) return false;
+
+    // Delete BEFORE invoking entry.cleanup so re-entrant calls (cleanup
+    // may itself trigger req.on('close') → cleanup again synchronously
+    // on some Node versions) find no entry and bail out.
+    this._fsWatchSessions.delete(sessionId);
+    console.warn('[fs-watch-cleanup]', { sessionId: sessionId, reason: reason });
+
+    if (typeof entry.cleanup === 'function') {
+      // Preferred path: the SSE route's own cleanup handles end-event +
+      // res.end + watcher.close + per-IP decrement in one place.
+      try {
+        entry.cleanup(reason);
+      } catch (_) {
+        // If the route's cleanup throws before fully tearing down (e.g.
+        // a non-thenable .close(), an exception during res.end), run
+        // the manual fallback so the watcher/FD doesn't leak. The map
+        // entry is already gone, so no caller can reach this entry
+        // again — this is our only recovery path.
+        this._teardownFsWatchEntryFallback(entry);
+      }
+    } else {
+      // Manual fallback for entries that don't carry a cleanup fn
+      // (defensive — e.g. tests that hand-inject map entries).
+      this._teardownFsWatchEntryFallback(entry);
+    }
+    return true;
+  }
+
+  /**
+   * Best-effort teardown of a fs-watch entry. Used by
+   * _cleanupFsWatchSession when the route-level cleanup is missing OR
+   * has thrown. Every step is independently try/catch-wrapped so one
+   * failure doesn't block the others.
+   */
+  _teardownFsWatchEntryFallback(entry) {
+    if (!entry) return;
+    if (entry.timer) { try { clearTimeout(entry.timer); } catch (_) { /* ignore */ } }
+    if (entry.watcher && typeof entry.watcher.close === 'function') {
+      try {
+        const p = entry.watcher.close();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (_) { /* ignore */ }
+    }
+    if (entry.res && !entry.res.writableEnded) {
+      try { entry.res.end(); } catch (_) { /* ignore */ }
+    }
+    if (entry.ip && this._activeWatchersByIp) {
+      try {
+        const c = this._activeWatchersByIp.get(entry.ip) || 0;
+        if (c <= 1) this._activeWatchersByIp.delete(entry.ip);
+        else this._activeWatchersByIp.set(entry.ip, c - 1);
+      } catch (_) { /* ignore */ }
+    }
+  }
+
+  /**
+   * Snapshot of leak-relevant resources at one point in time.
+   *
+   * Powers `GET /api/diagnostics` (on-demand) and the 5-minute diagnostics
+   * heartbeat log (continuous, for post-incident grep). Counts + sizes only —
+   * no paths, no usernames, no session content — safe to expose unauthenticated.
+   *
+   * Use this to spot which resource is growing when the server eventually
+   * goes unresponsive. Heap growing → memory leak. fd_count growing → FD
+   * exhaustion. active_handles growing → unclosed timers/listeners.
+   * fs_watch_sessions or voice_upload_counts growing → session-cleanup gap.
+   *
+   * Cross-platform: fd_count is Linux-only (reads /proc/self/fd). null on
+   * macOS/Windows — those platforms use lsof / Process Explorer respectively
+   * for FD inspection.
+   */
+  _collectDiagnostics() {
+    const mem = process.memoryUsage();
+    const handles = (process._getActiveHandles && process._getActiveHandles()) || [];
+    const requests = (process._getActiveRequests && process._getActiveRequests()) || [];
+    let fdCount = null;
+    try {
+      if (process.platform === 'linux') {
+        fdCount = fs.readdirSync('/proc/self/fd').length;
+      }
+    } catch (_) { /* ignore — /proc may be unavailable in sandboxes */ }
+    return {
+      uptime_seconds: Math.round(process.uptime()),
+      node_version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      memory: {
+        rss_mb: +(mem.rss / 1048576).toFixed(1),
+        heap_used_mb: +(mem.heapUsed / 1048576).toFixed(1),
+        heap_total_mb: +(mem.heapTotal / 1048576).toFixed(1),
+        external_mb: +(mem.external / 1048576).toFixed(1),
+        array_buffers_mb: +((mem.arrayBuffers || 0) / 1048576).toFixed(1),
+      },
+      process: {
+        active_handles: handles.length,
+        active_requests: requests.length,
+        fd_count: fdCount,
+      },
+      sessions: {
+        total: this.claudeSessions.size,
+        ws_connections: this.webSocketConnections.size,
+        fs_watch_sessions: (this._fsWatchSessions && this._fsWatchSessions.size) || 0,
+        voice_upload_counts: (this._voiceUploadCounts && this._voiceUploadCounts.size) || 0,
+        activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
+      },
+    };
+  }
+
   cleanupWebSocketConnection(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
@@ -2989,6 +3894,9 @@ class ClaudeCodeWebServer {
     if (this.sessionEvictionInterval) {
       clearInterval(this.sessionEvictionInterval);
     }
+    if (this.diagnosticsHeartbeatInterval) {
+      clearInterval(this.diagnosticsHeartbeatInterval);
+    }
 
     // Stop memory monitoring to release the interval timer
     if (this.restartManager) {
@@ -3001,6 +3909,14 @@ class ClaudeCodeWebServer {
     // Clean up temp images for all sessions
     for (const [, session] of this.claudeSessions) {
       this.cleanupSessionImages(session);
+    }
+
+    // Sweep stale generic-drop attachments across every known session
+    // (file-browser.md §"Generic file drop" lifecycle). 24 h cutoff —
+    // drops files left behind by previous sessions while preserving
+    // anything the user just added before the shutdown.
+    for (const [, session] of this.claudeSessions) {
+      try { this._sweepAttachments(session.workingDir); } catch (_) { /* ignore */ }
     }
 
     if (this.wss) {
@@ -3028,6 +3944,15 @@ class ClaudeCodeWebServer {
     }
     const timeout = new Promise(resolve => setTimeout(resolve, 5000));
     await Promise.race([Promise.allSettled(stopPromises), timeout]);
+
+    // Tear down every live fs-watch SSE (chokidar watcher + TCP conn +
+    // per-IP counter). The Map is keyed by sessionId, so we snapshot the
+    // keys before iterating — _cleanupFsWatchSession mutates the Map.
+    if (this._fsWatchSessions) {
+      for (const sid of Array.from(this._fsWatchSessions.keys())) {
+        this._cleanupFsWatchSession(sid, 'server_close');
+      }
+    }
 
     // Clear all data
     this.claudeSessions.clear();

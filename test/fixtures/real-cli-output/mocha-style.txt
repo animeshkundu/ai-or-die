@@ -1,0 +1,14 @@
+  1 failing
+
+  1) link-provider regex - Pattern 3: Bare relative w/ extension
+       matches: docker build -f Dockerfile.dev:
+
+      AssertionError [ERR_ASSERTION]: expected Dockerfile.dev; got []
+      + expected - actual
+
+      -false
+      +true
+
+      at /Users/kundus/Software/ai-or-die/test/link-provider-regex.test.js:171:16
+      at Array.forEach (<anonymous>)
+      at Context.<anonymous> (test/link-provider-regex.test.js:170:18)

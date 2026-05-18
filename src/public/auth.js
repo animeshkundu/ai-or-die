@@ -1,7 +1,76 @@
 // Authentication module for ai-or-die
+
+// ---------------------------------------------------------------------------
+// Module-level helpers — exported on `window` AND on `module.exports` (for
+// Node-side unit tests). Pure functions where possible so the URL-token
+// consumption + log sanitisation can be unit-tested without spinning up
+// JSDOM. Per QA #13 (auth-on journey), these close three P1 token leaks:
+//   - finding #2: the CLI prints `?token=…` URLs that the client ignored.
+//   - finding #3: the same `?token=…` lingered in the address bar.
+//   - finding #4: the SW registration error log included a stack trace
+//     containing the URL with the token.
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip every occurrence of `?token=…` / `&token=…` from a string and
+ * replace with `<redacted>`. Defends against:
+ *   - Bearer tokens echoed via `Authorization: Bearer xxx` headers.
+ *   - URLs in error messages / stack traces (the `at` lines from native
+ *     errors include the originating URL — that's how finding #4 leaked).
+ *   - Any future log site that stringifies a request URL.
+ *
+ * Pure — accepts any value, coerces to string. Safe to call from
+ * arbitrary log handlers.
+ */
+function sanitizeForLog(s) {
+  if (s == null) return '';
+  return String(s)
+    // ?token= or &token= in any URL-shaped substring.
+    .replace(/([?&])token=[^&\s'"`)\\]+/gi, '$1token=<redacted>')
+    // `Bearer <token>` in serialised header dumps.
+    .replace(/(Bearer\s+)[A-Za-z0-9._\-]+/gi, '$1<redacted>');
+}
+
+/**
+ * Read a `?token=` URL parameter (if any) and strip it from the address
+ * bar so it doesn't leak into screenshots, the Referer header, or
+ * server access logs. Returns the extracted token (or null when absent).
+ *
+ * Always strips the param, even when absent — no-op in that case. The
+ * strip uses `history.replaceState` so the back button isn't polluted
+ * with an extra entry.
+ *
+ * Browser-only (no-op when `window` / `URLSearchParams` aren't
+ * available — e.g. when this module is loaded under Node for testing).
+ */
+function extractAndStripUrlToken() {
+  if (typeof window === 'undefined' || !window.location) return null;
+  if (typeof URLSearchParams === 'undefined') return null;
+  var params;
+  try { params = new URLSearchParams(window.location.search || ''); }
+  catch (_) { return null; }
+  var t = params.get('token');
+  // Always strip — even when absent we want a deterministic post-condition
+  // (no `?token=` in the URL bar).
+  try {
+    if (t != null) {
+      params.delete('token');
+      var qs = params.toString();
+      var newUrl = window.location.pathname + (qs ? '?' + qs : '') +
+        (window.location.hash || '');
+      if (window.history && typeof window.history.replaceState === 'function') {
+        window.history.replaceState({}, '', newUrl);
+      }
+    }
+  } catch (_) { /* best-effort URL hygiene — never throw */ }
+  return t || null;
+}
+
 class AuthManager {
     constructor() {
-        this.token = sessionStorage.getItem('cc-web-token');
+        this.token = (typeof sessionStorage !== 'undefined')
+          ? sessionStorage.getItem('cc-web-token')
+          : null;
         this.authRequired = false;
     }
 
@@ -15,7 +84,7 @@ class AuthManager {
             this.authRequired = data.authRequired;
             return data;
         } catch (error) {
-            console.error('Failed to check auth status:', error);
+            console.error('Failed to check auth status:', sanitizeForLog(error && error.message));
             // Assume auth is required if we can't check - safer default
             this.authRequired = true;
             return { authRequired: true, authenticated: false };
@@ -31,15 +100,17 @@ class AuthManager {
                 },
                 body: JSON.stringify({ token })
             });
-            
+
             const data = await response.json();
             if (data.valid) {
                 this.token = token;
-                sessionStorage.setItem('cc-web-token', token);
+                if (typeof sessionStorage !== 'undefined') {
+                    sessionStorage.setItem('cc-web-token', token);
+                }
             }
             return data.valid;
         } catch (error) {
-            console.error('Failed to verify token:', error);
+            console.error('Failed to verify token:', sanitizeForLog(error && error.message));
             return false;
         }
     }
@@ -196,6 +267,22 @@ class AuthManager {
     }
 
     /**
+     * Return the current token (or null when none is set). Mirrors the
+     * shape app.js's FindPanel + generic-drop wiring expects — both call
+     * `window.authManager.getToken()` to populate their `getAuthToken`
+     * callbacks so request URLs carry `?token=` under `--auth` mode.
+     *
+     * Added in response to QA #17: previously the method didn't exist
+     * and the callbacks returned undefined, so request URLs were token-
+     * less and the server 401'd — Cmd-P returned 0 results and generic
+     * drop uploads broke under auth. Default mode hid it (tokenless
+     * requests are tolerated there).
+     */
+    getToken() {
+        return this.token || null;
+    }
+
+    /**
      * Append the auth token as a `?token=` query param.
      *
      * Use this for asset URLs that the browser fetches WITHOUT being able
@@ -232,35 +319,73 @@ class AuthManager {
     async initialize() {
         console.log('[Auth] Initializing auth manager...');
         console.log('[Auth] Current token:', this.token ? 'exists' : 'none');
-        
+
+        // Per QA #13 finding #2 + #3: read a `?token=` URL parameter (if
+        // any) and STRIP it from the address bar before we do anything
+        // else. The strip happens regardless of whether auth ends up
+        // being required — query strings leak via screenshots, the
+        // Referer header, server access logs, and screen-shares.
+        const urlToken = extractAndStripUrlToken();
+        if (urlToken) console.log('[Auth] URL token present (stripped from address bar)');
+
         const status = await this.checkAuthStatus();
         console.log('[Auth] Auth status:', status);
-        
-        if (status.authRequired && !this.token) {
-            // Auth required but no token - show login
-            console.log('[Auth] Auth required but no token - showing login prompt');
+
+        if (status.authRequired) {
+            // URL token wins over the sessionStorage token — when both
+            // are present, the URL one is fresher (it just came from the
+            // CLI), and the SS one might be stale across server restarts.
+            if (urlToken) {
+                console.log('[Auth] Verifying URL token...');
+                const urlValid = await this.verifyToken(urlToken);
+                if (urlValid) {
+                    console.log('[Auth] URL token valid — auto-authenticated');
+                    return true;
+                }
+                console.log('[Auth] URL token invalid — falling through to sessionStorage / login');
+            }
+            if (this.token) {
+                console.log('[Auth] Auth required and SS token exists — verifying...');
+                const valid = await this.verifyToken(this.token);
+                if (valid) {
+                    console.log('[Auth] SS token valid');
+                    return true;
+                }
+                console.log('[Auth] SS token invalid - showing login prompt');
+                this.token = null;
+                if (typeof sessionStorage !== 'undefined') {
+                    sessionStorage.removeItem('cc-web-token');
+                }
+            }
+            console.log('[Auth] Auth required but no valid token - showing login prompt');
             this.showLoginPrompt();
             return false;
         }
-        
-        if (status.authRequired && this.token) {
-            // Verify the stored token is still valid
-            console.log('[Auth] Auth required and token exists - verifying...');
-            const valid = await this.verifyToken(this.token);
-            if (!valid) {
-                console.log('[Auth] Token invalid - showing login prompt');
-                this.token = null;
-                sessionStorage.removeItem('cc-web-token');
-                this.showLoginPrompt();
-                return false;
-            }
-            console.log('[Auth] Token valid');
-        }
-        
+
         console.log('[Auth] Authentication successful or not required');
         return true;
     }
 }
 
-// Create global auth manager instance
-window.authManager = new AuthManager();
+// Expose helpers on the class for callers that need them statically (the
+// SW registration in index.html, future log sites, unit tests).
+AuthManager.sanitizeForLog = sanitizeForLog;
+AuthManager.extractAndStripUrlToken = extractAndStripUrlToken;
+
+// Create global auth manager instance + expose the class itself + the
+// bare helpers for non-class callers (the SW registration in
+// index.html lives outside class scope).
+if (typeof window !== 'undefined') {
+    window.AuthManager = AuthManager;
+    window.authManager = new AuthManager();
+    window.sanitizeAuthLog = sanitizeForLog;
+}
+
+// Node-side export for unit tests. Module-level helpers + the class.
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        AuthManager: AuthManager,
+        sanitizeForLog: sanitizeForLog,
+        extractAndStripUrlToken: extractAndStripUrlToken,
+    };
+}

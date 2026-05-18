@@ -349,6 +349,15 @@
     this._searchQuery = '';
     this._dragDepth = 0;
 
+    // Live-CWD follow-toggle state (per ADR-0019). Per-session boolean
+    // governing whether incoming `cwd_changed` WS frames re-root the
+    // panel; default `true` (follow on session create). Manual breadcrumb
+    // navigation flips it `false`; the "📍 follow terminal" header toggle
+    // re-engages it. _lastLiveCwd stashes the most recent OSC-7-tracked
+    // cwd per session so re-engaging can re-root immediately.
+    this._followsByOrigin = new Map();   // sessionId → boolean
+    this._lastLiveCwd = new Map();       // sessionId → string
+
     this._panelEl = null;
     this._backdropEl = null;
     this._previewPanel = null;
@@ -413,6 +422,20 @@
     searchBtn.innerHTML = window.icons ? window.icons.search(14) : 'S';
     searchBtn.addEventListener('click', this._toggleSearch.bind(this));
     header.appendChild(searchBtn);
+
+    // Follow-terminal toggle (per ADR-0019). Hidden until OSC 7 fires for
+    // the active session — _refreshFollowToggleUI() flips display on once
+    // a liveCwd is stashed. Click toggles the per-session follow flag.
+    var followBtn = document.createElement('button');
+    followBtn.className = 'fb-header-btn fb-follow-toggle active';
+    followBtn.title = '📍 Following terminal';
+    followBtn.setAttribute('aria-label', 'Toggle terminal CWD follow');
+    followBtn.setAttribute('aria-pressed', 'true');
+    followBtn.textContent = '📍';
+    followBtn.style.display = 'none';
+    followBtn.addEventListener('click', this._onFollowToggleClick.bind(this));
+    header.appendChild(followBtn);
+    this._followToggleBtn = followBtn;
 
     // Upload button
     var uploadBtn = document.createElement('button');
@@ -740,13 +763,25 @@
   };
 
   FileBrowserPanel.prototype.openToFile = function (filePath) {
-    // Navigate to the parent directory and select the file
+    // Navigate to the parent directory and select the file. Always rebase
+    // — if the panel is already open at a different dir, open(parentDir)
+    // would no-op (open() short-circuits on _open=true) and the file
+    // would never become visible. Per QA #5: Cmd-P → click on a nested
+    // file silently failed because of that no-op race. Set the pending
+    // selection FIRST so a synchronous re-render path picks it up.
     var parts = filePath.replace(/\\/g, '/').split('/');
     var fileName = parts.pop();
     var dirPath = parts.join('/') || '/';
-    this.open(dirPath);
-    // After navigation, auto-select the file
     this._pendingSelectFile = fileName;
+    if (!this._open) {
+      this.open(dirPath);
+    } else {
+      // Already open — rebase the listing to the file's parent dir
+      // unconditionally. navigateTo will fire even when dirPath equals
+      // the current path; a re-list is harmless and ensures the
+      // pending-select handler runs against fresh items.
+      this.navigateTo(dirPath);
+    }
   };
 
   FileBrowserPanel.prototype._adjustTerminal = function () {
@@ -873,13 +908,145 @@
     if (this._currentPath && this._basePath) {
       var parent = this._currentPath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
       if (parent && parent.length >= this._basePath.replace(/\\/g, '/').length) {
+        this._markManualNav();
         this.navigateTo(parent);
       }
     }
   };
 
   FileBrowserPanel.prototype.navigateHome = function () {
+    this._markManualNav();
     this.navigateTo(this._basePath);
+  };
+
+  // ---------------------------------------------------------------------------
+  // Live-CWD follow-toggle (per ADR-0019)
+  // ---------------------------------------------------------------------------
+  //
+  // The panel follows the active session's OSC-7-reported CWD by default.
+  // The user can click the header "📍 follow terminal" toggle to disengage
+  // (panel stops re-rooting on `cwd_changed`) and click again to re-engage
+  // (panel jumps to the latest stashed liveCwd). Per-session boolean so
+  // switching between sessions preserves each one's independent choice.
+  //
+  // Wired by `app.js`'s WebSocket `cwd_changed` handler:
+  //   panel.notifyCwdChanged(sessionId, cwd)
+  //
+  // Spec: docs/specs/file-browser.md "Live CWD follow-toggle"
+  // ---------------------------------------------------------------------------
+
+  FileBrowserPanel.prototype._activeSessionId = function () {
+    if (!this.app) return null;
+    return this.app.currentClaudeSessionId || null;
+  };
+
+  FileBrowserPanel.prototype._isActiveSession = function (sessionId) {
+    if (!sessionId) return false;
+    return this._activeSessionId() === sessionId;
+  };
+
+  /**
+   * Returns true when the panel is currently configured to follow the
+   * given session's OSC-7 CWD. Defaults to true on first lookup, and
+   * tolerates null/undefined/empty sessionId arguments by reporting true
+   * (the safe / default UX).
+   */
+  FileBrowserPanel.prototype.followsTerminal = function (sessionId) {
+    if (!sessionId) return true;
+    if (!this._followsByOrigin.has(sessionId)) return true;
+    return !!this._followsByOrigin.get(sessionId);
+  };
+
+  /**
+   * Flip the per-session follow flag. When flipping to `true` and a
+   * liveCwd has been stashed for an open active session, re-root the
+   * panel immediately so the user sees the terminal's current cwd
+   * without having to issue another `cd` (per ADR-0019 UX contract).
+   */
+  FileBrowserPanel.prototype.setFollowsTerminal = function (sessionId, value) {
+    if (!sessionId) return;
+    var v = !!value;
+    this._followsByOrigin.set(sessionId, v);
+    this._refreshFollowToggleUI();
+    if (v && this._open && this._isActiveSession(sessionId)) {
+      var stashed = this._lastLiveCwd.get(sessionId);
+      if (stashed) this.navigateTo(stashed);
+    }
+  };
+
+  /**
+   * Last OSC-7-reported cwd for a session, or undefined if none seen.
+   * Exposed for tests + the toggle button's hover tooltip.
+   */
+  FileBrowserPanel.prototype.getLastLiveCwd = function (sessionId) {
+    if (!sessionId) return undefined;
+    return this._lastLiveCwd.get(sessionId);
+  };
+
+  /**
+   * Entry point for the WebSocket `cwd_changed` handler in app.js.
+   * Always stashes the latest liveCwd (so re-engaging the toggle / a
+   * later session-switch picks it up). Re-roots the panel only when
+   * (followsTerminal && open && active session). When not re-rooting,
+   * still refreshes the toggle UI so the tooltip reflects the new cwd.
+   */
+  FileBrowserPanel.prototype.notifyCwdChanged = function (sessionId, cwd) {
+    if (!sessionId || !cwd) return;
+    this._lastLiveCwd.set(sessionId, cwd);
+    if (this.followsTerminal(sessionId) && this._open && this._isActiveSession(sessionId)) {
+      this.navigateTo(cwd);
+    }
+    this._refreshFollowToggleUI();
+  };
+
+  /**
+   * Called by every manual navigation entry point (breadcrumb click,
+   * back button, home button) so the panel stops chasing the terminal
+   * once the user has expressed an intent to look elsewhere. Per ADR-0019:
+   * the implicit "auto-rebase if breadcrumb still matches old liveCwd"
+   * rule was rejected as brittle; this explicit flip is the contract.
+   */
+  FileBrowserPanel.prototype._markManualNav = function () {
+    var sid = this._activeSessionId();
+    if (!sid) return;
+    this._followsByOrigin.set(sid, false);
+    this._refreshFollowToggleUI();
+  };
+
+  /**
+   * Click handler for the header "📍 follow terminal" toggle. Flips the
+   * per-session follow flag for the active session; setFollowsTerminal
+   * handles the immediate-re-root-on-engage behaviour per ADR-0019.
+   */
+  FileBrowserPanel.prototype._onFollowToggleClick = function () {
+    var sid = this._activeSessionId();
+    if (!sid) return;
+    this.setFollowsTerminal(sid, !this.followsTerminal(sid));
+  };
+
+  /**
+   * Refresh the header toggle button's appearance + tooltip. Real
+   * implementation flips an `active` class and updates the title attr;
+   * tests stub this so the state-machine assertions stay DOM-free.
+   */
+  FileBrowserPanel.prototype._refreshFollowToggleUI = function () {
+    if (!this._followToggleBtn) return;
+    var sid = this._activeSessionId();
+    var following = this.followsTerminal(sid);
+    var stashed = sid ? this._lastLiveCwd.get(sid) : null;
+    try {
+      this._followToggleBtn.classList[following ? 'add' : 'remove']('active');
+      this._followToggleBtn.setAttribute('aria-pressed', following ? 'true' : 'false');
+      var label = following
+        ? '📍 Following terminal'
+        : '📍 Follow terminal (paused)';
+      if (stashed) label += ' — last seen at ' + stashed;
+      this._followToggleBtn.title = label;
+      // Hidden when no liveCwd has ever been observed for the active
+      // session (Claude/Codex/Gemini bridges never emit cwd_changed —
+      // see ADR-0019 Bridge Contract). Visible the moment OSC 7 fires.
+      this._followToggleBtn.style.display = stashed ? '' : 'none';
+    } catch (_) { /* ignore — DOM may be partially built or stubbed */ }
   };
 
   // -- Rendering --
@@ -904,6 +1071,7 @@
       if (idx < segments.length - 1) {
         span.style.cursor = 'pointer';
         span.addEventListener('click', function () {
+          self._markManualNav();
           self.navigateTo(seg.path);
         });
       }
@@ -2984,17 +3152,30 @@
   // recover the precise start column of the captured path inside the line.
   //
   // Group 1 = leading boundary (single char or empty at line start)
+  // Group 1 = leading boundary (single char or empty at line start)
   // Group 2 = the path text
-  // Group 3 = optional line number
-  // Group 4 = optional column number
+  // Group 3 = optional line number  (`:line` form OR first capture of `(line,col)` form)
+  // Group 4 = optional column number (`:line:col` OR `(line,col)` second capture)
   //
   // Note: the path body intentionally does NOT permit spaces. Terminal
   // copy/paste of paths with spaces is uncommon; supporting them would
   // require quote-aware parsing and isn't worth the false-positive cost.
+  //
+  // Tail forms (peer-review #8 — real-output sampling exposed tsc):
+  //   `:42`        → :line
+  //   `:42:5`      → :line:col
+  //   `(42,5)`     → tsc-style `(line,col)` form. tsc emits errors as
+  //                  `path(line,col): error TS####:` — without this
+  //                  branch the path itself was matched but the line
+  //                  was lost AND the trailing `(` blocked LINK_RIGHT
+  //                  unless we also added `(` to it.
   var LINK_BODY = '(?:[A-Za-z]:[\\\\/]|~[\\\\/]|\\.{0,2}[\\\\/])?[\\w./\\\\-]*?\\.(?:' + EXT_ALT + ')';
-  var LINK_TAIL = '(?::(\\d+)(?::(\\d+))?)?';
+  var LINK_TAIL = '(?::(\\d+)(?::(\\d+))?|\\((\\d+),(\\d+)\\))?';
   var LINK_LEFT = '(^|[\\s\'"`(\\[<,;])';
-  var LINK_RIGHT = '(?=[\\s\'"`)\\]>,;]|[.:](?:\\s|$)|$)';
+  // Right boundary now also tolerates `(` — without it, the tsc-style
+  // `path(line,col):` left the regex unable to anchor (peer-review #8).
+  // The new `(line,col)` capture above handles cursor placement.
+  var LINK_RIGHT = '(?=[\\s\'"`)\\]>,;(]|[.:](?:\\s|$)|$)';
 
   // Single-match version (for the right-click selection extractor).
   var LINK_RE_SINGLE = new RegExp(LINK_LEFT + '(' + LINK_BODY + ')' + LINK_TAIL + LINK_RIGHT, 'i');
@@ -3034,10 +3215,21 @@
     var pathOnly = m[2];
     if (VERSION_RE.test(pathOnly)) return null;
 
+    // Two tail forms (per the regex): :line[:col] in groups 3+4, or
+    // tsc-style (line,col) in groups 5+6. Mutually exclusive.
+    var line = null, col = null;
+    if (m[3]) {
+      line = parseInt(m[3], 10);
+      col = m[4] ? parseInt(m[4], 10) : null;
+    } else if (m[5]) {
+      line = parseInt(m[5], 10);
+      col = m[6] ? parseInt(m[6], 10) : null;
+    }
+
     return {
       path: pathOnly,
-      line: m[3] ? parseInt(m[3], 10) : null,
-      col: m[4] ? parseInt(m[4], 10) : null,
+      line: line,
+      col: col,
     };
   }
 
@@ -3049,6 +3241,16 @@
     this.authFetch = options.authFetch;
     this.terminal = options.terminal;
     this.app = options.app || null;       // optional, for cwd resolution
+    // Optional source for the session id this terminal is bound to.
+    // Mirrors the attachLinkProvider sessionIdSource contract — main
+    // terminal passes the foreground session, splits pass their own
+    // pane's session id. Without this, the detector ends up using
+    // app.getCurrentWorkingDir() (which carries the global-folder
+    // fallback) — the same Layer-2 silent-wrong-dir footgun that the
+    // link provider's resolver chain explicitly avoids.
+    this._getSessionId = (typeof options.getSessionId === 'function')
+      ? options.getSessionId
+      : null;
     this._menuEl = null;
   }
 
@@ -3176,7 +3378,7 @@
     var menu = this._menuEl;
     // Tolerate legacy callers that pass a bare string.
     if (typeof detected === 'string') detected = { path: detected, line: null, col: null };
-    var filePath = detected.path;
+    var hint = detected.path;
 
     // Position the menu
     menu.style.left = x + 'px';
@@ -3189,56 +3391,138 @@
       items[i].classList.add('disabled');
     }
 
-    // Validate the path asynchronously
-    this.authFetch('/api/files/stat?path=' + encodeURIComponent(filePath))
-      .then(function (resp) {
-        if (!resp.ok) throw new Error('not found');
-        return resp.json();
-      })
-      .then(function (stat) {
-        // Enable items
-        for (var j = 0; j < items.length; j++) {
-          items[j].classList.remove('disabled');
-        }
-
-        // Wire click handlers
-        self._viewItem.onclick = function () {
-          self._hideMenu();
-          var panel = self._resolvePanel();
-          if (panel) panel.openToFile(filePath);
-        };
-        self._editItem.onclick = function () {
-          self._hideMenu();
-          var panel = self._resolvePanel();
-          if (panel) {
-            panel.openToFile(filePath);
-            // The edit will be triggered after preview loads
+    // Resolve the (possibly relative) selection through the SAME chain
+    // as the link provider's click activate path (Part C / Layer 2):
+    //   1. absolute? → stat(hint)
+    //   2. join(liveCwd, hint) (per-session OSC-7 cwd, terminal bridge only)
+    //   3. join(workingDir, hint) (per-session spawn dir — NOT the global folder)
+    //   4. join(repoRoot, hint) (per-session git toplevel)
+    // First step that 200s wins; menu actions use that absolute path.
+    // Without this, a relative selection ("src/app.js") was sent to
+    // /api/files/stat raw — server-side validatePath resolves against
+    // process.cwd() (baseFolder), which is NOT the session's working
+    // directory, so the menu silently disabled itself for ANY relative
+    // path emitted by a Claude/Codex/Gemini session in a subdirectory.
+    var sid = (typeof this._getSessionId === 'function') ? this._getSessionId() : null;
+    var ctx = { liveCwd: null, workingDir: null, repoRoot: null };
+    if (this.app) {
+      // Prefer the session-scoped helper (no global-folder fallback).
+      // Fall back to whatever the app exposes if those helpers are
+      // missing — keeps the detector usable for legacy embedders /
+      // future test shims.
+      try {
+        if (sid) {
+          if (this.app._liveCwd && typeof this.app._liveCwd.get === 'function') {
+            ctx.liveCwd = this.app._liveCwd.get(sid) || null;
           }
-        };
-        self._downloadItem.onclick = function () {
-          self._hideMenu();
-          // window.open spawns a fresh navigation; thread the Bearer
-          // token via ?token= so --auth mode doesn't 401 the new tab.
-          var dlUrl = '/api/files/download?path=' + encodeURIComponent(filePath);
-          if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
-            dlUrl = window.authManager.appendAuthToUrl(dlUrl);
+          if (typeof this.app.getSessionWorkingDir === 'function') {
+            ctx.workingDir = this.app.getSessionWorkingDir(sid) || null;
+          } else if (this.app._sessionWorkingDirs && this.app._sessionWorkingDirs.has(sid)) {
+            ctx.workingDir = this.app._sessionWorkingDirs.get(sid) || null;
           }
-          window.open(dlUrl, '_blank');
-        };
+          if (typeof this.app._getRepoRootCached === 'function') {
+            ctx.repoRoot = this.app._getRepoRootCached(sid) || null;
+          }
+        }
+        // Last-ditch back-compat for callers that don't supply
+        // getSessionId — use the global helper (which DOES carry the
+        // folder fallback). Bare-minimum to keep right-click working
+        // pre-Layer-4 wiring.
+        if (!sid && !ctx.workingDir && typeof this.app.getCurrentWorkingDir === 'function') {
+          ctx.workingDir = this.app.getCurrentWorkingDir() || null;
+        }
+      } catch (_) { /* leave ctx empty — chain still tries absolute hint */ }
+    }
+    var candidates = resolveCandidates(hint, ctx);
 
-        // Hide edit for non-editable files
-        if (!stat.editable) {
-          self._editItem.style.display = 'none';
-        } else {
-          self._editItem.style.display = '';
-        }
-      })
-      .catch(function () {
-        // Path doesn't exist — disable all items
-        for (var k = 0; k < items.length; k++) {
-          items[k].classList.add('disabled');
-        }
-      });
+    var disableAll = function () {
+      for (var k = 0; k < items.length; k++) items[k].classList.add('disabled');
+    };
+
+    // Last-ditch raw-hint fallback — restricted to:
+    //   (a) absolute hints (Unix /, Windows C:\ or C:/, ~/, UNC \\) —
+    //       passing these to /api/files/stat resolves to the literal
+    //       path; no wrong-dir hazard; OR
+    //   (b) TRUE legacy mode: no app AND no getSessionId wired (some
+    //       external embedder / unit-test shim that pre-dates the
+    //       resolver chain).
+    // For relative hints with session context wired (even if context
+    // returned null transiently — e.g. _sessionWorkingDirs not yet
+    // populated for a brand-new session), DO NOT fall back: sending a
+    // bare relative path lets server-side validatePath resolve against
+    // process.cwd() (baseFolder), which is the silent-wrong-dir
+    // footgun the resolver chain was built to avoid.
+    // (Peer-review MED-1 — codex_critic + codex_reviewer, same code
+    // two angles.)
+    if (!candidates.length) {
+      var hintIsAbsolute = /^([A-Za-z]:[\\\/]|[\\\/]|~[\\\/]|\\\\[^\\]+\\)/.test(hint);
+      var trueLegacyMode = !this.app && typeof this._getSessionId !== 'function';
+      if (hintIsAbsolute || trueLegacyMode) {
+        candidates = [hint];
+      } else {
+        disableAll();
+        return;
+      }
+    }
+
+    // Stat each candidate in order; first 200 wins (no ambiguity picker
+    // in the right-click flow — the user already selected a specific
+    // path token, and showing a picker after a context-menu invocation
+    // would be jarring UX).
+    var idx = 0;
+    var tryNext = function () {
+      if (idx >= candidates.length) {
+        disableAll();
+        return;
+      }
+      var candidate = candidates[idx++];
+      self.authFetch('/api/files/stat?path=' + encodeURIComponent(candidate))
+        .then(function (resp) {
+          if (!resp.ok) {
+            tryNext();
+            return null;
+          }
+          return resp.json().then(function (stat) { return { stat: stat, filePath: candidate }; });
+        })
+        .then(function (hit) {
+          if (!hit) return;
+          var stat = hit.stat;
+          var filePath = hit.filePath;
+          // Enable items
+          for (var j = 0; j < items.length; j++) items[j].classList.remove('disabled');
+
+          // Wire click handlers (bind the RESOLVED path, not the hint)
+          self._viewItem.onclick = function () {
+            self._hideMenu();
+            var panel = self._resolvePanel();
+            if (panel) panel.openToFile(filePath);
+          };
+          self._editItem.onclick = function () {
+            self._hideMenu();
+            var panel = self._resolvePanel();
+            if (panel) {
+              panel.openToFile(filePath);
+              // The edit will be triggered after preview loads
+            }
+          };
+          self._downloadItem.onclick = function () {
+            self._hideMenu();
+            var dlUrl = '/api/files/download?path=' + encodeURIComponent(filePath);
+            if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+              dlUrl = window.authManager.appendAuthToUrl(dlUrl);
+            }
+            window.open(dlUrl, '_blank');
+          };
+
+          if (!stat.editable) {
+            self._editItem.style.display = 'none';
+          } else {
+            self._editItem.style.display = '';
+          }
+        })
+        .catch(function () { tryNext(); });
+    };
+    tryNext();
 
     // Ensure menu stays within viewport
     requestAnimationFrame(function () {
@@ -3257,6 +3541,19 @@
       this._menuEl.style.display = 'none';
     }
   };
+
+  // Strip git-diff `a/` or `b/` prefix from a path hint. Per Part C of
+  // the file-browser-v2 iteration: the regex no longer excludes git-diff
+  // pseudo-paths; instead, the click-time resolver strips the prefix and
+  // tries the working-tree file. Returns the input unchanged when no
+  // prefix is present.
+  function stripGitDiffPrefix(p) {
+    if (typeof p !== 'string' || p.length < 2) return p;
+    if (p.charAt(1) !== '/' && p.charAt(1) !== '\\') return p;
+    var c = p.charAt(0);
+    if (c !== 'a' && c !== 'b') return p;
+    return p.slice(2);
+  }
 
   // ---------------------------------------------------------------------------
   // Path resolution helper (module scope so unit tests can call it directly).
@@ -3301,6 +3598,65 @@
   }
 
   // ---------------------------------------------------------------------------
+  // resolveCandidates — build the ordered candidate-path chain for a hint
+  // ---------------------------------------------------------------------------
+  //
+  // Returns the ordered list of absolute paths to try at click-time
+  // against `/api/files/stat`. Order matches docs/specs/file-browser.md
+  // "Client-side resolver chain":
+  //   1. path.isAbsolute(hint)        → hint
+  //   2. join(liveCwd, hint)
+  //   3. join(workingDir, hint)
+  //   4. join(repoRoot, hint)
+  //
+  // Git-diff `a/` / `b/` prefixes are stripped before joining (the
+  // working-tree path is the open target). Duplicate candidates are
+  // deduped while preserving order. Returned even when steps yield no
+  // value (e.g. liveCwd null) — those steps are simply absent.
+  //
+  // Pure function — testable under Node, no DOM / no fetch.
+  //
+  // For Layer 5 (architect-spec'd structured failure toast), callers
+  // that need to surface WHICH context produced each candidate should
+  // use `resolveCandidatesWithSource(hint, ctx)`, which returns the
+  // same array but tagged `{path, source}`. `resolveCandidates`
+  // remains a plain string array for back-compat with tests + e2e
+  // specs that pre-date Layer 5.
+  function resolveCandidates(hint, ctx) {
+    return resolveCandidatesWithSource(hint, ctx).map(function (c) { return c.path; });
+  }
+
+  /**
+   * Same ordering / dedup contract as resolveCandidates, but each
+   * entry carries a `source` tag ('absolute' | 'liveCwd' | 'workingDir'
+   * | 'repoRoot') identifying WHICH step of the chain produced it.
+   * Used by the Layer 5 resolver-failure toast (Block B annotations).
+   */
+  function resolveCandidatesWithSource(hint, ctx) {
+    if (typeof hint !== 'string' || !hint) return [];
+    ctx = ctx || {};
+    var stripped = stripGitDiffPrefix(hint);
+    var out = [];
+    var seen = Object.create(null);
+    function push(p, source) {
+      if (!p) return;
+      if (seen[p]) return;
+      seen[p] = true;
+      out.push({ path: p, source: source });
+    }
+    // Step 1: absolute paths (Unix `/`, Windows drive `C:\` or `C:/`,
+    // UNC `\\server\share`, `~/` shortcut, expanded later by stat).
+    if (/^([A-Za-z]:[\\/]|[\\/]|~[\\/]|\\\\[^\\]+\\)/.test(stripped)) {
+      push(stripped, 'absolute');
+    }
+    // Steps 2-4: join against each context root.
+    if (ctx.liveCwd) push(_resolveAgainstCwd(stripped, ctx.liveCwd), 'liveCwd');
+    if (ctx.workingDir) push(_resolveAgainstCwd(stripped, ctx.workingDir), 'workingDir');
+    if (ctx.repoRoot) push(_resolveAgainstCwd(stripped, ctx.repoRoot), 'repoRoot');
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------
   // attachLinkProvider — register an xterm link provider for clickable paths
   // ---------------------------------------------------------------------------
   //
@@ -3326,10 +3682,67 @@
     var authFetch = options.authFetch;
     var openInViewer = options.openInViewer;
     var getCwd = options.getCwd || function () { return null; };
+    // New (Part C): callbacks supplying the resolver chain context.
+    // getLiveCwd returns the OSC 7 cwd (null when not tracked); getWorkingDir
+    // returns the session's spawn dir; getRepoRoot returns the cached git
+    // toplevel for the active session (null when not in a git repo). All
+    // optional — the resolver chain skips absent steps gracefully.
+    //
+    // Track whether EITHER new-chain callback was supplied so the
+    // back-compat `getCwd` fallback below only fires for legacy callers
+    // (tests / external embedders that wire ONLY getCwd). Without this
+    // guard, a host that wires getWorkingDir but transiently returns
+    // null (e.g. session_joined hasn't populated _sessionWorkingDirs yet
+    // for the active sid) silently falls through to getCwd, which in
+    // app.js returns the GLOBAL folder picker — the silent-wrong-dir
+    // footgun architect's Layer 2 documents.
+    var hasNewChain = (typeof options.getLiveCwd === 'function') ||
+                      (typeof options.getWorkingDir === 'function');
+    var getLiveCwd = options.getLiveCwd || function () { return null; };
+    var getWorkingDir = options.getWorkingDir || function () { return null; };
+    var getRepoRoot = options.getRepoRoot || function () { return null; };
+    // Layer 5 (architect-spec'd structured failure toast): the host
+    // supplies a callback returning the bridge type for the active
+    // session ('terminal' | 'claude' | 'codex' | 'gemini' | 'copilot'
+    // | 'agent' | null). Used to pick the right copy block when the
+    // resolver chain produces no hits. Defaults to null so legacy
+    // callers (test shims) still produce a fallback toast.
+    var getBridgeType = options.getBridgeType || function () { return null; };
     var feedback = options.feedback || (typeof window !== 'undefined' ? window.feedback : null);
 
     if (!terminal || typeof terminal.registerLinkProvider !== 'function') return null;
     if (typeof authFetch !== 'function' || typeof openInViewer !== 'function') return null;
+
+    // Per-session resolution cache (LRU, 256 entries) so re-clicking a path
+    // emitted in many log lines doesn't re-spam /api/files/stat. Per spec
+    // "Each step caches its 200/404 result in a small per-session
+    // resolution cache (LRU, 256 entries)".
+    var statCache = new Map();
+    var STAT_CACHE_MAX = 256;
+    function cachedStat(absPath) {
+      if (statCache.has(absPath)) {
+        // LRU bump: re-insert to make it most-recent.
+        var v = statCache.get(absPath);
+        statCache.delete(absPath);
+        statCache.set(absPath, v);
+        return Promise.resolve(v);
+      }
+      return authFetch('/api/files/stat?path=' + encodeURIComponent(absPath))
+        .then(function (resp) {
+          if (resp.status === 404) return false;
+          if (!resp.ok) throw new Error('stat failed: ' + resp.status);
+          return true;
+        })
+        .then(function (exists) {
+          // Eviction: oldest entry first when at cap.
+          if (statCache.size >= STAT_CACHE_MAX) {
+            var firstKey = statCache.keys().next().value;
+            if (firstKey !== undefined) statCache.delete(firstKey);
+          }
+          statCache.set(absPath, exists);
+          return exists;
+        });
+    }
 
     function findLinksInText(text) {
       // Returns an array of { startCol, endCol, path, line, col } for the line.
@@ -3352,28 +3765,34 @@
         var pathOnly = m[2];
         if (!pathOnly || VERSION_RE.test(pathOnly)) continue;
 
-        // Suppress git-diff pseudo-paths `a/<file>` and `b/<file>` that
-        // appear in `diff --git` headers. They never resolve to real files
-        // and the user gets two underlined-but-broken links per diff
-        // header otherwise (peer-review LOW-2).
-        if (/^[ab][\\/]/.test(pathOnly)) continue;
+        // NOTE: previously git-diff pseudo-paths (`a/<file>`, `b/<file>`)
+        // were skipped here. Per Part C of the file-browser-v2 iteration
+        // the prefix is now PRESERVED — the click-time resolver chain
+        // strips it and tries the working-tree file via stripGitDiffPrefix.
 
         var pathStart = m.index + leadLen;
         var pathEnd = pathStart + pathOnly.length;       // exclusive
-        var line = m[3] ? parseInt(m[3], 10) : null;
-        var col = m[4] ? parseInt(m[4], 10) : null;
-
-        // Extend the link region to cover the trailing :line[:col] suffix
-        // so the user clicks the whole "path:42:5" rather than just the path.
-        var fullEnd = pathEnd;
+        // Tail forms: `:line[:col]` → groups 3 + 4; `(line,col)` → groups
+        // 5 + 6. Only ONE of the two alternations can match per the regex
+        // (LINK_TAIL is a single optional non-capturing group with two
+        // alternatives). tsc-style `path(1234,17):` lands here as 5+6.
+        var line = null, col = null, tailLen = 0;
         if (m[3]) {
-          fullEnd += 1 /* ':' */ + m[3].length;
-          if (m[4]) fullEnd += 1 + m[4].length;
+          line = parseInt(m[3], 10);
+          tailLen += 1 /* ':' */ + m[3].length;
+          if (m[4]) { col = parseInt(m[4], 10); tailLen += 1 + m[4].length; }
+        } else if (m[5]) {
+          line = parseInt(m[5], 10);
+          col = m[6] ? parseInt(m[6], 10) : null;
+          tailLen += 1 /* '(' */ + m[5].length + 1 /* ',' */ + (m[6] ? m[6].length : 0) + 1 /* ')' */;
         }
 
+        // Extend the link region to cover the trailing line/col so the
+        // user clicks the whole "path:42:5" or "path(42,5)" rather than
+        // just the path.
         matches.push({
           startCol: pathStart,
-          endCol: fullEnd,        // exclusive
+          endCol: pathEnd + tailLen,        // exclusive
           path: pathOnly,
           line: line,
           col: col,
@@ -3397,30 +3816,118 @@
     var resolveAgainstCwd = _resolveAgainstCwd;
 
     function activate(_event, _text, detected) {
-      var p = detected.path;
-      var cwd = getCwd();
-      var resolved = resolveAgainstCwd(p, cwd);
+      var hint = detected.path;
+      // Build the resolver chain (Part C). When liveCwd is missing we
+      // fall back to getCwd() — preserves the v1 single-cwd behaviour
+      // for hosts that don't supply the new callbacks.
+      var liveCwd = null, workingDir = null, repoRoot = null, bridgeType = null;
+      try { liveCwd = getLiveCwd(); } catch (_) { liveCwd = null; }
+      try { workingDir = getWorkingDir(); } catch (_) { workingDir = null; }
+      try { repoRoot = getRepoRoot(); } catch (_) { repoRoot = null; }
+      try { bridgeType = getBridgeType(); } catch (_) { bridgeType = null; }
+      // Back-compat ONLY for legacy callers that wired { getCwd } and
+      // not the new chain. When the host wired getLiveCwd/getWorkingDir
+      // (our app.js does), don't fall through to getCwd — it would
+      // resolve a session-scoped click against the GLOBAL folder picker
+      // and silently 404 on a path that lives in a DIFFERENT session's
+      // workingDir (architect's Layer 2 silent-wrong-dir footgun).
+      if (!hasNewChain && !liveCwd && !workingDir) {
+        try { workingDir = getCwd(); } catch (_) { workingDir = null; }
+      }
 
-      authFetch('/api/files/stat?path=' + encodeURIComponent(resolved))
-        .then(function (resp) {
-          if (resp.status === 404) {
-            if (feedback && typeof feedback.error === 'function') {
-              feedback.error('File not found: ' + p);
-            }
-            return null;
-          }
-          if (!resp.ok) throw new Error('stat failed: ' + resp.status);
-          return resp.json();
-        })
-        .then(function (stat) {
-          if (!stat) return;
-          openInViewer(resolved, detected.line, detected.col);
-        })
-        .catch(function (err) {
-          if (feedback && typeof feedback.error === 'function') {
-            feedback.error('Could not open ' + p + ': ' + (err && err.message ? err.message : err));
-          }
+      // Use the source-tagged form so the Layer-5 failure toast can
+      // annotate each candidate (Block B) with the chain step that
+      // produced it.
+      var candidatesWithSource = resolveCandidatesWithSource(hint, {
+        liveCwd: liveCwd, workingDir: workingDir, repoRoot: repoRoot,
+      });
+      var candidates = candidatesWithSource.map(function (c) { return c.path; });
+
+      // Shared helper: surface the structured Layer-5 failure toast,
+      // falling back to the legacy .error one-liner only when the
+      // host doesn't provide .resolverFailure (test shims, legacy
+      // embedders).
+      function surfaceFailure(triedCandidates) {
+        if (!feedback) return;
+        if (typeof feedback.resolverFailure === 'function') {
+          feedback.resolverFailure({
+            hint: hint,
+            candidates: triedCandidates,
+            context: {
+              liveCwd: liveCwd,
+              workingDir: workingDir,
+              repoRoot: repoRoot,
+              bridgeType: bridgeType,
+            },
+          });
+        } else if (typeof feedback.error === 'function') {
+          // Fallback for legacy/test feedbacks without resolverFailure.
+          feedback.error('Could not open: ' + hint);
+        }
+      }
+
+      if (!candidates.length) {
+        // Block D — no candidates at all (no session context).
+        surfaceFailure([]);
+        return;
+      }
+
+      // Stat every candidate in parallel; surface a picker when more
+      // than one resolves. Per spec: NEVER silently auto-pick across
+      // multiple hits — this is the explicit anti-footgun rule from
+      // adversarial review.
+      Promise.all(candidatesWithSource.map(function (c) {
+        return cachedStat(c.path).then(function (exists) {
+          return { path: c.path, source: c.source, exists: !!exists };
+        }, function () {
+          return { path: c.path, source: c.source, exists: false };
         });
+      })).then(function (results) {
+        var hits = results.filter(function (r) { return r.exists; });
+        if (hits.length === 0) {
+          // Blocks A / B / C dispatched by resolverFailure based on
+          // bridgeType + liveCwd. Pass the FULL stat'd set with their
+          // source tags so the toast can annotate (Block B).
+          surfaceFailure(results.map(function (r) {
+            return { path: r.path, source: r.source };
+          }));
+          return;
+        }
+        if (hits.length === 1) {
+          openInViewer(hits[0].path, detected.line, detected.col);
+          return;
+        }
+        // Multiple hits → picker. Defer rendering to the host so the
+        // panel can position the lozenge near the click site (xterm
+        // doesn't surface an originating-DOM-event in `activate`).
+        var pickerPaths = hits.map(function (r) { return r.path; });
+        if (typeof options.onAmbiguous === 'function') {
+          try {
+            options.onAmbiguous({
+              hint: hint,
+              line: detected.line,
+              col: detected.col,
+              candidates: pickerPaths,
+              choose: function (chosen) {
+                if (chosen) openInViewer(chosen, detected.line, detected.col);
+              },
+            });
+            return;
+          } catch (_) { /* fall through to the no-picker default */ }
+        }
+        // Default behaviour without a host-supplied picker: refuse to
+        // pick, surface a toast listing the matches. Matches spec's
+        // "never silently auto-pick" rule.
+        if (feedback && typeof feedback.warning === 'function') {
+          feedback.warning(hits.length + ' matches for ' + hint +
+            ' — open the file browser to disambiguate.');
+        }
+      }).catch(function (err) {
+        if (feedback && typeof feedback.error === 'function') {
+          feedback.error('Could not open ' + hint + ': ' +
+            (err && err.message ? err.message : err));
+        }
+      });
     }
 
     var provider = {
@@ -3471,6 +3978,14 @@
     };
 
     var disposable = terminal.registerLinkProvider(provider);
+    // Stash the provider object on the terminal so e2e helpers can
+    // invoke `provider.provideLinks` directly to test the wiring
+    // without depending on xterm internals (`_core._linkProviderService`
+    // is not exposed on xterm 5.3, and the disposable returned by
+    // registerLinkProvider doesn't carry the provider back). Tests use
+    // this through `e2e/helpers/file-browser-v2-helpers.js
+    // activateTerminalLink`. Production code never reads this field.
+    try { terminal._fbLinkProviderInstance = provider; } catch (_) {}
     return disposable;
   }
 
@@ -3505,6 +4020,9 @@
     LINK_RE_SINGLE: LINK_RE_SINGLE,
     LINK_RE_GLOBAL: LINK_RE_GLOBAL,
     _resolveAgainstCwd: _resolveAgainstCwd,
+    stripGitDiffPrefix: stripGitDiffPrefix,
+    resolveCandidates: resolveCandidates,
+    resolveCandidatesWithSource: resolveCandidatesWithSource,
   };
 
   if (typeof window !== 'undefined') {

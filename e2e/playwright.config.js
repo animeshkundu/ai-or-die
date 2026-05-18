@@ -132,6 +132,48 @@ module.exports = defineConfig({
       name: 'ux-features',
       testMatch: /5[1-5]-.*\.spec\.js/,
     },
+    // File browser v2: OSC 7 CWD tracking, Cmd-P fuzzy find, terminal-path
+    // click resolution, generic file drop. Specs 56–69.
+    {
+      name: 'file-browser-v2',
+      testMatch: /5[6-9]-.*\.spec\.js|6[0-9]-.*\.spec\.js/,
+      timeout: 90000,
+    },
+    // Exploratory user-journey suite. Drives the live dev server at
+    // http://127.0.0.1:11500 — start it BEFORE running:
+    //   node bin/ai-or-die.js --port 11500 --no-open --disable-auth
+    // Default headless; pass --headed via the CLI for human observation.
+    // (See e2e/tests/journey/journey.spec.js for the 12-step plan.)
+    {
+      name: 'journey',
+      testMatch: /journey[\\/]journey\.spec\.js/,
+      timeout: 120000,
+      use: {
+        viewport: { width: 1280, height: 800 },
+      },
+    },
+    // Auth-on rerun. Drives a SEPARATE dev server with --auth foo:
+    //   node bin/ai-or-die.js --port 11501 --no-open --auth foo
+    {
+      name: 'journey-auth',
+      testMatch: /journey[\\/]journey-auth\.spec\.js/,
+      timeout: 120000,
+      use: {
+        viewport: { width: 1280, height: 800 },
+      },
+    },
+    // CI-friendly regression assertions for QA #13's auth findings.
+    // Uses createServer({ auth: 'qa13regr' }) so it self-hosts — no
+    // separate process required (unlike journey-auth which targets a
+    // pre-running 11501 dev server).
+    {
+      name: 'journey-auth-regressions',
+      testMatch: /journey[\\/]journey-auth-regressions\.spec\.js/,
+      timeout: 60000,
+      use: {
+        viewport: { width: 1280, height: 800 },
+      },
+    },
     // Server restart feature tests
     {
       name: 'restart',

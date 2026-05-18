@@ -2,6 +2,8 @@
 
 Allows users to paste, drag-drop, or attach images directly into the terminal. Images are saved as temporary files on the server and their paths are injected into the terminal input, enabling Claude (and other agents that support image arguments) to process them.
 
+> **Cross-link:** non-image file drops follow a separate pipeline — see [Generic file drop](file-browser.md#generic-file-drop) in `file-browser.md`. The two flows share a single `drop` event handler at the terminal container that dispatches by MIME: `image/*` routes here (preview modal → temp dir → quoted path); everything else routes to the generic flow (uploads to `<workingDir>/.claude-attachments/`, injects `@<absolute-path>`). The image-handler module is **not** renamed; the generic flow lives in a sibling `generic-drop-handler.js`.
+
 ---
 
 ## Architecture
@@ -37,7 +39,7 @@ A standalone module that attaches to the terminal container and intercepts image
 | Source | Trigger | Notes |
 |--------|---------|-------|
 | Clipboard paste | `paste` event on `document` | Filters for `image/*` MIME types from `clipboardData.items` |
-| Drag and drop | `drop` event on terminal container | Filters for `image/*` files from `dataTransfer.files` |
+| Drag and drop | `drop` event on terminal container | Filters for `image/*` files from `dataTransfer.files`. The shared `drop` dispatcher routes non-image MIMEs to [Generic file drop](file-browser.md#generic-file-drop) instead. |
 | File picker | Click on "Attach Image" button or context menu item | Opens a hidden `<input type="file" accept="image/*">` |
 
 #### Preview Modal

@@ -733,6 +733,7 @@
     <script type="module" src="https://unpkg.com/ninja-keys?module"></script>
     <script src="clipboard-handler.js"></script>
     <script src="image-handler.js"></script>
+    <script src="generic-drop-handler.js"></script>
     <script src="auth.js"></script>
     <script src="feedback-manager.js"></script>
     <!-- marked.min.js and purify.min.js lazy-loaded on first plan viewer open -->
@@ -750,6 +751,7 @@
     <script src="file-diff.js"></script>
     <script src="file-watcher-client.js"></script>
     <script src="file-search.js"></script>
+    <script src="file-find.js"></script>
     <script src="file-tabs.js"></script>
     <script src="vscode-tunnel.js"></script>
     <script src="app-tunnel.js"></script>
@@ -794,7 +796,18 @@
                         });
                     })
                     .catch(err => {
-                        console.log('ServiceWorker registration failed:', err);
+                        // Per QA #13 finding #4: passing the Error object to
+                        // console.log includes its `stack`, which on some
+                        // browsers contains the originating URL with the
+                        // `?token=…` query param embedded in `at` lines.
+                        // Sanitise via window.sanitizeAuthLog (auth.js) and
+                        // log the message string only (no stack at all).
+                        var msg = (err && err.message) ? err.message : String(err);
+                        var fallback = function (s) {
+                            return String(s).replace(/([?&])token=[^&\s'"`)]+/gi, '$1token=<redacted>');
+                        };
+                        var sanitize = window.sanitizeAuthLog || fallback;
+                        console.log('ServiceWorker registration failed:', sanitize(msg));
                     });
             });
         }

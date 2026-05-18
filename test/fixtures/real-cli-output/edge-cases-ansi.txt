@@ -1,0 +1,4 @@
+See [31msrc/app.js[0m for impl.
+Found bug in src/app.js.
+open (src/app.js).
+Guide: [docs](docs/specs/file-browser.md).

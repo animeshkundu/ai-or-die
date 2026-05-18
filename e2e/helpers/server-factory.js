@@ -8,17 +8,30 @@ const os = require('os');
  * Start the server programmatically via ClaudeCodeWebServer class.
  * Each test spec gets its own instance with an isolated session store
  * to prevent session pollution across test files.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.auth] — when set, boots the server with
+ *   `--auth <token>` semantics (sets ClaudeCodeWebServer's `auth` option
+ *   and clears `noAuth`). Used by the auth-regressions journey spec
+ *   so QA #13's URL-token / log-leak guards can be exercised end-to-end.
  * @returns {Promise<{server: Object, port: number, url: string}>}
  */
-async function createServer() {
+async function createServer(opts) {
+  opts = opts || {};
   // Create a unique temp directory for this server instance's session store
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-or-die-test-'));
   const { ClaudeCodeWebServer } = require('../../src/server');
-  const server = new ClaudeCodeWebServer({
+  const constructorOpts = {
     port: 0,
-    noAuth: true,
-    sessionStoreOptions: { storageDir: tempDir }
-  });
+    sessionStoreOptions: { storageDir: tempDir },
+  };
+  if (opts.auth) {
+    constructorOpts.auth = opts.auth;
+    constructorOpts.noAuth = false;
+  } else {
+    constructorOpts.noAuth = true;
+  }
+  const server = new ClaudeCodeWebServer(constructorOpts);
   const httpServer = await server.start();
   const port = httpServer.address().port;
   // Store tempDir on server for cleanup

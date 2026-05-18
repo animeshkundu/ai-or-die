@@ -19,6 +19,32 @@ class ClaudeCodeWebInterface {
         this.folderMode = true; // Always use folder mode
         this.currentFolderPath = null;
         this.claudeSessions = [];
+        // Live CWD map (per ADR-0019): sessionId → most recent OSC-7-tracked
+        // working directory reported by the Terminal bridge. Populated by
+        // the WebSocket `cwd_changed` handler. Read by getCurrentWorkingDir()
+        // and the file-browser panel's notifyCwdChanged() flow. Map keeps
+        // dynamic add/delete cheap as sessions come and go.
+        this._liveCwd = new Map();
+        // Per-session workingDir cache. Source of truth for the terminal-
+        // path resolver's getWorkingDir callback (Part C). Populated
+        // SYNCHRONOUSLY from session_created / session_joined / *_started
+        // messages so the resolver chain has the right answer immediately —
+        // no waiting on loadSessions(). Closes two failure modes the
+        // post-PR-108 architect/PE diagnosis surfaced:
+        //   1. claudeSessions[] race: loadSessions() is async; a click
+        //      between session-join and list-refresh used to fall through
+        //      to currentFolderPath (silent wrong-dir → 404 toast).
+        //   2. Split-pane sessionId mismatch: the link provider's callbacks
+        //      now receive the SPLIT's session id (not this.currentClaudeSessionId),
+        //      so we need a per-session lookup that doesn't depend on which
+        //      tab is foregrounded.
+        // Cleanup contract: the `session_deleted` WS handler is the
+        // single place that removes the per-session entry from this Map
+        // (along with `_liveCwd`, `_repoRootCache`, `_repoRootInFlight`).
+        // Long-running tabs over weeks cycle through many sessions; the
+        // handler MUST drop the key so these Maps don't drift unboundedly.
+        // See handleMessage('session_deleted') below.
+        this._sessionWorkingDirs = new Map();
         this.isCreatingNewSession = false;
         Object.defineProperty(this, 'isMobile', {
             get: () => this.detectMobile(),
@@ -670,6 +696,59 @@ class ClaudeCodeWebInterface {
             );
         }
 
+        // Generic file drop (Part D). Sibling to the image handler — runs
+        // in capture phase so it can preempt xterm's drop handler. Image
+        // MIMEs delegate to attachImageHandler (above) via onImageDrop;
+        // anything else uploads to <workingDir>/.claude-attachments/ and
+        // injects `@<absolute-path>` as bracketed paste (Claude's native
+        // file-reference syntax).
+        if (window.genericDropHandler && termContainer) {
+            this._genericDropHandler = window.genericDropHandler.attachGenericDropHandler({
+                containerEl: termContainer,
+                getWorkingDir: () => this.getCurrentWorkingDir(),
+                getAuthToken: () => (window.authManager && window.authManager.getToken
+                    ? window.authManager.getToken() : null),
+                onImageDrop: (files) => {
+                    // Re-dispatch to the image handler's drop pipeline. We
+                    // can't easily hand it a constructed DataTransfer in
+                    // a JSDOM-portable way, so we route the FIRST file
+                    // through the image-preview modal it already exposes.
+                    if (window.imageHandler && typeof window.imageHandler.showImagePreview === 'function' &&
+                        files && files.length) {
+                        try {
+                            window.imageHandler.showImagePreview(files[0], (imageData) => {
+                                this._pendingImageCaption = imageData.caption;
+                                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                                    this.send({
+                                        type: 'image_upload',
+                                        base64: imageData.base64,
+                                        mimeType: imageData.mimeType,
+                                        fileName: imageData.fileName || 'pasted-image.png',
+                                        caption: imageData.caption || ''
+                                    });
+                                }
+                            });
+                        } catch (_) { /* ignore */ }
+                    }
+                },
+                injectAtPath: (atPath) => {
+                    if (!atPath) return;
+                    let normalized = attachClipboardHandler.normalizeLineEndings(atPath + ' ');
+                    if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+                        normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                    }
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.send({ type: 'input', data: normalized });
+                    }
+                },
+                onError: (basename, msg) => {
+                    if (window.feedback && typeof window.feedback.error === 'function') {
+                        window.feedback.error(basename + ': ' + msg);
+                    }
+                },
+            });
+        }
+
         this.setupTerminalSearch();
         this.setupTerminalContextMenu();
         this._setupTerminalLinking(this.terminal);
@@ -1091,6 +1170,28 @@ class ClaudeCodeWebInterface {
                 if (!panel.isOpen()) panel.open();
                 if (typeof panel.toggleSearchPanel === 'function') panel.toggleSearchPanel();
             }
+        });
+
+        // Ctrl/Cmd+P → toggle the Cmd-P "Go to File" panel (per ADR-0019
+        // Part B). Global shortcut: works whether or not the file browser
+        // is open. Steals the browser's print binding intentionally — file
+        // navigation in a coding tool wins over the OS print dialog. We
+        // don't steal when the focus is in a text input (so users can
+        // type 'p' freely), with one exception: our own find input, where
+        // re-pressing should just refocus.
+        document.addEventListener('keydown', (e) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            if (e.shiftKey || e.altKey) return;
+            if (e.key !== 'p' && e.key !== 'P') return;
+            const tag = (e.target && e.target.tagName) || '';
+            const isEditable = (tag === 'INPUT' || tag === 'TEXTAREA' ||
+                (e.target && e.target.isContentEditable));
+            const insideFindPanel = e.target &&
+                typeof e.target.closest === 'function' &&
+                e.target.closest('.fb-find-panel');
+            if (isEditable && !insideFindPanel) return;
+            e.preventDefault();
+            this.toggleFindPanel();
         });
 
         // Header overflow menu (tablet/mobile three-dot button)
@@ -2030,6 +2131,14 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
                 this.updateWorkingDir(message.workingDir);
+                // Cache the per-session workingDir SYNCHRONOUSLY so the
+                // terminal-path resolver's getWorkingDir callback hits
+                // immediately — without this, the resolver falls through
+                // to claudeSessions[] (populated by the async loadSessions
+                // call below) and a fast-fingered click in between misses.
+                if (message.sessionId && message.workingDir && this._sessionWorkingDirs) {
+                    this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
+                }
                 this.updateSessionButton(message.sessionName);
                 this.loadSessions();
                 
@@ -2047,6 +2156,13 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
                 this.updateWorkingDir(message.workingDir);
+                // Cache the per-session workingDir SYNCHRONOUSLY — see the
+                // matching comment in session_created above. Page-reload-
+                // then-immediately-click is the canonical race we close
+                // here; session_joined fires before loadSessions completes.
+                if (message.sessionId && message.workingDir && this._sessionWorkingDirs) {
+                    this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
+                }
                 this.updateSessionButton(message.sessionName);
                 
                 // Update tab status
@@ -2134,6 +2250,15 @@ class ClaudeCodeWebInterface {
                 this._toolStartPending = false;
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
+                // When the server enriches *_started with workingDir
+                // (SE's complementary change), seed the resolver-chain
+                // cache here too — belt-and-braces against any path
+                // where the client receives *_started before session_joined
+                // (e.g. reconnect-mid-tool flows). The map already has the
+                // value from session_created/joined; this is idempotent.
+                if (message.sessionId && message.workingDir && this._sessionWorkingDirs) {
+                    this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
+                }
                 this.loadSessions();
                 this.requestUsageStats();
                 const startedTool = message.type.replace('_started', '');
@@ -2240,6 +2365,17 @@ class ClaudeCodeWebInterface {
                 if (this.sessionTabManager && deletedId) {
                     this.sessionTabManager.closeSession(deletedId, { skipServerRequest: true });
                 }
+                // Drop per-session cache entries to prevent unbounded
+                // Map growth in long-running tabs. _repoRootCache and
+                // _repoRootInFlight are lazy-initialised inside
+                // _getRepoRootCached() and may legitimately not exist
+                // yet. See cleanup contract on _sessionWorkingDirs init.
+                if (deletedId) {
+                    if (this._sessionWorkingDirs) this._sessionWorkingDirs.delete(deletedId);
+                    if (this._liveCwd) this._liveCwd.delete(deletedId);
+                    if (this._repoRootCache) this._repoRootCache.delete(deletedId);
+                    if (this._repoRootInFlight) this._repoRootInFlight.delete(deletedId);
+                }
                 this.loadSessions();
                 break;
             }
@@ -2247,6 +2383,26 @@ class ClaudeCodeWebInterface {
             case 'pong':
                 if (this._heartbeat) this._heartbeat.onPong();
                 break;
+
+            case 'cwd_changed': {
+                // OSC 7 in-band CWD update from a Terminal-bridge session
+                // (per ADR-0019). Record the new cwd in the per-session
+                // _liveCwd map; notify the file-browser panel so it can
+                // re-root if its _followsTerminal flag is on for this
+                // session. Defensive against missing fields — silent drop
+                // beats a thrown handler that breaks subsequent frames.
+                if (message.sessionId && message.cwd) {
+                    if (!this._liveCwd) this._liveCwd = new Map();
+                    this._liveCwd.set(message.sessionId, message.cwd);
+                    if (this._fileBrowserPanel &&
+                        typeof this._fileBrowserPanel.notifyCwdChanged === 'function') {
+                        try {
+                            this._fileBrowserPanel.notifyCwdChanged(message.sessionId, message.cwd);
+                        } catch (_) { /* never let a panel error break the WS pipe */ }
+                    }
+                }
+                break;
+            }
 
             case 'image_upload_complete': {
                 const { filePath } = message;
@@ -2963,8 +3119,22 @@ class ClaudeCodeWebInterface {
      * disposable that we track on the terminal object so we can clean up if
      * the terminal is destroyed.
      */
-    _setupTerminalLinking(terminal) {
+    _setupTerminalLinking(terminal, getSessionId) {
         if (!terminal || !window.fileBrowser) return;
+
+        // The link-provider callbacks need to know WHICH session the
+        // terminal belongs to. The main terminal follows the app-global
+        // active session (changes on tab switch). Split panes pass
+        // `() => split.sessionId` so a click in the split resolves
+        // against the SPLIT's working directory, not whichever tab is
+        // foregrounded in the main terminal. (Bug: prior code always
+        // read this.currentClaudeSessionId, which collapsed all panes
+        // onto the foreground session — clicks in a backgrounded split
+        // resolved against the wrong workingDir → 404 or silent
+        // wrong-file open.)
+        const sessionIdSource = (typeof getSessionId === 'function')
+            ? getSessionId
+            : () => this.currentClaudeSessionId;
 
         // 1) Link provider — clickable links for paths/filenames in output.
         if (typeof window.fileBrowser.attachLinkProvider === 'function' &&
@@ -2975,7 +3145,47 @@ class ClaudeCodeWebInterface {
                     terminal: terminal,
                     authFetch: (url, opts) => this.authFetch(url, opts),
                     openInViewer: (path, line, col) => this.openFileInViewer(path, line, col),
-                    getCwd: () => this.getCurrentWorkingDir(),
+                    // Part C resolver-chain callbacks. liveCwd is the OSC 7
+                    // tracked cwd (null for non-Terminal-bridge sessions);
+                    // workingDir is the session spawn dir; repoRoot is the
+                    // cached git toplevel for the active session.
+                    //
+                    // NOTE: the legacy `getCwd` callback was intentionally
+                    // removed from this wiring (architect Layer-2 rip).
+                    // attachLinkProvider only falls back to `getCwd` when
+                    // NEITHER getLiveCwd nor getWorkingDir was supplied —
+                    // a condition we never hit. Wiring it here would have
+                    // re-introduced the silent global-folder-picker
+                    // fallback for any branch that returns null from
+                    // getWorkingDir (e.g. very first paint before
+                    // _sessionWorkingDirs is populated).
+                    getLiveCwd: () => {
+                        const sid = sessionIdSource();
+                        if (!sid || !this._liveCwd) return null;
+                        return this._liveCwd.get(sid) || null;
+                    },
+                    getWorkingDir: () => {
+                        // getSessionWorkingDir returns null on miss
+                        // (NOT currentFolderPath) — that's the whole
+                        // point of the Layer 2 fix.
+                        return this.getSessionWorkingDir(sessionIdSource());
+                    },
+                    getRepoRoot: () => this._getRepoRootCached(sessionIdSource()),
+                    // Layer 5 (architect-spec'd structured failure toast):
+                    // bridgeType picks the right copy block when the
+                    // resolver returns no hit. Read from claudeSessions[]
+                    // — populated by /api/sessions/list (with `agent`
+                    // field) on init + after each session/tool event.
+                    // Returns null if claudeSessions hasn't loaded yet
+                    // or the session isn't found; resolverFailure treats
+                    // null as Block C per spec.
+                    getBridgeType: () => {
+                        const sid = sessionIdSource();
+                        if (!sid || !this.claudeSessions) return null;
+                        const s = this.claudeSessions.find(x => x.id === sid);
+                        return (s && s.agent) ? s.agent : null;
+                    },
+                    onAmbiguous: (info) => this._showAmbiguityPicker(info),
                     feedback: window.feedback,
                 });
             } catch (err) {
@@ -2992,6 +3202,12 @@ class ClaudeCodeWebInterface {
                     authFetch: (url, opts) => this.authFetch(url, opts),
                     terminal: terminal,
                     app: this,
+                    // Same sessionIdSource thread as the link provider —
+                    // splits' right-click "Open in File Viewer" / "Edit"
+                    // / "Download" now uses the SPLIT's session id, not
+                    // app-global currentClaudeSessionId. (Layer 4 audit
+                    // ask from architect on the detector path.)
+                    getSessionId: sessionIdSource,
                 });
                 terminal._fbPathDetector.init();
             } catch (err) {
@@ -3765,6 +3981,65 @@ class ClaudeCodeWebInterface {
         if (panel) panel.toggle();
     }
 
+    /**
+     * Idempotent open — guarantees the file browser is OPEN after
+     * the call, never toggles closed. Required by the Layer 5
+     * resolver-failure toast's "Open file browser →" CTA: a user
+     * clicking the CTA expects the browser to appear, not vanish
+     * if it happened to be open already. (Round-2 peer review #1.)
+     */
+    openFileBrowser() {
+        const panel = this._ensureFileBrowser();
+        if (!panel) return;
+        if (typeof panel.isOpen === 'function' && panel.isOpen()) return;
+        if (typeof panel.open === 'function') panel.open();
+        else panel.toggle();   // defensive: hosts/tests without .open()/.isOpen()
+    }
+
+    // Cmd-P "Go to File" panel (per ADR-0019 + Part B of file-browser-v2).
+    // Mounted lazily on first Cmd/Ctrl+P press; reused thereafter.
+    _ensureFindPanel() {
+        if (this._findPanel || !window.fileFind) return this._findPanel || null;
+        // The panel mounts itself into the supplied container — we reuse
+        // <body> so it floats above the terminal regardless of the file
+        // browser's open/closed state.
+        try {
+            this._findPanel = new window.fileFind.FindPanel({
+                containerEl: document.body,
+                getAuthToken: () => (window.authManager && window.authManager.getToken
+                    ? window.authManager.getToken()
+                    : null),
+                getSearchPath: () => this.getCurrentWorkingDir(),
+                getSession: () => this.currentClaudeSessionId || null,
+                onResultClick: (hit) => {
+                    // Delegate to fileFind.dispatchFindHit — encapsulates
+                    // the editor-vs-preview branch in a regression-tested
+                    // helper. Editor mode force-bootstraps the panel's
+                    // tab manager via _ensureTabManager() (was a sync race
+                    // against the lazy init before QA #6) and skips
+                    // openToFile entirely so we don't end up with a
+                    // duplicate preview tab. Preview mode hands off to
+                    // openToFile (which carries QA #5's rebase-on-open
+                    // semantics).
+                    const panel = this._ensureFileBrowser();
+                    if (!panel || !window.fileFind ||
+                        typeof window.fileFind.dispatchFindHit !== 'function') return;
+                    window.fileFind.dispatchFindHit(panel, hit);
+                },
+            });
+        } catch (e) {
+            console.warn('[file-find] panel init failed:', e);
+            return null;
+        }
+        return this._findPanel;
+    }
+
+    toggleFindPanel() {
+        const panel = this._ensureFindPanel();
+        if (!panel) return;
+        if (panel.isOpen()) panel.close(); else panel.open();
+    }
+
     // VS Code Tunnel Methods
     toggleVSCodeTunnel() {
         if (!this._vscodeTunnelUI && window.VSCodeTunnelUI) {
@@ -3818,13 +4093,225 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    /**
+     * Return the SPAWN WorkingDir for a specific session (the directory
+     * the PTY was spawned in). Used by the terminal-path resolver chain's
+     * step 3 (`stat(path.join(workingDir, hint))`).
+     *
+     * IMPORTANT: this helper deliberately does NOT consult `_liveCwd`.
+     * The resolver chain's step 2 already tests `path.join(liveCwd, hint)`;
+     * having step 3 ALSO prefer liveCwd would collapse the two candidates
+     * into one (the chain dedupes them via `seen`), and step 3's whole
+     * purpose per spec line 525 is "Always tried even when liveCwd is
+     * set, to catch paths emitted by tools that haven't followed cd."
+     * (Cross-lab peer review HIGH-1 finding — codex_critic and
+     * gemini_critic flagged independently.)
+     *
+     * Resolution order:
+     *   1. `_sessionWorkingDirs` cache (synchronous from session_created/
+     *      joined/*_started events).
+     *   2. `claudeSessions[]` (asynchronously populated by loadSessions).
+     *   3. null (caller decides what "no session context" means — the
+     *      resolver chain skips step 3 silently; `getCurrentWorkingDir`
+     *      bottoms out at `currentFolderPath` for panel-default callers).
+     *
+     * @param {string} sid Session id. Returns null when sid is falsy.
+     * @returns {string|null}
+     */
+    getSessionWorkingDir(sid) {
+        if (!sid) return null;
+        if (this._sessionWorkingDirs && this._sessionWorkingDirs.has(sid)) {
+            const wd = this._sessionWorkingDirs.get(sid);
+            if (wd) return wd;
+        }
+        if (this.claudeSessions) {
+            const s = this.claudeSessions.find(x => x.id === sid);
+            if (s && s.workingDir) {
+                // Back-fill the cache so the next call short-circuits.
+                if (this._sessionWorkingDirs) this._sessionWorkingDirs.set(sid, s.workingDir);
+                return s.workingDir;
+            }
+        }
+        return null;
+    }
+
     getCurrentWorkingDir() {
-        // Return the working directory of the active session, or the base folder
-        if (this.currentClaudeSessionId && this.claudeSessions) {
-            const session = this.claudeSessions.find(s => s.id === this.currentClaudeSessionId);
-            if (session && session.workingDir) return session.workingDir;
+        // Panel-default "where am I now" answer. Prefers liveness
+        // (OSC 7-tracked cwd, for Terminal-bridge sessions that have a
+        // shell hook installed) → spawn dir → global folder fallback.
+        // The resolver-chain callback in _setupTerminalLinking does NOT
+        // use this method — it consumes getSessionWorkingDir() directly
+        // so resolver step 2 (liveCwd) and step 3 (workingDir) stay
+        // distinct. (See getSessionWorkingDir docstring HIGH-1 note.)
+        const sid = this.currentClaudeSessionId;
+        if (sid) {
+            if (this._liveCwd && this._liveCwd.has(sid)) {
+                const live = this._liveCwd.get(sid);
+                if (live) return live;
+            }
+            const spawnWd = this.getSessionWorkingDir(sid);
+            if (spawnWd) return spawnWd;
         }
         return this.currentFolderPath || null;
+    }
+
+    /**
+     * Return the cached git repo-root for the active session, kicking off
+     * a one-shot fetch if not yet cached. Reads `null` until the first
+     * fetch resolves; subsequent calls return the cached value (cached
+     * for the session's lifetime per the spec). Used by the link
+     * provider's resolver chain (Part C).
+     *
+     * @param {string} [sid] Optional session id. Defaults to the app-global
+     *   active session for back-compat; the link provider passes the
+     *   sessionIdSource value so split panes resolve against THEIR own
+     *   session's repo root, not whatever tab is foregrounded.
+     */
+    _getRepoRootCached(sid) {
+        if (!sid) sid = this.currentClaudeSessionId;
+        if (!sid) return null;
+        if (!this._repoRootCache) this._repoRootCache = new Map();
+        if (!this._repoRootInFlight) this._repoRootInFlight = new Map();
+        if (this._repoRootCache.has(sid)) return this._repoRootCache.get(sid);
+        // Kick off the fetch (idempotent — concurrent callers all get the
+        // same in-flight promise). Returns null synchronously while the
+        // fetch is pending; the resolver chain still has liveCwd /
+        // workingDir candidates to fall back on.
+        if (!this._repoRootInFlight.has(sid)) {
+            var self = this;
+            var p = this.authFetch('/api/sessions/' + encodeURIComponent(sid) + '/repo-root')
+                .then(function (resp) {
+                    if (!resp.ok) return null;
+                    return resp.json();
+                })
+                .then(function (data) {
+                    var root = (data && typeof data.root === 'string') ? data.root : null;
+                    self._repoRootCache.set(sid, root);
+                    self._repoRootInFlight.delete(sid);
+                    return root;
+                })
+                .catch(function () {
+                    self._repoRootCache.set(sid, null);
+                    self._repoRootInFlight.delete(sid);
+                    return null;
+                });
+            this._repoRootInFlight.set(sid, p);
+        }
+        return null;
+    }
+
+    /**
+     * Render the inline ambiguity picker for terminal-link clicks that
+     * resolve to multiple files (Part C). Anchored near the active
+     * terminal — xterm doesn't surface the originating click event in
+     * `activate`, so we float the lozenge near the terminal cursor or
+     * top-left of the terminal container as a fallback. Keyboard nav
+     * (Up/Down/Enter/Esc); cancels on outside click.
+     */
+    _showAmbiguityPicker(info) {
+        if (!info || !Array.isArray(info.candidates) || !info.candidates.length) return;
+        // Tear down any prior picker first (stacking would be confusing).
+        if (this._ambiguityPickerEl && this._ambiguityPickerEl.parentNode) {
+            this._ambiguityPickerEl.parentNode.removeChild(this._ambiguityPickerEl);
+        }
+
+        var picker = document.createElement('div');
+        picker.className = 'fb-ambiguity-picker';
+        picker.setAttribute('role', 'listbox');
+        picker.setAttribute('aria-label', info.candidates.length + ' matches for ' + info.hint);
+
+        var header = document.createElement('div');
+        header.className = 'fb-ambiguity-header';
+        header.textContent = info.candidates.length + ' matches — pick one';
+        picker.appendChild(header);
+
+        var rows = [];
+        var focusedIdx = 0;
+
+        info.candidates.forEach(function (path, idx) {
+            var row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'fb-ambiguity-row' + (idx === focusedIdx ? ' focused' : '');
+            row.setAttribute('role', 'option');
+            row.setAttribute('aria-selected', idx === focusedIdx ? 'true' : 'false');
+
+            // Split path into basename + parent (VS Code convention).
+            var lastSep = -1;
+            for (var i = path.length - 1; i >= 0; i--) {
+                var c = path.charCodeAt(i);
+                if (c === 47 || c === 92) { lastSep = i; break; }
+            }
+            var basename = lastSep === -1 ? path : path.slice(lastSep + 1);
+            var parent = lastSep === -1 ? '' : path.slice(0, lastSep);
+
+            var bn = document.createElement('span');
+            bn.className = 'fb-ambiguity-basename';
+            bn.textContent = basename;
+            row.appendChild(bn);
+            if (parent) {
+                var pn = document.createElement('span');
+                pn.className = 'fb-ambiguity-parent';
+                pn.textContent = ' ' + parent;
+                row.appendChild(pn);
+            }
+
+            row.addEventListener('click', function () { choose(idx); });
+            picker.appendChild(row);
+            rows.push(row);
+        });
+
+        function setFocus(idx) {
+            if (idx < 0) idx = 0;
+            if (idx >= rows.length) idx = rows.length - 1;
+            rows[focusedIdx].classList.remove('focused');
+            rows[focusedIdx].setAttribute('aria-selected', 'false');
+            focusedIdx = idx;
+            rows[focusedIdx].classList.add('focused');
+            rows[focusedIdx].setAttribute('aria-selected', 'true');
+            try { rows[focusedIdx].scrollIntoView({ block: 'nearest' }); } catch (_) {}
+        }
+
+        var self = this;
+        function close() {
+            try { document.removeEventListener('keydown', onKey, true); } catch (_) {}
+            try { document.removeEventListener('click', onClickOutside, true); } catch (_) {}
+            if (picker.parentNode) picker.parentNode.removeChild(picker);
+            self._ambiguityPickerEl = null;
+        }
+        function choose(idx) {
+            var p = info.candidates[idx];
+            close();
+            try { info.choose(p); } catch (_) {}
+        }
+        function onKey(e) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); setFocus(focusedIdx + 1); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); setFocus(focusedIdx - 1); }
+            else if (e.key === 'Enter') { e.preventDefault(); choose(focusedIdx); }
+            else if (e.key === 'Escape') { e.preventDefault(); close(); }
+        }
+        function onClickOutside(e) {
+            if (e.target && picker.contains(e.target)) return;
+            close();
+        }
+
+        // Anchor — top-left of the active terminal as a sane default.
+        var termEl = (this.terminal && this.terminal.element) ||
+            document.querySelector('.terminal-container') ||
+            document.body;
+        var rect = (termEl.getBoundingClientRect && termEl.getBoundingClientRect()) ||
+            { left: 80, top: 80 };
+        picker.style.position = 'fixed';
+        picker.style.left = (rect.left + 16) + 'px';
+        picker.style.top = (rect.top + 16) + 'px';
+        document.body.appendChild(picker);
+        this._ambiguityPickerEl = picker;
+
+        document.addEventListener('keydown', onKey, true);
+        // Defer the outside-click listener to next tick so the click that
+        // opened the picker (xterm's link click) doesn't immediately close it.
+        setTimeout(function () {
+            document.addEventListener('click', onClickOutside, true);
+        }, 0);
     }
 
     // Folder Browser Methods
@@ -4275,9 +4762,21 @@ class ClaudeCodeWebInterface {
         try {
             const response = await this.authFetch('/api/sessions/list');
             if (!response.ok) throw new Error('Failed to load sessions');
-            
+
             const data = await response.json();
             this.claudeSessions = data.sessions;
+            // Backfill the per-session workingDir cache for any sessions
+            // we learned about via /api/sessions/list but never received
+            // a session_created/joined/*_started event for (e.g. sessions
+            // restored from disk on a fresh page load). Don't overwrite —
+            // event-sourced values may be fresher than the disk snapshot.
+            if (this._sessionWorkingDirs && Array.isArray(data.sessions)) {
+                for (const s of data.sessions) {
+                    if (s && s.id && s.workingDir && !this._sessionWorkingDirs.has(s.id)) {
+                        this._sessionWorkingDirs.set(s.id, s.workingDir);
+                    }
+                }
+            }
             this.renderSessionList();
         } catch (error) {
             console.error('Failed to load sessions:', error);
