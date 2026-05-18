@@ -182,6 +182,16 @@ class ClaudeCodeWebServer {
       });
     }, 5 * 60 * 1000);
 
+    // Diagnostics heartbeat: log a structured snapshot of leak-relevant
+    // resources every 5 minutes. Lets an operator `grep '[diagnostics]'
+    // server.log | tail -100` to see resource growth over time without
+    // running a profiler. Counts only — no PII.
+    this.diagnosticsHeartbeatInterval = setInterval(() => {
+      try {
+        console.log('[diagnostics]', JSON.stringify(this._collectDiagnostics()));
+      } catch (_) { /* never break the timer */ }
+    }, 5 * 60 * 1000);
+
     // Also save on process exit
     process.on('SIGINT', () => this.handleShutdown());
     process.on('SIGTERM', () => this.handleShutdown());
@@ -739,13 +749,29 @@ class ClaudeCodeWebServer {
     // Commands API removed
 
     this.app.get('/api/health', (req, res) => {
-      res.json({ 
-        status: 'ok', 
+      res.json({
+        status: 'ok',
         claudeSessions: this.claudeSessions.size,
-        activeConnections: this.webSocketConnections.size 
+        activeConnections: this.webSocketConnections.size
       });
     });
-    
+
+    // Resource diagnostics for long-running-process leak detection.
+    //
+    // Returns memory + handle + per-resource-Map counts so an operator can
+    // grep a heartbeat log (or curl this endpoint on demand) and tell which
+    // resource is leaking when the server eventually goes unresponsive.
+    // Counts only — no paths, no usernames, no session content — so it is
+    // safe to expose without auth on the same posture as /api/health.
+    //
+    // History: added during PR #108 after a weeks-long-unresponsive incident
+    // where the team had to guess the resource class because no instrumentation
+    // existed. Companion heartbeat logger runs every 5 minutes (see
+    // setupAutoSave). Future hardening: gate behind auth for shared deploys.
+    this.app.get('/api/diagnostics', (req, res) => {
+      res.json(this._collectDiagnostics());
+    });
+
     // App-level tunnel status
     this.app.get('/api/tunnel/status', (req, res) => {
       if (!this.tunnelManager) {
@@ -3693,6 +3719,59 @@ class ClaudeCodeWebServer {
     }
   }
 
+  /**
+   * Snapshot of leak-relevant resources at one point in time.
+   *
+   * Powers `GET /api/diagnostics` (on-demand) and the 5-minute diagnostics
+   * heartbeat log (continuous, for post-incident grep). Counts + sizes only —
+   * no paths, no usernames, no session content — safe to expose unauthenticated.
+   *
+   * Use this to spot which resource is growing when the server eventually
+   * goes unresponsive. Heap growing → memory leak. fd_count growing → FD
+   * exhaustion. active_handles growing → unclosed timers/listeners.
+   * fs_watch_sessions or voice_upload_counts growing → session-cleanup gap.
+   *
+   * Cross-platform: fd_count is Linux-only (reads /proc/self/fd). null on
+   * macOS/Windows — those platforms use lsof / Process Explorer respectively
+   * for FD inspection.
+   */
+  _collectDiagnostics() {
+    const mem = process.memoryUsage();
+    const handles = (process._getActiveHandles && process._getActiveHandles()) || [];
+    const requests = (process._getActiveRequests && process._getActiveRequests()) || [];
+    let fdCount = null;
+    try {
+      if (process.platform === 'linux') {
+        fdCount = fs.readdirSync('/proc/self/fd').length;
+      }
+    } catch (_) { /* ignore — /proc may be unavailable in sandboxes */ }
+    return {
+      uptime_seconds: Math.round(process.uptime()),
+      node_version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      memory: {
+        rss_mb: +(mem.rss / 1048576).toFixed(1),
+        heap_used_mb: +(mem.heapUsed / 1048576).toFixed(1),
+        heap_total_mb: +(mem.heapTotal / 1048576).toFixed(1),
+        external_mb: +(mem.external / 1048576).toFixed(1),
+        array_buffers_mb: +((mem.arrayBuffers || 0) / 1048576).toFixed(1),
+      },
+      process: {
+        active_handles: handles.length,
+        active_requests: requests.length,
+        fd_count: fdCount,
+      },
+      sessions: {
+        total: this.claudeSessions.size,
+        ws_connections: this.webSocketConnections.size,
+        fs_watch_sessions: (this._fsWatchSessions && this._fsWatchSessions.size) || 0,
+        voice_upload_counts: (this._voiceUploadCounts && this._voiceUploadCounts.size) || 0,
+        activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
+      },
+    };
+  }
+
   cleanupWebSocketConnection(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
@@ -3784,6 +3863,9 @@ class ClaudeCodeWebServer {
     }
     if (this.sessionEvictionInterval) {
       clearInterval(this.sessionEvictionInterval);
+    }
+    if (this.diagnosticsHeartbeatInterval) {
+      clearInterval(this.diagnosticsHeartbeatInterval);
     }
 
     // Stop memory monitoring to release the interval timer

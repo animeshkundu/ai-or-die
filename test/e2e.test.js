@@ -217,6 +217,55 @@ describe('E2E: Server lifecycle', function () {
     assert.strictEqual(res.body.tools.terminal.available, true);
     assert(typeof res.body.aliases === 'object');
   });
+
+  it('should expose leak-relevant resource counts via /api/diagnostics', async function () {
+    // Endpoint shape — load-bearing for the post-incident grep workflow.
+    // If a field is renamed/dropped here, the operator runbook breaks.
+    const res = await httpRequest('GET', `http://127.0.0.1:${port}/api/diagnostics`);
+    assert.strictEqual(res.statusCode, 200);
+    const d = res.body;
+    assert(typeof d.uptime_seconds === 'number');
+    assert(typeof d.node_version === 'string');
+    assert(typeof d.platform === 'string');
+    assert(d.memory && typeof d.memory.rss_mb === 'number');
+    assert(typeof d.memory.heap_used_mb === 'number');
+    assert(d.process && typeof d.process.active_handles === 'number');
+    assert(typeof d.process.active_requests === 'number');
+    // fd_count is null on non-Linux; on Linux it's a number.
+    if (process.platform === 'linux') {
+      assert(typeof d.process.fd_count === 'number', 'expected fd_count on Linux');
+    } else {
+      assert.strictEqual(d.process.fd_count, null, 'expected null fd_count off-Linux');
+    }
+    assert(d.sessions && typeof d.sessions.total === 'number');
+    assert(typeof d.sessions.ws_connections === 'number');
+    assert(typeof d.sessions.fs_watch_sessions === 'number');
+    assert(typeof d.sessions.voice_upload_counts === 'number');
+  });
+
+  it('should reflect new sessions in /api/diagnostics counts', async function () {
+    const before = (await httpRequest('GET', `http://127.0.0.1:${port}/api/diagnostics`)).body;
+
+    // Create a session via the REST API.
+    const created = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {
+      headers: { 'Content-Type': 'application/json' },
+      body: { name: 'diagnostics-probe', workingDir: process.cwd() },
+    });
+    assert.strictEqual(created.statusCode, 200);
+    const sessionId = created.body.session.id;
+
+    const mid = (await httpRequest('GET', `http://127.0.0.1:${port}/api/diagnostics`)).body;
+    assert.strictEqual(mid.sessions.total, before.sessions.total + 1,
+      'diagnostics should show the new session in sessions.total');
+
+    // Delete the session; count should return to baseline.
+    const deleted = await httpRequest('DELETE', `http://127.0.0.1:${port}/api/sessions/${sessionId}`);
+    assert.strictEqual(deleted.statusCode, 200);
+
+    const after = (await httpRequest('GET', `http://127.0.0.1:${port}/api/diagnostics`)).body;
+    assert.strictEqual(after.sessions.total, before.sessions.total,
+      'diagnostics should return to baseline after session delete');
+  });
 });
 
 
