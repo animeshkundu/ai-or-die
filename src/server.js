@@ -643,6 +643,26 @@ class ClaudeCodeWebServer {
       this.app.use(express.static(path.join(__dirname, 'public')));
     }
 
+    // Static-serve project docs at /docs for in-app deep links —
+    // specifically the Layer 5 resolver-failure toast's "Show me how →"
+    // CTA which opens the OSC 7 shell-hooks section of the file-browser
+    // spec. Path-traversal protection: express.static + the dotfiles:
+    // 'ignore' option below + Express's path-normalization mean the
+    // mount can only serve descendants of repo/docs. (Round-2 peer
+    // review #2: prior CTA URL was broken because docs/ wasn't
+    // exposed.)
+    //
+    // NOTE: in SEA-packaged builds, docs/ isn't bundled — _sendSeaAsset
+    // would need a 'docs' asset path. For now, the CTA gracefully
+    // 404s in SEA mode; the toast body still carries the actionable
+    // text ("install the OSC 7 hook"). The full snippets live in
+    // docs/specs/file-browser.md regardless.
+    this.app.use('/docs', express.static(path.join(__dirname, '..', 'docs'), {
+      dotfiles: 'ignore',
+      index: false,
+      fallthrough: false,
+    }));
+
     // PWA Icon routes - generate ai-or-die brain/terminal icon dynamically
     const iconSizes = [16, 32, 144, 180, 192, 512];
     iconSizes.forEach(size => {

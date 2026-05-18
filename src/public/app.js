@@ -3969,6 +3969,21 @@ class ClaudeCodeWebInterface {
         if (panel) panel.toggle();
     }
 
+    /**
+     * Idempotent open — guarantees the file browser is OPEN after
+     * the call, never toggles closed. Required by the Layer 5
+     * resolver-failure toast's "Open file browser →" CTA: a user
+     * clicking the CTA expects the browser to appear, not vanish
+     * if it happened to be open already. (Round-2 peer review #1.)
+     */
+    openFileBrowser() {
+        const panel = this._ensureFileBrowser();
+        if (!panel) return;
+        if (typeof panel.isOpen === 'function' && panel.isOpen()) return;
+        if (typeof panel.open === 'function') panel.open();
+        else panel.toggle();   // defensive: hosts/tests without .open()/.isOpen()
+    }
+
     // Cmd-P "Go to File" panel (per ADR-0019 + Part B of file-browser-v2).
     // Mounted lazily on first Cmd/Ctrl+P press; reused thereafter.
     _ensureFindPanel() {
