@@ -342,6 +342,17 @@ test.describe('File browser — fs-watcher reactive sync (#100, ADR-0017)', () =
   test('(e) rate-limit: 6th concurrent watcher → 429', async ({ page }) => {
     await setupPage(page);
 
+    // Per 98ea397, GET /api/files/watch's session-missing race-guard runs
+    // BEFORE the per-IP rate-limit check (so bogus sessionIds neither
+    // count toward nor decrement the cap). The cap test therefore must
+    // create REAL claudeSessions for both the 5 "filler" watchers and
+    // the 6th overflow attempt — otherwise the race-guard returns 200 +
+    // SSE end-event without ever consuming a slot, and no 429 ever fires.
+    const sessionIds = [];
+    for (let i = 0; i < 6; i++) {
+      sessionIds.push(await createSessionViaApi(port, 'watcher-cap-' + i));
+    }
+
     // Open 5 watchers from the page context (same IP), then attempt a 6th.
     // Use page.request for the 6th so we can synchronously observe the
     // status code without EventSource's async lifecycle.
@@ -349,21 +360,22 @@ test.describe('File browser — fs-watcher reactive sync (#100, ADR-0017)', () =
     // ?path=<rootDir>; sending only session returns 400 before the
     // rate-limit check runs. Use the test session's own cwd ('.') as the
     // watch root — server resolves it via validatePath/realpathSync.
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (sids) => {
       const opened = [];
       const path = '.';
-      // Open 5 EventSources to distinct session ids.
+      // Open 5 EventSources to the first 5 real sessions.
       for (let i = 0; i < 5; i++) {
-        const sid = 'watcher-cap-test-' + i + '-' + Date.now();
-        const es = new EventSource('/api/files/watch?session=' + encodeURIComponent(sid)
+        const es = new EventSource('/api/files/watch?session=' + encodeURIComponent(sids[i])
           + '&path=' + encodeURIComponent(path));
         opened.push(es);
       }
-      // Wait briefly for them to actually establish.
+      // Wait briefly for them to actually establish (counter increments
+      // synchronously inside the handler, but EventSource open is async).
       await new Promise((r) => setTimeout(r, 500));
-      // The 6th attempt should be rejected with 429 (rate-limit), not 400
-      // (missing param) — that's why path= must be present.
-      const res = await fetch('/api/files/watch?session=watcher-cap-test-OVERFLOW'
+      // The 6th attempt (also a real session) should be rejected with 429
+      // (rate-limit), not 400 (missing param) — that's why path= must be
+      // present, and not 200 — that's why the session must exist.
+      const res = await fetch('/api/files/watch?session=' + encodeURIComponent(sids[5])
         + '&path=' + encodeURIComponent(path), {
         method: 'GET',
         headers: { Accept: 'text/event-stream' },
@@ -372,7 +384,7 @@ test.describe('File browser — fs-watcher reactive sync (#100, ADR-0017)', () =
       // Cleanup so we don't leak watchers between tests.
       opened.forEach((es) => { try { es.close(); } catch (_) {} });
       return { status, openedCount: opened.length };
-    });
+    }, sessionIds);
 
     expect(result.openedCount).toBe(5);
     expect(result.status, '6th concurrent /api/files/watch must return 429').toBe(429);

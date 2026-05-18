@@ -2202,6 +2202,36 @@ class ClaudeCodeWebServer {
         return res.status(500).json({ error: 'stat failed', message: err.message });
       }
 
+      // Race guard: if the parent claudeSession was deleted (or never
+      // existed) between request arrival and now, do not register an
+      // orphan watcher entry — it would never be cleaned up because the
+      // session-delete handler has nothing to key off. Reply 200 + SSE
+      // end-event with reason='session_missing' so the EventSource client
+      // closes cleanly, but DO NOT consume a per-IP slot (otherwise a
+      // burst of bogus sessionIds would block legitimate watchers and
+      // mask the rate-limit cap behaviour).
+      //
+      // Runs AFTER path validation (so callers still see 400/403/404 for
+      // bad paths even with bogus sessionIds — the same observable
+      // surface that test/file-browser-api.test.js asserts) and BEFORE
+      // the counter increment (so bogus sessionIds do not consume slots
+      // that get released on cleanup, which is what previously cycled
+      // the per-IP counter back to 0 and broke the cap test).
+      if (!this.claudeSessions.has(sessionId)) {
+        res.status(200);
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache, no-transform, no-store');
+        res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        if (typeof res.flushHeaders === 'function') res.flushHeaders();
+        try {
+          res.write('data: ' + JSON.stringify({ type: 'end', reason: 'session_missing' }) + '\n\n');
+          res.end();
+        } catch (_) { /* ignore — client may have already disconnected */ }
+        return;
+      }
+
       // Increment the concurrent-watcher counter BEFORE async work so a
       // burst of simultaneous requests can't all pass the cap check
       // before any of them increment.
