@@ -529,6 +529,17 @@ Each step caches its 200/404 result in a small per-session resolution cache (LRU
 
 **Why client-side, not a new endpoint:** the existing `/api/files/stat` already runs through `validatePath()`, so trust is preserved. Saves an endpoint, its rate limiter, its tests, and its failure-mode permutations. (Codex's exact recommendation in adversarial review.)
 
+#### Per-session workingDir cache (`_sessionWorkingDirs`)
+
+`workingDir` for step 3 is supplied by a per-session client cache (`app._sessionWorkingDirs`, keyed by sessionId), populated synchronously by the WebSocket handlers for `session_created`, `session_joined`, and the `*_started` family (`claude_started`, `codex_started`, `gemini_started`, `copilot_started`, `terminal_started`, `agent_started`). The async `loadSessions()` call additionally back-fills the cache for sessions that pre-date this client (page reload after a session was created in another tab).
+
+Two race / correctness windows this closes:
+
+- **`claudeSessions[]` race.** `loadSessions()` is async. A click between `session_joined` and the list-refresh used to fall through to `currentFolderPath` (the global folder picker) — a silent wrong-dir resolution that could 404 in the best case and open a coincidentally-same-relative-path file in the worst case. The cache is populated *before* `loadSessions()` is called, so the click sees the right value immediately.
+- **Split-pane sessionId mismatch.** The link-provider callbacks accept a `sessionIdSource` parameter. The main terminal passes `() => this.currentClaudeSessionId` (follows the foreground tab). Split panes pass `() => this.sessionId` so a click in a backgrounded split resolves against THAT pane's session id — not whatever tab is foregrounded. Without this, clicks in a split bound to session B while session A was foregrounded would resolve against A's workingDir.
+
+**Layer 2 — back-compat fallback gate.** `attachLinkProvider` historically fell through to the legacy `getCwd` callback (mapped to `app.getCurrentWorkingDir()`, which carries the `currentFolderPath` global-fallback) whenever both `getLiveCwd` and `getWorkingDir` returned null. Hosts that wire the new chain (our app does) now SKIP this fallback — the resolver surfaces "could not resolve" rather than silently joining against the global folder picker. The legacy fallback survives only for callers that supply neither new callback (e.g. unit tests that wire just `getCwd`).
+
 #### Ambiguity picker
 
 When more than one step in the resolver chain returns 200 — or when step 4's `repoRoot` enumeration finds multiple basename matches for a path that survived steps 1-3 with no hit — the click handler renders an inline lozenge near the click site:
@@ -1132,6 +1143,7 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 | `test/repo-root.test.js` | `git init` in a temp dir; resolves; asserts non-git dir returns `{ root: null }`; arg-injection on session id rejected |
 | `test/upload-generic.test.js` | Generic-drop upload: `.pdf` (success → 201), `.exe` (blocked → 422), >10 MB (rejected → 413), at session size cap (rejected with toast-able error code), 24 h sweep deletes only files older than threshold, `.gitignore` append is idempotent |
 | `test/link-provider-regex.test.js` | All 7 detection patterns (table-driven) + the rejection set (no dotless basenames, no version strings, no `http://` URLs, no CLI flags, no npm specifiers without an extension) |
+| `test/link-provider-resolver-chain.test.js` | `attachLinkProvider` activate-time wiring: back-compat `getCwd` fallback fires only when neither `getLiveCwd` nor `getWorkingDir` was supplied (architect's Layer 2 silent-wrong-dir guard); `getWorkingDir` honoured over legacy `getCwd` when both wired; callbacks re-evaluated on every `activate` so split-pane session id mutations propagate without re-attachment (architect's Layer 4) |
 | `test/file-viewer-monaco.test.js` | Monaco language map (extensions + extensionless filenames + case folding + path input); theme map covers every app theme; CDN base alignment with the worker shim's `ALLOWED_BASES` (drift breaks the test); SRI hash format + script-tag wiring guard |
 | `test/monaco-worker-shim.test.js` | Shim source evaluated in a sandboxed Node `vm`; positive (canonical base, trailing-slash normalisation) + 8 negative attack vectors covering HIGH-1 (attacker npm pkg, look-alike package, downgraded version, root path, cdnjs/unpkg, attacker origin, userinfo bypass) |
 | `test/file-tabs.test.js` | TabManager open/close/switch/reorder; localStorage persistence; dirty-state propagation |
@@ -1169,6 +1181,7 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 - **Ambiguous click** (`test/e2e/click-ambiguous.test.js`): print `utils.js` when 3 exist on disk → click → ambiguity picker shows; Up/Down + Enter selects.
 - **Generic drop — PDF** (`test/e2e/drop-pdf.test.js`): drop a PDF onto the terminal → upload toast → `@/abs/.../<uuid>-name.pdf` appears as bracketed paste in terminal input.
 - **Generic drop — multi + cancel** (`test/e2e/drop-multi-cancel.test.js`): drop 5 files; cancel mid-upload via the floating chip; assert only successfully-uploaded paths got injected.
+- **Click split-pane sessionId** (`e2e/tests/67-click-split-pane-sessionid.spec.js`): two sessions A and B with distinct workingDirs + non-overlapping fixtures; foreground pinned to A; verify clicks in a split bound to B resolve against B's workingDir via the split's own `sessionId` source (regression for the post-PR-108 split-pane bug). Companion assertion: `_sessionWorkingDirs` is populated synchronously on `session_joined`, no race window.
 
 ---
 

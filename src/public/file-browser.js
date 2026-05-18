@@ -3578,6 +3578,17 @@
     // returns the session's spawn dir; getRepoRoot returns the cached git
     // toplevel for the active session (null when not in a git repo). All
     // optional — the resolver chain skips absent steps gracefully.
+    //
+    // Track whether EITHER new-chain callback was supplied so the
+    // back-compat `getCwd` fallback below only fires for legacy callers
+    // (tests / external embedders that wire ONLY getCwd). Without this
+    // guard, a host that wires getWorkingDir but transiently returns
+    // null (e.g. session_joined hasn't populated _sessionWorkingDirs yet
+    // for the active sid) silently falls through to getCwd, which in
+    // app.js returns the GLOBAL folder picker — the silent-wrong-dir
+    // footgun architect's Layer 2 documents.
+    var hasNewChain = (typeof options.getLiveCwd === 'function') ||
+                      (typeof options.getWorkingDir === 'function');
     var getLiveCwd = options.getLiveCwd || function () { return null; };
     var getWorkingDir = options.getWorkingDir || function () { return null; };
     var getRepoRoot = options.getRepoRoot || function () { return null; };
@@ -3697,11 +3708,13 @@
       try { liveCwd = getLiveCwd(); } catch (_) { liveCwd = null; }
       try { workingDir = getWorkingDir(); } catch (_) { workingDir = null; }
       try { repoRoot = getRepoRoot(); } catch (_) { repoRoot = null; }
-      // Back-compat: if no liveCwd / workingDir callback supplied OR they
-      // both returned null, use the legacy getCwd() return as workingDir
-      // so the resolver still has *something* to join against. This keeps
-      // tests that only set { getCwd } working.
-      if (!liveCwd && !workingDir) {
+      // Back-compat ONLY for legacy callers that wired { getCwd } and
+      // not the new chain. When the host wired getLiveCwd/getWorkingDir
+      // (our app.js does), don't fall through to getCwd — it would
+      // resolve a session-scoped click against the GLOBAL folder picker
+      // and silently 404 on a path that lives in a DIFFERENT session's
+      // workingDir (architect's Layer 2 silent-wrong-dir footgun).
+      if (!hasNewChain && !liveCwd && !workingDir) {
         try { workingDir = getCwd(); } catch (_) { workingDir = null; }
       }
 

@@ -25,6 +25,20 @@ class ClaudeCodeWebInterface {
         // and the file-browser panel's notifyCwdChanged() flow. Map keeps
         // dynamic add/delete cheap as sessions come and go.
         this._liveCwd = new Map();
+        // Per-session workingDir cache. Source of truth for the terminal-
+        // path resolver's getWorkingDir callback (Part C). Populated
+        // SYNCHRONOUSLY from session_created / session_joined / *_started
+        // messages so the resolver chain has the right answer immediately —
+        // no waiting on loadSessions(). Closes two failure modes the
+        // post-PR-108 architect/PE diagnosis surfaced:
+        //   1. claudeSessions[] race: loadSessions() is async; a click
+        //      between session-join and list-refresh used to fall through
+        //      to currentFolderPath (silent wrong-dir → 404 toast).
+        //   2. Split-pane sessionId mismatch: the link provider's callbacks
+        //      now receive the SPLIT's session id (not this.currentClaudeSessionId),
+        //      so we need a per-session lookup that doesn't depend on which
+        //      tab is foregrounded.
+        this._sessionWorkingDirs = new Map();
         this.isCreatingNewSession = false;
         Object.defineProperty(this, 'isMobile', {
             get: () => this.detectMobile(),
@@ -2111,6 +2125,14 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
                 this.updateWorkingDir(message.workingDir);
+                // Cache the per-session workingDir SYNCHRONOUSLY so the
+                // terminal-path resolver's getWorkingDir callback hits
+                // immediately — without this, the resolver falls through
+                // to claudeSessions[] (populated by the async loadSessions
+                // call below) and a fast-fingered click in between misses.
+                if (message.sessionId && message.workingDir && this._sessionWorkingDirs) {
+                    this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
+                }
                 this.updateSessionButton(message.sessionName);
                 this.loadSessions();
                 
@@ -2128,6 +2150,13 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
                 this.updateWorkingDir(message.workingDir);
+                // Cache the per-session workingDir SYNCHRONOUSLY — see the
+                // matching comment in session_created above. Page-reload-
+                // then-immediately-click is the canonical race we close
+                // here; session_joined fires before loadSessions completes.
+                if (message.sessionId && message.workingDir && this._sessionWorkingDirs) {
+                    this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
+                }
                 this.updateSessionButton(message.sessionName);
                 
                 // Update tab status
@@ -2215,6 +2244,15 @@ class ClaudeCodeWebInterface {
                 this._toolStartPending = false;
                 if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
                 this.hideOverlay();
+                // When the server enriches *_started with workingDir
+                // (SE's complementary change), seed the resolver-chain
+                // cache here too — belt-and-braces against any path
+                // where the client receives *_started before session_joined
+                // (e.g. reconnect-mid-tool flows). The map already has the
+                // value from session_created/joined; this is idempotent.
+                if (message.sessionId && message.workingDir && this._sessionWorkingDirs) {
+                    this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
+                }
                 this.loadSessions();
                 this.requestUsageStats();
                 const startedTool = message.type.replace('_started', '');
@@ -3064,8 +3102,22 @@ class ClaudeCodeWebInterface {
      * disposable that we track on the terminal object so we can clean up if
      * the terminal is destroyed.
      */
-    _setupTerminalLinking(terminal) {
+    _setupTerminalLinking(terminal, getSessionId) {
         if (!terminal || !window.fileBrowser) return;
+
+        // The link-provider callbacks need to know WHICH session the
+        // terminal belongs to. The main terminal follows the app-global
+        // active session (changes on tab switch). Split panes pass
+        // `() => split.sessionId` so a click in the split resolves
+        // against the SPLIT's working directory, not whichever tab is
+        // foregrounded in the main terminal. (Bug: prior code always
+        // read this.currentClaudeSessionId, which collapsed all panes
+        // onto the foreground session — clicks in a backgrounded split
+        // resolved against the wrong workingDir → 404 or silent
+        // wrong-file open.)
+        const sessionIdSource = (typeof getSessionId === 'function')
+            ? getSessionId
+            : () => this.currentClaudeSessionId;
 
         // 1) Link provider — clickable links for paths/filenames in output.
         if (typeof window.fileBrowser.attachLinkProvider === 'function' &&
@@ -3076,26 +3128,42 @@ class ClaudeCodeWebInterface {
                     terminal: terminal,
                     authFetch: (url, opts) => this.authFetch(url, opts),
                     openInViewer: (path, line, col) => this.openFileInViewer(path, line, col),
-                    // Legacy single-cwd callback — kept so the back-compat
-                    // path inside attachLinkProvider has a fallback when
-                    // getLiveCwd/getWorkingDir both return null.
+                    // Legacy single-cwd callback — attachLinkProvider only
+                    // falls through to this when NEITHER getLiveCwd nor
+                    // getWorkingDir was supplied. We supply both below, so
+                    // in practice this is unused for our wiring; kept for
+                    // tests / external embedders that wire only getCwd.
                     getCwd: () => this.getCurrentWorkingDir(),
                     // Part C resolver-chain callbacks. liveCwd is the OSC 7
                     // tracked cwd (null for non-Terminal-bridge sessions);
                     // workingDir is the session spawn dir; repoRoot is the
                     // cached git toplevel for the active session.
                     getLiveCwd: () => {
-                        var sid = this.currentClaudeSessionId;
+                        const sid = sessionIdSource();
                         if (!sid || !this._liveCwd) return null;
                         return this._liveCwd.get(sid) || null;
                     },
                     getWorkingDir: () => {
-                        var sid = this.currentClaudeSessionId;
-                        if (!sid || !this.claudeSessions) return null;
-                        var s = this.claudeSessions.find(x => x.id === sid);
-                        return s && s.workingDir ? s.workingDir : null;
+                        const sid = sessionIdSource();
+                        if (!sid) return null;
+                        // Per-session cache first — populated synchronously
+                        // on session_created/joined/*_started events, so
+                        // race-free even before loadSessions resolves.
+                        if (this._sessionWorkingDirs && this._sessionWorkingDirs.has(sid)) {
+                            return this._sessionWorkingDirs.get(sid) || null;
+                        }
+                        // Fallback: claudeSessions[] (populated by
+                        // loadSessions). Backfill the cache as we go so
+                        // future clicks short-circuit.
+                        if (!this.claudeSessions) return null;
+                        const s = this.claudeSessions.find(x => x.id === sid);
+                        if (s && s.workingDir) {
+                            if (this._sessionWorkingDirs) this._sessionWorkingDirs.set(sid, s.workingDir);
+                            return s.workingDir;
+                        }
+                        return null;
                     },
-                    getRepoRoot: () => this._getRepoRootCached(),
+                    getRepoRoot: () => this._getRepoRootCached(sessionIdSource()),
                     onAmbiguous: (info) => this._showAmbiguityPicker(info),
                     feedback: window.feedback,
                 });
@@ -4010,9 +4078,14 @@ class ClaudeCodeWebInterface {
      * fetch resolves; subsequent calls return the cached value (cached
      * for the session's lifetime per the spec). Used by the link
      * provider's resolver chain (Part C).
+     *
+     * @param {string} [sid] Optional session id. Defaults to the app-global
+     *   active session for back-compat; the link provider passes the
+     *   sessionIdSource value so split panes resolve against THEIR own
+     *   session's repo root, not whatever tab is foregrounded.
      */
-    _getRepoRootCached() {
-        var sid = this.currentClaudeSessionId;
+    _getRepoRootCached(sid) {
+        if (!sid) sid = this.currentClaudeSessionId;
         if (!sid) return null;
         if (!this._repoRootCache) this._repoRootCache = new Map();
         if (!this._repoRootInFlight) this._repoRootInFlight = new Map();
@@ -4606,9 +4679,21 @@ class ClaudeCodeWebInterface {
         try {
             const response = await this.authFetch('/api/sessions/list');
             if (!response.ok) throw new Error('Failed to load sessions');
-            
+
             const data = await response.json();
             this.claudeSessions = data.sessions;
+            // Backfill the per-session workingDir cache for any sessions
+            // we learned about via /api/sessions/list but never received
+            // a session_created/joined/*_started event for (e.g. sessions
+            // restored from disk on a fresh page load). Don't overwrite —
+            // event-sourced values may be fresher than the disk snapshot.
+            if (this._sessionWorkingDirs && Array.isArray(data.sessions)) {
+                for (const s of data.sessions) {
+                    if (s && s.id && s.workingDir && !this._sessionWorkingDirs.has(s.id)) {
+                        this._sessionWorkingDirs.set(s.id, s.workingDir);
+                    }
+                }
+            }
             this.renderSessionList();
         } catch (error) {
             console.error('Failed to load sessions:', error);

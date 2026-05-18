@@ -126,8 +126,14 @@ class Split {
 
         // Wire clickable file paths (xterm registerLinkProvider) +
         // right-click selection-based file menu, same as the main terminal.
+        // CRITICAL: pass `() => this.sessionId` so the link provider's
+        // resolver chain looks up THIS split's session workingDir, not
+        // whichever session is foregrounded in the main terminal. Without
+        // this, clicks in a backgrounded split resolve against the wrong
+        // session — silent 404 or wrong-file open. (Post-PR-108 bug; see
+        // the matching comment in app.js _setupTerminalLinking.)
         if (this.app && typeof this.app._setupTerminalLinking === 'function') {
-            try { this.app._setupTerminalLinking(this.terminal); } catch (_) {}
+            try { this.app._setupTerminalLinking(this.terminal, () => this.sessionId); } catch (_) {}
         }
 
         // Attach image handler to split terminal
