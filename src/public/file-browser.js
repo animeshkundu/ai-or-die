@@ -3615,27 +3615,44 @@
   // value (e.g. liveCwd null) — those steps are simply absent.
   //
   // Pure function — testable under Node, no DOM / no fetch.
+  //
+  // For Layer 5 (architect-spec'd structured failure toast), callers
+  // that need to surface WHICH context produced each candidate should
+  // use `resolveCandidatesWithSource(hint, ctx)`, which returns the
+  // same array but tagged `{path, source}`. `resolveCandidates`
+  // remains a plain string array for back-compat with tests + e2e
+  // specs that pre-date Layer 5.
   function resolveCandidates(hint, ctx) {
+    return resolveCandidatesWithSource(hint, ctx).map(function (c) { return c.path; });
+  }
+
+  /**
+   * Same ordering / dedup contract as resolveCandidates, but each
+   * entry carries a `source` tag ('absolute' | 'liveCwd' | 'workingDir'
+   * | 'repoRoot') identifying WHICH step of the chain produced it.
+   * Used by the Layer 5 resolver-failure toast (Block B annotations).
+   */
+  function resolveCandidatesWithSource(hint, ctx) {
     if (typeof hint !== 'string' || !hint) return [];
     ctx = ctx || {};
     var stripped = stripGitDiffPrefix(hint);
     var out = [];
     var seen = Object.create(null);
-    function push(p) {
+    function push(p, source) {
       if (!p) return;
       if (seen[p]) return;
       seen[p] = true;
-      out.push(p);
+      out.push({ path: p, source: source });
     }
     // Step 1: absolute paths (Unix `/`, Windows drive `C:\` or `C:/`,
     // UNC `\\server\share`, `~/` shortcut, expanded later by stat).
     if (/^([A-Za-z]:[\\/]|[\\/]|~[\\/]|\\\\[^\\]+\\)/.test(stripped)) {
-      push(stripped);
+      push(stripped, 'absolute');
     }
     // Steps 2-4: join against each context root.
-    if (ctx.liveCwd) push(_resolveAgainstCwd(stripped, ctx.liveCwd));
-    if (ctx.workingDir) push(_resolveAgainstCwd(stripped, ctx.workingDir));
-    if (ctx.repoRoot) push(_resolveAgainstCwd(stripped, ctx.repoRoot));
+    if (ctx.liveCwd) push(_resolveAgainstCwd(stripped, ctx.liveCwd), 'liveCwd');
+    if (ctx.workingDir) push(_resolveAgainstCwd(stripped, ctx.workingDir), 'workingDir');
+    if (ctx.repoRoot) push(_resolveAgainstCwd(stripped, ctx.repoRoot), 'repoRoot');
     return out;
   }
 
@@ -3684,6 +3701,13 @@
     var getLiveCwd = options.getLiveCwd || function () { return null; };
     var getWorkingDir = options.getWorkingDir || function () { return null; };
     var getRepoRoot = options.getRepoRoot || function () { return null; };
+    // Layer 5 (architect-spec'd structured failure toast): the host
+    // supplies a callback returning the bridge type for the active
+    // session ('terminal' | 'claude' | 'codex' | 'gemini' | 'copilot'
+    // | 'agent' | null). Used to pick the right copy block when the
+    // resolver chain produces no hits. Defaults to null so legacy
+    // callers (test shims) still produce a fallback toast.
+    var getBridgeType = options.getBridgeType || function () { return null; };
     var feedback = options.feedback || (typeof window !== 'undefined' ? window.feedback : null);
 
     if (!terminal || typeof terminal.registerLinkProvider !== 'function') return null;
@@ -3796,10 +3820,11 @@
       // Build the resolver chain (Part C). When liveCwd is missing we
       // fall back to getCwd() — preserves the v1 single-cwd behaviour
       // for hosts that don't supply the new callbacks.
-      var liveCwd = null, workingDir = null, repoRoot = null;
+      var liveCwd = null, workingDir = null, repoRoot = null, bridgeType = null;
       try { liveCwd = getLiveCwd(); } catch (_) { liveCwd = null; }
       try { workingDir = getWorkingDir(); } catch (_) { workingDir = null; }
       try { repoRoot = getRepoRoot(); } catch (_) { repoRoot = null; }
+      try { bridgeType = getBridgeType(); } catch (_) { bridgeType = null; }
       // Back-compat ONLY for legacy callers that wired { getCwd } and
       // not the new chain. When the host wired getLiveCwd/getWorkingDir
       // (our app.js does), don't fall through to getCwd — it would
@@ -3810,26 +3835,40 @@
         try { workingDir = getCwd(); } catch (_) { workingDir = null; }
       }
 
-      var candidates = resolveCandidates(hint, {
+      // Use the source-tagged form so the Layer-5 failure toast can
+      // annotate each candidate (Block B) with the chain step that
+      // produced it.
+      var candidatesWithSource = resolveCandidatesWithSource(hint, {
         liveCwd: liveCwd, workingDir: workingDir, repoRoot: repoRoot,
       });
-      if (!candidates.length) {
-        if (feedback && typeof feedback.error === 'function') {
-          // Diagnostic detail surfaces WHICH context was empty so the
-          // user can tell whether the path is just wrong vs. whether
-          // their session has no working-dir context to join against
-          // (e.g. Terminal bridge with no OSC 7 shell hook installed —
-          // the common silent-failure case for the "ran claude inside
-          // bash" flow). Without this they see "Could not resolve"
-          // and assume the feature is broken.
-          feedback.error('Could not resolve: ' + hint +
-            ' — no context (liveCwd=' + (liveCwd || 'none') +
-            ', workingDir=' + (workingDir || 'none') +
-            ', repoRoot=' + (repoRoot || 'none') + ').' +
-            (!liveCwd && !workingDir
-              ? ' Tip: install the OSC 7 shell hook (see docs/specs/file-browser.md) for live-CWD tracking.'
-              : ''));
+      var candidates = candidatesWithSource.map(function (c) { return c.path; });
+
+      // Shared helper: surface the structured Layer-5 failure toast,
+      // falling back to the legacy .error one-liner only when the
+      // host doesn't provide .resolverFailure (test shims, legacy
+      // embedders).
+      function surfaceFailure(triedCandidates) {
+        if (!feedback) return;
+        if (typeof feedback.resolverFailure === 'function') {
+          feedback.resolverFailure({
+            hint: hint,
+            candidates: triedCandidates,
+            context: {
+              liveCwd: liveCwd,
+              workingDir: workingDir,
+              repoRoot: repoRoot,
+              bridgeType: bridgeType,
+            },
+          });
+        } else if (typeof feedback.error === 'function') {
+          // Fallback for legacy/test feedbacks without resolverFailure.
+          feedback.error('Could not open: ' + hint);
         }
+      }
+
+      if (!candidates.length) {
+        // Block D — no candidates at all (no session context).
+        surfaceFailure([]);
         return;
       }
 
@@ -3837,34 +3876,21 @@
       // than one resolves. Per spec: NEVER silently auto-pick across
       // multiple hits — this is the explicit anti-footgun rule from
       // adversarial review.
-      Promise.all(candidates.map(function (p) {
-        return cachedStat(p).then(function (exists) {
-          return { path: p, exists: !!exists };
+      Promise.all(candidatesWithSource.map(function (c) {
+        return cachedStat(c.path).then(function (exists) {
+          return { path: c.path, source: c.source, exists: !!exists };
         }, function () {
-          return { path: p, exists: false };
+          return { path: c.path, source: c.source, exists: false };
         });
       })).then(function (results) {
         var hits = results.filter(function (r) { return r.exists; });
         if (hits.length === 0) {
-          if (feedback && typeof feedback.error === 'function') {
-            // Enriched failure toast (team-lead user-feedback ask):
-            // when zero candidates resolve, surface WHAT we tried so
-            // the user can tell whether the failure is "I typo'd the
-            // path" vs "the resolver is joining against the wrong
-            // base dir" (the user-reported silent-failure class — a
-            // Terminal bridge session in which the user cd'd inside
-            // bash but no OSC 7 hook was emitting, so liveCwd is null
-            // and workingDir is the SHELL SPAWN dir, not the user's
-            // current directory).
-            var tried = results.map(function (r) { return r.path; }).join('\n  • ');
-            feedback.error('Could not find ' + hint + '. Tried:\n  • ' + tried +
-              '\n(liveCwd=' + (liveCwd || 'none') +
-              ', workingDir=' + (workingDir || 'none') +
-              ', repoRoot=' + (repoRoot || 'none') + ')' +
-              (!liveCwd && (workingDir || repoRoot)
-                ? '\nTip: if you cd\'d inside the shell, install the OSC 7 hook (docs/specs/file-browser.md) for live-CWD tracking.'
-                : ''));
-          }
+          // Blocks A / B / C dispatched by resolverFailure based on
+          // bridgeType + liveCwd. Pass the FULL stat'd set with their
+          // source tags so the toast can annotate (Block B).
+          surfaceFailure(results.map(function (r) {
+            return { path: r.path, source: r.source };
+          }));
           return;
         }
         if (hits.length === 1) {
@@ -3996,6 +4022,7 @@
     _resolveAgainstCwd: _resolveAgainstCwd,
     stripGitDiffPrefix: stripGitDiffPrefix,
     resolveCandidates: resolveCandidates,
+    resolveCandidatesWithSource: resolveCandidatesWithSource,
   };
 
   if (typeof window !== 'undefined') {

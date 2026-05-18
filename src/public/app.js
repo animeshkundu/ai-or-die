@@ -3159,6 +3159,20 @@ class ClaudeCodeWebInterface {
                         return this.getSessionWorkingDir(sessionIdSource());
                     },
                     getRepoRoot: () => this._getRepoRootCached(sessionIdSource()),
+                    // Layer 5 (architect-spec'd structured failure toast):
+                    // bridgeType picks the right copy block when the
+                    // resolver returns no hit. Read from claudeSessions[]
+                    // — populated by /api/sessions/list (with `agent`
+                    // field) on init + after each session/tool event.
+                    // Returns null if claudeSessions hasn't loaded yet
+                    // or the session isn't found; resolverFailure treats
+                    // null as Block C per spec.
+                    getBridgeType: () => {
+                        const sid = sessionIdSource();
+                        if (!sid || !this.claudeSessions) return null;
+                        const s = this.claudeSessions.find(x => x.id === sid);
+                        return (s && s.agent) ? s.agent : null;
+                    },
                     onAmbiguous: (info) => this._showAmbiguityPicker(info),
                     feedback: window.feedback,
                 });

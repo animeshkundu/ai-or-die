@@ -105,6 +105,147 @@ class FeedbackManager {
   success(message, opts) { this._show('success', message, opts); }
   warning(message, opts) { this._show('warning', message, opts); }
   error(message, opts) { this._show('error', message, opts); }
+
+  /**
+   * Structured failure toast for the terminal-path resolver (Layer 5
+   * per the file-browser-v2-followup architect+team-lead design).
+   *
+   * Unlike the generic .error() one-liner, this surfaces a title +
+   * body + optional CTA tailored to the FAILURE CONTEXT (which
+   * candidates were tried, which bridge type, whether OSC 7 is
+   * tracked). Single-stack: subsequent failures REPLACE the prior
+   * toast — clicking another path immediately after one fails should
+   * surface THAT path's diagnosis, not stack a second toast on top.
+   *
+   * Auto-dismiss after 12s OR user-dismiss via the close button.
+   *
+   * @param {object} failure
+   * @param {string} failure.hint                   Original clicked text
+   * @param {Array<{path:string,source:string}>} failure.candidates  Stat'd candidates
+   * @param {object} failure.context
+   * @param {string|null} failure.context.liveCwd
+   * @param {string|null} failure.context.workingDir
+   * @param {string|null} failure.context.repoRoot
+   * @param {string|null} failure.context.bridgeType  'terminal' | 'claude' | 'codex' | 'gemini' | 'copilot' | 'agent' | null
+   */
+  resolverFailure(failure) {
+    this._init();
+    if (!failure || typeof failure !== 'object') return;
+    // Pick copy block A/B/C/D per the architect's spec.
+    const ctx = failure.context || {};
+    const isAiCli = ctx.bridgeType && /^(claude|codex|gemini|copilot|agent)$/.test(ctx.bridgeType);
+    const isTerminal = ctx.bridgeType === 'terminal';
+    let title, body, cta;
+    if (!failure.candidates || !failure.candidates.length) {
+      // Block D — no candidates produced (no session context at all)
+      title = `Couldn't open "${failure.hint}"`;
+      body = 'No active session — open or create one to enable file-path clicks.';
+    } else if (isTerminal && !ctx.liveCwd) {
+      // Block A — Terminal bridge with no OSC 7 tracking. The user's
+      // exact failure mode: cd inside the shell, no PROMPT_COMMAND
+      // hook installed, clicks resolve against the spawn dir.
+      const tried = failure.candidates.map(c => `${c.path} — not found`).join('\n');
+      title = `Couldn't open "${failure.hint}"`;
+      body = `Live directory tracking isn't active in this terminal. Clicks resolve against where the session started (${ctx.workingDir || 'session start dir'}), not where you've \`cd\`'d.\n\nTried:\n${tried}\n\nFix: install the OSC 7 hook for your shell — one line in your shell rc.`;
+      cta = { label: 'Show me how →', onClick: () => window.open('/docs/specs/file-browser.md#shell-hooks', '_blank') };
+    } else if (isTerminal && ctx.liveCwd) {
+      // Block B — Terminal bridge with liveCwd present, still no hit.
+      // Enumerate candidates annotated by SOURCE so the user can tell
+      // which dir was the wrong base.
+      const tried = failure.candidates.map(c => {
+        const annotation = c.source === 'liveCwd' ? 'current shell directory'
+          : c.source === 'workingDir' ? 'session start directory'
+          : c.source === 'repoRoot' ? 'repo root'
+          : c.source === 'absolute' ? 'absolute path'
+          : c.source;
+        return `• ${c.path} — not found (${annotation})`;
+      }).join('\n');
+      title = `Couldn't open "${failure.hint}"`;
+      body = `Tried these locations:\n${tried}\n\nThe file may have moved, been deleted, or you may be looking at output from a different directory.`;
+    } else if (isAiCli) {
+      // Block C — AI CLI bridge. liveCwd is null by design (ADR-0019)
+      // since CLI tools don't chdir the host process. Educational copy
+      // about why + a CTA to open the file browser for manual nav.
+      const tried = failure.candidates.map(c => `${c.path} — not found`).join('\n');
+      title = `Couldn't open "${failure.hint}"`;
+      body = `Tried:\n${tried}\n\nAI assistants don't track \`cd\` operations — the file is resolved relative to where the session started. If the assistant has navigated to a different directory, the click won't find the file.`;
+      cta = {
+        label: 'Open file browser →',
+        onClick: () => {
+          if (window.app && typeof window.app.toggleFileBrowser === 'function') {
+            window.app.toggleFileBrowser();
+          }
+        },
+      };
+    } else {
+      // Defensive default — bridgeType null/unknown, candidates
+      // present. Behave like Block B without the annotations.
+      const tried = failure.candidates.map(c => `• ${c.path} — not found`).join('\n');
+      title = `Couldn't open "${failure.hint}"`;
+      body = `Tried:\n${tried}\n\nThe file may have moved or you may be looking at output from a different directory.`;
+    }
+
+    // Structured log for telemetry / future analysis. Avoid surfacing
+    // PII beyond what's already in the toast body.
+    try { console.debug('[resolverFailure]', failure); } catch (_) { /* ignore */ }
+
+    // Single-stack: dismiss any prior resolver-failure toast and the
+    // matching queued copies. Subsequent failures REPLACE.
+    this._dismissResolverFailure();
+
+    var el = document.createElement('div');
+    el.className = 'toast toast--error toast--resolver-failure';
+    el.setAttribute('role', 'alert');
+    el.setAttribute('data-resolver-failure', '1');
+
+    var html = '<span class="toast__icon toast__icon--error">' + this._icons.error + '</span>';
+    html += '<div class="toast__msg toast__msg--resolver-failure">';
+    html += '<div class="toast__title">' + this._escHtml(title) + '</div>';
+    // Preserve newlines in body — block A/B/C are multi-line.
+    html += '<div class="toast__body">' + this._escHtml(body).replace(/\n/g, '<br>') + '</div>';
+    html += '</div>';
+    if (cta) {
+      html += '<button class="toast__action" type="button">' + this._escHtml(cta.label) + '</button>';
+    }
+    html += '<button class="toast__close" type="button" aria-label="Dismiss">&times;</button>';
+    el.innerHTML = html;
+
+    var entry = { el: el, msg: '__resolver-failure__', timer: null, isResolverFailure: true };
+    this._visible.push(entry);
+    this._container.appendChild(el);
+
+    var self = this;
+    var dismiss = function() { self._dismiss(entry); };
+    el.querySelector('.toast__close').addEventListener('click', dismiss);
+    if (cta) {
+      el.querySelector('.toast__action').addEventListener('click', function() {
+        try { cta.onClick(); } catch (_) { /* ignore */ }
+        dismiss();
+      });
+    }
+    // 12s auto-dismiss per architect's spec.
+    entry.timer = setTimeout(dismiss, 12000);
+  }
+
+  /**
+   * Remove any visible resolver-failure toast + any queued ones so the
+   * next .resolverFailure() shows fresh. Single-stack contract.
+   * Detaches SYNCHRONOUSLY (no exit animation) so the replacement
+   * shows immediately — animating the prior out while the next is
+   * incoming would let the user briefly see TWO toasts.
+   */
+  _dismissResolverFailure() {
+    var self = this;
+    var dups = this._visible.filter(function(v) { return v.isResolverFailure; });
+    dups.forEach(function (entry) {
+      if (entry.timer) clearTimeout(entry.timer);
+      if (entry.el.parentNode) entry.el.parentNode.removeChild(entry.el);
+      self._visible = self._visible.filter(function(v) { return v !== entry; });
+    });
+    this._queue = this._queue.filter(function(q) {
+      return !(q.opts && q.opts._isResolverFailure);
+    });
+  }
 }
 
 window.feedback = new FeedbackManager();

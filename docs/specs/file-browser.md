@@ -570,6 +570,43 @@ When more than one step in the resolver chain returns 200 — or when step 4's `
 
 When the chosen path carries a `:line[:col]` suffix, the open call passes line + col through to Monaco's `editor.revealLineInCenter(line)` + `editor.setPosition({ lineNumber: line, column: col })`.
 
+#### Resolver failure behavior (Layer 5)
+
+When the resolver chain finds NO candidate that exists, `attachLinkProvider.activate()` surfaces a STRUCTURED failure toast via `window.feedback.resolverFailure(failure)` rather than the generic `.error(message)` one-liner. This closes the silent-failure UX class — the user always sees WHY a click didn't open, with WHAT was tried, and (when applicable) actionable next steps.
+
+**Failure object shape:**
+
+```js
+{
+  hint: 'src/server.js',                         // the clicked text
+  candidates: [
+    { path: '/Users/foo/src/server.js', source: 'workingDir' },
+    // 'source' is one of: 'absolute' | 'liveCwd' | 'workingDir' | 'repoRoot'
+  ],
+  context: {
+    liveCwd: null,
+    workingDir: '/Users/foo',
+    repoRoot: null,
+    bridgeType: 'terminal',  // 'terminal' | 'claude' | 'codex' | 'gemini' | 'copilot' | 'agent' | null
+  },
+}
+```
+
+`FeedbackManager.resolverFailure` picks one of four copy blocks based on `(bridgeType, liveCwd, candidates)`:
+
+- **Block A** — Terminal bridge, `liveCwd === null`. The user-reported failure mode (shell + cd, no OSC 7 hook). Body: "Live directory tracking isn't active in this terminal. Clicks resolve against where the session started (`<workingDir>`), not where you've cd'd." CTA: "Show me how →" (links to shell-hook docs).
+- **Block B** — Terminal bridge, `liveCwd` set, still no hit. Body: enumerated candidate list annotated by source (e.g. "`<path>` — not found (current shell directory)"). No OSC 7 hint (liveCwd is already tracked).
+- **Block C** — AI CLI bridge (claude / codex / gemini / copilot / agent). Body: "AI assistants don't track `cd` operations — the file is resolved relative to where the session started." CTA: "Open file browser →".
+- **Block D** — No candidates at all. Body: "No active session — open or create one to enable file-path clicks." No CTA.
+
+**Single-stack contract.** Subsequent failures REPLACE prior toast — clicking another path immediately surfaces THAT path's diagnosis, not a stack. Auto-dismiss after 12s OR user-dismiss via the close button. `console.debug` logs the same structured object for post-mortem inspection.
+
+**Source tagging.** `resolveCandidatesWithSource(hint, ctx)` (sibling to `resolveCandidates`) returns each entry as `{ path, source }`. The activate flow uses the source-tagged form so Block B can annotate; `resolveCandidates` (string-array form) remains for back-compat with tests / e2e specs.
+
+**bridgeType plumbing.** Read at click-time from `app.claudeSessions[].agent` (populated by `/api/sessions/list` + WebSocket session-event messages). Null is acceptable — `resolverFailure` treats it as Block C (educational AI-CLI copy) which is the least-bad default for an unknown bridge.
+
+**Legacy fallback.** Hosts that don't supply `feedback.resolverFailure` (test shims, external embedders) fall through to `feedback.error('Could not open: <hint>')`. Strictly worse UX than the structured toast, but better than silent failure.
+
 ---
 
 ## Preview Types
@@ -1157,6 +1194,7 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 | `test/link-provider-regex.test.js` | All 7 detection patterns (table-driven) + the rejection set (no dotless basenames, no version strings, no `http://` URLs, no CLI flags, no npm specifiers without an extension) |
 | `test/link-provider-resolver-chain.test.js` | `attachLinkProvider` activate-time wiring: back-compat `getCwd` fallback fires only when neither `getLiveCwd` nor `getWorkingDir` was supplied (architect's Layer 2 silent-wrong-dir guard); `getWorkingDir` honoured over legacy `getCwd` when both wired; callbacks re-evaluated on every `activate` so split-pane session id mutations propagate without re-attachment (architect's Layer 4) |
 | `test/file-browser-detector-resolver.test.js` | `TerminalPathDetector._showMenu` walks the same resolver-chain as the link provider: relative selection resolves via session workingDir (NOT global baseFolder); split-pane `getSessionId` honoured even when foreground tab points elsewhere; legacy embedders without `getSessionId` still get the raw-hint fallback path |
+| `test/feedback-resolver-failure.test.js` | Layer-5 structured failure toast: Block A (Terminal + liveCwd null → OSC 7 CTA), Block B (Terminal + liveCwd → annotated candidate list), Block C (AI CLI bridges → "AI assistants don't track cd" + Open-browser CTA), Block D (no candidates → "no active session"); single-stack contract (subsequent failures REPLACE prior in DOM); defensive (null input, missing candidates) |
 | `test/file-viewer-monaco.test.js` | Monaco language map (extensions + extensionless filenames + case folding + path input); theme map covers every app theme; CDN base alignment with the worker shim's `ALLOWED_BASES` (drift breaks the test); SRI hash format + script-tag wiring guard |
 | `test/monaco-worker-shim.test.js` | Shim source evaluated in a sandboxed Node `vm`; positive (canonical base, trailing-slash normalisation) + 8 negative attack vectors covering HIGH-1 (attacker npm pkg, look-alike package, downgraded version, root path, cdnjs/unpkg, attacker origin, userinfo bypass) |
 | `test/file-tabs.test.js` | TabManager open/close/switch/reorder; localStorage persistence; dirty-state propagation |

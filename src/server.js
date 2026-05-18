@@ -789,6 +789,7 @@ class ClaudeCodeWebServer {
         name: session.name,
         created: session.created,
         active: session.active,
+        agent: session.agent || null,
         workingDir: session.workingDir,
         connectedClients: session.connections.size,
         lastActivity: session.lastActivity

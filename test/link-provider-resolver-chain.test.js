@@ -146,10 +146,12 @@ describe('attachLinkProvider — resolver chain', function () {
             'expected NO stat against /global/folder; got: ' + JSON.stringify(statCalls));
           assert.deepStrictEqual(opens, [],
             'expected NO open call; got: ' + JSON.stringify(opens));
-          // User sees a "could not resolve" error rather than the
-          // silent wrong-dir-then-404 sequence.
-          assert.ok(errs.some(m => /could not resolve|file not found/i.test(m)),
-            'expected user-visible "could not resolve / not found" error; got: ' + JSON.stringify(errs));
+          // User sees a fallback "could not open" error rather than
+          // the silent wrong-dir-then-404 sequence. (Layer 5 hosts
+          // get a structured resolverFailure; legacy embedders that
+          // wire only `.error` see this terse one-liner.)
+          assert.ok(errs.some(m => /could not (open|resolve)|file not found/i.test(m)),
+            'expected user-visible failure error; got: ' + JSON.stringify(errs));
           done();
         } catch (e) { done(e); }
       });
@@ -178,94 +180,126 @@ describe('attachLinkProvider — resolver chain', function () {
   });
 
   // ------------------------------------------------------------------
-  // Diagnostic failure toast (team-lead user-feedback ask) — closes
-  // the silent-failure UX class: when the resolver finds NO candidate
-  // that exists, the user sees WHAT was tried + the (liveCwd,
-  // workingDir, repoRoot) context that was joined. Critical for the
-  // user-reported flow: Terminal bridge + bash + claude-inside-bash
-  // + user cd'd to project root + no OSC 7 hook installed →
-  // liveCwd === null → workingDir is bash spawn dir (NOT where they
-  // cd'd to) → relative-path stat misses → silent failure pre-fix.
+  // Diagnostic failure toast (team-lead user-feedback ask + architect
+  // Layer 5) — closes the silent-failure UX class. When the resolver
+  // finds NO candidate that exists, the user sees a STRUCTURED
+  // failure (feedback.resolverFailure) carrying: the hint, the
+  // candidates that were tried (with source tags), and the
+  // (liveCwd, workingDir, repoRoot, bridgeType) context. The toast
+  // copy is FeedbackManager's responsibility (covered in
+  // test/feedback-resolver-failure.test.js); here we assert the
+  // CONTRACT — that attachLinkProvider passes the right structured
+  // payload to feedback.resolverFailure.
   // ------------------------------------------------------------------
 
-  describe('diagnostic failure toast (zero-candidate + zero-hit)', function () {
-    it('zero-candidate failure: surfaces context AND the OSC 7 hook tip', function (done) {
-      const errs = [];
+  describe('diagnostic failure (Layer 5 structured contract)', function () {
+    it('zero-candidate failure: calls resolverFailure with empty candidates', function (done) {
+      const failures = [];
       const activate = attachAndGetActivate({
         getLiveCwd: () => null,
         getWorkingDir: () => null,
         getRepoRoot: () => null,
+        getBridgeType: () => 'terminal',
         authFetch: () => Promise.resolve({ ok: true, status: 200 }),
         openInViewer: () => {},
-        feedback: { error: (m) => errs.push(m), warning: () => {}, info: () => {} },
+        feedback: {
+          resolverFailure: (f) => failures.push(f),
+          error: () => {}, warning: () => {}, info: () => {},
+        },
       }, ' src/foo.js ');
 
       activate(null, null);
       setImmediate(() => {
         try {
-          assert.strictEqual(errs.length, 1, 'expected exactly one error toast; got: ' + JSON.stringify(errs));
-          const msg = errs[0];
-          // Hint is named.
-          assert.ok(msg.includes('src/foo.js'), 'expected hint in toast; got: ' + msg);
-          // Context is named.
-          assert.ok(msg.includes('liveCwd=none'), 'expected liveCwd=none; got: ' + msg);
-          assert.ok(msg.includes('workingDir=none'), 'expected workingDir=none; got: ' + msg);
-          assert.ok(msg.includes('repoRoot=none'), 'expected repoRoot=none; got: ' + msg);
-          // OSC 7 hook tip fires when liveCwd + workingDir both empty.
-          assert.ok(/OSC 7 shell hook/i.test(msg), 'expected OSC 7 hint when liveCwd+workingDir empty; got: ' + msg);
+          assert.strictEqual(failures.length, 1, 'one resolverFailure call');
+          const f = failures[0];
+          assert.strictEqual(f.hint, 'src/foo.js');
+          assert.deepStrictEqual(f.candidates, [],
+            'zero-candidate failure: candidates is empty');
+          assert.deepStrictEqual(f.context, {
+            liveCwd: null, workingDir: null, repoRoot: null, bridgeType: 'terminal',
+          });
           done();
         } catch (e) { done(e); }
       });
     });
 
-    it('zero-hit failure: surfaces ALL candidate paths + context', function (done) {
-      // workingDir is set but the file truly doesn't exist anywhere —
-      // user typo, or cd'd outside the workingDir without an OSC 7
-      // hook installed. Each candidate path should be enumerated.
-      const errs = [];
+    it('zero-hit failure: candidates carry source tags + context is preserved', function (done) {
+      const failures = [];
       const activate = attachAndGetActivate({
         getLiveCwd: () => '/live/dir',
         getWorkingDir: () => '/spawn/dir',
         getRepoRoot: () => '/repo/root',
+        getBridgeType: () => 'terminal',
         authFetch: () => Promise.resolve({ status: 404, ok: false }),
         openInViewer: () => {},
-        feedback: { error: (m) => errs.push(m), warning: () => {}, info: () => {} },
+        feedback: {
+          resolverFailure: (f) => failures.push(f),
+          error: () => {}, warning: () => {}, info: () => {},
+        },
       }, ' src/foo.js ');
 
       activate(null, null);
       setImmediate(() => {
         try {
-          assert.strictEqual(errs.length, 1, 'expected exactly one error toast; got: ' + JSON.stringify(errs));
-          const msg = errs[0];
-          assert.ok(msg.includes('src/foo.js'), 'expected hint in toast; got: ' + msg);
-          // Each candidate join is enumerated so user can see which
-          // dir was the wrong base.
-          assert.ok(msg.includes('/live/dir/src/foo.js'),  'expected liveCwd candidate; got: ' + msg);
-          assert.ok(msg.includes('/spawn/dir/src/foo.js'), 'expected workingDir candidate; got: ' + msg);
-          assert.ok(msg.includes('/repo/root/src/foo.js'), 'expected repoRoot candidate; got: ' + msg);
-          // Context block surfaces the raw values too — even when
-          // they were used, the user benefits from seeing "is THAT
-          // really the workingDir I expected?".
-          assert.ok(/liveCwd=\/live\/dir/.test(msg),     'expected liveCwd value; got: ' + msg);
-          assert.ok(/workingDir=\/spawn\/dir/.test(msg), 'expected workingDir value; got: ' + msg);
-          assert.ok(/repoRoot=\/repo\/root/.test(msg),   'expected repoRoot value; got: ' + msg);
-          // OSC 7 hint should NOT fire when liveCwd is already set.
-          assert.ok(!/OSC 7 shell hook/i.test(msg),
-            'OSC 7 hint should NOT fire when liveCwd is already set; got: ' + msg);
+          assert.strictEqual(failures.length, 1);
+          const f = failures[0];
+          assert.strictEqual(f.hint, 'src/foo.js');
+          // Source-tagged candidates — Block B in the toast uses
+          // these to annotate "current shell directory" /
+          // "session start directory" / "repo root".
+          assert.deepStrictEqual(f.candidates, [
+            { path: '/live/dir/src/foo.js',  source: 'liveCwd' },
+            { path: '/spawn/dir/src/foo.js', source: 'workingDir' },
+            { path: '/repo/root/src/foo.js', source: 'repoRoot' },
+          ]);
+          assert.strictEqual(f.context.liveCwd, '/live/dir');
+          assert.strictEqual(f.context.workingDir, '/spawn/dir');
+          assert.strictEqual(f.context.repoRoot, '/repo/root');
+          assert.strictEqual(f.context.bridgeType, 'terminal');
           done();
         } catch (e) { done(e); }
       });
     });
 
-    it('zero-hit failure: shows OSC 7 hint when liveCwd missing but workingDir present', function (done) {
-      // This IS the user-reported scenario: bash session at session
-      // workingDir, user cd'd elsewhere, no OSC 7 hook → liveCwd null
-      // BUT workingDir IS set (the original bash spawn). Relative
-      // path won't resolve and the OSC 7 hint is the actionable fix.
+    it('zero-hit failure: bridgeType=claude flows through (Block C dispatch)', function (done) {
+      // The user-reported case: a Claude session emits a relative
+      // path the user clicked, and it doesn't resolve. resolverFailure
+      // receives bridgeType='claude' so the toast picks Block C
+      // ("AI assistants don't track cd").
+      const failures = [];
+      const activate = attachAndGetActivate({
+        getLiveCwd: () => null,
+        getWorkingDir: () => '/proj',
+        getRepoRoot: () => null,
+        getBridgeType: () => 'claude',
+        authFetch: () => Promise.resolve({ status: 404, ok: false }),
+        openInViewer: () => {},
+        feedback: {
+          resolverFailure: (f) => failures.push(f),
+          error: () => {}, warning: () => {}, info: () => {},
+        },
+      }, ' src/x.js ');
+
+      activate(null, null);
+      setImmediate(() => {
+        try {
+          assert.strictEqual(failures.length, 1);
+          assert.strictEqual(failures[0].context.bridgeType, 'claude');
+          done();
+        } catch (e) { done(e); }
+      });
+    });
+
+    it('falls back to feedback.error when host doesn\'t supply resolverFailure (legacy)', function (done) {
+      // Legacy test shims / embedders that wire only .error/.warning
+      // should still see a user-visible signal, just not the
+      // structured one. The fallback message is intentionally terse
+      // — embedders that want rich copy implement resolverFailure.
       const errs = [];
       const activate = attachAndGetActivate({
         getLiveCwd: () => null,
-        getWorkingDir: () => '/spawn/dir',
+        getWorkingDir: () => '/spawn',
         getRepoRoot: () => null,
         authFetch: () => Promise.resolve({ status: 404, ok: false }),
         openInViewer: () => {},
@@ -275,9 +309,8 @@ describe('attachLinkProvider — resolver chain', function () {
       activate(null, null);
       setImmediate(() => {
         try {
-          assert.strictEqual(errs.length, 1);
-          assert.ok(/OSC 7 shell hook|OSC 7 hook/i.test(errs[0]),
-            'expected OSC 7 hint when liveCwd null + workingDir set; got: ' + errs[0]);
+          assert.strictEqual(errs.length, 1, 'legacy embedder still gets a toast');
+          assert.ok(errs[0].includes('src/foo.js'), 'fallback toast names the hint');
           done();
         } catch (e) { done(e); }
       });
