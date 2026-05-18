@@ -38,11 +38,12 @@ class ClaudeCodeWebInterface {
         //      now receive the SPLIT's session id (not this.currentClaudeSessionId),
         //      so we need a per-session lookup that doesn't depend on which
         //      tab is foregrounded.
-        // TODO(future): entries are NOT garbage-collected on session
-        // delete — de minimis at typical scale (max few-dozen sessions
-        // per page lifetime) but flagged by architect for cleanup if a
-        // user surfaces long-running-tab memory drift. A delete-handler
-        // would hook into the existing session-deletion message flow.
+        // Cleanup contract: the `session_deleted` WS handler is the
+        // single place that removes the per-session entry from this Map
+        // (along with `_liveCwd`, `_repoRootCache`, `_repoRootInFlight`).
+        // Long-running tabs over weeks cycle through many sessions; the
+        // handler MUST drop the key so these Maps don't drift unboundedly.
+        // See handleMessage('session_deleted') below.
         this._sessionWorkingDirs = new Map();
         this.isCreatingNewSession = false;
         Object.defineProperty(this, 'isMobile', {
@@ -2363,6 +2364,17 @@ class ClaudeCodeWebInterface {
                 this.updateSessionButton('Sessions');
                 if (this.sessionTabManager && deletedId) {
                     this.sessionTabManager.closeSession(deletedId, { skipServerRequest: true });
+                }
+                // Drop per-session cache entries to prevent unbounded
+                // Map growth in long-running tabs. _repoRootCache and
+                // _repoRootInFlight are lazy-initialised inside
+                // _getRepoRootCached() and may legitimately not exist
+                // yet. See cleanup contract on _sessionWorkingDirs init.
+                if (deletedId) {
+                    if (this._sessionWorkingDirs) this._sessionWorkingDirs.delete(deletedId);
+                    if (this._liveCwd) this._liveCwd.delete(deletedId);
+                    if (this._repoRootCache) this._repoRootCache.delete(deletedId);
+                    if (this._repoRootInFlight) this._repoRootInFlight.delete(deletedId);
                 }
                 this.loadSessions();
                 break;
