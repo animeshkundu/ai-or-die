@@ -173,6 +173,65 @@ describe('TerminalPathDetector — resolver chain', function () {
     assert.ok(urls.some(u => u.includes(encodeURIComponent('/abs/path.js'))),
       'expected stat against the literal absolute hint; got: ' + JSON.stringify(urls));
   });
+
+  // ------------------------------------------------------------------
+  // MED-1 regression — peer-review codex_critic + codex_reviewer
+  // both flagged that the detector's "if (!candidates.length) candidates
+  // = [hint]" raw-hint fallback was unconditional. For a RELATIVE hint
+  // with session context wired but transiently null (e.g.
+  // _sessionWorkingDirs not yet populated for a brand-new session),
+  // this re-enables server-side process.cwd() resolution — the exact
+  // silent-wrong-dir bug the resolver chain was built to prevent.
+  // ------------------------------------------------------------------
+
+  it('does NOT fall back to raw RELATIVE hint when session context is wired (MED-1)', async function () {
+    // App is wired, getSessionId is wired, but both return null →
+    // chain has zero candidates. Pre-fix: detector would stat 'src/foo.js'
+    // raw → server resolves against baseFolder → wrong-dir hit OR 404.
+    // Post-fix: menu is disabled, no stat sent.
+    const app = makeFakeApp({
+      currentClaudeSessionId: null,
+      workingDirs: {},
+    });
+    const det = new fb.TerminalPathDetector({
+      authFetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({ editable: true }) }),
+      terminal: makeFakeTerm(),
+      app: app,
+      getSessionId: () => null,          // context wired but transiently null
+    });
+    det.init();
+
+    const urls = await probeShowMenu(det, 'src/foo.js', (url) => {
+      // No stat should fire; if it does, this responder returns 200
+      // and the assertion below would surface the regression.
+      return { ok: true, status: 200, json: () => Promise.resolve({ editable: true }) };
+    });
+    assert.deepStrictEqual(urls, [],
+      'detector must NOT fall back to bare relative hint when session context is wired; got: ' + JSON.stringify(urls));
+  });
+
+  it('DOES fall back to raw ABSOLUTE hint even with session context wired', async function () {
+    // Absolute hints have no wrong-dir hazard — server-side validatePath
+    // canonicalises them. Detector should still try them as the
+    // last-ditch candidate so absolute-path right-clicks always work.
+    const app = makeFakeApp({ currentClaudeSessionId: null, workingDirs: {} });
+    const det = new fb.TerminalPathDetector({
+      authFetch: () => Promise.resolve({ ok: true, json: () => Promise.resolve({ editable: true }) }),
+      terminal: makeFakeTerm(),
+      app: app,
+      getSessionId: () => null,
+    });
+    det.init();
+
+    const urls = await probeShowMenu(det, '/abs/path.js', (url) => {
+      if (url.includes(encodeURIComponent('/abs/path.js'))) {
+        return { ok: true, status: 200, json: () => Promise.resolve({ editable: true }) };
+      }
+      return { ok: false, status: 404, json: () => Promise.resolve({}) };
+    });
+    assert.ok(urls.some(u => u.includes(encodeURIComponent('/abs/path.js'))),
+      'expected stat against absolute hint; got: ' + JSON.stringify(urls));
+  });
 });
 
 // ---------------------------------------------------------------------------

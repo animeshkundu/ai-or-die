@@ -4053,31 +4053,32 @@ class ClaudeCodeWebInterface {
     }
 
     /**
-     * Return the WorkingDir for a specific session, with NO global-folder
-     * fallback. Used by the terminal-path resolver chain — for that
-     * caller, falling back to `currentFolderPath` (which is the global
-     * folder picker, not a session-scoped value) is the silent-wrong-dir
-     * footgun architect's Layer 2 calls out: it makes the resolver
-     * silently join `/Users/foo/src/app.js` from a different session's
-     * relative path, leading to either a 404 toast (best case) or
-     * opening the wrong file (worst case).
+     * Return the SPAWN WorkingDir for a specific session (the directory
+     * the PTY was spawned in). Used by the terminal-path resolver chain's
+     * step 3 (`stat(path.join(workingDir, hint))`).
+     *
+     * IMPORTANT: this helper deliberately does NOT consult `_liveCwd`.
+     * The resolver chain's step 2 already tests `path.join(liveCwd, hint)`;
+     * having step 3 ALSO prefer liveCwd would collapse the two candidates
+     * into one (the chain dedupes them via `seen`), and step 3's whole
+     * purpose per spec line 525 is "Always tried even when liveCwd is
+     * set, to catch paths emitted by tools that haven't followed cd."
+     * (Cross-lab peer review HIGH-1 finding — codex_critic and
+     * gemini_critic flagged independently.)
      *
      * Resolution order:
-     *   1. liveCwd from the OSC 7 parser (Terminal-bridge sessions only).
-     *   2. _sessionWorkingDirs cache (synchronous from session_created/
+     *   1. `_sessionWorkingDirs` cache (synchronous from session_created/
      *      joined/*_started events).
-     *   3. claudeSessions[] (asynchronously populated by loadSessions).
-     *   4. null (caller decides what "no session context" means).
+     *   2. `claudeSessions[]` (asynchronously populated by loadSessions).
+     *   3. null (caller decides what "no session context" means — the
+     *      resolver chain skips step 3 silently; `getCurrentWorkingDir`
+     *      bottoms out at `currentFolderPath` for panel-default callers).
      *
      * @param {string} sid Session id. Returns null when sid is falsy.
      * @returns {string|null}
      */
     getSessionWorkingDir(sid) {
         if (!sid) return null;
-        if (this._liveCwd && this._liveCwd.has(sid)) {
-            const live = this._liveCwd.get(sid);
-            if (live) return live;
-        }
         if (this._sessionWorkingDirs && this._sessionWorkingDirs.has(sid)) {
             const wd = this._sessionWorkingDirs.get(sid);
             if (wd) return wd;
@@ -4094,14 +4095,22 @@ class ClaudeCodeWebInterface {
     }
 
     getCurrentWorkingDir() {
-        // Wrapper for callers that want the foreground session's working
-        // directory PLUS the global-folder fallback for pre-session
-        // contexts (e.g. the panel opened before any session exists).
-        // The resolver-chain callbacks in _setupTerminalLinking use
-        // getSessionWorkingDir() directly to avoid the fallback — see
-        // its docstring for why.
-        const sessionWd = this.getSessionWorkingDir(this.currentClaudeSessionId);
-        if (sessionWd) return sessionWd;
+        // Panel-default "where am I now" answer. Prefers liveness
+        // (OSC 7-tracked cwd, for Terminal-bridge sessions that have a
+        // shell hook installed) → spawn dir → global folder fallback.
+        // The resolver-chain callback in _setupTerminalLinking does NOT
+        // use this method — it consumes getSessionWorkingDir() directly
+        // so resolver step 2 (liveCwd) and step 3 (workingDir) stay
+        // distinct. (See getSessionWorkingDir docstring HIGH-1 note.)
+        const sid = this.currentClaudeSessionId;
+        if (sid) {
+            if (this._liveCwd && this._liveCwd.has(sid)) {
+                const live = this._liveCwd.get(sid);
+                if (live) return live;
+            }
+            const spawnWd = this.getSessionWorkingDir(sid);
+            if (spawnWd) return spawnWd;
+        }
         return this.currentFolderPath || null;
     }
 

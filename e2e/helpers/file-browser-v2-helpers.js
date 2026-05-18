@@ -136,12 +136,30 @@ async function dispatchDrop(page, selector, files) {
  * provider — the public API doesn't expose them but the field name has
  * been stable across xterm 5.x.
  *
- * Returns true if a link was activated; false if the row didn't contain
- * a recognised path.
+ * Critically, this exercises the SAME closures `_setupTerminalLinking`
+ * (and `splits.js`) registered — a regression that hardcodes the wrong
+ * session id or strips the `sessionIdSource` thread would fail an
+ * assertion downstream of this call. Calling `resolveCandidates`
+ * directly in `page.evaluate` (the alternative) does NOT exercise the
+ * wiring and would let such regressions slip through (peer-review
+ * gemini_critic HIGH-2).
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {string} hintText
+ * @param {object} [opts]
+ * @param {string} [opts.terminalAccessor] JS expression evaluated in
+ *   the page context to retrieve the xterm Terminal. Default
+ *   `'window.app.terminal'`. For split panes pass e.g.
+ *   `'window.app.splitContainer.splits[0].terminal'`.
+ * @returns {Promise<boolean>} true if a link was activated; false if
+ *   the row didn't contain a recognised path or no provider was
+ *   registered on the target terminal.
  */
-async function activateTerminalLink(page, hintText) {
-  return page.evaluate((needle) => {
-    const term = window.app && window.app.terminal;
+async function activateTerminalLink(page, hintText, opts) {
+  const terminalAccessor = (opts && opts.terminalAccessor) || 'window.app.terminal';
+  return page.evaluate(({ needle, accessor }) => {
+    // eslint-disable-next-line no-new-func — accessor is test-author controlled
+    const term = new Function('return (' + accessor + ');')();
     if (!term) return Promise.resolve(false);
     const buf = term.buffer.active;
     let foundRow = -1;
@@ -152,15 +170,27 @@ async function activateTerminalLink(page, hintText) {
       if (text.indexOf(needle) >= 0) { foundRow = row; break; }
     }
     if (foundRow < 0) return Promise.resolve(false);
-    // Convert absolute buffer row to viewport-relative row. The link
-    // provider's `provideLinks` operates in 1-based viewport rows.
-    const viewportRow = foundRow - buf.viewportY + 1;
+    // xterm's ILinkProvider.provideLinks receives 1-based BUFFER
+    // line number (not viewport-relative — that's a common misread
+    // of the API). foundRow is 0-based; add 1.
+    const bufferLineNumber = foundRow + 1;
 
-    // Prefer the captured test provider if present (the spec attaches
-    // its own copy via window.fileBrowser.attachLinkProvider), so the
-    // activate path runs through the closure we control. Falls back to
-    // the production-registered provider via xterm's internals.
+    // Provider resolution order:
+    //   1. window._fbV2TestLinkProvider — test-shim copy attached via
+    //      window.fileBrowser.attachLinkProvider; some specs use it
+    //      to assert the activate path with a custom mock authFetch.
+    //   2. terminal._fbLinkProviderInstance — the PRODUCTION-registered
+    //      provider object, stashed by attachLinkProvider for testing.
+    //      This is the load-bearing path: it proves the wiring (and
+    //      all its closures over `sessionIdSource` etc.) is hooked up
+    //      correctly. (xterm 5.3 doesn't expose registered providers
+    //      via _core._linkProviderService — the field is undefined —
+    //      so we have to stash on the terminal.)
+    //   3. Legacy fallback: walk xterm internals — kept for resilience
+    //      against future xterm-internal changes; harmless when both
+    //      the test shim and the stash are absent.
     let provider = window._fbV2TestLinkProvider || null;
+    if (!provider) provider = term._fbLinkProviderInstance || null;
     if (!provider) {
       try {
         const svc = term._core && term._core._linkProviderService;
@@ -169,11 +199,20 @@ async function activateTerminalLink(page, hintText) {
       } catch (_) { /* ignore */ }
     }
     if (!provider || typeof provider.provideLinks !== 'function') {
+      // Surface debug info so failing tests don't ALL look like a
+      // dead "false" — drop a global the spec can read.
+      window._fbV2DebugActivateFail = {
+        reason: 'no-provider',
+        haveCore: !!term._core,
+        haveSvc: !!(term._core && term._core._linkProviderService),
+        haveFbLinkProviderInstance: !!term._fbLinkProviderInstance,
+        haveFbLinkProvider: !!term._fbLinkProvider,
+      };
       return Promise.resolve(false);
     }
     return new Promise((resolve) => {
       try {
-        provider.provideLinks(viewportRow, (links) => {
+        provider.provideLinks(bufferLineNumber, (links) => {
           if (!Array.isArray(links) || !links.length) { resolve(false); return; }
           // Pick the link whose text contains the needle — the row may
           // have several detected paths if the test prints more than
@@ -195,7 +234,7 @@ async function activateTerminalLink(page, hintText) {
         resolve(false);
       }
     });
-  }, hintText);
+  }, { needle: hintText, accessor: terminalAccessor });
 }
 
 module.exports = {

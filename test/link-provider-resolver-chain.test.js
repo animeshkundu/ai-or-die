@@ -178,6 +178,113 @@ describe('attachLinkProvider — resolver chain', function () {
   });
 
   // ------------------------------------------------------------------
+  // Diagnostic failure toast (team-lead user-feedback ask) — closes
+  // the silent-failure UX class: when the resolver finds NO candidate
+  // that exists, the user sees WHAT was tried + the (liveCwd,
+  // workingDir, repoRoot) context that was joined. Critical for the
+  // user-reported flow: Terminal bridge + bash + claude-inside-bash
+  // + user cd'd to project root + no OSC 7 hook installed →
+  // liveCwd === null → workingDir is bash spawn dir (NOT where they
+  // cd'd to) → relative-path stat misses → silent failure pre-fix.
+  // ------------------------------------------------------------------
+
+  describe('diagnostic failure toast (zero-candidate + zero-hit)', function () {
+    it('zero-candidate failure: surfaces context AND the OSC 7 hook tip', function (done) {
+      const errs = [];
+      const activate = attachAndGetActivate({
+        getLiveCwd: () => null,
+        getWorkingDir: () => null,
+        getRepoRoot: () => null,
+        authFetch: () => Promise.resolve({ ok: true, status: 200 }),
+        openInViewer: () => {},
+        feedback: { error: (m) => errs.push(m), warning: () => {}, info: () => {} },
+      }, ' src/foo.js ');
+
+      activate(null, null);
+      setImmediate(() => {
+        try {
+          assert.strictEqual(errs.length, 1, 'expected exactly one error toast; got: ' + JSON.stringify(errs));
+          const msg = errs[0];
+          // Hint is named.
+          assert.ok(msg.includes('src/foo.js'), 'expected hint in toast; got: ' + msg);
+          // Context is named.
+          assert.ok(msg.includes('liveCwd=none'), 'expected liveCwd=none; got: ' + msg);
+          assert.ok(msg.includes('workingDir=none'), 'expected workingDir=none; got: ' + msg);
+          assert.ok(msg.includes('repoRoot=none'), 'expected repoRoot=none; got: ' + msg);
+          // OSC 7 hook tip fires when liveCwd + workingDir both empty.
+          assert.ok(/OSC 7 shell hook/i.test(msg), 'expected OSC 7 hint when liveCwd+workingDir empty; got: ' + msg);
+          done();
+        } catch (e) { done(e); }
+      });
+    });
+
+    it('zero-hit failure: surfaces ALL candidate paths + context', function (done) {
+      // workingDir is set but the file truly doesn't exist anywhere —
+      // user typo, or cd'd outside the workingDir without an OSC 7
+      // hook installed. Each candidate path should be enumerated.
+      const errs = [];
+      const activate = attachAndGetActivate({
+        getLiveCwd: () => '/live/dir',
+        getWorkingDir: () => '/spawn/dir',
+        getRepoRoot: () => '/repo/root',
+        authFetch: () => Promise.resolve({ status: 404, ok: false }),
+        openInViewer: () => {},
+        feedback: { error: (m) => errs.push(m), warning: () => {}, info: () => {} },
+      }, ' src/foo.js ');
+
+      activate(null, null);
+      setImmediate(() => {
+        try {
+          assert.strictEqual(errs.length, 1, 'expected exactly one error toast; got: ' + JSON.stringify(errs));
+          const msg = errs[0];
+          assert.ok(msg.includes('src/foo.js'), 'expected hint in toast; got: ' + msg);
+          // Each candidate join is enumerated so user can see which
+          // dir was the wrong base.
+          assert.ok(msg.includes('/live/dir/src/foo.js'),  'expected liveCwd candidate; got: ' + msg);
+          assert.ok(msg.includes('/spawn/dir/src/foo.js'), 'expected workingDir candidate; got: ' + msg);
+          assert.ok(msg.includes('/repo/root/src/foo.js'), 'expected repoRoot candidate; got: ' + msg);
+          // Context block surfaces the raw values too — even when
+          // they were used, the user benefits from seeing "is THAT
+          // really the workingDir I expected?".
+          assert.ok(/liveCwd=\/live\/dir/.test(msg),     'expected liveCwd value; got: ' + msg);
+          assert.ok(/workingDir=\/spawn\/dir/.test(msg), 'expected workingDir value; got: ' + msg);
+          assert.ok(/repoRoot=\/repo\/root/.test(msg),   'expected repoRoot value; got: ' + msg);
+          // OSC 7 hint should NOT fire when liveCwd is already set.
+          assert.ok(!/OSC 7 shell hook/i.test(msg),
+            'OSC 7 hint should NOT fire when liveCwd is already set; got: ' + msg);
+          done();
+        } catch (e) { done(e); }
+      });
+    });
+
+    it('zero-hit failure: shows OSC 7 hint when liveCwd missing but workingDir present', function (done) {
+      // This IS the user-reported scenario: bash session at session
+      // workingDir, user cd'd elsewhere, no OSC 7 hook → liveCwd null
+      // BUT workingDir IS set (the original bash spawn). Relative
+      // path won't resolve and the OSC 7 hint is the actionable fix.
+      const errs = [];
+      const activate = attachAndGetActivate({
+        getLiveCwd: () => null,
+        getWorkingDir: () => '/spawn/dir',
+        getRepoRoot: () => null,
+        authFetch: () => Promise.resolve({ status: 404, ok: false }),
+        openInViewer: () => {},
+        feedback: { error: (m) => errs.push(m), warning: () => {}, info: () => {} },
+      }, ' src/foo.js ');
+
+      activate(null, null);
+      setImmediate(() => {
+        try {
+          assert.strictEqual(errs.length, 1);
+          assert.ok(/OSC 7 shell hook|OSC 7 hook/i.test(errs[0]),
+            'expected OSC 7 hint when liveCwd null + workingDir set; got: ' + errs[0]);
+          done();
+        } catch (e) { done(e); }
+      });
+    });
+  });
+
+  // ------------------------------------------------------------------
   // Layer 4 — split-pane sessionId mismatch (closures evaluated at click time)
   // ------------------------------------------------------------------
 
@@ -218,6 +325,59 @@ describe('attachLinkProvider — resolver chain', function () {
               done();
             } catch (e) { done(e); }
           });
+        } catch (e) { done(e); }
+      });
+    });
+  });
+
+  // ------------------------------------------------------------------
+  // HIGH-1 regression — resolver step 2 (liveCwd) and step 3
+  // (workingDir) must produce DISTINCT candidates when both are set.
+  // Cross-lab peer review (codex_critic + gemini_critic, independently)
+  // surfaced that a previous refactor of the host's getSessionWorkingDir()
+  // collapsed both lookups: when OSC 7 was set, the helper returned the
+  // liveCwd value AND the resolver wired it as `getWorkingDir`, so step
+  // 3 redundantly retested step 2 and the actual session spawn dir was
+  // never tried. Spec line 525 explicitly requires step 3 "always tried
+  // even when liveCwd is set, to catch paths emitted by tools that
+  // haven't followed cd."
+  // ------------------------------------------------------------------
+
+  describe('HIGH-1: liveCwd and workingDir must produce distinct candidates', function () {
+    it('stats BOTH /live/dir/src/foo.js AND /spawn/dir/src/foo.js when they differ', function (done) {
+      const statCalls = [];
+      const activate = attachAndGetActivate({
+        getLiveCwd: () => '/live/dir',
+        getWorkingDir: () => '/spawn/dir',     // MUST be the spawn dir, NOT liveCwd
+        getRepoRoot: () => null,
+        authFetch: (url) => {
+          statCalls.push(url);
+          // Make the workingDir candidate the one that 200s — proves
+          // the chain tried it (and would have missed it if step 3
+          // had collapsed to step 2 = liveCwd).
+          if (url.includes(encodeURIComponent('/spawn/dir/src/foo.js'))) {
+            return Promise.resolve({ ok: true, status: 200 });
+          }
+          return Promise.resolve({ ok: false, status: 404 });
+        },
+        openInViewer: () => {},
+      }, ' src/foo.js ');
+
+      activate(null, null);
+      setImmediate(() => {
+        try {
+          // BOTH candidate URLs must have been stat'd. If the chain
+          // collapsed (the HIGH-1 regression), only one URL would
+          // appear because resolveCandidates dedupes via `seen`.
+          assert.ok(statCalls.some(u => u.includes(encodeURIComponent('/live/dir/src/foo.js'))),
+            'expected liveCwd candidate stat\'d; got: ' + JSON.stringify(statCalls));
+          assert.ok(statCalls.some(u => u.includes(encodeURIComponent('/spawn/dir/src/foo.js'))),
+            'expected workingDir candidate stat\'d (this is the HIGH-1 regression guard); got: ' + JSON.stringify(statCalls));
+          // Both distinct stat URLs → at least 2 calls.
+          const uniqueCandidates = new Set(statCalls);
+          assert.ok(uniqueCandidates.size >= 2,
+            'expected at least 2 distinct stat URLs (liveCwd + workingDir); got: ' + JSON.stringify(statCalls));
+          done();
         } catch (e) { done(e); }
       });
     });

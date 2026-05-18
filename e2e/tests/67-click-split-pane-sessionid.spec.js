@@ -15,9 +15,19 @@
 // from session_created/joined/*_started events.
 //
 // This spec creates two sessions A and B with DISTINCT workingDirs
-// and fixtures, pins the foreground session to A, then verifies that
-// the link-provider callbacks registered against split B's terminal
-// resolve `src/onlyB.js` against B's workingDir (NOT A's).
+// and fixtures, pins the foreground session to A, then drives the
+// REGISTERED link provider's `activate` for the SPLIT terminal — the
+// same code path xterm runs on a real mouse click. It verifies the
+// file-browser panel opens to a file inside B's tree (NOT A's),
+// which only works if the wiring threads `() => this.sessionId`
+// through to the resolver's getWorkingDir callback.
+//
+// (Critical: peer-review gemini_critic flagged that an earlier version
+// of this spec called `window.fileBrowser.resolveCandidates` directly
+// in `page.evaluate` — bypassing `_setupTerminalLinking` and `splits.js`
+// wiring entirely. That version would have silently kept passing even
+// if Layer 4 regressed. The activateTerminalLink helper closes that
+// gap by invoking the production-registered provider.)
 
 const { test, expect } = require('@playwright/test');
 const { createServer } = require('../helpers/server-factory');
@@ -27,11 +37,13 @@ const {
   setupPageCapture,
   attachFailureArtifacts,
   joinSessionAndStartTerminal,
+  waitForTerminalText,
 } = require('../helpers/terminal-helpers');
 const {
   makeFixtureDir,
   cleanupFixture,
   writeFileInside,
+  activateTerminalLink,
 } = require('../helpers/file-browser-v2-helpers');
 
 test.describe('Terminal click: split-pane session-id', () => {
@@ -81,15 +93,23 @@ test.describe('Terminal click: split-pane session-id', () => {
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
 
-    // Join A in the main terminal.
+    // Start a terminal in B FIRST (joining B switches the foreground,
+    // and createSplit only ATTACHES to existing tool sessions — it
+    // doesn't spawn). Without this, the split's terminal stays empty
+    // and the path-emit step has nothing to type into.
+    await joinSessionAndStartTerminal(page, sessionB);
+    // Then join A and start its terminal — now A is foreground and
+    // A also has a running terminal tool.
     await joinSessionAndStartTerminal(page, sessionA);
 
     // SplitContainer is initialised lazily — skip-gate consistent with
     // the existing 14-nerd-font split test.
     const hasSplit = await page.evaluate(() => !!(window.app && window.app.splitContainer));
-    if (!hasSplit) test.skip();
+    test.skip(!hasSplit, 'splitContainer not available in this build');
 
-    // Open a split bound to session B.
+    // Open a split bound to session B. The split's `createSplit`
+    // wires `_setupTerminalLinking` with `() => this.sessionId` —
+    // that's the wiring this spec is here to regress.
     await page.evaluate((sid) => window.app.splitContainer.createSplit(sid), sessionB);
     await page.waitForFunction(
       () => window.app.splitContainer && window.app.splitContainer.enabled &&
@@ -97,57 +117,107 @@ test.describe('Terminal click: split-pane session-id', () => {
       { timeout: 15000 }
     );
 
-    // Pin the foreground session id to A. This is the precondition for
-    // the bug — pre-fix code would use this value as the resolver's
-    // session id regardless of which terminal hosted the click.
+    // Discover the split's index for the activateTerminalLink helper.
+    const splitIndex = await page.evaluate((sid) => {
+      const splits = window.app.splitContainer.splits || [];
+      return splits.findIndex(s => s && s.sessionId === sid);
+    }, sessionB);
+    expect(splitIndex, 'expected to find a split bound to sessionB').toBeGreaterThanOrEqual(0);
+
+    // Wait for the split's terminal to be fully constructed (the
+    // link provider attaches when split.terminal exists + xterm has
+    // registerLinkProvider). Without this we race the assertion.
+    await page.waitForFunction((idx) => {
+      const s = window.app.splitContainer.splits[idx];
+      return !!(s && s.terminal && s.terminal._fbLinkProvider);
+    }, splitIndex, { timeout: 10000 });
+
+    // Force the split's fit() to run AFTER the container has its
+    // final flex dimensions — programmatic createSplit can race the
+    // layout, leaving the split's xterm at the default 80x24 fallback
+    // or worse (tiny widths that wrap the printf output across rows
+    // and break the link provider's regex). We explicitly fit + wait
+    // for a usable column count.
+    await page.evaluate((idx) => {
+      const s = window.app.splitContainer.splits[idx];
+      try { s.fit(); } catch (_) {}
+    }, splitIndex);
+    await page.waitForFunction((idx) => {
+      const s = window.app.splitContainer.splits[idx];
+      return !!(s && s.terminal && s.terminal.cols >= 60);
+    }, splitIndex, { timeout: 8000 });
+
+    // Wait for split's shell prompt to land before sending input —
+    // otherwise printf can be consumed before the shell is ready.
+    await page.waitForFunction((idx) => {
+      const t = window.app.splitContainer.splits[idx].terminal;
+      const buf = t.buffer.active;
+      for (let y = 0; y < buf.length; y++) {
+        const line = buf.getLine(y);
+        if (line && line.translateToString(true).trim().length > 0) return true;
+      }
+      return false;
+    }, splitIndex, { timeout: 10000 });
+
+    // Send `printf '%s\n' 'src/onlyB.js'` to the SPLIT's socket.
+    await page.evaluate(({ idx }) => {
+      const split = window.app.splitContainer.splits[idx];
+      split.socket.send(JSON.stringify({
+        type: 'input',
+        data: "printf '%s\\n' 'src/onlyB.js'\r",
+      }));
+    }, { idx: splitIndex });
+
+    // Wait for the path to appear in the SPLIT's buffer.
+    await page.waitForFunction(({ idx }) => {
+      const t = window.app.splitContainer.splits[idx].terminal;
+      const buf = t.buffer.active;
+      for (let y = 0; y < buf.length; y++) {
+        const line = buf.getLine(y);
+        if (!line) continue;
+        const text = line.translateToString(true);
+        // Skip the printf input line; we want the OUTPUT line.
+        if (text.indexOf('src/onlyB.js') >= 0 && text.indexOf('printf') === -1) {
+          return true;
+        }
+      }
+      return false;
+    }, { idx: splitIndex }, { timeout: 8000 });
+
+    // Pin the foreground session id to A. This is the precondition
+    // for the bug — pre-fix code would use this value as the
+    // resolver's session id regardless of which terminal hosted the
+    // click, so the chain would join `src/onlyB.js` against A's
+    // workingDir (no such file → 404 → silent failure).
     await page.evaluate((sidA) => { window.app.currentClaudeSessionId = sidA; }, sessionA);
 
-    // Simulate clicking `src/onlyB.js` in the SPLIT pane by walking
-    // the same activate-time path the link provider would take. The
-    // unit test (test/link-provider-resolver-chain.test.js) covers
-    // closure-evaluation timing in isolation; this spec proves the
-    // splits.js wiring threads the right session id through.
-    const result = await page.evaluate(async ({ sidA, sidB }) => {
-      const fb = window.fileBrowser;
-      const container = window.app.splitContainer;
-      const split = container.splits.find(s => s && s.sessionId === sidB);
-      if (!split) return { error: 'no split bound to sessionB; splits=' +
-        JSON.stringify((container.splits || []).map(s => s && s.sessionId)) };
+    // Drive the REGISTERED link provider's activate on the split's
+    // terminal — exact same code path xterm runs on a real click.
+    const activated = await activateTerminalLink(page, 'src/onlyB.js', {
+      terminalAccessor: `window.app.splitContainer.splits[${splitIndex}].terminal`,
+    });
+    expect(activated, 'link-provider activate fired for src/onlyB.js in the split').toBe(true);
 
-      // Sanity: confirm the precondition the bug needs.
-      const preFg = window.app.currentClaudeSessionId;
-      if (preFg !== sidA) return { error: 'currentClaudeSessionId not pinned to A; got ' + preFg };
-
-      // The fixed wiring: splits.js passes `() => this.sessionId` to
-      // _setupTerminalLinking. So the resolver callbacks should read
-      // sidB for clicks in the split. Drive the same callback shape
-      // attachLinkProvider builds — use the per-session cache the new
-      // app.js populates plus the split's session id.
-      const hint = 'src/onlyB.js';
-      const sid = split.sessionId;        // <-- the bug substituted sidA here
-      const liveCwd = (window.app._liveCwd && sid) ? (window.app._liveCwd.get(sid) || null) : null;
-      const wd = window.app._sessionWorkingDirs && window.app._sessionWorkingDirs.has(sid)
-        ? window.app._sessionWorkingDirs.get(sid)
-        : ((window.app.claudeSessions || []).find(s => s.id === sid) || {}).workingDir || null;
-      const candidates = fb.resolveCandidates(hint, { liveCwd, workingDir: wd, repoRoot: null });
-      const stats = await Promise.all(candidates.map(async (p) => {
-        const r = await window.app.authFetch('/api/files/stat?path=' + encodeURIComponent(p));
-        return { path: p, status: r.status };
-      }));
-      return { candidates, stats, sid, wd };
-    }, { sidA: sessionA, sidB: sessionB });
-
-    expect(result.error, 'precondition error: ' + result.error).toBeUndefined();
-    expect(result.sid, 'resolver used the split\'s sessionId').toBe(sessionB);
-    expect(result.wd, 'resolver picked up B\'s workingDir from _sessionWorkingDirs')
-      .toBe(fixtureB);
-    // Exactly one candidate, exactly one 200 — resolved into B's tree.
-    expect(result.stats.length).toBe(1);
-    expect(result.stats[0].status).toBe(200);
-    expect(result.stats[0].path.replace(/\\/g, '/'))
-      .toBe(fixtureB.replace(/\\/g, '/') + '/src/onlyB.js');
-    // And explicitly NOT inside A's tree — the regression we're guarding.
-    expect(result.stats[0].path.startsWith(fixtureA)).toBe(false);
+    // After activate, openFileInViewer → panel.openToFile → navigateTo
+    // the parent dir. Wait for the panel to open AND assert that the
+    // panel's _currentPath landed inside fixtureB's tree, NOT fixtureA's.
+    await page.waitForFunction(
+      () => !!document.querySelector('.file-browser-panel.open'),
+      { timeout: 8000 }
+    );
+    const panelDir = await page.waitForFunction(() => {
+      const p = window.app._fileBrowserPanel;
+      return (p && p._currentPath) ? p._currentPath : null;
+    }, null, { timeout: 8000 }).then(h => h.jsonValue());
+    expect(panelDir, 'panel currentPath should be set after click').toBeTruthy();
+    // The load-bearing assertion: panel landed inside fixtureB.
+    expect(panelDir.replace(/\\/g, '/').startsWith(fixtureB.replace(/\\/g, '/')),
+      `panel currentPath should be inside fixtureB (${fixtureB}); got: ${panelDir}`).toBe(true);
+    // Negative: must NOT be inside fixtureA (the foreground tab's
+    // workingDir — the bug we're guarding against would have routed
+    // through there).
+    expect(panelDir.replace(/\\/g, '/').startsWith(fixtureA.replace(/\\/g, '/')),
+      `panel currentPath must NOT be inside fixtureA (foreground tab) — that's the bug; got: ${panelDir}`).toBe(false);
   });
 
   test('_sessionWorkingDirs cache is populated synchronously on session join', async ({ page }) => {

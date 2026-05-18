@@ -3434,15 +3434,36 @@
       } catch (_) { /* leave ctx empty — chain still tries absolute hint */ }
     }
     var candidates = resolveCandidates(hint, ctx);
-    // If `hint` is absolute and resolveCandidates produced nothing
-    // (no context), still try the literal hint as a final fallback —
-    // legacy callers that pass an already-absolute path shouldn't
-    // regress.
-    if (!candidates.length) candidates = [hint];
 
     var disableAll = function () {
       for (var k = 0; k < items.length; k++) items[k].classList.add('disabled');
     };
+
+    // Last-ditch raw-hint fallback — restricted to:
+    //   (a) absolute hints (Unix /, Windows C:\ or C:/, ~/, UNC \\) —
+    //       passing these to /api/files/stat resolves to the literal
+    //       path; no wrong-dir hazard; OR
+    //   (b) TRUE legacy mode: no app AND no getSessionId wired (some
+    //       external embedder / unit-test shim that pre-dates the
+    //       resolver chain).
+    // For relative hints with session context wired (even if context
+    // returned null transiently — e.g. _sessionWorkingDirs not yet
+    // populated for a brand-new session), DO NOT fall back: sending a
+    // bare relative path lets server-side validatePath resolve against
+    // process.cwd() (baseFolder), which is the silent-wrong-dir
+    // footgun the resolver chain was built to avoid.
+    // (Peer-review MED-1 — codex_critic + codex_reviewer, same code
+    // two angles.)
+    if (!candidates.length) {
+      var hintIsAbsolute = /^([A-Za-z]:[\\\/]|[\\\/]|~[\\\/]|\\\\[^\\]+\\)/.test(hint);
+      var trueLegacyMode = !this.app && typeof this._getSessionId !== 'function';
+      if (hintIsAbsolute || trueLegacyMode) {
+        candidates = [hint];
+      } else {
+        disableAll();
+        return;
+      }
+    }
 
     // Stat each candidate in order; first 200 wins (no ambiguity picker
     // in the right-click flow — the user already selected a specific
@@ -3794,7 +3815,20 @@
       });
       if (!candidates.length) {
         if (feedback && typeof feedback.error === 'function') {
-          feedback.error('Could not resolve: ' + hint);
+          // Diagnostic detail surfaces WHICH context was empty so the
+          // user can tell whether the path is just wrong vs. whether
+          // their session has no working-dir context to join against
+          // (e.g. Terminal bridge with no OSC 7 shell hook installed —
+          // the common silent-failure case for the "ran claude inside
+          // bash" flow). Without this they see "Could not resolve"
+          // and assume the feature is broken.
+          feedback.error('Could not resolve: ' + hint +
+            ' — no context (liveCwd=' + (liveCwd || 'none') +
+            ', workingDir=' + (workingDir || 'none') +
+            ', repoRoot=' + (repoRoot || 'none') + ').' +
+            (!liveCwd && !workingDir
+              ? ' Tip: install the OSC 7 shell hook (see docs/specs/file-browser.md) for live-CWD tracking.'
+              : ''));
         }
         return;
       }
@@ -3813,7 +3847,23 @@
         var hits = results.filter(function (r) { return r.exists; });
         if (hits.length === 0) {
           if (feedback && typeof feedback.error === 'function') {
-            feedback.error('File not found: ' + hint);
+            // Enriched failure toast (team-lead user-feedback ask):
+            // when zero candidates resolve, surface WHAT we tried so
+            // the user can tell whether the failure is "I typo'd the
+            // path" vs "the resolver is joining against the wrong
+            // base dir" (the user-reported silent-failure class — a
+            // Terminal bridge session in which the user cd'd inside
+            // bash but no OSC 7 hook was emitting, so liveCwd is null
+            // and workingDir is the SHELL SPAWN dir, not the user's
+            // current directory).
+            var tried = results.map(function (r) { return r.path; }).join('\n  • ');
+            feedback.error('Could not find ' + hint + '. Tried:\n  • ' + tried +
+              '\n(liveCwd=' + (liveCwd || 'none') +
+              ', workingDir=' + (workingDir || 'none') +
+              ', repoRoot=' + (repoRoot || 'none') + ')' +
+              (!liveCwd && (workingDir || repoRoot)
+                ? '\nTip: if you cd\'d inside the shell, install the OSC 7 hook (docs/specs/file-browser.md) for live-CWD tracking.'
+                : ''));
           }
           return;
         }
@@ -3902,6 +3952,14 @@
     };
 
     var disposable = terminal.registerLinkProvider(provider);
+    // Stash the provider object on the terminal so e2e helpers can
+    // invoke `provider.provideLinks` directly to test the wiring
+    // without depending on xterm internals (`_core._linkProviderService`
+    // is not exposed on xterm 5.3, and the disposable returned by
+    // registerLinkProvider doesn't carry the provider back). Tests use
+    // this through `e2e/helpers/file-browser-v2-helpers.js
+    // activateTerminalLink`. Production code never reads this field.
+    try { terminal._fbLinkProviderInstance = provider; } catch (_) {}
     return disposable;
   }
 
