@@ -834,36 +834,104 @@ This makes the documented bash/zsh/pwsh hooks work out of the box on macOS / Lin
 
 No platform-specific branches in production code beyond this single fallback — the heavy lifting is in `url.fileURLToPath()`.
 
-### Shell hooks (one-line user setup)
+### Shell hooks — manual install (v1)
 
-The terminal bridge listens for OSC 7 — every modern terminal protocol speaks it. The user must run a shell that emits it. Many do by default; otherwise, one-line setup:
+ai-or-die's terminal bridge listens for OSC 7. Modern terminals speak it; users get click-to-open the moment OSC 7 starts firing in the shell. **In v1, OSC 7 hook install is MANUAL for all shells** — one-line copy-paste into the user's shell rc file. Auto-install (per the deferred [ADR-0021](../adrs/0021-osc7-shell-hook-auto-install.md)) is planned for a future version but not shipped in v1.
 
-- **bash** (`~/.bashrc`):
-  ```bash
-  PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
-  ```
-- **zsh** (`~/.zshrc`) — bare zsh (5.x) does **not** emit OSC 7 natively. Many distros and frameworks (Oh My Zsh, prezto, zsh-newuser-install on Fedora/Ubuntu desktop, macOS Terminal.app's default profile) ship a `chpwd` hook by default; otherwise add the one-liner:
-  ```zsh
-  function chpwd() { printf "\e]7;file://%s%s\e\\" "$HOST" "$PWD" }
-  ```
-- **fish** — emits OSC 7 unconditionally; no setup needed.
-- **PowerShell** (`$PROFILE` — works on Windows + macOS + Linux pwsh):
-  ```powershell
-  function prompt {
-      $loc = $executionContext.SessionState.Path.CurrentLocation
-      $out = "PS $loc> "
-      if ($loc.Provider.Name -eq 'FileSystem') {
-          $p = $loc.ProviderPath -replace '\\','/'
-          $out += "$([char]27)]7;file://$env:COMPUTERNAME/$p$([char]7)"
-      }
-      $out
-  }
-  ```
-- **Windows cmd.exe** — out of scope; no clean way to emit OSC 7 from a `prompt` definition. Recommend pwsh.
+**Per-shell status (v1):**
 
-Many distro defaults already emit OSC 7 (Fedora's `/etc/profile.d/vte.sh`, Ubuntu desktop, macOS Terminal.app's default zshrc, Git Bash on Windows when configured). **Hooks are not auto-injected** into user `~/.bashrc` / `$PROFILE` — user shell config is sacrosanct, and the documented one-line snippet is the right boundary.
+| Shell | v1 status | What user does |
+|---|---|---|
+| **bash** | Manual install | Paste the one-line snippet below into `~/.bashrc`. |
+| **zsh** | Manual install | Paste the one-line snippet below into `~/.zshrc`. |
+| **fish** | Native | Nothing. fish emits OSC 7 unconditionally. |
+| **pwsh (PowerShell 7 + Windows PowerShell 5.1)** | Manual install | Paste the snippet below into `$PROFILE`. |
+| **cmd.exe (Windows)** | Not supported | cmd.exe's `prompt` definition can't run arbitrary commands per prompt. Switch to PowerShell: `winget install Microsoft.PowerShell` or use Microsoft Store. |
 
-**Note on `$HOSTNAME` / `$HOST` / `$env:COMPUTERNAME`**: every documented hook above emits the local machine's hostname (`file://my-mac/Users/foo/...`), not `localhost`. The parser handles this transparently — see [Cross-platform path handling](#cross-platform-path-handling) above for the host-strip fallback.
+**Why manual in v1** (deferred from auto-install): four cross-lab review rounds on the auto-install wrapper design surfaced ~50 substantive items including a fatal Homebrew break on macOS zsh under naive ZDOTDIR restore. The wrapper design surface is more dynamic than the v1 critic cycle can clear safely. Manual install ships as the v1 baseline; auto-install may be revisited in a future ADR once Layer 5 + manual install has run in prod for ≥6 weeks and we have real usage data. See [ADR-0021](../adrs/0021-osc7-shell-hook-auto-install.md) Status header for the engineering history.
+
+**When click-to-open silently fails** in any shell, [Layer 5 toast](#resolver-failure-toast) Block A surfaces a copy-paste-friendly reference to the snippets below, contextually on the first failed click. Users don't need to read this spec; the toast tells them exactly what to do.
+
+#### Manual install snippets
+
+**bash** (paste in `~/.bashrc`):
+
+```bash
+PROMPT_COMMAND='printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
+```
+
+If you already have a `PROMPT_COMMAND`, append with a semicolon (bash <5.1) or as an array element (bash ≥5.1):
+
+```bash
+# bash <5.1 (scalar PROMPT_COMMAND):
+PROMPT_COMMAND="$PROMPT_COMMAND;"'printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"'
+
+# bash ≥5.1 (PROMPT_COMMAND can be an array):
+PROMPT_COMMAND+=('printf "\e]7;file://%s%s\e\\" "$HOSTNAME" "$PWD"')
+```
+
+**zsh** (paste in `~/.zshrc`):
+
+Bare zsh 5.x does NOT emit OSC 7 natively. Many distros and frameworks (Oh My Zsh, prezto, zsh-newuser-install on Fedora/Ubuntu desktop, macOS Terminal.app's default profile) ship a `chpwd` hook by default. To add manually:
+
+```zsh
+autoload -Uz add-zsh-hook
+_emit_osc7() { printf '\e]7;file://%s%s\e\\' "${HOST:-localhost}" "$PWD" }
+add-zsh-hook precmd _emit_osc7
+```
+
+`add-zsh-hook precmd` is additive — coexists with starship, powerlevel10k, oh-my-zsh's existing prompt hooks.
+
+**fish:** no setup needed. fish emits OSC 7 unconditionally on every prompt.
+
+**pwsh (PowerShell 7 + Windows PowerShell 5.1; works on Windows + Linux + macOS):**
+
+Paste in `$PROFILE` (whichever location pwsh shows when you run `echo $PROFILE`):
+
+```powershell
+$_aiordie_orig = $function:prompt
+function prompt {
+    $orig = & $_aiordie_orig
+    $loc = $executionContext.SessionState.Path.CurrentLocation
+    if ($loc.Provider.Name -eq 'FileSystem') {
+        $p = $loc.ProviderPath -replace '\\','/'
+        # Drive paths: use file:/// empty-host form (cleanest round-trip).
+        # On Linux/macOS pwsh, paths already use forward slashes.
+        [Console]::Write("$([char]27)]7;file://$p$([char]7)")
+    }
+    $orig
+}
+```
+
+The `file:///` empty-host form (note three slashes after `file:`) is what the bridge parser canonicalizes to a clean drive path on Windows (`C:\Users\foo`) or POSIX path on Unix (`/Users/foo`). This is the same wire shape the v2 auto-install wrapper would produce when it ships — no spec-vs-wrapper drift to worry about.
+
+**Windows cmd.exe:** not supported. cmd.exe's `prompt` definition takes only static text + small variable substitutions ($P, $G, $T, etc.); no command-execution mechanism per prompt cycle. Switch to PowerShell — install pwsh 7 via:
+
+```cmd
+winget install --id Microsoft.PowerShell --source winget
+```
+
+or via [Microsoft Store](https://aka.ms/PSWindows). Then re-open the ai-or-die terminal session with `--shell pwsh` (or change your terminal default in settings).
+
+#### Distro defaults that already emit OSC 7
+
+Many environments emit OSC 7 by default — check before adding the hook:
+
+- Fedora: `/etc/profile.d/vte.sh` adds the bash hook globally.
+- Ubuntu desktop: gnome-terminal's VTE library emits via its own profile snippet.
+- macOS Terminal.app: the system-default `~/.zshrc` template includes the chpwd snippet.
+- Git Bash on Windows: emits when configured (varies by Git for Windows version).
+- iTerm2, WezTerm, Konsole, Windows Terminal: terminal-emulator-side emission for shells running inside them — but our `node-pty` bridge is a separate PTY, so the emitting-side has to be in the shell itself (the snippets above), not the outer terminal emulator.
+
+If your distro already emits, the snippets above are harmless duplicates (the parser dedupes on `cwd === prev`).
+
+#### Why hooks aren't auto-injected into user rc files
+
+ai-or-die does NOT modify `~/.bashrc`, `~/.zshrc`, or `$PROFILE` files. User shell configuration is sacrosanct; persistent edits to user dotfiles would interact unpredictably with existing customizations, dotfile managers (chezmoi, yadm), and the user's next non-ai-or-die shell session.
+
+The pwsh wrapper (per ADR-0021) is **transient** — it creates a per-session tempfile shim that lives only for the spawned shell instance. Nothing is written to `$HOME`. Bash + zsh users get manual install snippets above; v2 may add the same kind of transient wrapper for bash + zsh after the design matures.
+
+**Note on `$HOSTNAME` / `$HOST`**: the bash/zsh snippets emit the local machine's hostname (`file://my-mac/Users/foo/...`). The bridge parser handles this transparently — see [Cross-platform path handling](#cross-platform-path-handling) above for the host-strip fallback. The pwsh snippet uses `file:///` (empty host) directly to skip the host-strip altogether — cleaner round-trip on Windows.
 
 ### Client integration
 
