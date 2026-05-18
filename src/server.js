@@ -173,22 +173,13 @@ class ClaudeCodeWebServer {
     // Sweep old temp images every 30 minutes
     this.imageSweepInterval = setInterval(() => this.sweepOldTempImages(), 30 * 60 * 1000);
 
-    // Evict stale inactive sessions older than 7 days every 5 minutes
+    // Evict stale inactive sessions older than 7 days every 5 minutes.
+    // Body is extracted into _evictStaleSessions so it has a clean unit-test
+    // seam (the timer body is otherwise unreachable from outside the class).
     this.sessionEvictionInterval = setInterval(() => {
-      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      for (const [id, session] of this.claudeSessions) {
-        if (!session.active && session.connections.size === 0 && new Date(session.lastActivity || session.created).getTime() < sevenDaysAgo) {
-          // Same per-session cleanup contract as the DELETE handler:
-          // tear down any orphan fs-watch SSE + voice-upload history
-          // BEFORE removing the parent session entry, otherwise the
-          // chokidar watcher leaks (PR #99 regression).
-          this._cleanupFsWatchSession(id, 'session_evicted');
-          this._voiceUploadCounts.delete(id);
-          this.claudeSessions.delete(id);
-          this.activityBroadcastTimestamps.delete(id);
-          this.sessionStore.markDirty();
-        }
-      }
+      this._evictStaleSessions().catch((err) => {
+        console.warn('Eviction sweep failed:', err && err.message);
+      });
     }, 5 * 60 * 1000);
 
     // Also save on process exit
@@ -930,11 +921,20 @@ class ClaudeCodeWebServer {
         return res.status(404).json({ error: 'Session not found' });
       }
       
-      // Stop running process if active
+      // Stop running process if active. Must `await` so the PTY teardown
+      // (listener disposal + kill + bounded wait) completes BEFORE we
+      // remove the session from claudeSessions. Without the await, the
+      // PTY exit callback raced session map mutation: callers landing
+      // mid-teardown saw a session that was "gone" from the map but
+      // whose ptyProcess was still alive holding FDs.
       if (session.active) {
         const bridge = this.getBridgeForAgent(session.agent);
         if (bridge) {
-          bridge.stopSession(sessionId);
+          try {
+            await bridge.stopSession(sessionId);
+          } catch (err) {
+            console.warn(`stopSession failed during DELETE for ${sessionId}: ${err && err.message}`);
+          }
         }
       }
       
@@ -3555,6 +3555,63 @@ class ClaudeCodeWebServer {
     if (session._pendingChunks && session._pendingChunks.length > 0) {
       this._flushSessionOutput(sessionId);
     }
+  }
+
+  /**
+   * Sweep stale inactive sessions older than 7 days. Extracted from the
+   * setInterval body for testability — pre-fix this method did NOT tear
+   * down the PTY process via bridge.stopSession, so an evicted session
+   * whose `active` flag was stale (PTY exited but flag never updated, or
+   * mid-flight teardown) would orphan its node-pty wrapper. With the
+   * listener-disposal fix in base-bridge.js this also leaked the onData/
+   * onExit closures + their dataBuffer refs — a slow EMFILE bleed on
+   * long-running production servers.
+   *
+   * Idempotent and safe to invoke from tests directly.
+   * @returns {Promise<number>} count of sessions evicted
+   */
+  async _evictStaleSessions() {
+    const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    let evictedCount = 0;
+    // Snapshot keys first — claudeSessions is mutated inside the loop and we
+    // would otherwise risk Map-iterator UB on V8.
+    const entries = Array.from(this.claudeSessions.entries());
+    for (const [id, session] of entries) {
+      if (!session) continue;
+      const connections = session.connections;
+      const connCount = connections && typeof connections.size === 'number' ? connections.size : 0;
+      const lastActivity = new Date(session.lastActivity || session.created).getTime();
+      if (session.active) continue;
+      if (connCount !== 0) continue;
+      if (lastActivity >= sevenDaysAgo) continue;
+
+      // Drive PTY teardown for the evicted session. stopSession is
+      // idempotent — if the bridge already lost the session (PTY exited
+      // by itself, hadn't been started, etc.) the call is a cheap no-op.
+      // The bridge owns the FD-leak prevention (listener disposal); calling
+      // it on eviction is the only chance a hung/zombie PTY gets to be
+      // cleaned up before its parent session disappears from claudeSessions.
+      const bridge = this.getBridgeForAgent(session.agent);
+      if (bridge && typeof bridge.stopSession === 'function') {
+        try {
+          await bridge.stopSession(id);
+        } catch (err) {
+          console.warn(`Eviction stopSession failed for ${id}: ${err && err.message}`);
+        }
+      }
+
+      // Same per-session cleanup contract as the DELETE handler:
+      // tear down any orphan fs-watch SSE + voice-upload history
+      // BEFORE removing the parent session entry, otherwise the
+      // chokidar watcher leaks (PR #99 regression).
+      try { this._cleanupFsWatchSession(id, 'session_evicted'); } catch (_) { /* ignore */ }
+      try { this._voiceUploadCounts.delete(id); } catch (_) { /* ignore */ }
+      this.claudeSessions.delete(id);
+      this.activityBroadcastTimestamps.delete(id);
+      try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
+      evictedCount++;
+    }
+    return evictedCount;
   }
 
   /**

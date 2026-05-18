@@ -247,7 +247,17 @@ class BaseBridge {
         created: new Date(),
         active: true,
         killTimeout: null,
-        writeQueue: Promise.resolve()
+        writeQueue: Promise.resolve(),
+        // PTY listener handles registered against ptyProcess.{onData,onExit,on('error')}.
+        // node-pty's onData/onExit return IDisposable objects with a .dispose()
+        // method; the EventEmitter-style .on('error', fn) path is wrapped in a
+        // synthetic disposable so it can be torn down through the same helper.
+        // Without explicit disposal, the closures keep dataBuffer/outputBatch/
+        // flushTimer alive, pinning the PTY wrapper and its file descriptors
+        // across thousands of session create/delete cycles — root cause of the
+        // weeks-long EMFILE / server-unresponsive symptom on Windows-primary
+        // production deployments.
+        _ptyDisposables: []
       };
 
       this.sessions.set(sessionId, session);
@@ -260,6 +270,10 @@ class BaseBridge {
           console.error(`${this.toolName} session ${sessionId}: no response within ${SPAWN_TIMEOUT_MS}ms, treating as spawn failure`);
           session.active = false;
           this.sessions.delete(sessionId);
+          // Dispose any listener handles we wired up before the timeout fired;
+          // otherwise the PTY object (and its FDs) cannot be GC'd even after
+          // the kill() below succeeds.
+          this._disposePtyDisposables(session, sessionId);
           try { ptyProcess.kill(); } catch (e) { /* ignore */ }
           onError(new Error(`${this.toolName} process did not respond within ${SPAWN_TIMEOUT_MS / 1000} seconds. The command may not be installed or may have hung during startup.`));
         }
@@ -269,7 +283,7 @@ class BaseBridge {
       let outputBatch = '';
       let flushTimer = null;
 
-      ptyProcess.onData((data) => {
+      const onDataDisposable = ptyProcess.onData((data) => {
         if (!receivedLifeSign) {
           receivedLifeSign = true;
           clearTimeout(spawnWatchdog);
@@ -300,8 +314,9 @@ class BaseBridge {
           });
         }
       });
+      this._addPtyDisposable(session, onDataDisposable);
 
-      ptyProcess.onExit((exitCode, signal) => {
+      const onExitDisposable = ptyProcess.onExit((exitCode, signal) => {
         if (!receivedLifeSign) {
           receivedLifeSign = true;
           clearTimeout(spawnWatchdog);
@@ -312,14 +327,19 @@ class BaseBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
+        // Drain remaining disposables — the PTY is gone, but the wrappers
+        // still hold references to the data-buffer closures. Skip onExit
+        // self-disposal (node-pty already removed it on fire).
+        this._disposePtyDisposables(session, sessionId);
         if (this.sessions.has(sessionId)) {
           session.active = false;
           this.sessions.delete(sessionId);
         }
         onExit(exitCode, signal);
       });
+      this._addPtyDisposable(session, onExitDisposable);
 
-      ptyProcess.on('error', (error) => {
+      const errorHandler = (error) => {
         if (!receivedLifeSign) {
           receivedLifeSign = true;
           clearTimeout(spawnWatchdog);
@@ -334,11 +354,26 @@ class BaseBridge {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
+        this._disposePtyDisposables(session, sessionId);
         if (this.sessions.has(sessionId)) {
           session.active = false;
           this.sessions.delete(sessionId);
         }
         onError(error);
+      };
+      ptyProcess.on('error', errorHandler);
+      // EventEmitter-style 'error' handler doesn't return IDisposable, so wrap
+      // it in one so the same drain helper covers all three callsites.
+      this._addPtyDisposable(session, {
+        dispose: () => {
+          try {
+            if (typeof ptyProcess.off === 'function') {
+              ptyProcess.off('error', errorHandler);
+            } else if (typeof ptyProcess.removeListener === 'function') {
+              ptyProcess.removeListener('error', errorHandler);
+            }
+          } catch (_) { /* ignore */ }
+        }
       });
 
       console.log(`${this.toolName} session ${sessionId} started successfully`);
@@ -423,6 +458,43 @@ class BaseBridge {
     }
   }
 
+  /**
+   * Push an IDisposable handle onto a session's listener list so stopSession
+   * can drain it. The disposable shape is whatever node-pty's onData/onExit
+   * returns: an object with a .dispose() method. EventEmitter-style 'error'
+   * handlers are wrapped in a synthetic disposable at the registration site.
+   * @private
+   */
+  _addPtyDisposable(session, disposable) {
+    if (!session || !disposable || typeof disposable.dispose !== 'function') return;
+    if (!Array.isArray(session._ptyDisposables)) session._ptyDisposables = [];
+    session._ptyDisposables.push(disposable);
+  }
+
+  /**
+   * Drain a session's PTY listener disposables. Each .dispose() is wrapped
+   * in try/catch so one bad handle can't strand the others; the array is
+   * cleared on the way out so a re-entrant call is a safe no-op. Called from
+   * stopSession (manual teardown), the natural onExit callback (PTY exited
+   * on its own), the 'error' handler (PTY blew up), and the spawn-watchdog
+   * timeout path — every code path that retires a PTY object.
+   * @private
+   */
+  _disposePtyDisposables(session, sessionId) {
+    if (!session || !Array.isArray(session._ptyDisposables)) return;
+    const handles = session._ptyDisposables;
+    session._ptyDisposables = [];
+    for (const h of handles) {
+      try {
+        if (h && typeof h.dispose === 'function') h.dispose();
+      } catch (err) {
+        if (process.env.DEBUG) {
+          console.warn(`${this.toolName} session ${sessionId || '?'}: dispose() threw: ${err && err.message}`);
+        }
+      }
+    }
+  }
+
   async stopSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -438,21 +510,42 @@ class BaseBridge {
       session.killTimeout = null;
     }
 
+    // Dispose every PTY listener we wired up at startSession time. This is
+    // the load-bearing fix for the EMFILE leak: without it, the onData /
+    // onExit / 'error' closures keep references to dataBuffer + outputBatch
+    // + flushTimer, pinning the underlying ptyProcess (and its FDs) past
+    // session disposal. We dispose BEFORE registering the temporary onExit
+    // waiter below so the temp handle is the only one left when kill()
+    // runs.
+    this._disposePtyDisposables(session, sessionId);
+
     if (!session.process) return;
 
     // Return a promise that resolves when the PTY process actually exits
     // (or after a bounded timeout), so callers can await clean shutdown.
     return new Promise((resolve) => {
+      let settled = false;
+      let waitDisposable = null;
+
       const cleanup = () => {
+        if (settled) return;
+        settled = true;
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
+        }
+        // Tear down the temporary onExit waiter so it doesn't outlive the
+        // promise it backed (same FD-leak class as the main listeners).
+        if (waitDisposable && typeof waitDisposable.dispose === 'function') {
+          try { waitDisposable.dispose(); } catch (_) { /* ignore */ }
         }
         resolve();
       };
 
       try {
-        session.process.onExit(() => cleanup());
+        const handle = session.process.onExit(() => cleanup());
+        // node-pty returns an IDisposable; older mocks may return undefined.
+        if (handle && typeof handle.dispose === 'function') waitDisposable = handle;
       } catch (_) {
         // onExit may fail if process already exited
       }
@@ -466,7 +559,7 @@ class BaseBridge {
       // Bounded timeout: don't wait forever for ConPTY cleanup
       session.killTimeout = setTimeout(() => {
         session.killTimeout = null;
-        resolve();
+        cleanup();
       }, 3000);
     });
   }
