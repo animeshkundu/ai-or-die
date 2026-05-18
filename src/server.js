@@ -178,6 +178,12 @@ class ClaudeCodeWebServer {
       const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
       for (const [id, session] of this.claudeSessions) {
         if (!session.active && session.connections.size === 0 && new Date(session.lastActivity || session.created).getTime() < sevenDaysAgo) {
+          // Same per-session cleanup contract as the DELETE handler:
+          // tear down any orphan fs-watch SSE + voice-upload history
+          // BEFORE removing the parent session entry, otherwise the
+          // chokidar watcher leaks (PR #99 regression).
+          this._cleanupFsWatchSession(id, 'session_evicted');
+          this._voiceUploadCounts.delete(id);
           this.claudeSessions.delete(id);
           this.activityBroadcastTimestamps.delete(id);
           this.sessionStore.markDirty();
@@ -957,6 +963,17 @@ class ClaudeCodeWebServer {
       // may still need younger ones for an in-flight conversation, so
       // we keep recent files.
       try { this._sweepAttachments(session.workingDir); } catch (_) { /* ignore */ }
+
+      // Tear down any orphan fs-watch SSE for this session BEFORE the
+      // session map deletion. Without this, chokidar watchers leaked
+      // (PR #99 regression) — kernel inotify-watch + FD exhaustion after
+      // weeks of uptime. See _cleanupFsWatchSession.
+      this._cleanupFsWatchSession(sessionId, 'session_deleted');
+
+      // Drop the voice-upload rate-limit history for this session. Map
+      // grew unbounded across session-create/delete churn on long-lived
+      // servers (smaller cousin of the _fsWatchSessions leak).
+      this._voiceUploadCounts.delete(sessionId);
 
       this.claudeSessions.delete(sessionId);
       this.activityBroadcastTimestamps.delete(sessionId);
@@ -2126,15 +2143,10 @@ class ClaudeCodeWebServer {
       if (!this._fsWatchSessions) this._fsWatchSessions = new Map();
 
       // If an EventSource already exists for this session, replace it
-      // (single-ES-per-session per ADR-0017). The displaced session
-      // releases its slot in the per-IP counter so this fresh open
-      // doesn't double-count.
-      const existing = this._fsWatchSessions.get(sessionId);
-      if (existing) {
-        try { existing.send && existing.send({ type: 'end', reason: 'replaced' }); } catch (_) {}
-        try { existing.cleanup && existing.cleanup('replaced'); } catch (_) {}
-        // existing.cleanup already decrements the per-IP counter.
-      }
+      // (single-ES-per-session per ADR-0017). Delegate to the central
+      // cleanup helper so the displaced session frees its per-IP slot,
+      // closes its chokidar watcher, and emits one end-event (not two).
+      this._cleanupFsWatchSession(sessionId, 'replaced');
 
       const currentCount = this._activeWatchersByIp.get(ip) || 0;
       const MAX_CONCURRENT_WATCHERS = 5;
@@ -2237,7 +2249,21 @@ class ClaudeCodeWebServer {
         send: send,
         cleanup: cleanup,
         ip: ip,
+        res: res,             // for manual-fallback teardown in _cleanupFsWatchSession
       };
+
+      // Race guard: if the parent claudeSession was deleted (or never
+      // existed) between request arrival and now, do not register an
+      // orphan watcher entry — it would never be cleaned up because the
+      // session-delete handler has nothing to key off. Run cleanup
+      // immediately and bail out. This is the load-bearing fix for the
+      // PR #99 leak: every entry in _fsWatchSessions now corresponds to
+      // a live claudeSession.
+      if (!this.claudeSessions.has(sessionId)) {
+        cleanup('session_missing');
+        return;
+      }
+
       this._fsWatchSessions.set(sessionId, sessionEntry);
 
       try {
@@ -3531,6 +3557,85 @@ class ClaudeCodeWebServer {
     }
   }
 
+  /**
+   * Centralized cleanup for a session's fs-watch SSE entry. Idempotent —
+   * safe to call from session-delete, eviction-sweep, server-close, and
+   * the SSE replace path without double-closing.
+   *
+   * Background: PR #99 introduced _fsWatchSessions but only cleared
+   * entries via the SSE req.on('close') path. If the client never
+   * disconnected (browser tab kept open, network black-holed, etc.) and
+   * the session was deleted server-side, the chokidar watcher leaked —
+   * each carrying ~10 inotify watches plus an open TCP connection.
+   * After weeks of uptime on Windows-primary production this exhausted
+   * the per-process FD limit (EMFILE) and the server stopped accepting
+   * new connections, so a browser refresh appeared to hang.
+   *
+   * @param {string} sessionId
+   * @param {string} reason — diagnostic tag for logs ('session_deleted',
+   *                          'session_evicted', 'server_close', 'replaced',
+   *                          'session_missing', etc.)
+   * @returns {boolean} true if an entry existed and cleanup ran; false otherwise.
+   */
+  _cleanupFsWatchSession(sessionId, reason) {
+    if (!this._fsWatchSessions) return false;
+    const entry = this._fsWatchSessions.get(sessionId);
+    if (!entry) return false;
+
+    // Delete BEFORE invoking entry.cleanup so re-entrant calls (cleanup
+    // may itself trigger req.on('close') → cleanup again synchronously
+    // on some Node versions) find no entry and bail out.
+    this._fsWatchSessions.delete(sessionId);
+    console.warn('[fs-watch-cleanup]', { sessionId: sessionId, reason: reason });
+
+    if (typeof entry.cleanup === 'function') {
+      // Preferred path: the SSE route's own cleanup handles end-event +
+      // res.end + watcher.close + per-IP decrement in one place.
+      try {
+        entry.cleanup(reason);
+      } catch (_) {
+        // If the route's cleanup throws before fully tearing down (e.g.
+        // a non-thenable .close(), an exception during res.end), run
+        // the manual fallback so the watcher/FD doesn't leak. The map
+        // entry is already gone, so no caller can reach this entry
+        // again — this is our only recovery path.
+        this._teardownFsWatchEntryFallback(entry);
+      }
+    } else {
+      // Manual fallback for entries that don't carry a cleanup fn
+      // (defensive — e.g. tests that hand-inject map entries).
+      this._teardownFsWatchEntryFallback(entry);
+    }
+    return true;
+  }
+
+  /**
+   * Best-effort teardown of a fs-watch entry. Used by
+   * _cleanupFsWatchSession when the route-level cleanup is missing OR
+   * has thrown. Every step is independently try/catch-wrapped so one
+   * failure doesn't block the others.
+   */
+  _teardownFsWatchEntryFallback(entry) {
+    if (!entry) return;
+    if (entry.timer) { try { clearTimeout(entry.timer); } catch (_) { /* ignore */ } }
+    if (entry.watcher && typeof entry.watcher.close === 'function') {
+      try {
+        const p = entry.watcher.close();
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (_) { /* ignore */ }
+    }
+    if (entry.res && !entry.res.writableEnded) {
+      try { entry.res.end(); } catch (_) { /* ignore */ }
+    }
+    if (entry.ip && this._activeWatchersByIp) {
+      try {
+        const c = this._activeWatchersByIp.get(entry.ip) || 0;
+        if (c <= 1) this._activeWatchersByIp.delete(entry.ip);
+        else this._activeWatchersByIp.set(entry.ip, c - 1);
+      } catch (_) { /* ignore */ }
+    }
+  }
+
   cleanupWebSocketConnection(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
@@ -3670,6 +3775,15 @@ class ClaudeCodeWebServer {
     }
     const timeout = new Promise(resolve => setTimeout(resolve, 5000));
     await Promise.race([Promise.allSettled(stopPromises), timeout]);
+
+    // Tear down every live fs-watch SSE (chokidar watcher + TCP conn +
+    // per-IP counter). The Map is keyed by sessionId, so we snapshot the
+    // keys before iterating — _cleanupFsWatchSession mutates the Map.
+    if (this._fsWatchSessions) {
+      for (const sid of Array.from(this._fsWatchSessions.keys())) {
+        this._cleanupFsWatchSession(sid, 'server_close');
+      }
+    }
 
     // Clear all data
     this.claudeSessions.clear();

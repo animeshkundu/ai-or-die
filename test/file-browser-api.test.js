@@ -1193,6 +1193,40 @@ function encodeParam(val) {
     });
 
     /**
+     * Test helper — register a synthetic session in the server map so
+     * the watcher's race guard (no orphan watchers without a parent
+     * session) lets the SSE open. Real REST-API session creation would
+     * also work, but it pulls in body-parser overhead and the watcher
+     * code path doesn't care about any other session field.
+     *
+     * The PR #99 leak fix added the guard:
+     *     if (!this.claudeSessions.has(sessionId)) { cleanup(); return; }
+     * which is correct for production (every watcher is anchored to a
+     * live session that DELETE/eviction can cascade through), but it
+     * means watcher tests can no longer fabricate sessionIds out of thin
+     * air.
+     */
+    function ensureSession(id) {
+      if (!server || !server.claudeSessions) return;
+      if (server.claudeSessions.has(id)) return;
+      server.claudeSessions.set(id, {
+        id: id,
+        name: 'test-' + id,
+        created: new Date(),
+        lastActivity: new Date(),
+        active: false,
+        agent: null,
+        workingDir: tmpDir,
+        connections: new Set(),
+        outputBuffer: { push: () => {}, getAll: () => [], clear: () => {} },
+        priority: 'foreground',
+        sessionStartTime: null,
+        sessionUsage: { requests: 0, inputTokens: 0, outputTokens: 0, cacheTokens: 0, totalCost: 0, models: {} },
+        maxBufferSize: 1000,
+      });
+    }
+
+    /**
      * Open an SSE connection that stays open until `predicate(events)` returns
      * truthy or `timeoutMs` elapses, then closes the connection and resolves
      * with { status, events }. Used by tests that need to wait for specific
@@ -1289,6 +1323,11 @@ function encodeParam(val) {
      * subscribe paths via POST and read events as they arrive.
      */
     function openSseAndWaitForStart(port, sessionId, watchRoot, timeoutMs) {
+      // PR #99 race-guard contract — the watcher route now refuses to
+      // register an entry for a sessionId that's not present in
+      // claudeSessions. Tests that fabricate sessionIds must register
+      // a placeholder first.
+      ensureSession(sessionId);
       timeoutMs = timeoutMs || 3000;
       return new Promise((resolve, reject) => {
         const req = http.request({
@@ -1587,6 +1626,11 @@ function encodeParam(val) {
     it('rate-limits at 5 concurrent watchers per IP (returns 429 on 6th)', async function () {
       const subDir = path.join(realTmpDirW(), 'watch-rl');
       fs.mkdirSync(subDir, { recursive: true });
+
+      // PR #99 race-guard contract — pre-register each synthetic session
+      // so the 5 watcher slots actually open (otherwise the route bails
+      // on the 'session_missing' guard before incrementing the counter).
+      for (let i = 0; i < 7; i++) ensureSession('rl-slot-' + i);
 
       // Open 5 watchers with DISTINCT session ids and HOLD them open.
       // The 6th must 429.
