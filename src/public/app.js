@@ -3128,40 +3128,30 @@ class ClaudeCodeWebInterface {
                     terminal: terminal,
                     authFetch: (url, opts) => this.authFetch(url, opts),
                     openInViewer: (path, line, col) => this.openFileInViewer(path, line, col),
-                    // Legacy single-cwd callback — attachLinkProvider only
-                    // falls through to this when NEITHER getLiveCwd nor
-                    // getWorkingDir was supplied. We supply both below, so
-                    // in practice this is unused for our wiring; kept for
-                    // tests / external embedders that wire only getCwd.
-                    getCwd: () => this.getCurrentWorkingDir(),
                     // Part C resolver-chain callbacks. liveCwd is the OSC 7
                     // tracked cwd (null for non-Terminal-bridge sessions);
                     // workingDir is the session spawn dir; repoRoot is the
                     // cached git toplevel for the active session.
+                    //
+                    // NOTE: the legacy `getCwd` callback was intentionally
+                    // removed from this wiring (architect Layer-2 rip).
+                    // attachLinkProvider only falls back to `getCwd` when
+                    // NEITHER getLiveCwd nor getWorkingDir was supplied —
+                    // a condition we never hit. Wiring it here would have
+                    // re-introduced the silent global-folder-picker
+                    // fallback for any branch that returns null from
+                    // getWorkingDir (e.g. very first paint before
+                    // _sessionWorkingDirs is populated).
                     getLiveCwd: () => {
                         const sid = sessionIdSource();
                         if (!sid || !this._liveCwd) return null;
                         return this._liveCwd.get(sid) || null;
                     },
                     getWorkingDir: () => {
-                        const sid = sessionIdSource();
-                        if (!sid) return null;
-                        // Per-session cache first — populated synchronously
-                        // on session_created/joined/*_started events, so
-                        // race-free even before loadSessions resolves.
-                        if (this._sessionWorkingDirs && this._sessionWorkingDirs.has(sid)) {
-                            return this._sessionWorkingDirs.get(sid) || null;
-                        }
-                        // Fallback: claudeSessions[] (populated by
-                        // loadSessions). Backfill the cache as we go so
-                        // future clicks short-circuit.
-                        if (!this.claudeSessions) return null;
-                        const s = this.claudeSessions.find(x => x.id === sid);
-                        if (s && s.workingDir) {
-                            if (this._sessionWorkingDirs) this._sessionWorkingDirs.set(sid, s.workingDir);
-                            return s.workingDir;
-                        }
-                        return null;
+                        // getSessionWorkingDir returns null on miss
+                        // (NOT currentFolderPath) — that's the whole
+                        // point of the Layer 2 fix.
+                        return this.getSessionWorkingDir(sessionIdSource());
                     },
                     getRepoRoot: () => this._getRepoRootCached(sessionIdSource()),
                     onAmbiguous: (info) => this._showAmbiguityPicker(info),
@@ -3181,6 +3171,12 @@ class ClaudeCodeWebInterface {
                     authFetch: (url, opts) => this.authFetch(url, opts),
                     terminal: terminal,
                     app: this,
+                    // Same sessionIdSource thread as the link provider —
+                    // splits' right-click "Open in File Viewer" / "Edit"
+                    // / "Download" now uses the SPLIT's session id, not
+                    // app-global currentClaudeSessionId. (Layer 4 audit
+                    // ask from architect on the detector path.)
+                    getSessionId: sessionIdSource,
                 });
                 terminal._fbPathDetector.init();
             } catch (err) {
@@ -4051,24 +4047,56 @@ class ClaudeCodeWebInterface {
         }
     }
 
-    getCurrentWorkingDir() {
-        // Resolution order (per ADR-0019):
-        //   1. liveCwd from the OSC 7 parser (Terminal-bridge sessions only).
-        //   2. session.workingDir — the directory the PTY was spawned in.
-        //   3. currentFolderPath — the global base folder fallback.
-        // Steps 1 & 2 are session-scoped; step 3 is the safety net for
-        // pre-session contexts (e.g. the panel opened before any session
-        // exists).
-        if (this.currentClaudeSessionId) {
-            if (this._liveCwd && this._liveCwd.has(this.currentClaudeSessionId)) {
-                var live = this._liveCwd.get(this.currentClaudeSessionId);
-                if (live) return live;
-            }
-            if (this.claudeSessions) {
-                const session = this.claudeSessions.find(s => s.id === this.currentClaudeSessionId);
-                if (session && session.workingDir) return session.workingDir;
+    /**
+     * Return the WorkingDir for a specific session, with NO global-folder
+     * fallback. Used by the terminal-path resolver chain — for that
+     * caller, falling back to `currentFolderPath` (which is the global
+     * folder picker, not a session-scoped value) is the silent-wrong-dir
+     * footgun architect's Layer 2 calls out: it makes the resolver
+     * silently join `/Users/foo/src/app.js` from a different session's
+     * relative path, leading to either a 404 toast (best case) or
+     * opening the wrong file (worst case).
+     *
+     * Resolution order:
+     *   1. liveCwd from the OSC 7 parser (Terminal-bridge sessions only).
+     *   2. _sessionWorkingDirs cache (synchronous from session_created/
+     *      joined/*_started events).
+     *   3. claudeSessions[] (asynchronously populated by loadSessions).
+     *   4. null (caller decides what "no session context" means).
+     *
+     * @param {string} sid Session id. Returns null when sid is falsy.
+     * @returns {string|null}
+     */
+    getSessionWorkingDir(sid) {
+        if (!sid) return null;
+        if (this._liveCwd && this._liveCwd.has(sid)) {
+            const live = this._liveCwd.get(sid);
+            if (live) return live;
+        }
+        if (this._sessionWorkingDirs && this._sessionWorkingDirs.has(sid)) {
+            const wd = this._sessionWorkingDirs.get(sid);
+            if (wd) return wd;
+        }
+        if (this.claudeSessions) {
+            const s = this.claudeSessions.find(x => x.id === sid);
+            if (s && s.workingDir) {
+                // Back-fill the cache so the next call short-circuits.
+                if (this._sessionWorkingDirs) this._sessionWorkingDirs.set(sid, s.workingDir);
+                return s.workingDir;
             }
         }
+        return null;
+    }
+
+    getCurrentWorkingDir() {
+        // Wrapper for callers that want the foreground session's working
+        // directory PLUS the global-folder fallback for pre-session
+        // contexts (e.g. the panel opened before any session exists).
+        // The resolver-chain callbacks in _setupTerminalLinking use
+        // getSessionWorkingDir() directly to avoid the fallback — see
+        // its docstring for why.
+        const sessionWd = this.getSessionWorkingDir(this.currentClaudeSessionId);
+        if (sessionWd) return sessionWd;
         return this.currentFolderPath || null;
     }
 

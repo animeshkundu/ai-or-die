@@ -3241,6 +3241,16 @@
     this.authFetch = options.authFetch;
     this.terminal = options.terminal;
     this.app = options.app || null;       // optional, for cwd resolution
+    // Optional source for the session id this terminal is bound to.
+    // Mirrors the attachLinkProvider sessionIdSource contract — main
+    // terminal passes the foreground session, splits pass their own
+    // pane's session id. Without this, the detector ends up using
+    // app.getCurrentWorkingDir() (which carries the global-folder
+    // fallback) — the same Layer-2 silent-wrong-dir footgun that the
+    // link provider's resolver chain explicitly avoids.
+    this._getSessionId = (typeof options.getSessionId === 'function')
+      ? options.getSessionId
+      : null;
     this._menuEl = null;
   }
 
@@ -3368,7 +3378,7 @@
     var menu = this._menuEl;
     // Tolerate legacy callers that pass a bare string.
     if (typeof detected === 'string') detected = { path: detected, line: null, col: null };
-    var filePath = detected.path;
+    var hint = detected.path;
 
     // Position the menu
     menu.style.left = x + 'px';
@@ -3381,56 +3391,117 @@
       items[i].classList.add('disabled');
     }
 
-    // Validate the path asynchronously
-    this.authFetch('/api/files/stat?path=' + encodeURIComponent(filePath))
-      .then(function (resp) {
-        if (!resp.ok) throw new Error('not found');
-        return resp.json();
-      })
-      .then(function (stat) {
-        // Enable items
-        for (var j = 0; j < items.length; j++) {
-          items[j].classList.remove('disabled');
-        }
-
-        // Wire click handlers
-        self._viewItem.onclick = function () {
-          self._hideMenu();
-          var panel = self._resolvePanel();
-          if (panel) panel.openToFile(filePath);
-        };
-        self._editItem.onclick = function () {
-          self._hideMenu();
-          var panel = self._resolvePanel();
-          if (panel) {
-            panel.openToFile(filePath);
-            // The edit will be triggered after preview loads
+    // Resolve the (possibly relative) selection through the SAME chain
+    // as the link provider's click activate path (Part C / Layer 2):
+    //   1. absolute? → stat(hint)
+    //   2. join(liveCwd, hint) (per-session OSC-7 cwd, terminal bridge only)
+    //   3. join(workingDir, hint) (per-session spawn dir — NOT the global folder)
+    //   4. join(repoRoot, hint) (per-session git toplevel)
+    // First step that 200s wins; menu actions use that absolute path.
+    // Without this, a relative selection ("src/app.js") was sent to
+    // /api/files/stat raw — server-side validatePath resolves against
+    // process.cwd() (baseFolder), which is NOT the session's working
+    // directory, so the menu silently disabled itself for ANY relative
+    // path emitted by a Claude/Codex/Gemini session in a subdirectory.
+    var sid = (typeof this._getSessionId === 'function') ? this._getSessionId() : null;
+    var ctx = { liveCwd: null, workingDir: null, repoRoot: null };
+    if (this.app) {
+      // Prefer the session-scoped helper (no global-folder fallback).
+      // Fall back to whatever the app exposes if those helpers are
+      // missing — keeps the detector usable for legacy embedders /
+      // future test shims.
+      try {
+        if (sid) {
+          if (this.app._liveCwd && typeof this.app._liveCwd.get === 'function') {
+            ctx.liveCwd = this.app._liveCwd.get(sid) || null;
           }
-        };
-        self._downloadItem.onclick = function () {
-          self._hideMenu();
-          // window.open spawns a fresh navigation; thread the Bearer
-          // token via ?token= so --auth mode doesn't 401 the new tab.
-          var dlUrl = '/api/files/download?path=' + encodeURIComponent(filePath);
-          if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
-            dlUrl = window.authManager.appendAuthToUrl(dlUrl);
+          if (typeof this.app.getSessionWorkingDir === 'function') {
+            ctx.workingDir = this.app.getSessionWorkingDir(sid) || null;
+          } else if (this.app._sessionWorkingDirs && this.app._sessionWorkingDirs.has(sid)) {
+            ctx.workingDir = this.app._sessionWorkingDirs.get(sid) || null;
           }
-          window.open(dlUrl, '_blank');
-        };
+          if (typeof this.app._getRepoRootCached === 'function') {
+            ctx.repoRoot = this.app._getRepoRootCached(sid) || null;
+          }
+        }
+        // Last-ditch back-compat for callers that don't supply
+        // getSessionId — use the global helper (which DOES carry the
+        // folder fallback). Bare-minimum to keep right-click working
+        // pre-Layer-4 wiring.
+        if (!sid && !ctx.workingDir && typeof this.app.getCurrentWorkingDir === 'function') {
+          ctx.workingDir = this.app.getCurrentWorkingDir() || null;
+        }
+      } catch (_) { /* leave ctx empty — chain still tries absolute hint */ }
+    }
+    var candidates = resolveCandidates(hint, ctx);
+    // If `hint` is absolute and resolveCandidates produced nothing
+    // (no context), still try the literal hint as a final fallback —
+    // legacy callers that pass an already-absolute path shouldn't
+    // regress.
+    if (!candidates.length) candidates = [hint];
 
-        // Hide edit for non-editable files
-        if (!stat.editable) {
-          self._editItem.style.display = 'none';
-        } else {
-          self._editItem.style.display = '';
-        }
-      })
-      .catch(function () {
-        // Path doesn't exist — disable all items
-        for (var k = 0; k < items.length; k++) {
-          items[k].classList.add('disabled');
-        }
-      });
+    var disableAll = function () {
+      for (var k = 0; k < items.length; k++) items[k].classList.add('disabled');
+    };
+
+    // Stat each candidate in order; first 200 wins (no ambiguity picker
+    // in the right-click flow — the user already selected a specific
+    // path token, and showing a picker after a context-menu invocation
+    // would be jarring UX).
+    var idx = 0;
+    var tryNext = function () {
+      if (idx >= candidates.length) {
+        disableAll();
+        return;
+      }
+      var candidate = candidates[idx++];
+      self.authFetch('/api/files/stat?path=' + encodeURIComponent(candidate))
+        .then(function (resp) {
+          if (!resp.ok) {
+            tryNext();
+            return null;
+          }
+          return resp.json().then(function (stat) { return { stat: stat, filePath: candidate }; });
+        })
+        .then(function (hit) {
+          if (!hit) return;
+          var stat = hit.stat;
+          var filePath = hit.filePath;
+          // Enable items
+          for (var j = 0; j < items.length; j++) items[j].classList.remove('disabled');
+
+          // Wire click handlers (bind the RESOLVED path, not the hint)
+          self._viewItem.onclick = function () {
+            self._hideMenu();
+            var panel = self._resolvePanel();
+            if (panel) panel.openToFile(filePath);
+          };
+          self._editItem.onclick = function () {
+            self._hideMenu();
+            var panel = self._resolvePanel();
+            if (panel) {
+              panel.openToFile(filePath);
+              // The edit will be triggered after preview loads
+            }
+          };
+          self._downloadItem.onclick = function () {
+            self._hideMenu();
+            var dlUrl = '/api/files/download?path=' + encodeURIComponent(filePath);
+            if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
+              dlUrl = window.authManager.appendAuthToUrl(dlUrl);
+            }
+            window.open(dlUrl, '_blank');
+          };
+
+          if (!stat.editable) {
+            self._editItem.style.display = 'none';
+          } else {
+            self._editItem.style.display = '';
+          }
+        })
+        .catch(function () { tryNext(); });
+    };
+    tryNext();
 
     // Ensure menu stays within viewport
     requestAnimationFrame(function () {
