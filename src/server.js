@@ -308,10 +308,26 @@ class ClaudeCodeWebServer {
       }
       return out;
     } catch (_) {
-      // .native throws ENOENT on non-existent paths (POSIX realpath
-      // semantics). Try the laxer JS implementation, which may still
-      // resolve the parent.
-      try { return fs.realpathSync(resolved); } catch (__) { return resolved; }
+      // Path doesn't exist — recurse on the parent (which usually does)
+      // and append the basename. This propagates the 8.3 / symlink
+      // expansion from the closest existing ancestor down to the
+      // non-existent leaf, so the lexical compare against an existing
+      // baseFolder still resolves correctly.
+      //
+      // Without this, a brand-new upload destination (e.g. a file path
+      // about to be created, or a directory that hasn't been mkdir'd
+      // yet) would canonicalize to its input form (SHORT on Windows
+      // CI) while baseFolder canonicalizes to LONG — and the lexical
+      // compare in isPathWithinBase would reject it as out-of-sandbox.
+      try {
+        const parent = path.dirname(resolved);
+        if (parent && parent !== resolved) {
+          return path.join(this._canonicalizePathSync(parent), path.basename(resolved));
+        }
+      } catch (__) { /* recursion fell through — fall through to plain JS realpath */ }
+      // Last-ditch: pure-JS realpath (may resolve some POSIX symlinks
+      // that .native couldn't, e.g. broken-symlink edge cases).
+      try { return fs.realpathSync(resolved); } catch (___) { return resolved; }
     }
   }
 
