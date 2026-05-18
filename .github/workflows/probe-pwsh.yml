@@ -13,10 +13,17 @@ name: Probe — pwsh empirical validation for ADR-0021
 #   5 — OSC 7 URI emit form for Windows paths (ASCII / spaces / unicode / UNC)
 #   6 — cmd.exe confirmation of no PROMPT_COMMAND equivalent
 #
-# Manual trigger only — this is investigative, not part of the merge gate.
-# Findings flow into ADR-0021 cross-lab round 2.
-
+# Triggers on push to the dedicated probe branch only. GitHub's
+# workflow_dispatch API requires the workflow definition to live on the
+# repo's default branch, which would defeat the "no main pollution"
+# architectural choice for this probe surface. Push-scoped is the
+# next-cleanest option — fires when SE pushes a probe iteration to
+# probe/pwsh-empirical; no default-branch registration needed; never
+# auto-fires from elsewhere.
 on:
+  push:
+    branches:
+      - probe/pwsh-empirical
   workflow_dispatch:
 
 jobs:
