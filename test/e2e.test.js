@@ -542,6 +542,13 @@ describe('E2E: Terminal tool session', function () {
     wsSend(ws, { type: 'start_terminal' });
     const started = await waitForMessage(ws, 'terminal_started', 10000);
     assert.strictEqual(started.type, 'terminal_started');
+    // Started broadcasts must carry workingDir so the client's
+    // resolver-chain `getWorkingDir()` callback has a deterministic
+    // per-session signal without racing /api/sessions/list refresh.
+    // (Click-to-open from terminal output depends on this.)
+    assert.strictEqual(started.workingDir, created.workingDir,
+      'expected terminal_started.workingDir === session_created.workingDir, got ' +
+      JSON.stringify({ started: started.workingDir, created: created.workingDir }));
 
     // The shell should produce some initial output (prompt, motd, etc.)
     const outputs = await collectMessages(ws, 'output', 3000);
@@ -593,6 +600,10 @@ describe('E2E: Terminal tool session', function () {
     wsSend(ws, { type: 'start_terminal' });
     const msg = await waitForMessage(ws, 'terminal_started', 10000);
     assert(msg.sessionId, 'Expected terminal_started with sessionId');
+    // Even on the idempotent re-start path, workingDir must be present —
+    // a client joining post-start needs the resolver-chain prime too.
+    assert(typeof msg.workingDir === 'string' && msg.workingDir.length > 0,
+      'Expected terminal_started (idempotent path) to carry workingDir, got: ' + msg.workingDir);
 
     // Cleanup
     wsSend(ws, { type: 'stop' });

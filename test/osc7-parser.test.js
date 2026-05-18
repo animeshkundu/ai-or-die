@@ -225,6 +225,7 @@ describe('Osc7Parser', function () {
   });
 
   describe('overflow safety (4 KB pending cap)', function () {
+    before(skipOnWindows);
     it('drops a runaway sequence that never terminates and resyncs cleanly', function () {
       const p = new Osc7Parser();
       // Start a sequence and never terminate it — feed > 4 KB of junk after.

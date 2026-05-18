@@ -77,18 +77,25 @@ class ClaudeCodeWebServer {
     this.keyFile = options.key;
     this.folderMode = options.folderMode !== false; // Default to true
     this.selectedWorkingDir = null;
-    // Canonicalize baseFolder via realpathSync at construction so the
-    // sandbox check in isPathWithinBase (which is purely lexical via
-    // path.relative) compares apples-to-apples with realpath'd target
-    // paths. On Windows this matters because the test runner's tmpdir
-    // may be in 8.3-short form (C:\Users\RUNNER~1\...) while realpathSync
-    // returns the long form (C:\Users\runneradmin\...). Without
-    // canonicalizing baseFolder, validatePath silently rejects any
-    // realpath'd target that crosses the short-vs-long boundary — which
-    // broke the /api/sessions/:id/repo-root test on windows-latest.
-    let _baseFolder = process.cwd();
-    try { _baseFolder = fs.realpathSync(_baseFolder); } catch (_) { /* keep cwd on failure */ }
-    this.baseFolder = _baseFolder; // The folder where the app runs from
+    // Canonicalize baseFolder so the sandbox check in isPathWithinBase
+    // (which is purely lexical via path.relative) compares apples-to-apples
+    // with realpath'd target paths.
+    //
+    // On Windows this is especially fiddly because:
+    //   (a) The test runner's tmpdir may be in 8.3-short form
+    //       (C:\Users\RUNNER~1\...) while git rev-parse and Windows
+    //       native APIs return the long form (C:\Users\runneradmin\...).
+    //   (b) Pure-JS fs.realpathSync does NOT expand 8.3 short names on
+    //       Node 22 Windows — only fs.realpathSync.native does (via
+    //       libuv's uv_fs_realpath → GetFinalPathNameByHandleW).
+    //   (c) But .native sometimes returns a \\?\-prefixed long path,
+    //       which then breaks the lexical compare in the OTHER direction.
+    //
+    // _canonicalizePathSync handles all three: prefers .native (so 8.3
+    // shorts expand), strips any \\?\ prefix back to its plain form,
+    // falls back to JS realpath on POSIX legacy paths. See its definition
+    // below.
+    this.baseFolder = this._canonicalizePathSync(process.cwd());
     // Session duration in hours (default to 5 hours from first message)
     this.sessionDurationHours = parseFloat(process.env.CLAUDE_SESSION_HOURS || options.sessionHours || 5);
     
@@ -254,10 +261,77 @@ class ClaudeCodeWebServer {
     process.exit(exitCode);
   }
 
+  /**
+   * Canonicalize a filesystem path to a single deterministic form so the
+   * lexical sandbox check in isPathWithinBase compares apples-to-apples
+   * regardless of which "flavour" of the path the input started in.
+   *
+   * Windows specifics (this is the load-bearing OS):
+   *   - `fs.realpathSync` (pure JS) does NOT expand 8.3 short names on
+   *     Node 22. Inputs like `C:\Users\RUNNER~1\...` stay short. Inputs
+   *     like `C:\Users\runneradmin\...` stay long. So two paths to the
+   *     same dir can lexically disagree.
+   *   - `fs.realpathSync.native` delegates to libuv → GetFinalPathNameByHandleW
+   *     which DOES expand 8.3 — but sometimes returns a `\\?\`-prefixed
+   *     long path. The `\\?\` prefix is a Windows API hint, not part of
+   *     the canonical path, and breaks lexical comparison against
+   *     paths that don't carry it.
+   *
+   * Strategy: prefer `.native` (so 8.3 shorts always expand). Strip any
+   * `\\?\` prefix the native call adds (handle both DOS-drive and UNC
+   * forms). Fall back to pure-JS `realpathSync` on any error (e.g. a
+   * non-existent path on POSIX where .native throws ENOENT but JS
+   * fallback can still resolve the parent).
+   *
+   * POSIX: `.native` is a thin wrapper around realpath(3); behaviour
+   * matches `realpathSync` for existing paths. No `\\?\` prefix
+   * concern. Returns the same value either way.
+   *
+   * Returns the input unchanged when both calls fail (e.g. neither
+   * the path nor its parent exists). Callers that need an existence
+   * guarantee should `fs.existsSync` first.
+   *
+   * @param {string} p Absolute or relative path. Resolved against cwd
+   *   before canonicalization.
+   * @returns {string} Canonical absolute path, or the resolved input
+   *   on canonicalization failure.
+   */
+  _canonicalizePathSync(p) {
+    if (!p) return p;
+    const resolved = path.resolve(p);
+    // Prefer .native — only it expands Windows 8.3 short names.
+    try {
+      let out = fs.realpathSync.native(resolved);
+      // Strip the Windows long-path `\\?\` prefix that .native sometimes
+      // adds. Two forms:
+      //   `\\?\C:\Users\...`       → `C:\Users\...`
+      //   `\\?\UNC\server\share\…` → `\\server\share\…`
+      // Without this, baseFolder (resolved before the prefix was added)
+      // and the realpath'd target would still lexically disagree.
+      if (process.platform === 'win32' && out.startsWith('\\\\?\\')) {
+        out = out.startsWith('\\\\?\\UNC\\') ? '\\\\' + out.slice(8) : out.slice(4);
+      }
+      return out;
+    } catch (_) {
+      // .native throws ENOENT on non-existent paths (POSIX realpath
+      // semantics). Try the laxer JS implementation, which may still
+      // resolve the parent.
+      try { return fs.realpathSync(resolved); } catch (__) { return resolved; }
+    }
+  }
+
   isPathWithinBase(targetPath) {
     try {
-      const resolvedTarget = path.resolve(targetPath);
-      const resolvedBase = path.resolve(this.baseFolder);
+      // Canonicalize BOTH sides at compare time. Storage form (whatever
+      // baseFolder was captured as, whatever the caller hands in) is
+      // irrelevant — only the canonical form is compared. This collapses
+      // 8.3 short / long, `\\?\` prefix presence/absence, and symlink
+      // variance into a single deterministic key per filesystem entity.
+      // Defence-in-depth: callers also canonicalize via _canonicalizePathSync
+      // upstream, but re-doing it here means a future caller that forgets
+      // to canonicalize still gets the right answer.
+      const resolvedTarget = this._canonicalizePathSync(targetPath);
+      const resolvedBase = this._canonicalizePathSync(this.baseFolder);
       // Use path.relative instead of startsWith to avoid prefix-matching false positives
       // (e.g. /home/user-admin would match /home/user with startsWith)
       const relative = path.relative(resolvedBase, resolvedTarget);
@@ -275,29 +349,33 @@ class ClaudeCodeWebServer {
 
     let canonicalPath = path.resolve(targetPath);
 
-    // Canonicalize symlinks BEFORE the within-base check. Otherwise an input
-    // passed in its pre-symlink form (e.g. `/var/folders/x` where `/var ->
-    // /private/var` on macOS) won't match a baseFolder that came from
-    // `process.cwd()` — which returns the realpath form. Without this,
-    // EVERY /api/files/* request hitting a symlinked tmp dir returns 403
-    // even when the realpath would be inside baseFolder. (This was the
-    // root cause of 28 file-browser-api.test.js failures on macOS; the
-    // tests had effectively never been run end-to-end on a symlinked tmp.)
+    // Canonicalize symlinks AND Windows 8.3 short names BEFORE the
+    // within-base check. Otherwise an input passed in its pre-symlink
+    // form (e.g. `/var/folders/x` where `/var -> /private/var` on macOS)
+    // won't match a baseFolder that came from `process.cwd()` — which
+    // returns the realpath form. Without this, EVERY /api/files/* request
+    // hitting a symlinked tmp dir returns 403 even when the realpath
+    // would be inside baseFolder. (This was the root cause of 28
+    // file-browser-api.test.js failures on macOS; the tests had
+    // effectively never been run end-to-end on a symlinked tmp.)
+    //
+    // On Windows the same logic also expands 8.3 short forms — see
+    // _canonicalizePathSync for the full rationale.
     //
     // For non-existent inputs (new uploads, files about to be created),
-    // canonicalize the parent so a symlinked parent dir doesn't leak past
-    // the within-base check either.
+    // canonicalize the parent so a symlinked / short-named parent dir
+    // doesn't leak past the within-base check either.
     //
     // The post-canonicalize within-base check still defends against the
     // "user-planted symlink escapes baseFolder" case: realpath follows
     // the symlink, then we compare the FOLLOWED path against base.
     try {
       if (fs.existsSync(canonicalPath)) {
-        canonicalPath = fs.realpathSync(canonicalPath);
+        canonicalPath = this._canonicalizePathSync(canonicalPath);
       } else {
         const parent = path.dirname(canonicalPath);
         if (parent && parent !== canonicalPath && fs.existsSync(parent)) {
-          canonicalPath = path.join(fs.realpathSync(parent), path.basename(canonicalPath));
+          canonicalPath = path.join(this._canonicalizePathSync(parent), path.basename(canonicalPath));
         }
       }
     } catch (_) { /* keep the lexical form on realpath failure */ }
@@ -330,15 +408,13 @@ class ClaudeCodeWebServer {
       current = path.dirname(startPath);
     }
 
-    // baseFolder may itself be a symlink — resolve to its realpath ONCE so
-    // the lexical equality check below matches the realpath validatePath
-    // returned for the file we're walking up from. Without this, a server
-    // started with `--folder /symlink-to-foo` could keep walking past the
-    // intended boundary because the operator's lexical path !== realpath.
-    // (Reviewer LOW-1 on 2fa99d1.)
-    let baseResolved;
-    try { baseResolved = fs.realpathSync(this.baseFolder); }
-    catch (_) { baseResolved = path.resolve(this.baseFolder); }
+    // baseFolder may itself be a symlink or in Windows 8.3 short form —
+    // use _canonicalizePathSync so the lexical equality check below matches
+    // the canonical form validatePath returned for the file we're walking
+    // up from. Without this, a server started with `--folder /symlink-to-foo`
+    // could keep walking past the intended boundary because the operator's
+    // lexical path !== realpath. (Reviewer LOW-1 on 2fa99d1.)
+    const baseResolved = this._canonicalizePathSync(this.baseFolder);
 
     // Defensive cap: walk at most 64 levels up. parent === current already
     // terminates at the FS root, but the cap defends against pathological
@@ -1776,7 +1852,11 @@ class ClaudeCodeWebServer {
             killForCap();
             break;
           }
-          files.push(line);
+          // Normalize separators to '/' so path-separator queries
+          // (`utils/format`) match on Windows where ripgrep emits
+          // native '\' separators. The fuzzysort target shape is what
+          // the user types against, not what the OS reports.
+          files.push(process.platform === 'win32' ? line.replace(/\\/g, '/') : line);
         }
       });
 
@@ -3091,7 +3171,12 @@ class ClaudeCodeWebServer {
         console.log(`startToolSession(${toolName}): already running in session ${sessionId}, sending success`);
         this.sendToWebSocket(wsInfo.ws, {
           type: `${toolName}_started`,
-          sessionId: sessionId
+          sessionId: sessionId,
+          // Mirror the broadcast shape so the client always gets workingDir
+          // from a started frame, even on the idempotent already-running
+          // re-entry path. (Otherwise a client that joined post-start would
+          // miss the resolver-chain prime.)
+          workingDir: session.workingDir,
         });
         return;
       }
@@ -3203,7 +3288,17 @@ class ClaudeCodeWebServer {
 
       this.broadcastToSession(sessionId, {
         type: `${toolName}_started`,
-        sessionId: sessionId
+        sessionId: sessionId,
+        // Carry workingDir on the started frame so the client's
+        // resolver-chain `getWorkingDir()` callback has a deterministic
+        // per-session signal without racing /api/sessions/list refresh.
+        // Matches the shape of `session_created` and `session_joined`,
+        // which already include this field. Architect-approved fix for
+        // click-to-open failures where the cached claudeSessions array
+        // lagged the user's first click after session start.
+        // (Per ADR-0019, we do NOT also emit a synthesized cwd_changed
+        // here — `liveCwd` must stay null for non-Terminal bridges.)
+        workingDir: session.workingDir,
       });
       this.broadcastSessionActivity(sessionId, 'session_started', { agent: toolName });
 

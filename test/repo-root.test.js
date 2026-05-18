@@ -106,11 +106,19 @@ function gitAvailable() {
     const sid = await makeSession(path.join(repoDir, 'src'));
     const r = await request(port, 'GET', '/api/sessions/' + sid + '/repo-root');
     assert.strictEqual(r.status, 200);
-    // Compare via realpath because validatePath canonicalizes via realpathSync
-    // (matters on macOS where /var → /private/var).
-    const expected = fs.realpathSync(repoDir);
-    assert.strictEqual(r.body.root, expected,
-      'expected ' + expected + ', got ' + r.body.root);
+    assert.notStrictEqual(r.body.root, null,
+      'expected non-null root for session inside git repo, got null (server validation rejected git output?)');
+    // Compare via realpath of BOTH sides so we don't trip on Windows 8.3
+    // short vs long form (CI runner exposes tmpdir as `C:\Users\RUNNER~1`
+    // but git rev-parse returns the long form `C:\Users\runneradmin`).
+    // Both calls go through the same canonicalization pipe, so they
+    // collapse to the same form regardless of which form the caller
+    // started in. Matters on macOS too (where /var → /private/var).
+    const canonicalActual = fs.realpathSync(r.body.root);
+    const canonicalExpected = fs.realpathSync(repoDir);
+    assert.strictEqual(canonicalActual, canonicalExpected,
+      'expected ' + canonicalExpected + ', got ' + canonicalActual +
+      ' (server returned ' + r.body.root + ')');
   });
 
   it('returns root: null for a session whose workingDir is not inside a git repo', async function () {
