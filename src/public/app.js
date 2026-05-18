@@ -38,6 +38,11 @@ class ClaudeCodeWebInterface {
         //      now receive the SPLIT's session id (not this.currentClaudeSessionId),
         //      so we need a per-session lookup that doesn't depend on which
         //      tab is foregrounded.
+        // TODO(future): entries are NOT garbage-collected on session
+        // delete — de minimis at typical scale (max few-dozen sessions
+        // per page lifetime) but flagged by architect for cleanup if a
+        // user surfaces long-running-tab memory drift. A delete-handler
+        // would hook into the existing session-deletion message flow.
         this._sessionWorkingDirs = new Map();
         this.isCreatingNewSession = false;
         Object.defineProperty(this, 'isMobile', {

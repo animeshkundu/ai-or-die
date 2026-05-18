@@ -540,6 +540,8 @@ Two race / correctness windows this closes:
 
 `app.getSessionWorkingDir(sid)` is the single helper both `getCurrentWorkingDir()` (panel default, with the global `currentFolderPath` fallback) and the resolver-chain `getWorkingDir` callback (no fallback — returns null on miss) consume. It walks `_liveCwd → _sessionWorkingDirs → claudeSessions[]` and back-fills the cache from `claudeSessions[]` on a fallthrough hit so future calls short-circuit.
 
+> **Known limitation.** `_sessionWorkingDirs` entries are not garbage-collected when a session is deleted. De minimis at typical scale (a few dozen sessions per page lifetime); a delete-handler hooking into the existing session-deletion message flow is a follow-up if long-running tabs surface memory drift.
+
 **Layer 2 — back-compat fallback gate.** `attachLinkProvider` historically fell through to the legacy `getCwd` callback (mapped to `app.getCurrentWorkingDir()`, which carries the `currentFolderPath` global-fallback) whenever both `getLiveCwd` and `getWorkingDir` returned null. Hosts that wire the new chain (our app does) now SKIP this fallback — the resolver surfaces "could not resolve" rather than silently joining against the global folder picker. The legacy fallback survives only for callers that supply neither new callback (e.g. unit tests that wire just `getCwd`). The app's own `_setupTerminalLinking` no longer passes a `getCwd` option at all (architect "rip" sign-off) so the legacy path is now strictly test-shim territory.
 
 #### TerminalPathDetector resolver-chain audit
