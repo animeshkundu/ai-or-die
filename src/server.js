@@ -352,7 +352,15 @@ class ClaudeCodeWebServer {
       // .native form); .native is only used HERE, where it can't leak
       // into response paths or watcher-subscription keys.
       const resolvedTarget = this._canonicalizePathSync(targetPath);
-      const resolvedBase = this._canonicalizePathSync(this.baseFolder);
+      // Memoized — baseFolder is constant for the process lifetime, but
+      // _canonicalizePathSync calls fs.realpathSync.native which is a real
+      // syscall (10–50ms on a SUBST/network drive). isPathWithinBase runs
+      // on every OSC 7 emission via validatePath; without this cache, each
+      // emission paid a redundant baseFolder realpath round-trip.
+      if (!this._canonicalizedBaseFolder) {
+        this._canonicalizedBaseFolder = this._canonicalizePathSync(this.baseFolder);
+      }
+      const resolvedBase = this._canonicalizedBaseFolder;
       // Use path.relative instead of startsWith to avoid prefix-matching false positives
       // (e.g. /home/user-admin would match /home/user with startsWith)
       const relative = path.relative(resolvedBase, resolvedTarget);
@@ -2253,7 +2261,12 @@ class ClaudeCodeWebServer {
 
       let watcher;
       let watcherClosed = false;
-      const debounceMs = parseInt(process.env.FS_WATCHER_DEBOUNCE_MS, 10) || 100;
+      // Per the diagnosed Windows hang on Q:\src with multi-worktree + Claude
+      // bulk edits: the 100ms default barely coalesced — a single bulk-edit
+      // wave produced thousands of debounce timers. 500ms is still well below
+      // the 5s "stale buffer" UX threshold from ADR-0017 but cuts emitted
+      // event rate by ~5x under bulk activity.
+      const debounceMs = parseInt(process.env.FS_WATCHER_DEBOUNCE_MS, 10) || 500;
       // FS_WATCHER_STABILITY_MS env: defaults to 80ms (the tuned-down
       // value per ADR-0017 §Coalescing). Setting to 0 DISABLES chokidar's
       // awaitWriteFinish entirely — useful in tests where sync
@@ -2335,6 +2348,16 @@ class ClaudeCodeWebServer {
           // FS_WATCHER_USE_POLLING=1 → chokidar uses fs.stat-loop backend.
           usePolling: usePolling,
           ignoreDirs: ignoreFromEnv.length ? ignoreFromEnv : undefined,
+          // Narrow scope: chokidar only watches direct children of every
+          // subscribed path (vs. the prior recursive watch of the entire
+          // watchRoot tree). This is the load-bearing knob that bounds
+          // active_handles on large/multi-worktree trees — the symptom
+          // that prompted the unhang work. The client's existing soft-
+          // filter subscription model (current dir + open tabs) drives
+          // what chokidar actually watches via add()/unwatch() inside
+          // FileWatcher. Subscriptions for paths NOT in the displayed
+          // dir or an open tab don't allocate watch handles at all.
+          depth: 0,
         });
         sessionEntry.watcher = watcher;
 
