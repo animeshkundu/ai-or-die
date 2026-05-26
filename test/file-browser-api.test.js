@@ -1569,11 +1569,20 @@ function encodeParam(val) {
         `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(target)}`);
       assert.strictEqual(sub.status, 204);
 
-      // Lifecycle: write → modify → delete, with > debounce-window between.
+      // Under depth: 0, subscribe() calls chokidar.add() which is async — give
+      // it a moment to attach before mutating, or the first 'add' event races.
+      // In production the file-browser's initial /api/files readdir naturally
+      // covers this window; tests need an explicit delay.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Lifecycle: write → modify → delete, with > debounce-window between
+      // (debounce default is 500ms post-Windows-hang fix — the gap MUST
+      // exceed that or per-path debounce will collapse add+change into one
+      // event with the latest type winning).
       fs.writeFileSync(target, 'first');
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, 700));
       fs.writeFileSync(target, 'second');
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, 700));
       fs.unlinkSync(target);
 
       // Wait for the unlink event to confirm the chain completed.
@@ -1589,8 +1598,15 @@ function encodeParam(val) {
       assert.ok(change, 'change event must exist');
       assert.strictEqual(change.relPath, 'changeling.txt', 'relPath must be set');
       assert.strictEqual(typeof change.mtime, 'number', 'change must include numeric mtime');
-      assert.ok(typeof change.hash === 'string' && /^[0-9a-f]{32}$/.test(change.hash),
-        'change must include md5 hash; got ' + change.hash);
+      // hash is now opt-in: when the server constructs FileWatcher with
+      // depth: 0 (the narrow-scope path used by /api/files/watch since the
+      // Windows-hang fix), includeHash defaults to false to keep the sync
+      // fs.readFileSync MD5 from blocking the event loop under bulk edits.
+      // When present, it must still be a 32-char hex string.
+      if (change.hash !== undefined) {
+        assert.ok(typeof change.hash === 'string' && /^[0-9a-f]{32}$/.test(change.hash),
+          'change.hash, if emitted, must be a 32-char md5 hex; got ' + change.hash);
+      }
 
       const unlink = sse.events.find((e) => e.type === 'unlink' && e.path && e.path.endsWith('/changeling.txt'));
       assert.strictEqual(unlink.mtime, null, 'unlink mtime must be null');
@@ -1704,12 +1720,19 @@ function encodeParam(val) {
     });
 
     it('recursive=1: emits change event for nested file in subscribed dir', async function () {
-      const subDir = path.join(realTmpDirW(), 'watch-rec-nested');
-      fs.mkdirSync(path.join(subDir, 'a', 'b'), { recursive: true });
-      const nested = path.join(subDir, 'a', 'b', 'deep.txt');
-      fs.writeFileSync(nested, 'initial');
+      // SEMANTIC NOTE: under the depth: 0 narrow-scope (introduced when the
+      // Windows-hang fix narrowed chokidar to direct-children-only), a
+      // "recursive" subscription means "this dir's direct children", not
+      // "this dir's whole subtree". The file-browser listing only renders
+      // direct children anyway, so this matches actual use. This test now
+      // exercises the direct-child case; descendant events are intentionally
+      // not supported.
+      const subDir = path.join(realTmpDirW(), 'watch-rec-direct');
+      fs.mkdirSync(subDir, { recursive: true });
+      const direct = path.join(subDir, 'direct.txt');
+      fs.writeFileSync(direct, 'initial');
 
-      const sessionId = 'rec-nested-' + Date.now();
+      const sessionId = 'rec-direct-' + Date.now();
       const sse = await openSseAndWaitForStart(port, sessionId, subDir);
       assert.strictEqual(sse.status, 200);
 
@@ -1717,16 +1740,16 @@ function encodeParam(val) {
         `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}&recursive=1`);
       assert.strictEqual(sub.status, 204);
 
-      // Modify the deeply-nested file. Exact-path filter would drop this
-      // (the deep file wasn't subscribed); recursive must accept it.
-      await new Promise((r) => setTimeout(r, 150));   // let watcher settle
-      fs.writeFileSync(nested, 'modified by agent');
+      // Settle the chokidar.add() race window (see note in the "streams add
+      // → change → unlink" test above).
+      await new Promise((r) => setTimeout(r, 200));
+      fs.writeFileSync(direct, 'modified by agent');
 
       const evt = await waitForEvent(sse.events,
-        (e) => e.type === 'change' && e.path && e.path.endsWith('/a/b/deep.txt'),
+        (e) => e.type === 'change' && e.path && e.path.endsWith('/direct.txt'),
         3000);
-      assert.ok(evt, 'expected change event for nested file inside recursive sub');
-      assert.strictEqual(evt.relPath, 'a/b/deep.txt');
+      assert.ok(evt, 'expected change event for direct-child file inside recursive sub');
+      assert.strictEqual(evt.relPath, 'direct.txt');
 
       try { sse.request.destroy(); } catch (_) {}
       await new Promise((r) => setTimeout(r, 100));
@@ -1749,6 +1772,8 @@ function encodeParam(val) {
         `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(inside)}&recursive=1`);
       assert.strictEqual(sub.status, 204);
 
+      // Settle the chokidar.add() race for the inside subscription.
+      await new Promise((r) => setTimeout(r, 200));
       fs.writeFileSync(path.join(inside, 'in.txt'), 'inside');
       fs.writeFileSync(path.join(outside, 'out.txt'), 'outside');
 
@@ -1784,6 +1809,8 @@ function encodeParam(val) {
         `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(path.join(root, 'b'))}&recursive=1`);
       assert.strictEqual(sub.status, 204);
 
+      // Settle the chokidar.add() race.
+      await new Promise((r) => setTimeout(r, 200));
       fs.writeFileSync(path.join(root, 'b', 'in.txt'), 'in');
       fs.writeFileSync(path.join(root, 'bc', 'out.txt'), 'out');
 
@@ -1943,9 +1970,12 @@ function encodeParam(val) {
       await postJson(port,
         `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(target)}`);
 
+      // Settle the chokidar.add() race so the immediate writeFileSync below
+      // is observed.
+      await new Promise((r) => setTimeout(r, 200));
       fs.writeFileSync(target, 'first');
       // Wait > debounce window so any duplicates would have surfaced.
-      await new Promise((r) => setTimeout(r, 350));
+      await new Promise((r) => setTimeout(r, 600));
 
       const matchingEvts = sse.events.filter(
         (e) => e.type === 'add' && e.path && e.path.endsWith('/twice.txt'));

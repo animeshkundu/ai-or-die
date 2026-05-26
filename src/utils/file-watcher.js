@@ -98,7 +98,12 @@ class FileWatcher extends EventEmitter {
    *                Subscribed paths are typically children of this root, but
    *                relPath is computed regardless (may include `..` segments
    *                if a subscription is outside the root).
-   *   - debounceMs: per-path debounce window (default 100, ADR §Coalescing).
+   *   - debounceMs: per-path debounce window (default 500, ADR §Coalescing).
+   *                 Bumped from 100 to 500 when the "Windows + multi-worktree
+   *                 + Claude bulk edits" hang was diagnosed — under bulk edits
+   *                 a 100ms window barely coalesces, and combined with the
+   *                 narrow-scope `depth: 0` path below the longer window
+   *                 substantially cuts event rate without harming UX.
    *   - addChangeDedupMs: window within which add+change collapses to change
    *                       (default 50, ADR §Coalescing layer 3).
    *   - renameDetectMs: window within which same-inode unlink+add collapses
@@ -108,7 +113,19 @@ class FileWatcher extends EventEmitter {
    *                                    layer 1; tunable for tests).
    *   - ignoreDirs: directory-name list for ignore patterns; default
    *                 DEFAULT_IGNORE_DIRS.
-   *   - includeHash: emit hash on change events (default true).
+   *   - depth: passed through to chokidar. `0` confines the watcher to direct
+   *            children of every watched path — used by the file-browser SSE
+   *            endpoint to eliminate the recursive-tree handle explosion on
+   *            Windows + large worktree trees. Default `undefined`
+   *            (chokidar's recursive default, for backward compat).
+   *   - includeHash: emit MD5 hash on change events. Default `true` UNLESS
+   *                 `depth: 0` is set, in which case the default flips to
+   *                 `false` because the sync `fs.readFileSync` inside
+   *                 `_flush()` can block the event loop under bulk edits
+   *                 (e.g. an agent generating many files in the displayed
+   *                 directory). The `file-tabs.js` hash short-circuit falls
+   *                 through gracefully when hash is absent (always refresh
+   *                 via HTTP), so functionality is preserved.
    */
   constructor(opts) {
     super();
@@ -124,14 +141,24 @@ class FileWatcher extends EventEmitter {
     let resolvedRoot = path.resolve(opts.watchRoot);
     try { resolvedRoot = fs.realpathSync(resolvedRoot); } catch (_) {}
     this._watchRoot = resolvedRoot;
-    this._debounceMs = typeof opts.debounceMs === 'number' ? opts.debounceMs : 100;
+    this._debounceMs = typeof opts.debounceMs === 'number' ? opts.debounceMs : 500;
     this._addChangeDedupMs = typeof opts.addChangeDedupMs === 'number' ? opts.addChangeDedupMs : 50;
     this._renameDetectMs = typeof opts.renameDetectMs === 'number' ? opts.renameDetectMs : 50;
     this._stabilityMs = typeof opts.stabilityMs === 'number' ? opts.stabilityMs : 80;
     this._pollIntervalMs = typeof opts.pollIntervalMs === 'number' ? opts.pollIntervalMs : 30;
     this._ignoreDirs = Array.isArray(opts.ignoreDirs) ? opts.ignoreDirs : DEFAULT_IGNORE_DIRS;
     this._ignoreRegexes = buildIgnoreRegexes(this._ignoreDirs);
-    this._includeHash = opts.includeHash !== false;
+    this._depth = typeof opts.depth === 'number' ? opts.depth : undefined;
+    // When the caller opted into narrow-scope (depth: 0) and didn't explicitly
+    // ask for hashes, default-off to keep _flush() from doing sync MD5 reads
+    // under bulk-edit storms. Explicit `includeHash: true` still wins.
+    if (typeof opts.includeHash === 'boolean') {
+      this._includeHash = opts.includeHash;
+    } else if (this._depth === 0) {
+      this._includeHash = false;
+    } else {
+      this._includeHash = true;
+    }
     // Allow callers to disable awaitWriteFinish entirely (for tests where
     // sync writeFileSync races chokidar's poll cycle). Default = on with
     // tuned-down values per ADR-0017.
@@ -211,6 +238,15 @@ class FileWatcher extends EventEmitter {
       usePolling: this._usePolling,
       interval: this._usePolling ? 50 : undefined,
       atomic: false,
+      // depth: 0 confines chokidar to direct children of every watched
+      // path (the watchRoot + anything later added via subscribe). The
+      // server passes this for the file-browser SSE path; subscriptions
+      // drive what's actually watched beyond the watchRoot via
+      // chokidar.add(). This is the load-bearing knob that bounds the
+      // active_handles cost on large/multi-worktree trees. `undefined`
+      // (the default) restores chokidar's recursive behaviour for
+      // backward compat in callers that haven't migrated.
+      depth: this._depth,
     });
 
     this._watcher.on('add', (p, stat) => this._onChokidar('add', p, stat));
@@ -270,24 +306,38 @@ class FileWatcher extends EventEmitter {
 
   /**
    * Add a path to the active subscription set. Events for this path will
-   * now flow through the consumer's 'event' listener. The path does not
-   * need to exist at subscribe time — chokidar already watches the
-   * watchRoot subtree, so add events fire when the file is created.
+   * now flow through the consumer's 'event' listener.
+   *
+   * When the watcher was constructed with `depth: 0`, the chokidar watch
+   * scope is dynamically managed: subscribing to a file watches its parent
+   * directory (chokidar emits events for direct children of the watched
+   * dir); subscribing to a directory recursively watches that directory.
+   * A physical-watch-target refcount means we only call chokidar.add()
+   * for the first subscription that needs a given dir, and chokidar.unwatch()
+   * for the last. Without this, two tabs in the same dir would race the
+   * underlying watch and a tab-close could kill another tab's events.
+   *
+   * For constructors NOT using depth: 0 (legacy callers), chokidar already
+   * watches the full subtree of watchRoot recursively, so subscribe is
+   * pure soft-filter bookkeeping (no chokidar.add).
    *
    * @param {string} absPath
    * @param {object} [opts]
-   *   - recursive: boolean — if true, the subscription is treated as a
-   *                directory-recursive match: events for `absPath` AND
-   *                any descendant fire. Used by FileBrowserPanel for
-   *                the "auto-refresh listing on agent-create" case
-   *                where the new file's path isn't known at subscribe
-   *                time. Default false (exact-path match).
+   *   - recursive: boolean — if true, the subscription matches the dir AND
+   *                its descendants (in the recursive-watch model). Under
+   *                depth: 0 the soft-filter set still uses this for event
+   *                matching, but chokidar itself only watches direct
+   *                children of the dir — descendant events would not
+   *                arrive (file-browser listing already filters to direct
+   *                children, so this is invisible to current consumers).
+   *                Default false (exact-path match).
    */
   async subscribe(absPath, opts) {
     if (this._closed) throw new Error('FileWatcher: cannot subscribe on a closed watcher');
     if (!this._watcher) throw new Error('FileWatcher: must call start() before subscribe()');
     const canonical = this._canonicalize(absPath);
-    if (opts && opts.recursive) {
+    const isRecursive = !!(opts && opts.recursive);
+    if (isRecursive) {
       // Store with a trailing path separator so the prefix-match in
       // _onChokidar via `startsWith(dir + sep)` works without false
       // positives (e.g. /a/b should NOT match /a/bc).
@@ -295,13 +345,20 @@ class FileWatcher extends EventEmitter {
     } else {
       this._subscriptions.add(canonical);
     }
+    if (this._depth === 0) {
+      const target = isRecursive ? canonical : path.dirname(canonical);
+      this._refWatchTarget(target);
+    }
   }
 
   /**
    * Remove a path from the active subscription set. Subsequent events for
-   * this path will be dropped on emit (chokidar continues to fire them
-   * internally — cheap to discard). Idempotent: removing a non-subscribed
+   * this path will be dropped on emit. Idempotent: removing a non-subscribed
    * path is a no-op.
+   *
+   * Under `depth: 0`, also drops the chokidar watch on the corresponding
+   * target directory when no other subscription still references it (see
+   * `_refWatchTarget`).
    *
    * The `recursive` opt must match the flavour the path was subscribed
    * with — calling unsubscribe(path, {recursive:true}) on an exact-
@@ -312,10 +369,59 @@ class FileWatcher extends EventEmitter {
   async unsubscribe(absPath, opts) {
     if (this._closed) return;
     const canonical = this._canonicalize(absPath);
-    if (opts && opts.recursive) {
-      this._dirSubscriptions.delete(canonical + path.sep);
+    const isRecursive = !!(opts && opts.recursive);
+    let hadSub = false;
+    if (isRecursive) {
+      hadSub = this._dirSubscriptions.delete(canonical + path.sep);
     } else {
-      this._subscriptions.delete(canonical);
+      hadSub = this._subscriptions.delete(canonical);
+    }
+    if (!hadSub) return; // idempotent — nothing to release
+    if (this._depth === 0) {
+      const target = isRecursive ? canonical : path.dirname(canonical);
+      this._unrefWatchTarget(target);
+    }
+  }
+
+  /**
+   * Refcount-key normalization for the watch-target map. On Windows the
+   * filesystem is case-insensitive but path strings carry whatever casing
+   * the caller used (or whatever realpathSync returned, which is not
+   * always the on-disk form for paths it can't resolve). Lower-casing the
+   * key means `subscribe('Q:\\src\\file.js')` and `unsubscribe('q:\\SRC\\
+   * FILE.JS')` resolve to the same refcount slot. Forward-slash
+   * normalization is a separate cross-platform concern handled by
+   * normalizePath above.
+   */
+  _watchKeyNorm(p) {
+    const n = normalizePath(p);
+    return process.platform === 'win32' ? n.toLowerCase() : n;
+  }
+
+  _refWatchTarget(target) {
+    // The watchRoot is already watched at start() time — never add/unwatch it
+    // dynamically here, or we'd risk closing the root chokidar handle.
+    if (this._watchKeyNorm(target) === this._watchKeyNorm(this._watchRoot)) return;
+    const key = this._watchKeyNorm(target);
+    const cur = this._dirRefcount.get(key) || 0;
+    this._dirRefcount.set(key, cur + 1);
+    if (cur === 0) {
+      this._watchedDirs.add(key);
+      try { this._watcher.add(target); } catch (_) { /* chokidar will surface via 'error' if real */ }
+    }
+  }
+
+  _unrefWatchTarget(target) {
+    if (this._watchKeyNorm(target) === this._watchKeyNorm(this._watchRoot)) return;
+    const key = this._watchKeyNorm(target);
+    const cur = this._dirRefcount.get(key) || 0;
+    if (cur === 0) return; // defensive — refcount should never go negative
+    if (cur === 1) {
+      this._dirRefcount.delete(key);
+      this._watchedDirs.delete(key);
+      try { this._watcher.unwatch(target); } catch (_) {}
+    } else {
+      this._dirRefcount.set(key, cur - 1);
     }
   }
 
