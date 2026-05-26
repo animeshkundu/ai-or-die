@@ -194,6 +194,7 @@ class ClaudeCodeWebInterface {
         this.setupTerminal();
         this._setupExtraKeys();
         this._setupOrientationHandler();
+        this._setupPwaStandaloneListener();
         this.setupUI();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
@@ -827,6 +828,7 @@ class ClaudeCodeWebInterface {
         const handleOrientationChange = () => {
             setTimeout(() => {
                 this.fitTerminal();
+                this._polyfillSafeAreaInsetTop();
                 // Re-evaluate keyboard state
                 if (window.visualViewport && this._keyboardOpen !== undefined) {
                     const heightDiff = window.innerHeight - window.visualViewport.height;
@@ -3658,6 +3660,55 @@ class ClaudeCodeWebInterface {
             || window.matchMedia('(display-mode: minimal-ui)').matches
             || window.matchMedia('(display-mode: fullscreen)').matches
             || navigator.standalone === true;
+    }
+
+    _setupPwaStandaloneListener() {
+        const apply = () => {
+            const standalone = this._isInstalledPWA();
+            document.documentElement.classList.toggle('pwa-standalone', standalone);
+            if (standalone) this._polyfillSafeAreaInsetTop();
+        };
+        apply();
+        try {
+            const queries = [
+                '(display-mode: standalone)',
+                '(display-mode: fullscreen)',
+                '(display-mode: minimal-ui)',
+                '(display-mode: window-controls-overlay)',
+            ];
+            queries.forEach((q) => {
+                const mql = window.matchMedia(q);
+                if (mql.addEventListener) mql.addEventListener('change', apply);
+                else if (mql.addListener) mql.addListener(apply);
+            });
+        } catch (_) { /* ignore */ }
+    }
+
+    _polyfillSafeAreaInsetTop() {
+        // WebKit bug: env(safe-area-inset-top) sometimes returns 0px in iOS PWA
+        // standalone on Dynamic Island / notched devices in portrait. Probe the
+        // actual value; if zero on iOS *in portrait*, substitute 59px (current
+        // Dynamic Island default). Landscape legitimately reports 0 (status bar
+        // hidden, cutouts move to the sides) — do NOT force a fallback there or
+        // the bar gets a persistent 59px gap.
+        if (!document.body) return;
+        const probe = document.createElement('div');
+        probe.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:env(safe-area-inset-top);pointer-events:none;visibility:hidden;';
+        document.body.appendChild(probe);
+        const measured = probe.offsetHeight;
+        document.body.removeChild(probe);
+
+        const root = document.documentElement;
+        if (measured > 0) {
+            root.style.setProperty('--safe-area-inset-top', measured + 'px');
+            return;
+        }
+        const isPortrait = window.matchMedia('(orientation: portrait)').matches;
+        if (isPortrait && this._isIOS()) {
+            root.style.setProperty('--safe-area-inset-top', '59px');
+        } else {
+            root.style.removeProperty('--safe-area-inset-top');
+        }
     }
 
     _isIOS() {

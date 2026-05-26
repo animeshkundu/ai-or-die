@@ -19,11 +19,11 @@
     <link rel="manifest" href="/manifest.json">
     
     <!-- Icons for various platforms -->
-    <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/icons/icon-16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/icon-180.png">
     <meta name="msapplication-TileColor" content="#161b22">
-    <meta name="msapplication-TileImage" content="/icon-144.png">
+    <meta name="msapplication-TileImage" content="/icons/icon-144.png">
     
     <!-- Apply saved theme early to avoid flash -->
     <script>
@@ -36,6 +36,24 @@
             // Midnight is default — no data-theme attribute needed
             document.documentElement.removeAttribute('data-theme');
           }
+        } catch (_) { /* ignore */ }
+      })();
+    </script>
+
+    <!-- Detect PWA standalone mode before first paint so safe-area-top rules can apply
+         without a layout-shift flash. Class lives on <html> because <body> isn't parsed yet. -->
+    <script>
+      (function() {
+        try {
+          var mm = window.matchMedia;
+          var isStandalone = (mm && (
+              mm('(display-mode: standalone)').matches
+              || mm('(display-mode: fullscreen)').matches
+              || mm('(display-mode: minimal-ui)').matches
+              || mm('(display-mode: window-controls-overlay)').matches
+            ))
+            || navigator.standalone === true;
+          if (isStandalone) document.documentElement.classList.add('pwa-standalone');
         } catch (_) { /* ignore */ }
       })();
     </script>
