@@ -352,7 +352,15 @@ class ClaudeCodeWebServer {
       // .native form); .native is only used HERE, where it can't leak
       // into response paths or watcher-subscription keys.
       const resolvedTarget = this._canonicalizePathSync(targetPath);
-      const resolvedBase = this._canonicalizePathSync(this.baseFolder);
+      // Memoized — baseFolder is constant for the process lifetime, but
+      // _canonicalizePathSync calls fs.realpathSync.native which is a real
+      // syscall (10–50ms on a SUBST/network drive). isPathWithinBase runs
+      // on every OSC 7 emission via validatePath; without this cache, each
+      // emission paid a redundant baseFolder realpath round-trip.
+      if (!this._canonicalizedBaseFolder) {
+        this._canonicalizedBaseFolder = this._canonicalizePathSync(this.baseFolder);
+      }
+      const resolvedBase = this._canonicalizedBaseFolder;
       // Use path.relative instead of startsWith to avoid prefix-matching false positives
       // (e.g. /home/user-admin would match /home/user with startsWith)
       const relative = path.relative(resolvedBase, resolvedTarget);

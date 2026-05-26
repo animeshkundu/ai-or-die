@@ -42,6 +42,19 @@ class TerminalBridge extends BaseBridge {
      * @type {Map<string, string|null>}
      */
     this._liveCwd = new Map();
+
+    /**
+     * Raw OSC 7 path most recently seen for each session — used to skip the
+     * entire validate-and-emit chain when the shell re-emits the same path
+     * (every prompt redraw on pwsh/oh-my-posh/Starship). Without this, each
+     * redraw fires 3–4 fs.realpathSync syscalls per session; on a SUBST or
+     * mapped Windows drive (e.g. Q:\), those syscalls are 10–50ms each and
+     * pending requests pile up faster than they complete, blocking the event
+     * loop. The dedupe at line ~205 below only saves the *broadcast* — this
+     * one saves the syscalls.
+     * @type {Map<string, string|null>}
+     */
+    this._lastRawOsc7 = new Map();
   }
 
   // Override async command discovery — use default shell instead of searching PATH
@@ -156,6 +169,7 @@ class TerminalBridge extends BaseBridge {
     this._osc7Parsers.set(sessionId, new Osc7Parser());
     this._osc7Hooks.set(sessionId, hooks);
     this._liveCwd.set(sessionId, null);
+    this._lastRawOsc7.set(sessionId, null);
   }
 
   /**
@@ -169,6 +183,7 @@ class TerminalBridge extends BaseBridge {
     this._osc7Parsers.delete(sessionId);
     this._osc7Hooks.delete(sessionId);
     this._liveCwd.delete(sessionId);
+    this._lastRawOsc7.delete(sessionId);
   }
 
   /**
@@ -186,6 +201,18 @@ class TerminalBridge extends BaseBridge {
     if (!decoded.length) return;
 
     for (const raw of decoded) {
+      // Fast-path: skip the entire validate-and-emit chain when the shell
+      // re-emits the same raw path. pwsh + oh-my-posh/Starship redraws on
+      // every keystroke, so the same `file:///Q:/src` arrives N times per
+      // second. validatePath does 3–4 fs.realpathSync syscalls per call;
+      // on a SUBST/mapped/network drive each syscall is 10–50ms, and
+      // pending requests pile up faster than they complete. The dedupe
+      // at the cwd-level below (line 207) only saves the BROADCAST — it
+      // can't save the syscalls because they happen during validation.
+      const lastRaw = this._lastRawOsc7.get(sessionId);
+      if (raw === lastRaw) continue;
+      this._lastRawOsc7.set(sessionId, raw);
+
       let validated;
       try {
         validated = hooks.validatePath(raw);
@@ -199,9 +226,8 @@ class TerminalBridge extends BaseBridge {
       const cwd = validated.path || raw;
       const prev = this._liveCwd.get(sessionId) || null;
 
-      // Only emit on actual change — OSC 7 fires every prompt, including
-      // the no-cd common case. Suppressing same-value emits keeps the
-      // WebSocket frame count bounded by user activity, not prompt rate.
+      // Defence-in-depth: even if validation collapses two different raw
+      // strings to the same canonical cwd, don't broadcast a no-op change.
       if (cwd === prev) continue;
 
       this._liveCwd.set(sessionId, cwd);

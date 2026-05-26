@@ -383,4 +383,59 @@ describe('TerminalBridge OSC 7 wiring', function () {
     bridge._uninstallOsc7State(sessionId);
     assert.strictEqual(bridge.getLiveCwd(sessionId), null);
   });
+
+  it('does NOT call validatePath when the same raw OSC 7 path is re-emitted', function () {
+    // Windows-hang repro guard: pwsh + a fast prompt (oh-my-posh/Starship)
+    // re-emits the same `file:///...` URI on every prompt redraw. Without
+    // the raw-path fast-path in _handleOsc7Chunk, validatePath fires per
+    // emission — and each call costs 3–4 fs.realpathSync syscalls. On a
+    // SUBST/network drive those queue up, the event loop blocks, and the
+    // server hangs (observed: active_handles 16 → 48k in 5 min on Q:\src).
+    const bridge = makeBridge();
+    const sessionId = 'sess-dedupe';
+
+    let validateCalls = 0;
+    let cwdChangeCalls = 0;
+    bridge._installOsc7State(sessionId, {
+      onCwdChange: () => { cwdChangeCalls++; },
+      validatePath: (p) => { validateCalls++; return { valid: true, path: p }; },
+    });
+
+    const sameChunk = '\x1b]7;file:///tmp\x07';
+    for (let i = 0; i < 100; i++) bridge._handleOsc7Chunk(sessionId, sameChunk);
+
+    assert.strictEqual(validateCalls, 1, 'validatePath ran more than once for identical raw paths');
+    assert.strictEqual(cwdChangeCalls, 1, 'onCwdChange fired more than once for identical raw paths');
+
+    // Sanity: a NEW raw path still flows through validation.
+    bridge._handleOsc7Chunk(sessionId, '\x1b]7;file:///var\x07');
+    assert.strictEqual(validateCalls, 2);
+    assert.strictEqual(cwdChangeCalls, 2);
+
+    bridge._uninstallOsc7State(sessionId);
+  });
+
+  it('clears _lastRawOsc7 on session uninstall so a re-installed session re-validates', function () {
+    const bridge = makeBridge();
+    const sessionId = 'sess-reinstall';
+    let validateCalls = 0;
+    const hooks = {
+      onCwdChange: () => {},
+      validatePath: (p) => { validateCalls++; return { valid: true, path: p }; },
+    };
+
+    bridge._installOsc7State(sessionId, hooks);
+    bridge._handleOsc7Chunk(sessionId, '\x1b]7;file:///tmp\x07');
+    assert.strictEqual(validateCalls, 1);
+
+    bridge._uninstallOsc7State(sessionId);
+    bridge._installOsc7State(sessionId, hooks);
+
+    // Same raw path on the new session — the previous run's lastRaw must
+    // not leak through, so validatePath should fire again.
+    bridge._handleOsc7Chunk(sessionId, '\x1b]7;file:///tmp\x07');
+    assert.strictEqual(validateCalls, 2);
+
+    bridge._uninstallOsc7State(sessionId);
+  });
 });
