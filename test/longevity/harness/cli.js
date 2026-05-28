@@ -39,14 +39,49 @@ function parseDuration(s) {
 
 function parseArgs(argv) {
   const args = {};
+  const workloadOpts = {};
   for (const raw of argv.slice(2)) {
     if (!raw.startsWith('--')) continue;
     const eq = raw.indexOf('=');
     const k = eq === -1 ? raw.slice(2) : raw.slice(2, eq);
     const v = eq === -1 ? true : raw.slice(eq + 1);
-    args[k] = v;
+    if (k === 'workload-opts') {
+      // SOAK-05l: repeatable --workload-opts=workload-name.key=value
+      // Accumulates into workloadOpts[workloadName] = {key: value, ...}.
+      // Value coerced: integer-looking → number, "true"/"false" → boolean,
+      // else string. Operators wanting an explicit string number can quote
+      // (the shell handles that; we don't try to disambiguate).
+      const m = /^([^.]+)\.([^=]+)=(.*)$/.exec(String(v));
+      if (!m) {
+        throw new Error(`bad --workload-opts: ${v} (expected name.key=value)`);
+      }
+      const [, name, key, val] = m;
+      if (!workloadOpts[name]) workloadOpts[name] = {};
+      workloadOpts[name][key] = _coerceOptValue(val);
+    } else {
+      args[k] = v;
+    }
+  }
+  if (Object.keys(workloadOpts).length > 0) {
+    args._workloadOpts = workloadOpts;
   }
   return args;
+}
+
+/**
+ * Coerce a CLI string value into the most natural JS type:
+ *   "true"/"false" → boolean
+ *   "123" / "1.5" → number
+ *   else → string
+ * Workload constructor options can be any of these; this matches the
+ * shapes used by the existing workloads' defaults.
+ */
+function _coerceOptValue(v) {
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  if (/^-?\d+$/.test(v)) return parseInt(v, 10);
+  if (/^-?\d*\.\d+$/.test(v)) return parseFloat(v);
+  return v;
 }
 
 function printHelp() {
@@ -56,6 +91,9 @@ function printHelp() {
   console.log('Flags:');
   console.log('  --duration=60s|10m|4h   soak window           (default 60s)');
   console.log('  --workloads=a,b         workload selection    (default noop; "all" expands registry)');
+  console.log('  --workload-opts=name.key=value  override workload constructor opts (repeatable)');
+  console.log('                          e.g. --workload-opts=mock-clock.batchSize=50');
+  console.log('                               --workload-opts=session-stringify.sessionCount=500');
   console.log('  --gates=a,b             gate selection        (default all)');
   console.log('  --interval=30s          sample cadence        (default ⌊duration/6⌋, max 30s)');
   console.log('  --seed=42               RNG seed              (default 42)');
@@ -122,6 +160,9 @@ async function main() {
     browserPage,
     browserIntervalMs,
     browserHeadless,
+    // SOAK-05l: per-workload constructor options, e.g.
+    //   { 'mock-clock': { batchSize: 50, maxInjected: 50000 } }
+    workloadOpts: args._workloadOpts || {},
     // Auto-relax the disk breaker / quota gates when the deliberate-trip
     // workload is in the set. Caller can still override via gate-evaluator
     // thresholds if they want stricter semantics.
@@ -146,7 +187,10 @@ async function main() {
     console.log('');
     console.log('Per-gate verdict:');
     for (const g of result.evaluation.gates) {
-      const verdict = g.pass === true ? 'PASS' : g.pass === false ? 'FAIL' : 'N/A ';
+      const verdict = g.pass === true ? 'PASS'
+        : g.pass === 'vacuous' ? 'VAC ' // VAC = vacuous (PASS-BUT-VACUOUS per SOAK-05n)
+        : g.pass === false ? 'FAIL'
+        : 'N/A ';
       console.log(`  [${verdict}] ${g.name.padEnd(12)} ${g.summary || ''}`);
     }
   }

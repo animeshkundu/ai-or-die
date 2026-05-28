@@ -400,6 +400,21 @@ const GATES = [
       if (!xs.length) return { pass: null, summary: 'client.plan_detector.bytes not sampled (no browser page)' };
       const peak = Math.max(...xs.map(r => r.value));
       const cap = 8 * 1024 * 1024;
+      // SOAK-05n vacuous-PASS guard (per SUP-CLIENT spec ask): peak == 0
+      // means the workload never produced browser-visible PTY output, so
+      // the cap was UNTESTED, not tested-and-held. Returning the special
+      // 'vacuous' verdict makes the gate-evaluator surface this distinctly
+      // from a clean PASS — overall verdict goes false unless the operator
+      // explicitly acknowledges via thresholds.client_plan_detector_allow_vacuous.
+      if (peak === 0) {
+        return {
+          pass: 'vacuous',
+          summary: 'plan_detector.bytes peak 0 — gate VACUOUS (workload did not produce browser-visible PTY output; cap was UNTESTED). Use --workloads=pty-flood-ws to drive output through the WS broadcast pipeline.',
+          peak_bytes: 0,
+          cap_bytes: cap,
+          samples: xs.length,
+        };
+      }
       const pass = peak <= cap;
       return {
         pass,

@@ -54,6 +54,12 @@ async function runSoak(options = {}) {
     browserPage = false,
     browserIntervalMs = 60_000,
     browserHeadless = true,
+    // SOAK-05l: { workloadName: {key: value, ...} } map of per-workload
+    // constructor option overrides. Merged into each workload's `opts` when
+    // it's instantiated. Unknown workload names are silently ignored
+    // (operator may have specified opts for a workload not in this run's
+    // --workloads= list — harmless).
+    workloadOpts = {},
     log = (msg) => process.stderr.write(`[soak] ${msg}\n`),
   } = options;
 
@@ -207,10 +213,14 @@ async function runSoak(options = {}) {
     const masterRng = new Rng(seed);
     for (const name of workloadNames) {
       const Ctor = getWorkload(name);
-      const wl = new Ctor({ rng: masterRng.fork(name) });
+      // Merge per-workload constructor opts (SOAK-05l) on top of the rng-fork
+      // default. Caller's opts win where keys overlap; rng and name are
+      // always set by the runner.
+      const ctorOpts = { rng: masterRng.fork(name), ...(workloadOpts[name] || {}) };
+      const wl = new Ctor(ctorOpts);
       workloadInstances.push(wl);
       await wl.start({ baseUrl: ctl.baseUrl, wsUrl: ctl.wsUrl, workDir: ctl.workDir, server: ctl.server });
-      logEvent('workload_start', { name });
+      logEvent('workload_start', { name, opts: workloadOpts[name] || null });
     }
 
     await new Promise((resolve) => setTimeout(resolve, durationMs));

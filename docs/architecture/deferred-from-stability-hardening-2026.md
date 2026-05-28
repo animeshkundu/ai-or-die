@@ -62,48 +62,57 @@ pressuring the production code path.
 
 ## 2. SOAK-05n — WS-broadcast pty-flood variant + vacuous-PASS guard
 
-**Symptom:** the bundled soak's `client.plan_detector.bytes` gate
-PASSED at peak **0 MB** — not because CLIENT-01's 8 MB cap held, but
-because the `pty-flood` workload drives `terminalBridge._handleOsc7Chunk`
-internally and **never broadcasts to the attached browser tab via the
-WS layer**. The browser's plan-detector buffer received zero bytes
-under a workload literally named "pty-flood." The cap was never
-exercised end-to-end by the soak.
+**Status: ✅ SHIPPED IN CAMPAIGN** (commits on `sup-soak/soak-05ln`).
+Activated by team-lead's "Don't defer what we can fix" pushback after
+this doc's initial draft routed it to deferred. Both parts shipped:
 
-**Architectural question:** when a synthetic workload bypasses the
-production observation path, is the resulting "PASS" honest enough to
-gate a merge on? More generally — what is the contract between
-**workload generators** and **observation gates**? Today the
-gate-evaluator treats absent activity as PASS-by-default. The
-discipline that exposes this gap (the "meaningfulness check") is a
-harness-level invariant, not a fix-lane concern.
+1. **`pty-flood-ws` workload** at `test/longevity/harness/workloads/pty-flood-ws-workload.js`.
+   Drives `server._throttledOutputBroadcast(sessionId, chunk)` directly,
+   so output flows through the production coalescer → binary WS frame →
+   browser `app.terminal.write` → `PlanDetector.processOutput`. Default
+   1 MB/s smoke; plan-spec 5 MB/s stress via `--workload-opts=pty-flood-ws.targetBytesPerSecond=5242880`.
+2. **Vacuous-PASS guard** in `harness/gate-evaluator.js`. A gate's
+   `evaluate()` may return `{pass: 'vacuous', summary: '...'}`; the
+   evaluator surfaces `vacuous_count` in the result and forces
+   `overall: false` when any gate is vacuous. CLI prints `[VAC ]` for
+   the per-gate verdict. Applied to `client.plan_detector` (peak == 0
+   → vacuous). Unit test at `test/longevity/gate-evaluator-vacuous.test.js`
+   verifies the contract (5 specs).
 
-**Why it matters for the north star:** Bet 3 ("diagnostics endpoint
-as the operator's primary observation surface") only works if the
-gates measure what they claim to measure. A vacuous PASS is worse
-than a FAIL because it advertises a guarantee that the soak did not
-verify. The harness invariant — "any cap-on-observed-activity gate
-fails on zero observed activity unless explicitly marked
-ceiling-only" — generalizes across every future cap-style gate, not
-just plan-detector.
+**Why activated now**: team-lead's deferral bar is "high risk / breakage /
+can't confidently carry out and validate." Neither met that bar — the
+workload is harness-additive, the guard is a one-shot enum-state addition,
+and both have unit coverage. Activating them now means the next 4-h or
+12-h soak can produce a non-vacuous CLIENT-01 verdict.
 
-**Priority:** **MEDIUM-HIGH.** Two related deliverables:
-1. **WS-broadcast variant of pty-flood** (so the cap is actually
-   exercised end-to-end by a future 4-h or 12-h soak — the only time
-   horizon at which CLIENT-01's value is observable).
-2. **Vacuous-PASS guard** in `gate-evaluator.js` so future
-   cap-on-observed-activity gates don't quietly succeed at zero.
+**Original architectural framing preserved** (the "vacuous PASS is worse
+than a FAIL" insight stays valid as future-campaign guidance):
 
-**Trigger condition for implementation:** ship before the next
-campaign that introduces a new cap-style gate (CLIENT-04, DISK-05,
-anything that puts a ceiling on a sampled metric). Or ride along with
-the next 4-h soak attempt that the team-lead requests for
-post-bundle validation — the WS-broadcast pty-flood is what makes
-that 4-h soak's CLIENT-01 verdict meaningful.
+> The harness invariant — "any cap-on-observed-activity gate fails on
+> zero observed activity unless explicitly marked ceiling-only" —
+> generalizes across every future cap-style gate, not just plan-detector.
+> Future cap gates should opt in by returning `'vacuous'` when their
+> metric is at the empty/baseline value.
 
-Until then, CLIENT-01's enforcement is verified by the deterministic
-unit test (`test/plan-detector.test.js`) and the Playwright spec —
-both honest but neither at production-scale durations.
+---
+
+## 2b. (historical — original deferred framing for archaeologists)
+
+The original deferred-list entry for SOAK-05n is preserved below for
+context. The team-lead's "don't defer what we can fix" decision-rule
+that activated it is the load-bearing lesson; this entry shows what the
+deferral case looked like.
+
+> **Symptom:** the bundled soak's `client.plan_detector.bytes` gate
+> PASSED at peak **0 MB** — not because CLIENT-01's 8 MB cap held, but
+> because the `pty-flood` workload drives `terminalBridge._handleOsc7Chunk`
+> internally and **never broadcasts to the attached browser tab via the
+> WS layer**. The browser's plan-detector buffer received zero bytes
+> under a workload literally named "pty-flood." The cap was never
+> exercised end-to-end by the soak.
+
+(Rest of original entry omitted — see git history at parent commit for
+the full "why it matters for the north star" discussion.)
 
 ---
 

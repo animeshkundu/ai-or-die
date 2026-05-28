@@ -75,14 +75,27 @@ class GateEvaluator {
         ...verdict,
       });
     }
+
+    // SOAK-05n: a gate's evaluate() may return `pass: 'vacuous'` to signal
+    // PASS-BUT-VACUOUS — the cap held only because the workload never
+    // produced any data to measure against it. We treat this as a hard FAIL
+    // for the overall verdict (you can't approve a soak that didn't measure
+    // what it claimed to measure) but report it distinctly in the per-gate
+    // summary so reviewers can see WHY it failed. Pattern surfaced by
+    // SOAK-05m where `client.plan_detector.bytes peak 0` was reported as
+    // PASS even though the workload never wrote any bytes through the WS
+    // pipeline — the cap was untested, not tested-and-held.
     const decidable = results.filter(r => r.pass !== null);
+    const vacuousFailures = results.filter(r => r.pass === 'vacuous');
     const overall = decidable.length === 0
       ? null
-      : decidable.every(r => r.pass === true);
+      : decidable.every(r => r.pass === true);  // 'vacuous' !== true, so vacuous → overall false
+
     return {
       overall,
       gate_count: results.length,
       decidable_count: decidable.length,
+      vacuous_count: vacuousFailures.length,
       thresholds: this.thresholds,
       gates: results,
     };
