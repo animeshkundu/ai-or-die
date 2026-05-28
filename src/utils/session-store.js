@@ -19,6 +19,16 @@ class SessionStore {
         // caller having to wrap saveSessions. Null after a successful
         // save; otherwise an Error-shaped object carrying .code.
         this._lastSaveError = null;
+        // DISK-04b: monotonically increasing counter of saveSessions()
+        // calls that returned false. Surfaced in _collectDiagnostics so
+        // the soak harness (and operators grepping the diagnostics log)
+        // can drift-watch for new concurrency / I/O regressions without
+        // coupling to a specific log-line format. Pre-fix the DISK-04
+        // rename race would increment this by 5–10 per 2-min soak; post-
+        // fix it should stay at 0. Other increment sources: ENOSPC,
+        // EBUSY on Windows, EACCES, EIO — any I/O failure path through
+        // _saveSessionsLocked's catch block.
+        this._saveFailureCount = 0;
         // DISK-01 follow-up (SOAK-reported race): serialize concurrent
         // saveSessions() calls. The 30 s autosave can overlap with
         // explicit saves from session-create/delete, beforeExit, and
@@ -276,6 +286,7 @@ class SessionStore {
             return true;
         } catch (error) {
             this._lastSaveError = error;
+            this._saveFailureCount++;
             console.error('Failed to save sessions:', error.message);
             return false;
         }

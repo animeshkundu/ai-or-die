@@ -4113,6 +4113,13 @@ class ClaudeCodeWebServer {
       quota_used_pct: usedPct,
       circuit_breaker_open: !!this._diskFull,
       circuit_breaker_since: this._diskFullSince,
+      // DISK-04b: drift-watch counter for SessionStore save failures.
+      // Increments monotonically on every saveSessions() failure (rename
+      // race regression, ENOSPC, EBUSY, EACCES, EIO, etc.). Decoupled
+      // from log-line format so soak harness gates can watch for
+      // non-zero delta without stderr-grep coupling. Should remain at 0
+      // under sustained load post-DISK-04 fix.
+      save_failure_count: (this.sessionStore && this.sessionStore._saveFailureCount) || 0,
     };
   }
 
