@@ -1,0 +1,115 @@
+{
+  "started_at": "2026-05-28T06:13:25.861Z",
+  "duration_ms": 3600000,
+  "sample_interval_ms": 30000,
+  "workloads": [
+    "noop",
+    "pty-flood",
+    "reconnect-storm",
+    "watcher-flood",
+    "ws-fuzz",
+    "attachment-growth",
+    "session-stringify",
+    "mock-clock",
+    "disk-bloat-jsonl",
+    "disk-bloat-quota"
+  ],
+  "gates": null,
+  "seed": 42,
+  "label": "final-bundle",
+  "pr": null,
+  "node_version": "v24.15.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "output_dir": "/var/folders/dt/zrh4y21d41j_2bsn53pdljcm0000gn/T/final-bundle-soak-XXXXXX.MbvTV3YhxF/test/longevity/results/final-bundle-20260528T061325Z",
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "started_at": "2026-05-28T06:13:25.861Z",
+      "finished_at": "2026-05-28T07:14:28.066Z",
+      "duration_ms": 3600000,
+      "sample_interval_ms": 30000,
+      "workloads": [
+        "noop",
+        "pty-flood",
+        "reconnect-storm",
+        "watcher-flood",
+        "ws-fuzz",
+        "attachment-growth",
+        "session-stringify",
+        "mock-clock",
+        "disk-bloat-jsonl",
+        "disk-bloat-quota"
+      ],
+      "sampler_stats": {
+        "samples": 123,
+        "errors": 0,
+        "lastSample": {
+          "ts": "2026-05-28T07:14:13.607Z",
+          "diag": {
+            "uptime_seconds": 3648,
+            "node_version": "v24.15.0",
+            "platform": "darwin",
+            "arch": "arm64",
+            "memory": {
+              "rss_mb": 2043,
+              "heap_used_mb": 1849.1,
+              "heap_total_mb": 2061,
+              "external_mb": 35.2,
+              "array_buffers_mb": 31.6
+            },
+            "process": {
+              "active_handles": 11,
+              "active_requests": 4,
+              "fd_count": null
+            },
+            "sessions": {
+              "total": 179179,
+              "ws_connections": 1,
+              "fs_watch_sessions": 0,
+              "voice_upload_counts": 0,
+              "activity_broadcast_timestamps": 0
+            },
+            "disk": {
+              "sampled_at": "2026-05-28T07:13:26.138Z",
+              "ai_or_die_dir_bytes": 87150612,
+              "ai_or_die_dir_files": 1,
+              "ai_or_die_dir_stale": false,
+              "claude_projects_bytes": 356663023,
+              "claude_projects_files": 168,
+              "claude_projects_stale": true,
+              "quota_total_mb": 1024,
+              "quota_used_pct": 8.12,
+              "circuit_breaker_open": false,
+              "circuit_breaker_since": null,
+              "save_failure_count": 0
+            }
+          },
+          "eventLoop": {
+            "p50_ms": 20.054,
+            "p99_ms": 109.445,
+            "max_ms": 2709.52,
+            "mean_ms": 29.433
+          }
+        }
+      },
+      "browser_sampler_stats": {
+        "samples": 62,
+        "errors": 0,
+        "diagnostics_available": true
+      },
+      "aborted": false,
+      "abort_error": null,
+      "seed": 42
+    }
+  ],
+  "finished_at": "2026-05-28T07:14:28.066Z",
+  "total_duration_ms": 3600000,
+  "chunk_count": 1,
+  "aborted": false,
+  "abort_error": null,
+  "sampler_stats": {
+    "samples": 123,
+    "errors": 0
+  }
+}

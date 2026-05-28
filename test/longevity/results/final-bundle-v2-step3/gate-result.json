@@ -1,0 +1,164 @@
+{
+  "overall": false,
+  "gate_count": 17,
+  "decidable_count": 12,
+  "thresholds": {
+    "heap_slope_mb_per_hour": 2.5,
+    "handles_abs_delta": 5,
+    "handles_pct_delta": 2,
+    "fd_pct_delta": 1,
+    "fs_watch_tail_max": 0,
+    "disk_bytes_slope_mb_per_hour": 100,
+    "disk_quota_max_pct": 90,
+    "disk_breaker_allow_trip": true
+  },
+  "gates": [
+    {
+      "name": "memory",
+      "description": "Heap and RSS — must not grow unboundedly over the soak window.",
+      "pass": false,
+      "summary": "heap slope 1689.404 MB/h (threshold 2.5) over 62 samples",
+      "slope_mb_per_hour": 1689.4037300844877,
+      "threshold": 2.5,
+      "samples": 62
+    },
+    {
+      "name": "handles",
+      "description": "process.active_handles — drift must stay bounded.",
+      "pass": false,
+      "summary": "active_handles 5 → 11 (Δ 6, 120.00%, peak 43)",
+      "first": 5,
+      "last": 11,
+      "abs_delta": 6,
+      "pct_delta": 120,
+      "peak": 43
+    },
+    {
+      "name": "requests",
+      "description": "process.active_requests — should stay near 0; reported only.",
+      "pass": null,
+      "summary": "active_requests peak 3, final 2",
+      "peak": 3,
+      "final": 2
+    },
+    {
+      "name": "fd",
+      "description": "fd_count (Linux only) — drift must stay < 1%.",
+      "pass": null,
+      "summary": "fd_count unavailable (non-Linux) or insufficient samples"
+    },
+    {
+      "name": "ws",
+      "description": "sessions.ws_connections — reported; caller supplies expected count.",
+      "pass": null,
+      "summary": "ws_connections peak 17, final 1",
+      "peak": 17,
+      "final": 1
+    },
+    {
+      "name": "fs_watch",
+      "description": "sessions.fs_watch_sessions — must return to 0 by end-of-run.",
+      "pass": true,
+      "summary": "fs_watch peak 0, final 0 (target ≤ 0)",
+      "peak": 0,
+      "final": 0
+    },
+    {
+      "name": "event_loop",
+      "description": "perf_hooks histogram — p99 < 50ms; no sample > 200ms.",
+      "pass": false,
+      "summary": "event-loop p99 peak 52.46ms (limit 50), single-sample peak 1070.60ms (limit 200)",
+      "p99_peak_ms": 52.462,
+      "max_peak_ms": 1070.596
+    },
+    {
+      "name": "disk.atomic_write",
+      "description": "sessions.json atomic-write durability (DISK-01) — proxied via disk.ai_or_die_dir_stale === false.",
+      "pass": true,
+      "summary": "ai_or_die_dir_stale max consecutive 0 (fail if ≥ 2); 0/61 samples stale total",
+      "max_consecutive_stale": 0,
+      "stale_count": 0,
+      "samples": 61
+    },
+    {
+      "name": "disk.save_failure_count",
+      "description": "Cumulative SessionStore save failures — catches concurrent-save race + future fan-out bugs (DISK-04b).",
+      "pass": true,
+      "summary": "save_failure_count stable at 0 across 62 samples",
+      "first": 0,
+      "last": 0,
+      "delta": 0
+    },
+    {
+      "name": "disk.bytes_used",
+      "description": "~/.ai-or-die/ bytes (DISK-02) — slope must stay bounded under steady load.",
+      "pass": true,
+      "summary": "ai_or_die_dir slope 86.75 MB/h (threshold 100), final 44.43 MB, peak 44.43 MB",
+      "slope_mb_per_hour": 86.74810678423313,
+      "threshold": 100,
+      "final_mb": 44.43,
+      "peak_mb": 44.43,
+      "samples": 61
+    },
+    {
+      "name": "disk.circuit_breaker",
+      "description": "ENOSPC circuit breaker — must stay closed under normal soak load (DISK-03).",
+      "pass": null,
+      "summary": "disk_breaker tripped 0/62 samples (allowed by disk-bloat-quota workload)",
+      "samples": 62,
+      "trip_count": 0
+    },
+    {
+      "name": "disk.quota",
+      "description": "Quota usage % — must stay below 90% under normal soak load (DISK-03).",
+      "pass": null,
+      "summary": "quota_used_pct peak 4.3%, final 4.3% (threshold 90%)",
+      "peak_pct": 4.34,
+      "final_pct": 4.34,
+      "threshold_pct": 90
+    },
+    {
+      "name": "client.plan_detector",
+      "description": "plan-detector buffer must stay under 8 MB hard cap (CLIENT-01).",
+      "pass": true,
+      "summary": "plan_detector.bytes peak 0.00 MB (cap 8 MB)",
+      "peak_bytes": 0,
+      "cap_bytes": 8388608,
+      "samples": 32
+    },
+    {
+      "name": "client.dom",
+      "description": "DOM total_nodes slope must stay < 100 nodes/h (CLIENT-02).",
+      "pass": true,
+      "summary": "dom.total_nodes slope 68.6/h (threshold 100/h), 588 → 787 over 32 samples",
+      "slope_per_hour": 68.63683292914816,
+      "threshold": 100,
+      "first": 588,
+      "last": 787
+    },
+    {
+      "name": "client.xterm",
+      "description": "xterm scrollback line count must stay ≤ 10100 (CLIENT-03 §1).",
+      "pass": true,
+      "summary": "xterm.scrollback_lines peak 35 (cap 10100)",
+      "peak": 35,
+      "cap": 10100
+    },
+    {
+      "name": "client.ws",
+      "description": "WebSocket state must stay OPEN (1) post-baseline (CLIENT-03 §3 reconnect-failure detection).",
+      "pass": true,
+      "summary": "ws.state max consecutive 2/3 = 0 (fail if ≥ 2)",
+      "max_consecutive_closing_or_closed": 0,
+      "post_baseline_samples": 30
+    },
+    {
+      "name": "client.sse",
+      "description": "SSE stream count slope must stay ≤ 0 in steady state (CLIENT-03 §3).",
+      "pass": true,
+      "summary": "sse.streams steady-state slope 0.00/h (peak 0)",
+      "slope_per_hour": 0,
+      "peak": 0
+    }
+  ]
+}

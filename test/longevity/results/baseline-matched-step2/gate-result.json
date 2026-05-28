@@ -1,0 +1,135 @@
+{
+  "overall": false,
+  "gate_count": 17,
+  "decidable_count": 4,
+  "thresholds": {
+    "heap_slope_mb_per_hour": 2.5,
+    "handles_abs_delta": 5,
+    "handles_pct_delta": 2,
+    "fd_pct_delta": 1,
+    "fs_watch_tail_max": 0,
+    "disk_bytes_slope_mb_per_hour": 100,
+    "disk_quota_max_pct": 90,
+    "disk_breaker_allow_trip": true
+  },
+  "gates": [
+    {
+      "name": "memory",
+      "description": "Heap and RSS — must not grow unboundedly over the soak window.",
+      "pass": false,
+      "summary": "heap slope 589.774 MB/h (threshold 2.5) over 122 samples",
+      "slope_mb_per_hour": 589.7738169918417,
+      "threshold": 2.5,
+      "samples": 122
+    },
+    {
+      "name": "handles",
+      "description": "process.active_handles — drift must stay bounded.",
+      "pass": false,
+      "summary": "active_handles 5 → 11 (Δ 6, 120.00%, peak 83)",
+      "first": 5,
+      "last": 11,
+      "abs_delta": 6,
+      "pct_delta": 120,
+      "peak": 83
+    },
+    {
+      "name": "requests",
+      "description": "process.active_requests — should stay near 0; reported only.",
+      "pass": null,
+      "summary": "active_requests peak 277, final 166",
+      "peak": 277,
+      "final": 166
+    },
+    {
+      "name": "fd",
+      "description": "fd_count (Linux only) — drift must stay < 1%.",
+      "pass": null,
+      "summary": "fd_count unavailable (non-Linux) or insufficient samples"
+    },
+    {
+      "name": "ws",
+      "description": "sessions.ws_connections — reported; caller supplies expected count.",
+      "pass": null,
+      "summary": "ws_connections peak 11, final 1",
+      "peak": 11,
+      "final": 1
+    },
+    {
+      "name": "fs_watch",
+      "description": "sessions.fs_watch_sessions — must return to 0 by end-of-run.",
+      "pass": true,
+      "summary": "fs_watch peak 0, final 0 (target ≤ 0)",
+      "peak": 0,
+      "final": 0
+    },
+    {
+      "name": "event_loop",
+      "description": "perf_hooks histogram — p99 < 50ms; no sample > 200ms.",
+      "pass": false,
+      "summary": "event-loop p99 peak 213.91ms (limit 50), single-sample peak 1954.55ms (limit 200)",
+      "p99_peak_ms": 213.91,
+      "max_peak_ms": 1954.546
+    },
+    {
+      "name": "disk.atomic_write",
+      "description": "sessions.json atomic-write durability (DISK-01) — proxied via disk.ai_or_die_dir_stale === false.",
+      "pass": null,
+      "summary": "disk.ai_or_die_dir_stale not exposed (pre-DISK-02 bundle)"
+    },
+    {
+      "name": "disk.save_failure_count",
+      "description": "Cumulative SessionStore save failures — catches concurrent-save race + future fan-out bugs (DISK-04b).",
+      "pass": null,
+      "summary": "disk.save_failure_count not exposed (pre-DISK-04b bundle)"
+    },
+    {
+      "name": "disk.bytes_used",
+      "description": "~/.ai-or-die/ bytes (DISK-02) — slope must stay bounded under steady load.",
+      "pass": null,
+      "summary": "disk.ai_or_die_dir_bytes not exposed or insufficient samples (pre-DISK-02 bundle)"
+    },
+    {
+      "name": "disk.circuit_breaker",
+      "description": "ENOSPC circuit breaker — must stay closed under normal soak load (DISK-03).",
+      "pass": null,
+      "summary": "disk.circuit_breaker_open not exposed (pre-DISK-03 bundle)"
+    },
+    {
+      "name": "disk.quota",
+      "description": "Quota usage % — must stay below 90% under normal soak load (DISK-03).",
+      "pass": null,
+      "summary": "disk.quota_used_pct not exposed (pre-DISK-03 bundle)"
+    },
+    {
+      "name": "client.plan_detector",
+      "description": "plan-detector buffer must stay under 8 MB hard cap (CLIENT-01).",
+      "pass": null,
+      "summary": "client.plan_detector.bytes not sampled (no browser page)"
+    },
+    {
+      "name": "client.dom",
+      "description": "DOM total_nodes slope must stay < 100 nodes/h (CLIENT-02).",
+      "pass": null,
+      "summary": "client.dom.total_nodes not sampled / insufficient samples"
+    },
+    {
+      "name": "client.xterm",
+      "description": "xterm scrollback line count must stay ≤ 10100 (CLIENT-03 §1).",
+      "pass": null,
+      "summary": "client.xterm.scrollback_lines not sampled"
+    },
+    {
+      "name": "client.ws",
+      "description": "WebSocket state must stay OPEN (1) post-baseline (CLIENT-03 §3 reconnect-failure detection).",
+      "pass": null,
+      "summary": "client.ws.state not sampled / insufficient samples"
+    },
+    {
+      "name": "client.sse",
+      "description": "SSE stream count slope must stay ≤ 0 in steady state (CLIENT-03 §3).",
+      "pass": null,
+      "summary": "client.sse.streams not sampled / insufficient samples"
+    }
+  ]
+}
