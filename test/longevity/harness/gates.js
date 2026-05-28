@@ -213,27 +213,38 @@ const GATES = [
 
   {
     name: 'disk.atomic_write',
-    description: 'sessions.json atomic-write durability (DISK-01).',
+    description: 'sessions.json atomic-write durability (DISK-01) — proxied via disk.ai_or_die_dir_stale === false.',
+    // DISK-01 doesn't expose a dedicated atomic_write_ok field; the closest
+    // observable is disk.ai_or_die_dir_stale, which DISK-02 sets to true
+    // when the bytes-cache snapshot is older than the rotation cadence.
+    // A genuinely-broken atomic write would manifest as a stale cache OR a
+    // save_failure_count increment (covered by the separate gate below).
     metrics: [
       {
-        name: 'atomic_write_ok',
-        extract: ({ diag }) => diag.disk && typeof diag.disk.atomic_write_ok === 'boolean'
-          ? (diag.disk.atomic_write_ok ? 1 : 0) : null,
-        threshold: 1,
-        spotCheck: (v) => v === 1,
+        name: 'ai_or_die_dir_stale',
+        extract: ({ diag }) => diag.disk && typeof diag.disk.ai_or_die_dir_stale === 'boolean'
+          ? (diag.disk.ai_or_die_dir_stale ? 1 : 0) : null,
+        threshold: 0,
+        spotCheck: (v) => v === 0,
       },
     ],
     evaluate(rows) {
-      const xs = filterMetric(rows, 'atomic_write_ok');
-      if (!xs.length) return { pass: null, summary: 'disk.atomic_write_ok not exposed (pre-DISK-01 bundle)' };
-      const fails = xs.filter(r => r.value !== 1);
+      const xs = filterMetric(rows, 'ai_or_die_dir_stale');
+      if (!xs.length) return { pass: null, summary: 'disk.ai_or_die_dir_stale not exposed (pre-DISK-02 bundle)' };
+      const stale = xs.filter(r => r.value === 1);
+      // Stale snapshot is allowed if it's transient (one sample window);
+      // ≥2 consecutive samples is the regression signal.
+      let maxRun = 0, run = 0;
+      for (const r of xs) {
+        if (r.value === 1) { run++; if (run > maxRun) maxRun = run; }
+        else run = 0;
+      }
       return {
-        pass: fails.length === 0,
-        summary: fails.length === 0
-          ? `atomic_write_ok=true across ${xs.length} samples`
-          : `atomic_write_ok=false in ${fails.length}/${xs.length} samples`,
+        pass: maxRun < 2,
+        summary: `ai_or_die_dir_stale max consecutive ${maxRun} (fail if ≥ 2); ${stale.length}/${xs.length} samples stale total`,
+        max_consecutive_stale: maxRun,
+        stale_count: stale.length,
         samples: xs.length,
-        failures: fails.length,
       };
     },
   },
@@ -275,17 +286,19 @@ const GATES = [
 
   {
     name: 'disk.bytes_used',
-    description: 'Total ~/.ai-or-die/ bytes — slope must stay bounded under steady load (DISK-02).',
+    description: '~/.ai-or-die/ bytes (DISK-02) — slope must stay bounded under steady load.',
     metrics: [
       {
         name: 'bytes_used_mb',
-        extract: ({ diag }) => diag.disk && typeof diag.disk.usage_mb === 'number'
-          ? diag.disk.usage_mb : null,
+        // DISK-02 exposes ai_or_die_dir_bytes (in bytes); convert to MB
+        // for slope reporting in human-readable units.
+        extract: ({ diag }) => diag.disk && typeof diag.disk.ai_or_die_dir_bytes === 'number'
+          ? +(diag.disk.ai_or_die_dir_bytes / 1048576).toFixed(2) : null,
       },
     ],
     evaluate(rows, ctx) {
       const xs = filterMetric(rows, 'bytes_used_mb');
-      if (xs.length < 2) return { pass: null, summary: 'disk.usage_mb not exposed or insufficient samples (pre-DISK-02 bundle)' };
+      if (xs.length < 2) return { pass: null, summary: 'disk.ai_or_die_dir_bytes not exposed or insufficient samples (pre-DISK-02 bundle)' };
       const slopeMbPerHour = linearRegressionSlope(xs) * 3600 * 1000;
       const threshold = ctx.thresholds.disk_bytes_slope_mb_per_hour ?? 100;
       const pass = slopeMbPerHour <= threshold;
@@ -293,7 +306,7 @@ const GATES = [
       const peak = Math.max(...xs.map(r => r.value));
       return {
         pass,
-        summary: `disk.usage_mb slope ${slopeMbPerHour.toFixed(2)} MB/h (threshold ${threshold}), final ${last} MB, peak ${peak} MB`,
+        summary: `ai_or_die_dir slope ${slopeMbPerHour.toFixed(2)} MB/h (threshold ${threshold}), final ${last} MB, peak ${peak} MB`,
         slope_mb_per_hour: slopeMbPerHour,
         threshold,
         final_mb: last,
