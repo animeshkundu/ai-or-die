@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Performance
+- HOT-06 — TerminalBridge OSC 7: added a process-wide validated-path
+  cache (LRU 256 entries, 5 s TTL) on top of the existing per-session
+  same-raw fast-path. Eliminates redundant `validatePath` syscalls
+  across multi-tab clients hitting the same cwd, and across
+  intra-session prompt alternation (e.g. `pushd`/`popd`, multi-segment
+  prompts). See `docs/audits/hot-01-osc7-dedupe.md`.
+
 ## [0.1.0] - 2025-02-06
 
 ### Added
