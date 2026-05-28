@@ -325,5 +325,28 @@ describe('SessionStore', function() {
       const streamed = await sessionStore._serializeDataStreamed(data);
       assert.strictEqual(streamed, JSON.stringify(data));
     });
+
+    it('relies on JSON.stringify producing the exact "sessions":[] marker (no whitespace)', function() {
+      // HOT-10 follow-up — invariant guard flagged by SUP-DISK's
+      // integration review. The streaming serializer's envelope-splice
+      // strategy depends on `JSON.stringify(envelope)` (no indent
+      // argument) producing literally `"sessions":[]` so the splice
+      // marker matches. If a future caller threads an indent argument
+      // through somewhere upstream (e.g.
+      // `JSON.stringify(envelope, null, 2)`), the marker becomes
+      // `"sessions": []` with a space and the splice silently falls
+      // back to bare `JSON.stringify` — correctness preserved, but the
+      // perf win disappears without warning.
+      //
+      // This test pins down the marker shape so a Node.js / V8 change
+      // to default JSON.stringify formatting, OR an accidental
+      // indent-arg slip, surfaces as a hard failure rather than a
+      // silent perf cliff.
+      assert.strictEqual(JSON.stringify({ sessions: [] }), '{"sessions":[]}',
+        'JSON.stringify default format produced unexpected whitespace — ' +
+        'the streamed serializer envelope-splice marker is invalidated');
+      assert.ok(JSON.stringify({ a: 1, sessions: [], b: 2 }).includes('"sessions":[]'),
+        'embedded envelope should still contain the literal marker');
+    });
   });
 });
