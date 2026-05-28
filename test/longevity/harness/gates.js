@@ -77,7 +77,15 @@ const GATES = [
       const pctDelta = first === 0 ? 0 : (absDelta / first) * 100;
       const absLimit = ctx.thresholds.handles_abs_delta ?? 5;
       const pctLimit = ctx.thresholds.handles_pct_delta ?? 2;
-      const pass = Math.abs(absDelta) <= absLimit || Math.abs(pctDelta) <= pctLimit;
+      // SOAK-05x: only positive growth past threshold = FAIL. Negative
+      // drift (handle count shrinking) = clean teardown = PASS. The prior
+      // Math.abs() check would flag a 35→11 clean-teardown drop as FAIL
+      // (|Δ| 24 > 5 limit). Mirror the FD gate's directional logic for
+      // consistency. Not surfaced in any past soak (always grew under load)
+      // but defensive-fix to prevent it biting a future cleaner run.
+      const pass = absDelta <= 0
+        ? true
+        : (absDelta <= absLimit || pctDelta <= pctLimit);
       return {
         pass,
         summary: `active_handles ${first} → ${last} (Δ ${absDelta}, ${pctDelta.toFixed(2)}%, peak ${max})`,
@@ -104,7 +112,7 @@ const GATES = [
 
   {
     name: 'fd',
-    description: 'fd_count (Linux only) — drift must stay < 1%.',
+    description: 'fd_count (Linux only) — drift must stay < 1% GROWTH (decrease is always PASS).',
     metrics: [
       { name: 'fd_count', extract: ({ diag }) => diag.process.fd_count },
     ],
@@ -116,7 +124,14 @@ const GATES = [
       const absDelta = last - first;
       const pctDelta = first === 0 ? 0 : (absDelta / first) * 100;
       const pctLimit = ctx.thresholds.fd_pct_delta ?? 1;
-      const pass = Math.abs(pctDelta) <= pctLimit;
+      // SOAK-05x: only positive growth past threshold = FAIL. fd_count
+      // shrinking = clean FD release = PASS. The prior Math.abs(pctDelta)
+      // check flagged "33 → 29 (Δ -4, -12.12%)" as FAIL in the round-6
+      // CI smoke even though that's a GOOD direction (file descriptors
+      // being released, not leaking). A real FD leak goes UP, not down.
+      const pass = absDelta <= 0
+        ? true
+        : pctDelta <= pctLimit;
       return {
         pass,
         summary: `fd_count ${first} → ${last} (Δ ${absDelta}, ${pctDelta.toFixed(2)}%)`,

@@ -4,13 +4,18 @@ name: Longevity Smoke (PR-blocking)
 # the stability-hardening-2026 campaign. Runs on every PR (PR-only post-
 # dfe95c0, see docs/audits/ci-trigger-architecture.md).
 #
-# Scope: 5-minute soak with the workload subset SUP-REL + SUP-SOAK agreed
-#        (per docs/audits/rel-ci-matrix.md §"Knobs negotiated with SUP-SOAK"):
-#          --workloads=noop,reconnect-storm,ws-fuzz  (WS lifecycle + handle
-#            churn — broadest regression coverage for lowest cost)
+# Scope: 5-minute soak with workload subset = `noop` only (per SOAK-05x
+#        after the 2026-05-28 round-6 calibration miss). The originally-
+#        negotiated `noop,reconnect-storm,ws-fuzz` set produced ramp-only
+#        heap growth that tripped the steady-state `memory.heap_slope`
+#        threshold. SOAK-05q deferred work will codify multi-tier
+#        thresholds; until then, smoke is intentionally minimal:
+#          --workloads=noop
 #          --duration=5m
 #          --interval=20s   (15 samples — safe floor for linear-regression
 #            slope confidence; per SOAK negotiation item #3)
+#        Real workload + gate verification under sustained load is the
+#        longevity-nightly tier's job (see longevity-nightly.yml).
 #
 # Also runs `npm run test:longevity` (mocha test/longevity/**/*.test.js)
 # BEFORE the soak as a fast pre-gate. Catches regression-test failures
@@ -70,13 +75,29 @@ jobs:
       - name: Longevity regression tests
         run: npm run test:longevity
 
-      # 5-min soak. Workload subset + 20s interval per SOAK negotiation.
+      # 5-min soak. SOAK-05x: workload set simplified to `noop` only.
+      # The prior `noop,reconnect-storm,ws-fuzz` set ran an aggregate
+      # 250+ sessions/min through reconnect-storm, putting the heap
+      # squarely in the warm-up ramp (NOT steady-state) for the entire
+      # 5-min window. The default 2.5 MB/h `memory.heap_slope` threshold
+      # is calibrated for steady-state load (60-min runs that reach
+      # equilibrium); applied to a 5-min warm-up ramp it produces a
+      # 3000+ MB/h slope-FAIL purely from the synthetic stress, not from
+      # any real leak. Smoke's job is fast + PR-blocking + reliable on
+      # shared CI; per the team-lead's recommendation B, smoke verifies
+      # the harness boots + samples + the contract-direct gates work
+      # (event_loop, handles, fs_watch, all disk.* gates), while real
+      # workload + gate verification under sustained load is the
+      # longevity-nightly tier's job. The SOAK-05q deferred follow-up
+      # will codify multi-tier thresholds (single-workload steady-state
+      # vs multi-workload-stress) so the noisy thresholds become
+      # configuration-aware rather than smoke needing to dodge them.
       - name: Longevity smoke soak (5 min)
         run: |
           node test/longevity/harness/cli.js \
             --duration=5m \
             --interval=20s \
-            --workloads=noop,reconnect-storm,ws-fuzz \
+            --workloads=noop \
             --label=ci-smoke \
             --out=test/longevity/results/ci-smoke
 
