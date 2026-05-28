@@ -2,12 +2,18 @@ class PlanDetector {
   constructor() {
     this.isMonitoring = false;
     this.outputBuffer = [];
+    // Byte-count cap (data.length is a faithful proxy for V8 string heap
+    // cost — see docs/audits/client-plan-detector.md). 8 MB hard cap; FIFO
+    // eviction when exceeded. Replaces the older 10 000-item cap, which
+    // permitted ~80 MB of retained string memory per tab under sustained
+    // heavy PTY output.
+    this.maxBufferBytes = 8 * 1024 * 1024;
+    this.bufferBytes = 0;
     this.planModeActive = false;
     this.currentPlan = null;
     this.currentTool = null;
     this.planStartMarker = '## Implementation Plan:';
     this.planEndMarker = 'User has approved your plan';
-    this.maxBufferSize = 10000;
     this.onPlanDetected = null;
     this.onPlanModeChange = null;
     this.onStepProgress = null;
@@ -64,11 +70,18 @@ class PlanDetector {
       timestamp: Date.now(),
       data: data
     });
+    this.bufferBytes += data.length;
 
-    // Keep buffer size manageable
-    if (this.outputBuffer.length > this.maxBufferSize) {
-      this.outputBuffer = this.outputBuffer.slice(-this.maxBufferSize / 2);
+    // FIFO eviction: pop oldest until under the byte cap. O(k) per call
+    // where k is the number of entries to evict — usually 1 unless a
+    // single huge chunk pushes us multiple entries over.
+    while (this.bufferBytes > this.maxBufferBytes && this.outputBuffer.length > 0) {
+      const evicted = this.outputBuffer.shift();
+      this.bufferBytes -= evicted.data.length;
     }
+    // Defensive: clamp accounting drift caused by arithmetic on unusual
+    // string types (should never happen, but cheap insurance).
+    if (this.bufferBytes < 0) this.bufferBytes = 0;
 
     // Stage 1: Quick trigger scan on the new chunk only (O(k) where k = chunk size).
     // Prepend overlap from the previous chunk to catch triggers spanning boundaries.
@@ -405,6 +418,7 @@ class PlanDetector {
   startMonitoring() {
     this.isMonitoring = true;
     this.outputBuffer = [];
+    this.bufferBytes = 0;
     this.planModeActive = false;
     this.currentPlan = null;
     this._lastChunkTail = '';
@@ -413,6 +427,7 @@ class PlanDetector {
   stopMonitoring() {
     this.isMonitoring = false;
     this.outputBuffer = [];
+    this.bufferBytes = 0;
     this.planModeActive = false;
     this.currentPlan = null;
     this._lastChunkTail = '';
@@ -420,6 +435,7 @@ class PlanDetector {
 
   clearBuffer() {
     this.outputBuffer = [];
+    this.bufferBytes = 0;
     this.currentPlan = null;
     this._lastChunkTail = '';
   }
