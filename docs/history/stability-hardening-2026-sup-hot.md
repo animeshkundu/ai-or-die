@@ -9,6 +9,20 @@
 **Sister post-mortems:** [`disk-hygiene-2026.md`](./disk-hygiene-2026.md), [`stability-hardening-2026-sup-client.md`](./stability-hardening-2026-sup-client.md)
 **Bundle soak result:** [`test/longevity/results/FINAL-BUNDLE.md`](../../test/longevity/results/FINAL-BUNDLE.md) — bundle improves every measured metric vs the workload-matched baseline at identical load.
 
+---
+
+> **Update 2026-05-28 (post-PROC-04 acceptance — FINAL-BUNDLE.md v4)**
+>
+> SUP-PROC's **PROC-04** (sub-linear `_evictStaleSessions` via min-heap) landed post-HOT-11. SUP-SOAK's acceptance soak (**SOAK-05r**) re-ran the un-capped mock-clock workload that triggered SOAK-05m's BLOCKING verdict — to validate that PROC-04 closes the underlying eviction-sweep cost rather than the harness-side cap merely masking it. The result: **the bundle sustained 798,680 sessions** under un-capped mock-clock (4.5× SOAK-05m's 178,848-session ceiling), confirming PROC-04 architecturally closes the gap.
+>
+> Aggregate event-loop metrics at un-capped 10-workload concurrent stress: `event_loop.p99_ms peak = 134 ms` / `max_ms peak = 2,414 ms` (vs SOAK-05m's 187 ms / 2,709 ms at the same load with 4.5× *fewer* sessions). See [FINAL-BUNDLE.md v4](../../test/longevity/results/FINAL-BUNDLE.md), commit `9db7d2e` on `sup-soak/final-bundle-results` (integrated at `76c0d07` on `stability-hardening-2026`).
+>
+> **Honest framing**: the strict `event_loop.p99_ms < 50 ms` target is **not** met under un-capped 10-workload concurrent stress (134 ms peak — down 28% from SOAK-05m's 187 ms at the same load). The architectural gap that drove SOAK-05m is closed — PROC-04 sustained 4.5× more sessions AND p99 improved at the same load — but multi-workload concurrency on a single-host darwin runner remains a real ceiling. **SOAK-05q** (split absolute vs multi-workload-stress thresholds) is the deferred follow-up that codifies the distinction; the campaign's deployment target (single-user daemon for months) is a much lighter workload than `--workloads=all` and lands well under the strict threshold in steady state.
+>
+> **The pre-walk discipline §Process [§ below](#process-patterns) correctly attributed the SOAK-05m 2,709 ms outlier** to GC-pause shape (workload-driven via 178k accumulated entries through an O(n) eviction sweep, not HOT-fix-driven). PROC-04 closes the eviction-sweep cost; **the mock-clock cap is no longer architecturally required for correctness** — it's kept as the smoke-default for soak hygiene (SUP-SOAK's framing in FINAL-BUNDLE.md v4). The through-line: pre-walk diagnosed the GC-pause mechanism → PROC-04 fixed the algorithmic root cause → v4 acceptance soak proves the fix at 4.5× scale → strict target deferred to SOAK-05q follow-up.
+
+---
+
 ## Charter
 
 Five named event-loop hot paths, audited by the campaign's pre-investigation phase. Each had a concrete `file:line` reference, a hypothesised burst pattern, and a proposed fix outline:
