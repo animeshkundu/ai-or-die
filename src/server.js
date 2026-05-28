@@ -26,6 +26,20 @@ const SttEngine = require('./stt-engine');
 const CircularBuffer = require('./utils/circular-buffer');
 const RestartManager = require('./restart-manager');
 
+// HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
+// large frame can't block the event loop for tens-to-hundreds of ms.
+//
+// The ws library's protocol-layer `maxPayload` (8 MB, see WebSocket.Server
+// construction below) is a SECOND-LINE defence; this constant is the
+// application-layer FIRST-LINE. 1 MB matches the realistic upper bound
+// for legitimate WS control frames (paste-image and file uploads go via
+// HTTP `/api/files/upload` at 10 MB; WS carries small JSON control
+// messages). Frames exceeding this cap get a `message_too_large` error
+// reply + a ws-standard 1009 close — explicit, debuggable.
+//
+// See docs/audits/hot-03-ws-frame-size.md.
+const MAX_WS_MESSAGE_BYTES = 1 * 1024 * 1024;
+
 // Pre-built PWA screenshot SVG buffers (served at /screenshot-wide.png and /screenshot-narrow.png)
 const SCREENSHOT_WIDE_BUF = Buffer.from(`
   <svg width="1280" height="720" viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
@@ -2853,6 +2867,26 @@ class ClaudeCodeWebServer {
     this.webSocketConnections.set(wsId, wsInfo);
 
     ws.on('message', (message) => {
+      // HOT-08: application-layer size guard, runs BEFORE JSON.parse.
+      // Buffer.byteLength handles both string and Buffer message types.
+      // On oversize, send a marker error frame and close with WS-standard
+      // 1009 ("message too big"). A buggy or malicious client repeatedly
+      // sending 8 MB frames at 10 Hz would otherwise stall the event loop
+      // for ~400 ms/s (per HOT-03 memo).
+      const byteLen = Buffer.byteLength(message);
+      if (byteLen > MAX_WS_MESSAGE_BYTES) {
+        try {
+          this.sendToWebSocket(ws, {
+            type: 'error',
+            code: 'message_too_large',
+            message: `WebSocket message exceeds ${MAX_WS_MESSAGE_BYTES} bytes`,
+            received_bytes: byteLen,
+            limit_bytes: MAX_WS_MESSAGE_BYTES,
+          });
+        } catch (_) { /* socket may be already half-closed */ }
+        try { ws.close(1009, 'message_too_large'); } catch (_) {}
+        return;
+      }
       try {
         const data = JSON.parse(message);
         if (data.type === 'input') {
