@@ -192,3 +192,65 @@ working-assumption-of-go.
 
 Lane totals updated: **5 branches, 7 commits, 27 PROC longevity tests +
 19 unregressed existing tests = 46/46 green, 4 audit memos.**
+
+---
+
+## Addendum (2026-05-28) — PROC-01-fixup: contract-direct tier-monotonicity assertion
+
+The original `supervisor-slow-crash.test.js` "Tier 1" describe asserted
+"observe tier-1 escalation within 4s." On slow CI runners (notably
+Windows shared GitHub Actions hosts), multiple crashes can land inside
+the same monitor tick — the supervisor's `classifyCrash` higher-tier-
+wins logic correctly jumps straight to tier-2, skipping tier-1 entirely.
+Observed Windows transcript: `tier:0(count=1) → 2(count=2) → 2(count=3)
+→ 2(count=4) → tier:2(count=5)`. The test asserted a proxy ("transit
+tier-1 specifically") that depended on crash-spacing-vs-runner-speed,
+not on the algorithm.
+
+**The fix.** Replace the tier-1-specific assertion with **four
+contract-direct assertions** that are CI-environment-invariant:
+
+1. **Tiers escalate monotonically** — `tiers[i] >= tiers[i-1]` over the
+   observation sequence. A regression from tier-2 → tier-1 would
+   indicate a real algorithm bug; transit-tier-1 vs skip-to-tier-2 is
+   not a bug.
+2. **Supervisor never permanently exits** — `proc.killed === false` &
+   `proc.exitCode === null`. The user-facing daemon promise: the
+   browser always has something to talk to.
+3. **At least one escalation fires** (`tier ≥ 1`) — escalation isn't
+   dead code under sustained crash pressure. Uses a new
+   `waitForAnyEscalation(minTier=1, ...)` helper instead of polling
+   for a specific tier.
+4. **The loud `TIER {N} ESCALATION` log appears** for operator
+   visibility — matches any tier (`/TIER [12] ESCALATION/`) instead
+   of the specific tier-1 pattern.
+
+All four are environment-invariant: whether the runner transits tier-1
+or skips straight to tier-2, every contract still holds. The tier-2
+specific test (Test 2 in the same suite) retains its `tier === 2`
+assertion because the IPC `supervisor_warning` is genuinely a tier-2
+feature; only Test 1 needed the contract-direct refactor.
+
+**Verification of the simulated-Windows path.** Locally, I patched
+`SHRUNK_ENV.CIRCUIT_BREAKER_MAX_CRASHES` from `3` to `99` (forcing
+tier-1 to be permanently unreachable inside the 200 ms window) and
+re-ran the test — it passed in 398 ms (vs the pre-fix would have
+failed at the 4 s timeout). With `MAX_CRASHES=3` (normal config) the
+test also passes in 244 ms. Same shape on both ends; CI-environment
+sensitivity eliminated.
+
+**Pattern citation.** This mirrors SUP-HOT's HOT-04-fixup pattern
+documented in `stability-hardening-2026-sup-hot.md` §"Test the
+contract, not the proxy". The shared lesson: **when a regression test
+asserts a proxy for the contract, CI environment variance can produce
+false failures even when the contract holds.** The decision rule the
+fix-up codifies: prefer direct contract assertions (monotonicity,
+liveness, presence) over indirect proxies (timing, specific-tier
+transit, event-loop ms).
+
+**Commit**: `sup-proc/proc-01-contract-direct` (separate fix-up branch
+off the bundle tip; SUP-REL bundles).
+
+Lane totals after PROC-01-fixup: **6 branches, 8 commits, 27 PROC
+longevity tests + 19 unregressed existing tests = 46/46 green,
+4 audit memos.**
