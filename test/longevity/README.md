@@ -324,6 +324,77 @@ COOP+COEP today, so the sampler falls back to
 headers to the test-only server profile, the sampler automatically
 starts capturing real byte counts.
 
+## Stress profiles via `--workload-opts` (SOAK-05l)
+
+Every workload class accepts a constructor `opts` object. The CLI exposes
+this via repeatable `--workload-opts=name.key=value` flags:
+
+```bash
+# Plan-spec stress profile for session-stringify (500 sessions × 200 KB)
+npm run soak -- --duration=10m --workloads=session-stringify \
+  --workload-opts=session-stringify.sessionCount=500 \
+  --workload-opts=session-stringify.bytesPerSession=204800
+
+# Restore mock-clock to its pre-SOAK-05o uncapped runaway behavior for
+# PROC-04 sub-linear-eviction characterization
+npm run soak -- --duration=60m --workloads=mock-clock \
+  --workload-opts=mock-clock.batchSize=50 \
+  --workload-opts=mock-clock.sweepsPerSecond=5 \
+  --workload-opts=mock-clock.maxInjected=900000
+
+# Pty-flood-ws at the plan-spec 5 MB/s stress (default is 1 MB/s smoke)
+npm run soak -- --duration=10m --workloads=pty-flood-ws --browser-page \
+  --workload-opts=pty-flood-ws.targetBytesPerSecond=5242880
+```
+
+Value types are coerced automatically: `42` → number, `1.5` → number,
+`true`/`false` → boolean, anything else → string. Multiple
+`--workload-opts` for the same workload are merged. Malformed flags
+(missing `.` or `=`) throw a clear CLI error. See
+`test/longevity/cli.test.js` for the parser contract.
+
+## WS-broadcast pty-flood (`pty-flood-ws`) — SOAK-05n
+
+Unlike `pty-flood` (which drives `terminalBridge._handleOsc7Chunk`
+internally), `pty-flood-ws` pushes output through the production data path:
+
+```
+workload → server._throttledOutputBroadcast(sessionId, chunk)
+        → coalescer (16 ms / 32 KB FG window per ADR 0009)
+        → binary WS frame to every connected client
+        → browser client.app.terminal.write
+        → PlanDetector.processOutput → bufferBytes
+```
+
+This is the workload that exercises CLIENT-01's 8 MB plan-detector cap
+end-to-end. The original `pty-flood` silently never fills the browser
+buffer because the internal OSC 7 seam bypasses the WS layer (the gap that
+surfaced as "vacuous PASS" in SOAK-05m).
+
+Use with `--browser-page` to drive the browser sampler. At default 1 MB/s
+the cap is hit in ~8 s; at the plan-spec 5 MB/s stress profile, ~1.6 s.
+Targets all sessions with connected clients by default; pin to a specific
+session via `--workload-opts=pty-flood-ws.targetSessionId=<id>`.
+
+## Vacuous-PASS guard (SOAK-05n)
+
+A gate's `evaluate()` may return `{ pass: 'vacuous', summary: '...' }` to
+signal **PASS-BUT-VACUOUS** — the cap held only because the workload never
+produced any data to measure against it. The gate-evaluator treats this as
+a hard FAIL for the overall verdict (you can't approve a soak that didn't
+measure what it claimed to measure) but reports it distinctly in the
+per-gate summary so reviewers can see why.
+
+Currently applied to `client.plan_detector` (peak == 0 → vacuous). The
+pattern generalizes to any "cap on observed activity" gate; future cap
+gates should opt in by returning `'vacuous'` when their underlying metric
+is at the empty/baseline value. See `test/longevity/gate-evaluator-vacuous.test.js`
+for the contract.
+
+CLI verdict marker: `[VAC ]` (distinct from `[PASS]`, `[FAIL]`, `[N/A ]`).
+`gate-result.json` carries a top-level `vacuous_count` field alongside
+`decidable_count`. `overall` is `false` when `vacuous_count > 0`.
+
 ## Determinism
 
 - **Sampling cadence**: fixed by `--interval` (default min(30s, ⌊duration/6⌋)).

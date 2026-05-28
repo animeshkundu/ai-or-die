@@ -17,6 +17,7 @@
 
 const { NoopWorkload } = require('./noop-workload');
 const { PtyFloodWorkload } = require('./pty-flood-workload');
+const { PtyFloodWsWorkload } = require('./pty-flood-ws-workload');
 const { ReconnectStormWorkload } = require('./reconnect-storm-workload');
 const { WatcherFloodWorkload } = require('./watcher-flood-workload');
 const { WsFuzzWorkload } = require('./ws-fuzz-workload');
@@ -29,6 +30,7 @@ const { DiskBloatQuotaWorkload } = require('./disk-bloat-quota-workload');
 const WORKLOADS = {
   'noop':              NoopWorkload,
   'pty-flood':         PtyFloodWorkload,
+  'pty-flood-ws':      PtyFloodWsWorkload,
   'reconnect-storm':   ReconnectStormWorkload,
   'watcher-flood':     WatcherFloodWorkload,
   'ws-fuzz':           WsFuzzWorkload,
