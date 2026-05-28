@@ -225,18 +225,73 @@ exists.
 - **Failure policy**: same as nightly.
 - **Artifacts**: full results dir, retention-days 60.
 
-### Per-PR gate re-run coordination (REL-02 scope)
+## Per-PR canary methodology (REL-02 procedure)
 
-When a PR opens:
-1. Identify the failure-mode lane from the PR diff (touched files) cross-
-   referenced against `docs/audits/<lane>-*.md` affected-files lists.
-2. SUP-REL adds a PR comment naming the gates that fix touches.
-3. `longevity-smoke` runs unconditionally on every PR.
-4. For event-loop-touching PRs, also `workflow_dispatch` a 1h targeted soak
-   with the implicated workload(s).
-5. Compare `gate-result.json` against baseline `gate-result.json` produced by
-   SOAK-03. **Regression = block merge.**
-6. Provide the JSONL diff in the PR comment so SUP-* author can iterate.
+**Workload-matched baseline.** Authored by SUP-SOAK after the HOT-06 canary
+produced an apparent `event_loop.max_ms` regression that turned out to be a
+workload-set mismatch (the baseline ran 8 workloads including GC-pressure-
+heavy `session-stringify`; the canary ran 2 workloads). The HOT-07 canary
+re-ran the methodology cleanly and produced a -21 % / -31 % win on
+`event_loop.max_ms` peak / p95 with no other regression.
+
+**Procedure:**
+
+1. If the PR's `Workloads exercised` line matches the baseline at
+   `test/longevity/results/baseline-20260528T042545Z/` (i.e. all of
+   `noop, pty-flood, reconnect-storm, watcher-flood, ws-fuzz,
+   attachment-growth, session-stringify, mock-clock`), skip to step 4.
+
+2. Otherwise: capture a controlled baseline on `<base SHA> + harness`
+   with the EXACT workload set the canary will use:
+   ```bash
+   npm run soak -- --duration=10m --interval=30s \
+     --workloads=<PR's workload set> \
+     --label=baseline-<base-sha>-<workload-set>
+   ```
+   Save under `test/longevity/results/baseline-<sha>-<workloads>/`.
+
+3. This controlled baseline replaces the canonical baseline for THIS
+   PR's gate diff.
+
+4. Run the canary on `<base SHA> + harness + PR's commits`, same flags:
+   ```bash
+   npm run soak -- --duration=10m --interval=30s \
+     --workloads=<PR's workload set> \
+     --gates=<PR's affected gates> \
+     --pr=<n> --label=canary-<PR>-<lane>
+   ```
+
+5. Side-by-side diff:
+   ```bash
+   node test/longevity/harness/summarize.js \
+     test/longevity/results/baseline-<sha>-<workloads> --markdown > /tmp/base.md
+   node test/longevity/harness/summarize.js \
+     test/longevity/results/canary-<PR>-<lane> --markdown > /tmp/canary.md
+   diff /tmp/base.md /tmp/canary.md
+   ```
+
+6. PR passes if every claimed gate either **improves** OR **stays flat
+   within ±10 %** of the controlled baseline (per BASELINE.md §"How to
+   compare a PR run against this baseline").
+
+**Why the workload-match matters.** Different workload sets warm the heap
+to different steady-state RSS, allocate different histograms of object
+shapes, trigger different GC cycles, and saturate different libuv queues.
+Comparing canary p99 against a baseline run with a different workload set
+is comparing apples to oranges and produces spurious regressions
+(false-positive: HOT-06 was reported as +25 % `event_loop.max_ms` until
+re-baselined; true delta is -21 %).
+
+**Verify-pushed-to-origin.** Before declaring a PR ready, run:
+```bash
+git ls-remote --heads origin <branch-name>
+git log origin/<branch-name>..<local-branch> --oneline
+```
+Both must show: branch exists on origin AND no local-only commits ahead.
+Adopted after multiple local-only-work-lost-to-worktree-removal near-
+misses during the campaign (SOAK harness sat uncommitted in a worktree
+for hours; HOT recovery from a HEAD-collision left commits on a local
+bookmark that wasn't pushed).
 
 ## Knobs negotiated with SUP-SOAK (resolved 2026-05-28)
 
