@@ -14,6 +14,20 @@ class SessionStore {
             || path.join(os.homedir(), '.ai-or-die');
         this.sessionsFile = path.join(this.storageDir, 'sessions.json');
         this._dirty = false;
+        // DISK-03: surface the last save error to the server so it can
+        // open the disk-full circuit breaker on ENOSPC without the
+        // caller having to wrap saveSessions. Null after a successful
+        // save; otherwise an Error-shaped object carrying .code.
+        this._lastSaveError = null;
+        // DISK-01 follow-up (SOAK-reported race): serialize concurrent
+        // saveSessions() calls. The 30 s autosave can overlap with
+        // explicit saves from session-create/delete, beforeExit, and
+        // SIGINT/SIGTERM handlers. Two concurrent writers both produce
+        // a `.tmp` and race on rename — the loser ENOENTs because the
+        // winner's rename removed the tmp. Chain via promise so each
+        // call waits for the prior in-flight save to settle before
+        // entering the write critical section.
+        this._inFlightSave = Promise.resolve();
         this.initializeStorage();
     }
 
@@ -50,10 +64,31 @@ class SessionStore {
     async saveSessions(sessions) {
         if (!this._dirty) return true;
 
+        // DISK-01 follow-up (SOAK-reported race): chain onto any prior
+        // in-flight save so two callers don't both writeFile() the same
+        // `.tmp` and race on rename. We attach to the prior promise but
+        // swallow its rejection — the prior save's failure is its own
+        // problem, not ours; we still want to run.
+        const prior = this._inFlightSave;
+        let release;
+        this._inFlightSave = new Promise((resolve) => { release = resolve; });
+        try {
+            await prior.catch(() => {});
+            return await this._saveSessionsLocked(sessions);
+        } finally {
+            release();
+        }
+    }
+
+    async _saveSessionsLocked(sessions) {
+        // Re-check dirty after acquiring the lock: a prior save in the
+        // queue may have already flushed our state. (Cheap; no-op fast path.)
+        if (!this._dirty) return true;
+
         try {
             // Ensure storage directory exists
             await fs.mkdir(this.storageDir, { recursive: true });
-            
+
             // Convert Map to array for JSON serialization
             const sessionsArray = Array.from(sessions.entries()).map(([id, session]) => ({
                 id,
@@ -87,22 +122,77 @@ class SessionStore {
                 sessions: sessionsArray
             };
 
-            // Write to a temporary file first, then rename (atomic operation)
-            // Use restrictive permissions (owner-only) since output may contain secrets.
-            // Note: mode 0o600 is silently ignored on Windows (which uses ACLs instead
-            // of Unix permissions). The file inherits the user's default ACL, which is
-            // acceptable but not explicitly enforced.
+            // Atomic, durable write — see docs/audits/disk-atomic-write.md (DISK-01).
+            //
+            // The standard POSIX recipe is:
+            //   1. open(temp, O_WRONLY|O_CREAT|O_TRUNC, 0o600)
+            //   2. write(jsonStr)
+            //   3. fsync(tempFd)         <- DURABILITY of file contents
+            //   4. close(tempFd)
+            //   5. rename(temp, target)  <- ATOMICITY of swap (rename(2))
+            //   6. fsync(dirFd)          <- DURABILITY of the rename
+            //
+            // Use restrictive permissions (owner-only) since output may contain
+            // secrets. Note: mode 0o600 is silently ignored on Windows (which
+            // uses ACLs instead of Unix permissions); the file inherits the
+            // user's default ACL, which is acceptable.
+            //
+            // On Windows we skip the directory fsync: NTFS journal +
+            // MoveFileExW(REPLACE_EXISTING) provide the equivalent guarantee,
+            // and Node's fsync on a directory handle returns EPERM there.
             const tempFile = `${this.sessionsFile}.tmp`;
-            // JSON.stringify is CPU-bound; yield to pending I/O before serializing
-            const jsonStr = await new Promise(resolve => setImmediate(() => resolve(JSON.stringify(data))));
-            await fs.writeFile(tempFile, jsonStr, { mode: 0o600 });
-            // Ensure directory still exists before rename (handles race conditions)
-            await fs.mkdir(this.storageDir, { recursive: true });
-            await fs.rename(tempFile, this.sessionsFile);
-            this._dirty = false;
 
+            // Opportunistic cleanup of a stale .tmp from a prior aborted run.
+            // Defense-in-depth — the writeFile below would overwrite anyway,
+            // but an explicit unlink keeps any partial bytes from a disk-full
+            // mid-write off disk while we re-write.
+            try { await fs.unlink(tempFile); } catch (_) { /* ENOENT ok */ }
+
+            // JSON.stringify is CPU-bound; yield to pending I/O before serializing.
+            const jsonStr = await new Promise(resolve => setImmediate(() => resolve(JSON.stringify(data))));
+
+            // Step 1–4: write + fsync + close the temp file via an explicit
+            // FileHandle so we can call .sync() before closing.
+            let tempHandle = null;
+            try {
+                tempHandle = await fs.open(tempFile, 'w', 0o600);
+                await tempHandle.writeFile(jsonStr);
+                await tempHandle.sync(); // fsync data + metadata
+            } finally {
+                if (tempHandle) {
+                    try { await tempHandle.close(); } catch (_) { /* best effort */ }
+                }
+            }
+
+            // Step 5: atomic swap. On POSIX this is rename(2); on Windows
+            // libuv maps fs.rename to MoveFileExW with MOVEFILE_REPLACE_EXISTING,
+            // which is atomic on the NTFS journal for same-volume moves.
+            await fs.rename(tempFile, this.sessionsFile);
+
+            // Step 6: fsync the parent directory so the rename itself is
+            // durable. POSIX-only; skipped on Windows (see above).
+            if (process.platform !== 'win32') {
+                let dirHandle = null;
+                try {
+                    dirHandle = await fs.open(this.storageDir, 'r');
+                    await dirHandle.sync();
+                } catch (dirErr) {
+                    // Some filesystems (procfs, some FUSE mounts) refuse fsync
+                    // on directory handles with EINVAL / EISDIR / EBADF.
+                    // Best-effort: the rename has been issued; durability is
+                    // a best-effort guarantee on those exotic mounts.
+                } finally {
+                    if (dirHandle) {
+                        try { await dirHandle.close(); } catch (_) { /* best effort */ }
+                    }
+                }
+            }
+
+            this._dirty = false;
+            this._lastSaveError = null;
             return true;
         } catch (error) {
+            this._lastSaveError = error;
             console.error('Failed to save sessions:', error.message);
             return false;
         }
