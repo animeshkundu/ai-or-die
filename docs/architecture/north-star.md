@@ -159,6 +159,27 @@ timestamps, fs-watch handles, `_ptyDisposables`). The north-star
 direction is to keep new structures inside the invariant, and to
 gradually move the linear-eviction outliers to sub-linear shapes.
 
+**Bounded does not mean semantically safe.** A cache, queue, sampler,
+or async worker that is memory-bounded can still produce wrong
+behavior when its data is stale, late, dropped, or coalesced. Every
+bounded structure that is *consulted by a decision path* must also
+declare its **freshness and overflow semantics**: max age,
+invalidation triggers, whether stale/missing data is advisory-only,
+and whether callers fail open or fail closed. Stale or partial
+results must not authorize filesystem access, admit writes, suppress
+errors, or render a user-visible "healthy/OK" state unless the
+pattern explicitly says that is safe. The DISK-03 `_sampleDiskUsage`
+cache is advisory; the disk circuit-breaker's admission decisions use
+the fresh signal path (the `ENOSPC` from the actual write), not the
+cached usage estimate. Future bounded surfaces must call out which
+they are.
+
+A corollary on naming: a boolean `*_stale: true` flag does not
+distinguish "old but complete" from "timed out mid-traversal" from
+"failed with EBUSY." When a sampler is consulted by anything other
+than display, prefer a status enum (`fresh | cached | partial |
+timeout | error`).
+
 ---
 
 ## 5. Resource lifetime contract
@@ -191,10 +212,15 @@ called from every exit path including error paths, and is idempotent.
   failure, so a failed save never deadlocks the queue.
 
 **Test for "is this disposal complete":** can you run 1000 cycles of
-attach-then-detach in a loop and watch `_collectDiagnostics()` return
-to baseline (handles, FDs, listener counts, watcher entries) within
-30s of the loop ending? CLIENT-02's 25-cycle reconnect-storm test is
-the codified shape; new lifetime contracts should follow it.
+attach-then-detach **AND** an overlapping-concurrent variant (new
+attach while the previous one's disposal is still draining) and watch
+`_collectDiagnostics()` return to baseline (handles, FDs, listener
+counts, watcher entries) within 30 s of the loop ending? CLIENT-02's
+25-cycle reconnect-storm test uses server-side `client.terminate()`
+to force the overlapping case — a clean sequential close masks
+race conditions on FD acquisition and listener-array mutation that
+real browser reconnect storms exercise. New lifetime contracts must
+exercise both shapes.
 
 **The rule:** for every `new X()` / `spawn()` / `addListener()` /
 `watch()` / `createReadStream()` / `setInterval()` you write, the same
@@ -206,14 +232,25 @@ shutdown, the lifetime is wrong.
 
 ## 6. Event-loop budget
 
-The event loop is the daemon's only thread of work that matters. Every
-piece of code competing for it must respect the same budget.
+The event loop is the daemon's **primary responsiveness budget — but
+not the only resource budget**. Event-loop delay is necessary, not
+sufficient: async queues, libuv worker-pool jobs, disk latency,
+watcher backlog, and WebSocket send buffers each have their own
+boundedness and observation requirements. Any fix that moves
+synchronous work off the event loop MUST add diagnostics for the new
+queue or resource it relies on, or it has merely shifted the
+unboundedness somewhere less visible.
 
-**Steady-state targets** (the bar a healthy soak passes):
-- `event_loop.p99_ms` < **50 ms**
-- `event_loop.max_ms` single-sample < **200 ms**
-- Recovery to within 5 ms of idle baseline within 5 s of any synthetic
-  burst ending.
+**Steady-state targets** (the bar a healthy soak passes — under the
+REL-01 bundled workload, on the supported CI / developer-class
+hardware classes, computed per sampling window with the harness's
+documented `monitorEventLoopDelay` resolution; environmental outliers
+— laptop sleep/resume, antivirus pauses, runner co-tenant noise — are
+flagged separately):
+- `event_loop.p99_ms` < **50 ms** per window
+- `event_loop.max_ms` per-window-max < **200 ms**
+- Recovery to within 5 ms of that run's idle baseline within 5 s of
+  any synthetic burst ending.
 
 **Synthetic-stress envelope** (the bar SUP-SOAK reports against — the
 bar at which fixes are CANARIED, not the bar at which the daemon ships
@@ -247,13 +284,32 @@ broken):
 - **Cached-and-budgeted disk walks** (DISK-03 `_sampleDiskUsage`)
   rather than synchronous `readdirSync` storms (HOT-04 lesson).
 - **Async hashing with a bounded queue** in `file-watcher.js`
-  (HOT-07) rather than sync hash on the watcher hot path.
+  (HOT-07) rather than sync hash on the watcher hot path. The queue
+  must declare overflow behavior; hash jobs carry a version key
+  (`{path, mtimeMs, size}`) so a late result for a file that has
+  since changed is discarded rather than overwriting newer state;
+  queue depth, oldest-job age, drop counts, and stale-result discards
+  surface in `_collectDiagnostics()`. Without this, HOT-07 can hold
+  the event loop green while making the file browser eventually
+  consistent in a way the operator can't see.
 - **Process-wide validation cache** for OSC 7 `validatePath` results
   (HOT-06) — the biggest single win of the campaign at −51 % p99.
+  **Cache scope is OSC 7 CWD-tracking display only**, not a
+  substitute for fresh authorization on mutating file operations.
+  Keyed by `(workspace root, candidate path)`; bypassed for any
+  write/delete/admission decision. The pattern generalizes only to
+  *display* caches; reusing this shape for security-sensitive paths
+  reintroduces the symlink-/junction-/reparse-retarget gap the cache
+  is otherwise safe against.
 - **Streaming per-session JSON.stringify with `setImmediate` yields**
   (HOT-10) rather than a single all-sessions stringify cliff.
 - **WS frame size guard** rejecting >1 MB at the application layer
-  before `JSON.parse` (HOT-08).
+  before `JSON.parse` (HOT-08). This is a parse/dispatch guard, not
+  an ingress memory guard — must be paired with the WebSocket
+  library's own max-payload setting so oversized frames are rejected
+  before full buffering where the platform supports it. The 1 MB
+  ceiling applies to JSON control frames; binary terminal-output
+  frames use their own size disciplines per ADR-0009 / ADR-0011.
 
 **Anti-pattern (do not introduce):** any synchronous `readFileSync`,
 `readdirSync`, sync hash, sync stringify of unbounded size, or
@@ -280,10 +336,24 @@ deployment its survivability.
 single-user daemon's supervisor must never permanently exit. Fleet
 patterns ("hard exit after N crashes, let systemd / k8s / pager
 restart externally") **do not transfer**. Tier-2's 5-min cadence drops
-worst-case respawn volume by two orders of magnitude (28 800/day →
-288/day) while keeping the daemon technically alive so the user's
-browser has something to talk to whenever the underlying defect is
-fixed.
+worst-case respawn volume by roughly two orders of magnitude (from a
+3-second tight-loop baseline of ~28 800/day down to ~288/day once
+Tier-2 has engaged) while keeping an owning supervisor alive with
+logs / IPC warnings / a recovery surface, so the user retains a local
+process responsible for the daemon even when the child is repeatedly
+failing.
+
+**Caveat — destructive crash classes.** "Never exit" guarantees the
+*supervisor* survives and the user retains a recovery surface; it
+does NOT mandate blind respawn of every crash class into the same
+destructive code path. For crash classes where re-entry risks data
+corruption (persistent-store schema mismatch, repeated crash during
+migration, write-path crash with an unclean ENOSPC underneath), the
+child enters a circuit-open / maintenance state — the supervisor
+keeps running, logs the condition loudly, broadcasts the failure
+class via the IPC channel PROC-01 introduced, and lets the user act.
+This is liveness-vs-integrity: when they conflict, the supervisor
+protects integrity, not just respawn-rate.
 
 **The cross-layer composition** (DISK-03 + PROC-01 + future
 CLIENT-04) demonstrates the pattern works without explicit
@@ -301,8 +371,13 @@ rulebook. The architectural shape that flows from it:
 
 - **All path canonicalization through one place.** `validatePath()`
   runs `realpathSync.native` (handles 8.3 short names) and strips
-  `\\?\` long-path prefix BEFORE lexical compare, on both sides.
-  Bridges and routes do not re-implement this.
+  the `\\?\` long-path prefix BEFORE the lexical compare on both
+  sides. The stripped form is used *only* for the lexical compare;
+  the canonical path used for downstream `fs` / shell / `node-pty`
+  calls preserves the prefix when it was present, because Windows
+  `MAX_PATH = 260` deep-tree navigation (think `node_modules`)
+  literally requires it. Bridges and routes do not re-implement
+  either side of this.
 - **Native subprocess discovery through the platform-detection
   helper** in `BaseBridge` — `where.exe` vs `which`, ConPTY vs
   xterm-256color, `pwsh.exe` vs `powershell.exe` vs `cmd.exe`.
@@ -377,25 +452,48 @@ Each bet has a horizon and a triggering condition; none is "fix
 tomorrow." These are the directional commitments that future ADRs and
 specs should harmonize with.
 
-### Bet 1 — Typed `BoundedX<T>` family in `src/utils/`
+> **"Campaign"** in this doc means a planned multi-supervisor
+> hardening or product push with explicit lanes and exit criteria —
+> the shape of stability-hardening-2026, not a calendar SLA. Horizons
+> are sequencing guidance. If no formal campaign launches in the
+> named window, the per-bet trigger condition still governs. Each
+> bet below is also stated trigger-first so it remains actionable
+> outside any campaign cadence.
 
-**Horizon:** 2 campaigns.
+### Bet 1 — Typed `BoundedX` family in `src/utils/` (memory bounds only)
+
+**Horizon:** 2 campaigns. **Trigger:** before the *second* new
+long-lived bounded structure is introduced outside the existing
+helpers.
 
 Today the codebase has `CircularBuffer` (ring + count cap),
 `_capBufferByBytes` (byte cap shifting), the `log-rotator` primitives
-(size/age/preserve-N), the supervisor's `crashTimestamps` (window + cap
-belt-and-braces), and `_inFlightSave` (mutex). Each is correct in
-isolation but each is its own ad-hoc shape.
+(size/age/preserve-N), and the supervisor's `crashTimestamps` (window
++ absolute cap belt-and-braces). Each is correct in isolation but
+each is its own ad-hoc shape.
 
-Direction: extract these into a typed `BoundedX<T>` family (count,
-bytes, age, multi-axis, mutex-queue) with a uniform diagnostics hook so
-new bounded structures pick the right shape off the shelf instead of
-ad-hoc-ing it. CLIENT-04 / DISK-05+ are the natural first consumers.
+Direction: extract these into a JSDoc-typed `BoundedX` family in
+`src/utils/` (count, bytes, age, multi-axis) with a uniform
+diagnostics hook so new memory-bounded structures pick the right
+shape off the shelf instead of ad-hoc-ing it. CLIENT-04 / DISK-05+
+are the natural first consumers.
+
+**Scope discipline (critic catch).** This family covers **spatial
+memory bounds for data containers**, nothing else. The `_inFlightSave`
+promise-chain serializer (DISK-04) is a *concurrency primitive*, not a
+data container — it bounds in-flight work, not stored bytes; eviction
+policies and preserve-N semantics don't apply. Concurrency primitives
+(mutexes, serialized writer queues, debouncers, rate limiters) live in
+their own utility family with their own contract (e.g., max queue
+length OR explicit coalescing — serialization alone is not a bound).
+Conflating the two is the category error this doc deliberately
+avoids; the `BoundedX` name does not extend to it.
 
 ### Bet 2 — Sub-linear eviction across all evictable Maps (PROC-04 reified)
 
-**Horizon:** 1–2 campaigns; **trigger:** real-user session count
-crosses ~10 K.
+**Horizon:** 1–2 campaigns. **Trigger:** when any eviction sweep first
+becomes visible on the production diagnostics tick, OR real-user
+session count crosses ~10 K.
 
 The campaign uncovered that `_evictStaleSessions` is O(n) per sweep.
 At realistic single-user counts (≤ 500) this is invisible; at the
@@ -423,8 +521,10 @@ small built-in `/diagnostics` HTML view so the operator doesn't curl
 
 ### Bet 4 — Generalized Bridge so adding a CLI is 50 lines, not a fork
 
-**Horizon:** 1 campaign; **trigger:** the next CLI (likely Copilot
-expansion, or whatever Anthropic ships).
+**Horizon:** 1 campaign. **Trigger:** before accepting the next bridge
+that would require copy-pasting an existing `*-bridge.js` (likely
+Copilot expansion, or whatever Anthropic / OpenAI / Google ship
+next).
 
 `BaseBridge` already gets most of the way (ADR-0001). The remaining
 fork pressure is: tool-specific "dangerous command" patterns, custom
@@ -485,6 +585,15 @@ would warp the daemon's coherence.
   user's installed CLIs precisely so the user controls auth, billing,
   model version, system prompts, and tool capabilities at the CLI
   layer. Reimplementing that against a vendor API loses everything.
+- **Embedded local RAG / vector indexing / codebase embeddings.**
+  `ai-or-die` proxies the CLI; it does not index, embed, or query the
+  user's workspace itself. If a wrapped CLI exposes its own RAG, the
+  bridge passes the bytes through; the daemon never stands up a
+  vector store, never intercepts the user's prompt to inject
+  retrieved context, never runs an embedding model locally. This is
+  the generalization of "we proxy, not orchestrate" to the
+  retrieval-augmented-generation surface — same one-way door as
+  server-side workflow state machines.
 
 ---
 
@@ -493,9 +602,21 @@ would warp the daemon's coherence.
 When in doubt — and a fast reviewer prompt for any PR that touches
 the daemon — prefer:
 
-1. **The smaller blast radius.** A 5-line fix in one file beats a
-   30-line refactor across three. Re-evaluate the broader refactor as
-   its own ADR if needed.
+> **Precedence note.** These rules are not all equal. Rules 2–5
+> (boundedness, disposal, diagnostics, regression test) define
+> *completeness* — they are not optional blast-radius. Rule 1 means
+> "choose the smallest production-code change among complete fixes,"
+> not "skip the test or the diagnostic to keep the diff small." When
+> Rule 1 appears to conflict with Rules 2–5, Rule 1 yields — a 5-line
+> production fix plus its regression test plus its diagnostics is
+> still a smaller blast radius than a 30-line refactor.
+
+1. **The smaller production-code blast radius among complete fixes.**
+   A 5-line production fix in one file beats a 30-line refactor
+   across three. **Required regression tests, diagnostics fields,
+   and doc updates are part of the fix, not optional scope** — judge
+   blast radius on the production code path, not on the
+   accompanying test/doc/diagnostics surface area.
 2. **The bounded structure over the unbounded one.** Cap on bytes,
    cap on age, cap on preserved-N — pick at least one. "It's normally
    small" is not a bound.
