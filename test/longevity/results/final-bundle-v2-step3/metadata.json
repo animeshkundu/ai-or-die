@@ -1,0 +1,115 @@
+{
+  "started_at": "2026-05-28T08:28:52.572Z",
+  "duration_ms": 1800000,
+  "sample_interval_ms": 30000,
+  "workloads": [
+    "noop",
+    "pty-flood",
+    "reconnect-storm",
+    "watcher-flood",
+    "ws-fuzz",
+    "attachment-growth",
+    "session-stringify",
+    "mock-clock",
+    "disk-bloat-jsonl",
+    "disk-bloat-quota"
+  ],
+  "gates": null,
+  "seed": 42,
+  "label": "final-bundle-v2",
+  "pr": null,
+  "node_version": "v24.15.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "output_dir": "/private/tmp/restep3-soak-XXXX/test/longevity/results/final-bundle-v2-20260528T082852Z",
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "started_at": "2026-05-28T08:28:52.572Z",
+      "finished_at": "2026-05-28T08:59:15.765Z",
+      "duration_ms": 1800000,
+      "sample_interval_ms": 30000,
+      "workloads": [
+        "noop",
+        "pty-flood",
+        "reconnect-storm",
+        "watcher-flood",
+        "ws-fuzz",
+        "attachment-growth",
+        "session-stringify",
+        "mock-clock",
+        "disk-bloat-jsonl",
+        "disk-bloat-quota"
+      ],
+      "sampler_stats": {
+        "samples": 62,
+        "errors": 0,
+        "lastSample": {
+          "ts": "2026-05-28T08:59:12.096Z",
+          "diag": {
+            "uptime_seconds": 1820,
+            "node_version": "v24.15.0",
+            "platform": "darwin",
+            "arch": "arm64",
+            "memory": {
+              "rss_mb": 1458.2,
+              "heap_used_mb": 929.1,
+              "heap_total_mb": 1128.1,
+              "external_mb": 54.8,
+              "array_buffers_mb": 51.2
+            },
+            "process": {
+              "active_handles": 11,
+              "active_requests": 2,
+              "fd_count": null
+            },
+            "sessions": {
+              "total": 89935,
+              "ws_connections": 1,
+              "fs_watch_sessions": 0,
+              "voice_upload_counts": 0,
+              "activity_broadcast_timestamps": 0
+            },
+            "disk": {
+              "sampled_at": "2026-05-28T08:58:52.611Z",
+              "ai_or_die_dir_bytes": 46585308,
+              "ai_or_die_dir_files": 1,
+              "ai_or_die_dir_stale": false,
+              "claude_projects_bytes": 499393027,
+              "claude_projects_files": 417,
+              "claude_projects_stale": true,
+              "quota_total_mb": 1024,
+              "quota_used_pct": 4.34,
+              "circuit_breaker_open": false,
+              "circuit_breaker_since": null,
+              "save_failure_count": 0
+            }
+          },
+          "eventLoop": {
+            "p50_ms": 20.021,
+            "p99_ms": 49.644,
+            "max_ms": 1070.596,
+            "mean_ms": 22.887
+          }
+        }
+      },
+      "browser_sampler_stats": {
+        "samples": 32,
+        "errors": 0,
+        "diagnostics_available": true
+      },
+      "aborted": false,
+      "abort_error": null,
+      "seed": 42
+    }
+  ],
+  "finished_at": "2026-05-28T08:59:15.765Z",
+  "total_duration_ms": 1800000,
+  "chunk_count": 1,
+  "aborted": false,
+  "abort_error": null,
+  "sampler_stats": {
+    "samples": 62,
+    "errors": 0
+  }
+}
