@@ -171,6 +171,26 @@ SUP-SOAK's first HOT-06 canary compared against the original 8-workload baseline
 
 The named convention is the deliverable; the practice itself was already campaign-wide. Adopted by SUP-REL for the REL-03 retrospective standards.
 
+### Test the contract, not the proxy ("HOT-04-fixup pattern")
+
+**The pattern.** When a regression test asserts a *proxy* for the contract being protected (e.g. event-loop max-lag as a proxy for "the cache eliminates O(N) syscalls"), CI environment variance can make the test fail even when the contract IS satisfied. Replace the proxy with a direct contract assertion.
+
+**The case study.** The original HOT-04 regression test had two assertions:
+1. `statSync called ≤ 1000 across 10 unchanged-dir scans` — direct contract: per-call cost is O(1) not O(N).
+2. `monitorEventLoopDelay h.max < 50ms across post-warmup calls` — proxy contract: "few syscalls" ⇒ "low event-loop block."
+
+Assertion (1) passes deterministically on every platform. Assertion (2) passes on local darwin and Linux but fails on macOS GitHub Actions shared runners: a single real `fs.statSync` takes 30–80 ms under disk contention there, pushing `h.max` over 50 ms even though the fix is doing exactly ONE stat per call (the contract is satisfied).
+
+The instinct is to fix the production code — "make the fix faster on macOS." I tried that first (a "soft TTL" that skips the dir-stat freshness check for calls within 100 ms of last populate). It made the HOT-04 test pass on darwin BUT broke `upload-generic.test.js`'s cap-enforcement assertion: external mutations (test pre-seed via `fs.writeFileSync`; in production, user `rm` between uploads) leave the cache stale within the TTL window → cap check uses pre-mutation bytes → real correctness bug, not just test issue. Reverted in ~10 minutes after seeing the failure.
+
+The right fix: drop the proxy assertion entirely. The contract ("≤1 dir-stat per call post-warmup") is already directly assertable via the existing `fs.statSync` stub. Zero CI-environment sensitivity. On main without HOT-09: 4500+ statSyncs (9 × 500 per-entry). With HOT-09: ≤ 9 dir-stats. Strict contract; clean signal.
+
+**The heuristic.** When a regression test fails on CI-only due to environment variance, ask: *what's the actual contract being violated? Can I measure that directly?* — before assuming the production code is wrong. Proxies are useful when the direct contract is hard to instrument; when both are available, prefer the direct one.
+
+**Corollary**: cheap-to-revert exploration is part of the discipline. The ~10 minutes I spent implementing-then-reverting the soft TTL was not wasted — the failed attempt proved the constraint ("dir-stat IS the freshness mechanism; can't be eliminated without breaking correctness"), which strengthened the test-side argument. "We tried X, it broke Y, dropped it" is institutional memory worth capturing; not every fix attempt makes it in, and that's part of the rigor.
+
+**Campaign instances**: the HOT-04-fixup cycle is the cleanest example (CI-noise vs real regression cleanly disambiguated by trying both). The pattern generalises to any future event-loop-lag regression test on shared CI infrastructure — measure call counts, queue depths, or other structural properties whenever possible. See [`test/longevity/event-loop/hot-04-attachment-scan.test.js`](../../test/longevity/event-loop/hot-04-attachment-scan.test.js) for the after-fix shape; the commit `353cc37` message documents the soft-TTL exploration and revert.
+
 ## Peer collaboration & cross-lane finds
 
 ### DISK ↔ HOT-10 — API brief upfront + integration verification at end
