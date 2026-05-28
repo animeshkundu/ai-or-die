@@ -16,6 +16,10 @@ concurrency:
 
 jobs:
   test:
+    # Explicit name so branch protection can reliably reference the check
+    # context as "CI / test (ubuntu-latest)" etc. (See
+    # docs/audits/ci-branch-protection-checklist.md.)
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     strategy:
@@ -591,6 +595,7 @@ jobs:
           retention-days: 14
 
   test-package:
+    name: test-package (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: test
     timeout-minutes: 10
@@ -609,6 +614,7 @@ jobs:
         run: node scripts/smoke-test-package.js
 
   build-binary:
+    name: build-binary (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     strategy:

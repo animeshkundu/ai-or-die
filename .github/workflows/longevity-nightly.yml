@@ -21,6 +21,13 @@ on:
   schedule:
     # 03:07 UTC daily. Off-peak, off-minute (avoids 03:00 traffic spike).
     - cron: '7 3 * * *'
+  # PR-attached opt-in path (per ci-trigger-architecture.md): apply the
+  # `run-longevity-nightly` label to a PR to fire a 4h soak against it.
+  # Useful for PRs that touch PTY lifecycle, supervisor, disk circuit
+  # breaker, or any code path the smoke (5 min) is too coarse to validate.
+  # Apply via: gh pr edit <N> --add-label run-longevity-nightly
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       duration:
@@ -33,11 +40,13 @@ on:
         default: 'all'
 
 concurrency:
-  group: longevity-nightly
+  group: longevity-nightly-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: false  # let in-flight nightly finish; queue overlapping schedule
 
 jobs:
   longevity-nightly:
+    # Only fire on the matching label (or any non-PR trigger).
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-longevity-nightly'
     runs-on: ${{ matrix.os }}
     # 4h soak + 30min server boot/drain/upload buffer.
     timeout-minutes: 270

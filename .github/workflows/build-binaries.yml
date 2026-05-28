@@ -1,20 +1,32 @@
 name: Build Binaries
 
+# Trigger policy (per ci-trigger-architecture.md, 2026-05-28):
+#   - PR label `run-binaries` — apply via `gh pr edit <N> --add-label run-binaries`
+#     to build a SEA binary for the PR head and download it from the run.
+#   - workflow_dispatch — manual build against a tag/branch.
+#
+# NOTE: the `release: types: [published]` trigger was REMOVED — the release
+# pipeline (`.github/workflows/release-on-main.yml`) already builds + uploads
+# Linux/Windows SEA binaries to the release tag in its own `build-binaries`
+# job, so a second auto-trigger here was duplicative. If release-on-main.yml
+# ever drops its build matrix, restore `release: types: [published]` here.
 on:
-  release:
-    types: [published]
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g., v0.1.0)'
-        required: true
+        description: 'Version tag (e.g., v0.1.0) — workflow_dispatch only'
+        required: false
 
 concurrency:
-  group: build-binaries-${{ github.event.release.tag_name || github.event.inputs.version }}
-  cancel-in-progress: false
+  group: build-binaries-${{ github.event.pull_request.number || github.event.inputs.version || github.sha }}
+  cancel-in-progress: true
 
 jobs:
   build:
+    # Only fire on the matching label (or any non-PR trigger).
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-binaries'
     strategy:
       matrix:
         include:
@@ -60,17 +72,11 @@ jobs:
           ./dist/${{ matrix.artifact }} --version || true
           ./dist/${{ matrix.artifact }} --help || true
 
-      - name: Upload to release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/${{ matrix.artifact }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload artifact (for workflow_dispatch)
-        if: github.event_name == 'workflow_dispatch'
+      # Upload artifact for PR-label runs AND workflow_dispatch runs. Both
+      # produce a downloadable build the user can grab from the run page.
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/${{ matrix.artifact }}
+          retention-days: 14

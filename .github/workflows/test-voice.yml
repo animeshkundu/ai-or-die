@@ -1,12 +1,18 @@
 name: Voice Input Tests
 
-# Trigger policy (per user directive, 2026-05-27): PR-only.
-# Avoid auto-fanout on every push — feature-branch pushes are throwaway
-# and main-push runs are redundant with the PR run that just merged.
-# Use workflow_dispatch for manual re-runs (e.g. retry voice-real-inference).
+# Trigger policy (per user directive + ci-trigger-architecture.md, 2026-05-28):
+# label-gated. Voice tests download a 670 MB Parakeet V3 model and run
+# ~20 min per OS (~40 min wall-clock per PR). Most PRs do not touch voice
+# code, so this is opt-in: apply the `run-voice` label to a PR to fire it.
+#
+# Label: run-voice
+# Apply via: gh pr edit <N> --add-label run-voice
+# Reapplying the label re-fires the workflow.
+#
+# Also fires on workflow_dispatch for direct manual runs.
 on:
   pull_request:
-    branches: [main]
+    types: [labeled]
   workflow_dispatch:
 
 concurrency:
@@ -15,6 +21,8 @@ concurrency:
 
 jobs:
   voice-unit:
+    # Only fire on the matching label (or any non-PR trigger).
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-voice'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 9
     strategy:
@@ -29,6 +37,7 @@ jobs:
       - run: npm test -- --grep "voice"
 
   voice-e2e:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-voice'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 9
     strategy:
@@ -55,6 +64,7 @@ jobs:
           retention-days: 14
 
   voice-real-inference:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-voice'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:

@@ -1,7 +1,8 @@
 name: Longevity Smoke (PR-blocking)
 
 # Tier 1 of the longevity-suite trio (smoke / nightly / weekly) added during
-# the stability-hardening-2026 campaign. Runs on every PR + push to main.
+# the stability-hardening-2026 campaign. Runs on every PR (PR-only post-
+# dfe95c0, see docs/audits/ci-trigger-architecture.md).
 #
 # Scope: 5-minute soak with the workload subset SUP-REL + SUP-SOAK agreed
 #        (per docs/audits/rel-ci-matrix.md §"Knobs negotiated with SUP-SOAK"):
@@ -36,6 +37,9 @@ concurrency:
 
 jobs:
   longevity-smoke:
+    # Explicit name so branch protection can reference
+    # "Longevity Smoke (PR-blocking) / smoke (ubuntu-latest)" etc.
+    name: smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     strategy:

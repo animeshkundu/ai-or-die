@@ -21,14 +21,22 @@ on:
   schedule:
     # Sunday 04:13 UTC. Off-peak, off-minute.
     - cron: '13 4 * * 0'
+  # PR-attached opt-in path (per ci-trigger-architecture.md): apply the
+  # `run-longevity-weekly` label to a PR to fire a 12h (split 6h+6h) soak
+  # against it. Reserved for major refactors that warrant the full window.
+  # Apply via: gh pr edit <N> --add-label run-longevity-weekly
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
 
 concurrency:
-  group: longevity-weekly
+  group: longevity-weekly-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: false
 
 jobs:
   chunk-0:
+    # Only fire on the matching label (or any non-PR trigger).
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-longevity-weekly'
     name: Weekly chunk 0 (first 6h)
     runs-on: ubuntu-latest
     # 6h soak + 1h buffer (well under the 6h hard cap with margin for boot/upload).
@@ -59,6 +67,10 @@ jobs:
           retention-days: 7  # short — only chunk-1 needs it
 
   chunk-1:
+    # Skip on label-mismatch (and on PR triggers without the right label).
+    # Defensive duplicate of chunk-0's guard — chunk-1 needs chunk-0 so it
+    # would skip anyway, but the explicit guard makes intent visible.
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-longevity-weekly'
     name: Weekly chunk 1 (second 6h via --resume)
     needs: chunk-0
     runs-on: ubuntu-latest
