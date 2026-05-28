@@ -1,0 +1,100 @@
+name: Longevity Nightly (4h soak, all workloads)
+
+# Tier 2 of the longevity-suite trio. Runs once nightly at 03:07 UTC
+# (off-peak; off-minute per the campaign convention to avoid the global
+# top-of-hour traffic spike on shared runners).
+#
+# Scope: 4-hour soak with --workloads=all (all 10 workloads + 11 gates
+# post-DISK / post-SOAK-05e). Heavy enough to catch slow leaks invisible
+# to the 5-min smoke; light enough to fit two parallel matrix jobs in
+# under the 6h hosted-runner cap.
+#
+# Matrix: ubuntu-latest, windows-latest, macos-latest (per REL-01 task
+# description "Win + macOS + Linux"; Windows is the campaign's primary
+# deployment target so nightly Windows is non-negotiable per CLAUDE.md).
+#
+# Failure policy: does NOT block PRs; opens a regression issue auto-tagged
+# `regression/soak` (assignee SUP-REL) on fail. PR-blocking is the smoke
+# tier's job, not nightly.
+
+on:
+  schedule:
+    # 03:07 UTC daily. Off-peak, off-minute (avoids 03:00 traffic spike).
+    - cron: '7 3 * * *'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Override soak duration (e.g. 4h, 30m, 1h)'
+        required: false
+        default: '4h'
+      workloads:
+        description: 'Override workload set (comma-separated, or "all")'
+        required: false
+        default: 'all'
+
+concurrency:
+  group: longevity-nightly
+  cancel-in-progress: false  # let in-flight nightly finish; queue overlapping schedule
+
+jobs:
+  longevity-nightly:
+    runs-on: ${{ matrix.os }}
+    # 4h soak + 30min server boot/drain/upload buffer.
+    timeout-minutes: 270
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Longevity nightly soak
+        run: |
+          node test/longevity/harness/cli.js \
+            --duration=${{ github.event.inputs.duration || '4h' }} \
+            --interval=30s \
+            --workloads=${{ github.event.inputs.workloads || 'all' }} \
+            --pr=${{ github.sha }} \
+            --label=nightly \
+            --out=test/longevity/results/nightly
+
+      - name: Upload soak artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: longevity-nightly-${{ matrix.os }}-${{ github.run_id }}
+          path: |
+            test/longevity/results/nightly/**/samples.jsonl
+            test/longevity/results/nightly/**/events.jsonl
+            test/longevity/results/nightly/**/metadata.json
+            test/longevity/results/nightly/**/gate-result.json
+          retention-days: 30
+
+      - name: Open regression issue on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `nightly soak regression — ${context.runId} (${process.env.RUNNER_OS})`;
+            const body = [
+              `Nightly soak failed on \`${process.env.RUNNER_OS}\`.`,
+              ``,
+              `**Run**: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `**Commit**: ${context.sha}`,
+              ``,
+              `Download the \`longevity-nightly-${process.env.RUNNER_OS}-${context.runId}\` artifact for samples/events/gate-result JSONL.`,
+              ``,
+              `Routing: SUP-REL (or successor release-coordinator).`,
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['regression/soak'],
+            });

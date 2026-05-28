@@ -1,0 +1,75 @@
+name: Longevity Smoke (PR-blocking)
+
+# Tier 1 of the longevity-suite trio (smoke / nightly / weekly) added during
+# the stability-hardening-2026 campaign. Runs on every PR + push to main.
+#
+# Scope: 5-minute soak with the workload subset SUP-REL + SUP-SOAK agreed
+#        (per docs/audits/rel-ci-matrix.md §"Knobs negotiated with SUP-SOAK"):
+#          --workloads=noop,reconnect-storm,ws-fuzz  (WS lifecycle + handle
+#            churn — broadest regression coverage for lowest cost)
+#          --duration=5m
+#          --interval=20s   (15 samples — safe floor for linear-regression
+#            slope confidence; per SOAK negotiation item #3)
+#
+# Also runs `npm run test:longevity` (mocha test/longevity/**/*.test.js)
+# BEFORE the soak as a fast pre-gate. Catches regression-test failures
+# in <2 min vs the 6-min soak round-trip.
+#
+# Matrix: ubuntu-latest, windows-latest, macos-latest (REL-01 task
+# description explicitly mandates "Win + macOS + Linux" for longevity tier;
+# diverges from the existing 18 PR-blocking browser jobs which are
+# ubuntu+windows only).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: longevity-smoke-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  longevity-smoke:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+
+      # Fast regression-test gate (< 2 min). Catches per-lane regression-
+      # test failures before the expensive 5-min soak.
+      - name: Longevity regression tests
+        run: npm run test:longevity
+
+      # 5-min soak. Workload subset + 20s interval per SOAK negotiation.
+      - name: Longevity smoke soak (5 min)
+        run: |
+          node test/longevity/harness/cli.js \
+            --duration=5m \
+            --interval=20s \
+            --workloads=noop,reconnect-storm,ws-fuzz \
+            --label=ci-smoke \
+            --out=test/longevity/results/ci-smoke
+
+      # Upload JSONL + verdict so REL-02 per-PR diff workflow can compare.
+      - name: Upload soak artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: longevity-smoke-${{ matrix.os }}
+          path: |
+            test/longevity/results/ci-smoke/**/samples.jsonl
+            test/longevity/results/ci-smoke/**/events.jsonl
+            test/longevity/results/ci-smoke/**/metadata.json
+            test/longevity/results/ci-smoke/**/gate-result.json
+          retention-days: 14
