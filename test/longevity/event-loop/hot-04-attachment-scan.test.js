@@ -16,20 +16,28 @@
 // Repro: instantiate the server, preload a tmp .claude-attachments dir
 // with 500 small files, wrap fs.statSync with a 1ms busy-wait (network
 // share proxy) that counts calls, call _attachmentDirBytes 10 times,
-// measure call count and event-loop max lag.
+// and assert (a) call-count is bounded over the burst, (b) post-warmup
+// calls don't re-trigger the O(N) per-entry scan.
 //
 // On main:
 //   • statSync called 500 * 10 = 5000 times (no cache).
-//   • h.max ≥ 500ms (10 × 500ms busy-wait, bunched).
 //   ⇒ both assertions fail.
 //
-// After the proposed fix (cached (bytes, mtimeMs) pair, refresh only on
-// mtime advance — see memo §Proposed fix):
-//   • statSync called ≤ 1000 (first scan populates + 10 dir-stats).
-//     The fix may also fold the dir-stat into the upload path, in which
-//     case ≤ 500 + 10 = 510.
-//   • h.max < 50ms (no bunched I/O on the hot path after cache warmup).
+// After the fix (cached (bytes, mtimeMs) pair, refresh only on mtime
+// advance — HOT-09):
+//   • statSync called ≤ 1000 across 10 calls (first scan populates +
+//     subsequent dir-freshness stats only).
+//   • Post-warmup calls each do ONE dir-stat (no O(N) per-entry scan).
 //   ⇒ both assertions pass.
+//
+// Note on CI shape: the earlier version of the second assertion measured
+// `perf_hooks.monitorEventLoopDelay h.max < 50ms`. On macOS GitHub
+// Actions shared runners, a single real fs.statSync can take 30-80ms
+// under disk contention — pushing h.max over 50ms even though the FIX
+// works exactly as designed (only 1 stat per call, no O(N) scan).
+// That's CI-noise, not regression. The current shape (call-count
+// post-warmup) catches the actual contract being violated with zero
+// CI-environment sensitivity. See HOT-04-fixup commit message.
 
 'use strict';
 
@@ -37,7 +45,6 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { monitorEventLoopDelay } = require('perf_hooks');
 
 const { ClaudeCodeWebServer } = require('../../../src/server');
 
@@ -127,37 +134,48 @@ describe('HOT-04: attachment dir scan on every upload (event-loop hot path)', fu
     );
   });
 
-  it('keeps event-loop max lag under 50ms across post-warmup _attachmentDirBytes calls', async () => {
-    // Warmup call to populate any cache the fix introduces. Excluded
-    // from the histogram measurement so the fix isn't penalised for
-    // its first-touch population cost (a one-shot per process restart).
+  it('post-warmup _attachmentDirBytes calls do not re-trigger the O(N) file-stat scan (CI-robust)', async () => {
+    // Warmup call to populate the cache. Excluded from the measurement.
     server._attachmentDirBytes(attachmentsDir);
 
-    const h = monitorEventLoopDelay({ resolution: 10 });
-    h.enable();
+    // Reset the statSync counter so we only measure post-warmup calls.
+    statCount = 0;
 
     const yieldNext = () => new Promise((r) => setImmediate(r));
-    try {
-      for (let i = 0; i < 9; i++) {
-        server._attachmentDirBytes(attachmentsDir);
-        await yieldNext();
-      }
-    } finally {
-      h.disable();
+    for (let i = 0; i < 9; i++) {
+      server._attachmentDirBytes(attachmentsDir);
+      await yieldNext();
     }
 
-    const maxMs = h.max / 1e6;
-    const meanMs = h.mean / 1e6;
-
-    // After warmup:
-    //   main: still 500ms per call (no cache) → max ≥ 500ms.
-    //   fix:  ~0ms per call (cache hit) → max < 50ms.
+    // HOT-09 fix contract: each post-warmup call does exactly ONE
+    // fs.statSync — the dir freshness check. The O(N) per-entry scan is
+    // skipped. With 9 calls, expect ≤ 9 statSyncs on the tmp dir.
+    //
+    // On main without HOT-09: each call would do 1 readdirSync + 500
+    // per-entry statSyncs → 4500+ statSyncs after warmup. We allow some
+    // slack (≤ 20) to tolerate any auxiliary stats the implementation
+    // might add (e.g. dir-existence pre-check) without flakiness.
+    //
+    // Why this assertion shape instead of event-loop max-lag:
+    //   The earlier version of this test asserted
+    //   `perf_hooks.monitorEventLoopDelay h.max < 50ms` across 9
+    //   post-warmup calls. On macOS shared CI runners (GitHub Actions
+    //   darwin), a single real fs.statSync can take 30-80ms under disk
+    //   contention — pushing h.max over 50ms even though the FIX works
+    //   exactly as designed (only 1 stat per call, no O(N) scan).
+    //   That's CI-noise, not regression. The call-count assertion catches
+    //   the actual contract being violated (O(N) scan returning) with
+    //   zero CI-environment sensitivity.
     assert.ok(
-      maxMs < 50,
-      `post-warmup event-loop max lag = ${maxMs.toFixed(2)} ms ` +
-      `(mean ${meanMs.toFixed(2)} ms); expected < 50 ms — ` +
-      'attachment-dir scan still O(N) per call on the hot path ' +
-      '(see docs/audits/hot-04-attachment-scan.md)'
+      statCount <= 20,
+      `fs.statSync called ${statCount} times across 9 post-warmup calls; ` +
+      'expected ≤ 20 (per-call dir-freshness stat only; O(N) per-entry scan ' +
+      'should be skipped — see docs/audits/hot-04-attachment-scan.md)'
     );
+
+    // Sanity: each call returns a positive byte count (cache lookups are
+    // returning the actual cached bytes, not 0 or undefined).
+    const bytes = server._attachmentDirBytes(attachmentsDir);
+    assert.ok(bytes > 0, `post-warmup call returned ${bytes}; expected positive`);
   });
 });
