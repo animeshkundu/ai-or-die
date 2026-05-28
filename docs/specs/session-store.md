@@ -62,6 +62,11 @@ Serializes the session Map to disk.
 
 **Returns:** `true` on success, `false` on error.
 
+**Last-error surfacing (DISK-03):** After every call, `this._lastSaveError`
+is either `null` (success) or the `Error` that aborted the save. The
+server reads `_lastSaveError.code` and opens the disk-full circuit
+breaker on `ENOSPC` / `EDQUOT` — see `docs/specs/disk-budget.md` §4.
+
 **Durability guarantee:** After `saveSessions` resolves with `true`, a power loss or hard reboot will leave `sessionsFile` either fully containing the just-saved content OR fully containing the previously saved content (or no file at all, for the first-ever save). It will NOT leave a partial, empty, or torn file. This is enforced by the regression test `test/longevity/disk/atomic-write-power-loss.test.js`.
 
 ### `loadSessions() => Promise<Map>`

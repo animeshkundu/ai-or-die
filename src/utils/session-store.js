@@ -14,6 +14,11 @@ class SessionStore {
             || path.join(os.homedir(), '.ai-or-die');
         this.sessionsFile = path.join(this.storageDir, 'sessions.json');
         this._dirty = false;
+        // DISK-03: surface the last save error to the server so it can
+        // open the disk-full circuit breaker on ENOSPC without the
+        // caller having to wrap saveSessions. Null after a successful
+        // save; otherwise an Error-shaped object carrying .code.
+        this._lastSaveError = null;
         this.initializeStorage();
     }
 
@@ -154,8 +159,10 @@ class SessionStore {
             }
 
             this._dirty = false;
+            this._lastSaveError = null;
             return true;
         } catch (error) {
+            this._lastSaveError = error;
             console.error('Failed to save sessions:', error.message);
             return false;
         }

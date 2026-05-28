@@ -126,6 +126,14 @@ class ClaudeCodeWebServer {
     this.activityBroadcastTimestamps = new Map(); // sessionId -> last broadcast timestamp
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
+    // DISK-03: disk quota + circuit breaker state.
+    // Default 1 GB ceiling on ~/.ai-or-die/; override with AIORDIE_DISK_QUOTA_MB.
+    const quotaEnv = parseInt(process.env.AIORDIE_DISK_QUOTA_MB, 10);
+    this._diskQuotaMb = (Number.isFinite(quotaEnv) && quotaEnv > 0) ? quotaEnv : 1024;
+    this._diskFull = false;          // circuit breaker state
+    this._diskFullSince = null;      // ms timestamp of last IDLE→FULL transition
+    this._diskUsageCache = null;     // populated by _sampleDiskUsage
+    this._diskUsageCacheAt = 0;
     this.supervised = typeof process.send === 'function'; // Running under supervisor with IPC
     this.restartManager = new RestartManager(this);
     this.restartManager.startMemoryMonitoring();
@@ -273,7 +281,69 @@ class ClaudeCodeWebServer {
     if (force) {
       this.sessionStore.markDirty();
     }
-    await this.sessionStore.saveSessions(this.claudeSessions);
+    const ok = await this.sessionStore.saveSessions(this.claudeSessions);
+    // DISK-03: detect ENOSPC and open the circuit breaker. Edge-triggered
+    // — broadcast `disk_full` exactly once per IDLE→FULL transition.
+    if (!ok && this.sessionStore._lastSaveError) {
+      const err = this.sessionStore._lastSaveError;
+      if (err.code === 'ENOSPC' || err.code === 'EDQUOT') {
+        this._enterDiskFull({ source: 'fs', op: 'session-save', code: err.code });
+      }
+    }
+    return ok;
+  }
+
+  /**
+   * DISK-03: open the disk-full circuit breaker. Broadcasts
+   * { type: 'disk_full', detail: {...} } to all connected WS clients
+   * exactly once per IDLE→FULL transition.
+   */
+  _enterDiskFull(detail) {
+    if (this._diskFull) return; // already open — no broadcast spam
+    this._diskFull = true;
+    this._diskFullSince = Date.now();
+    console.warn('[disk-full] entering disk-full state:', JSON.stringify(detail));
+    this._broadcastDiskFull({
+      ...detail,
+      quota_total_mb: this._diskQuotaMb,
+      quota_used_pct: this._diskUsagePercentOfQuota(),
+    });
+  }
+
+  /**
+   * DISK-03: close the circuit breaker when disk pressure clears.
+   * Hysteresis: only clears when usage drops 10% below the quota.
+   */
+  _maybeExitDiskFull() {
+    if (!this._diskFull) return;
+    const pct = this._diskUsagePercentOfQuota();
+    // Clear when below 80% of quota (10% hysteresis below the 90% open threshold).
+    if (pct !== null && pct < 80) {
+      this._diskFull = false;
+      this._diskFullSince = null;
+      console.log('[disk-full] exiting disk-full state; quota_used_pct=', pct);
+    }
+  }
+
+  _diskUsagePercentOfQuota() {
+    if (!this._diskQuotaMb) return null;
+    const sample = this._diskUsageCache;
+    if (!sample || typeof sample.ai_or_die_dir_bytes !== 'number') return null;
+    return (sample.ai_or_die_dir_bytes / (this._diskQuotaMb * 1024 * 1024)) * 100;
+  }
+
+  _broadcastDiskFull(detail) {
+    try {
+      const msg = { type: 'disk_full', detail };
+      const json = JSON.stringify(msg);
+      if (this.webSocketConnections) {
+        for (const [, wsInfo] of this.webSocketConnections) {
+          if (wsInfo && wsInfo.ws && wsInfo.ws.readyState === 1) {
+            try { wsInfo.ws.send(json); } catch (_) { /* best effort */ }
+          }
+        }
+      }
+    } catch (_) { /* never break the caller */ }
   }
 
   async handleShutdown(exitCode = 0) {
@@ -3180,6 +3250,18 @@ class ClaudeCodeWebServer {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
 
+    // DISK-03: refuse new sessions when the circuit breaker is open.
+    // Existing sessions continue to function read-only-ish (output
+    // buffer is bounded; we just can't durably persist new state).
+    if (this._diskFull) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'error',
+        code: 'disk_full',
+        message: 'Cannot create new session — local disk is full. Delete some sessions or free disk space.'
+      });
+      return;
+    }
+
     // Validate working directory if provided
     let validWorkingDir = this.baseFolder;
     if (workingDir) {
@@ -3858,7 +3940,28 @@ class ClaudeCodeWebServer {
       // DISK-02/03: cached disk usage sample (60 s TTL, never blocks the
       // event loop). Populated by _sampleDiskUsage() — see method
       // comment for the time-budget contract.
-      disk: this._diskUsageCache || { stale: true, note: 'no sample yet' },
+      disk: this._buildDiagnosticsDiskBlock(),
+    };
+  }
+
+  /**
+   * DISK-03: build the `disk` block for diagnostics, combining the
+   * cached _diskUsageCache sample with quota state + circuit breaker
+   * status.
+   */
+  _buildDiagnosticsDiskBlock() {
+    const sample = this._diskUsageCache || { stale: true, note: 'no sample yet' };
+    const totalMb = this._diskQuotaMb;
+    let usedPct = null;
+    if (totalMb && typeof sample.ai_or_die_dir_bytes === 'number') {
+      usedPct = +((sample.ai_or_die_dir_bytes / (totalMb * 1024 * 1024)) * 100).toFixed(2);
+    }
+    return {
+      ...sample,
+      quota_total_mb: totalMb,
+      quota_used_pct: usedPct,
+      circuit_breaker_open: !!this._diskFull,
+      circuit_breaker_since: this._diskFullSince,
     };
   }
 
@@ -3903,6 +4006,20 @@ class ClaudeCodeWebServer {
 
     this._diskUsageCache = sample;
     this._diskUsageCacheAt = now;
+
+    // DISK-03: quota-pressure detection. Open the circuit breaker at
+    // 90% of quota; let _maybeExitDiskFull close it at 80% (hysteresis).
+    const pct = this._diskUsagePercentOfQuota();
+    if (pct !== null && pct >= 90 && !this._diskFull) {
+      this._enterDiskFull({
+        source: 'quota',
+        op: 'sample',
+        quota_used_pct: pct,
+      });
+    } else if (this._diskFull) {
+      this._maybeExitDiskFull();
+    }
+
     return sample;
   }
 

@@ -94,64 +94,95 @@ idempotency, crash-file pruning, Windows `EBUSY` fallback.
 
 ---
 
-## 4. DISK-03: ENOSPC + `~/.ai-or-die/` size cap (proposed)
+## 4. DISK-03: ENOSPC + `~/.ai-or-die/` size cap ✅
 
-**Status:** Memo to be drafted; implementation to land last.
+**Status:** Landed. See `docs/audits/disk-enospc.md`.
 
 ### Size cap
 
 - **Default ceiling:** 1 GB total bytes under `~/.ai-or-die/`.
-- **Override:** `AIORDIE_DISK_QUOTA_MB` environment variable.
+- **Override:** `AIORDIE_DISK_QUOTA_MB` environment variable (positive
+  integer MB; non-numeric / non-positive values fall back to the default).
 - **Enforcement points:**
-  - Pre-write check in `saveSessions` (estimate envelope size + headroom).
-  - Pre-write check in any attachment-upload path.
-  - Periodic (5 min diagnostics tick) audit emits a `disk_pressure`
-    WS broadcast when usage > 80 % of quota.
-- **On cap breach:** refuse new writes that would exceed the cap;
-  return structured error (`disk_full`) over WS; do NOT crash the
-  process; existing sessions remain read-only.
+  - `_sampleDiskUsage` (5 min cadence, 60 s cache TTL) measures
+    `ai_or_die_dir_bytes` against `_diskQuotaMb`. At ≥ 90% it opens
+    the circuit breaker.
+  - `createAndJoinSession` (server.js) refuses new sessions when the
+    breaker is open and emits `{type: 'error', code: 'disk_full'}`
+    to the requesting client.
+- **No hard pre-write block today.** The current writers
+  (`sessions.json` + `.crash`) are intrinsically small; the quota is
+  the alarm threshold, not a hard blocker. When attachments/uploads
+  start landing under `~/.ai-or-die/`, the pre-write block lands then.
 
 ### ENOSPC circuit breaker
 
-- Catch `ENOSPC` on **all** disk-write call sites:
-  - `session-store.js#saveSessions` (already gracefully returns false).
-  - `server.js` attachment upload paths.
-  - `usage-reader.js` (gzip rotation — must not corrupt source on ENOSPC).
-- New WebSocket message type: `{ type: 'disk_full', detail: { path, op, quota_used_mb, quota_total_mb } }`.
-- Server-wide circuit-breaker state: after first ENOSPC, set
-  `this._diskFull = true`; periodic recheck via diagnostics tick clears
-  it when usage drops 10 % below the cap.
-- Degrade gracefully: refuse new sessions, refuse uploads, keep
-  serving existing sessions read-only (no buffer growth past the
-  current 512 KB cap).
+- `session-store.js#saveSessions` returns `false` on any write
+  failure and stores the error on `this._lastSaveError` (DISK-03).
+  Server's `saveSessionsToDisk` reads that and opens the breaker on
+  `ENOSPC` or `EDQUOT`.
+- **Edge-triggered broadcast:** `disk_full` WS message fires exactly
+  once per IDLE→FULL transition. Detail payload:
+  ```json
+  {
+    "type": "disk_full",
+    "detail": {
+      "source": "fs" | "quota",
+      "op": "session-save" | "sample" | ...,
+      "code": "ENOSPC" | "EDQUOT" | null,
+      "quota_total_mb": 1024,
+      "quota_used_pct": 92.7
+    }
+  }
+  ```
+- **Hysteresis:** breaker only closes when `_sampleDiskUsage` reports
+  < 80% of quota. Prevents flapping near the 90% threshold.
+- **Degraded mode while open:**
+  - New sessions refused (returns structured error to client).
+  - Existing sessions keep streaming PTY output (bounded by the
+    512 KB output-buffer cap — no disk growth).
+  - Auto-save loop keeps trying every 30 s; first success transitions
+    `_lastSaveError` back to `null` and the next sample re-checks the
+    quota.
 
-### Diagnostics endpoint extension
+### Diagnostics endpoint
 
-`src/server.js:3791–3826` (`_collectDiagnostics`) gets a new `disk`
-block:
+`_collectDiagnostics().disk` reports:
 
 ```json
 {
-  "disk": {
-    "ai_or_die_dir_bytes": 12345678,
-    "ai_or_die_dir_files": 42,
-    "quota_total_mb": 1024,
-    "quota_used_pct": 1.2,
-    "claude_projects_bytes": 758912345,
-    "claude_projects_files": 889,
-    "circuit_breaker_open": false
-  }
+  "ai_or_die_dir_bytes": 1234567,
+  "ai_or_die_dir_files": 5,
+  "ai_or_die_dir_stale": false,
+  "claude_projects_bytes": 758912345,
+  "claude_projects_files": 889,
+  "claude_projects_stale": false,
+  "sampled_at": "2026-05-27T12:00:00.000Z",
+  "quota_total_mb": 1024,
+  "quota_used_pct": 0.12,
+  "circuit_breaker_open": false,
+  "circuit_breaker_since": null
 }
 ```
 
-The sampling uses a directory-walk with a 50 ms time budget and
-caches results for 60 s — must NOT block the event loop. If the
-sample times out, the previous cached value is returned with a
-`stale: true` flag.
+The sample walks asynchronously with a **50 ms wall-clock budget per
+sample call**, caches results for **60 s**, and reports `*_stale: true`
+on budget timeout. Never blocks the event loop.
 
-**Regression test:** `test/longevity/disk/enospc-handling.test.js`.
-Linux-only (tmpfs/loopback with a tight cap); skipped on macOS/Windows
-in CI with manual reproduction documented inline.
+### Regression test
+
+`test/longevity/disk/enospc-handling.test.js` covers:
+
+1. `SessionStore._lastSaveError` surfaces ENOSPC code.
+2. Failed save does NOT corrupt the prior `sessions.json` (DISK-01
+   temp+rename guarantee carries through).
+3. `_sampleDiskUsage` populates expected fields and caches for 60 s.
+4. Wall-clock budget honored on a 500-file synthetic corpus.
+5. Circuit breaker opens at ≥ 90% and broadcasts exactly once per
+   transition.
+6. Hysteresis: breaker stays open between 80–90%; closes below 80%.
+7. Linux real-tmpfs ENOSPC test is gated `this.skip()` in CI
+   (privileged mount required); manual repro in §6.
 
 ---
 
