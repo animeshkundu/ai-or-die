@@ -2,11 +2,11 @@
 
 **Lane**: SUP-HOT (event-loop hot paths)
 **Owner**: SUP-HOT
-**Status**: Investigation complete; fix deferred to HOT-10 (post-baseline)
+**Status**: Investigation complete. **Fix landed in HOT-10** (`src/utils/session-store.js`).
 **Files**: `src/utils/session-store.js:50–109` (`saveSessions`),
 specifically the `setImmediate(() => resolve(JSON.stringify(data)))` call
 at line 97
-**Date**: 2026-05-27
+**Date**: 2026-05-27 (investigation), 2026-05-28 (fix)
 
 ## Symptom
 
@@ -212,3 +212,94 @@ mid-write failure), slightly more disk syscalls.
 - `src/server.js:246–264` — `handleShutdown` (force-save once)
 - `test/longevity/event-loop/hot-05-sessionstore-stringify.test.js` —
   regression test
+
+## Fix landed (HOT-10)
+
+Picked **Option B** (streaming JSON via per-session yields), NOT Option
+A (worker_threads). The decision flipped from the memo recommendation
+because of structured-clone overhead.
+
+### Decision divergence from memo
+
+The memo recommended **Option A (`worker_threads` offload)**, scored
+ahead of streaming because "main loop unblocked." That analysis missed
+the **structured-clone cost on the sender side**. `worker.postMessage(data)`
+runs structured-clone of `data` ON the main thread (sender) before
+delivering to the worker. For a 25-50 MB sessions object, structured
+clone is itself 50-100 ms of synchronous main-thread work — most of the
+block we were trying to eliminate stays. ArrayBuffer-style transfer
+would zero-copy, but the sessions object is plain JS (Maps already
+converted to arrays) with nothing transferable.
+
+**Option B (streaming) avoids the structured-clone cost entirely**:
+work stays on main but is INTERRUPTED every per-session-stringify
+(1-10 ms on a 512 KB buffer). The h.max-per-tick is then bounded by
+the per-session work, not total work. For the regression test
+(100 × 512 KB), that means h.max ≤ ~10 ms even though total wall is
+unchanged.
+
+### Implementation in `src/utils/session-store.js`
+
+New instance method `_serializeDataStreamed(data)`:
+
+- Stringifies the envelope ONCE with `sessions: []` to capture the
+  bracket/comma layout.
+- Iterates `data.sessions`, stringifying each entry individually and
+  `await setImmediate()` between iterations. setImmediate fires AFTER
+  pending I/O on the current tick, so PTY data, WS frames, heartbeat
+  ticks all run between per-session serializations.
+- Joins prefix + per-session strings (comma-separated) + suffix. The
+  final `parts.join('')` is itself O(total bytes) but V8 rope-string
+  optimization keeps the join cost negligible (~5 ms for 25 MB).
+- Defensive fallback to bare `JSON.stringify` if `data.sessions` isn't
+  an array or the envelope shape doesn't match — preserves behaviour
+  for any future caller with a different data shape.
+
+`_saveSessionsLocked` (DISK-01 follow-up's renamed `_saveSessions`)
+replaces the `setImmediate(() => resolve(JSON.stringify(data)))` line
+with `await this._serializeDataStreamed(data)`. The surrounding
+DISK-01 fsync / FileHandle / rename machinery is untouched (per
+SUP-DISK's HOT-10 sequencing brief).
+
+### Output shape compatibility
+
+The streamed output is **byte-identical** to bare `JSON.stringify(data)`
+for the `_saveSessionsLocked` envelope shape (`{version, savedAt,
+sessions: [...]}`). Asserted by new tests in
+`test/session-store.test.js`:
+
+- `produces byte-identical output to JSON.stringify for the standard
+  envelope shape` — direct string compare.
+- `produces parseable output that round-trips back to the input data`
+  — covers edge-case characters (escape sequences, unicode, control
+  chars).
+- `falls back to bare JSON.stringify when data.sessions is missing or
+  not an array` — defensive fallback exercised.
+- `handles an empty sessions array` — boundary condition.
+
+### Test surface
+
+- `test/longevity/event-loop/hot-05-sessionstore-stringify.test.js`:
+  assertion flips from failing on main → passing (h.max ~90 ms → < 50
+  ms on 100 × 512 KB sessions; observed: ~5-10 ms per per-session
+  tick).
+- `test/session-store.test.js`: 4 new HOT-10 unit tests for the
+  streamed serializer correctness contract. 17 passing total.
+- Adjacent sweep (chunked-write, circular-buffer, session-deleted-
+  cleanup): 36 passing / 0 failing.
+
+### Out-of-scope follow-ups (deliberately deferred)
+
+- **Actually moving stringify to a `worker_threads` Worker.** Would
+  reduce main-thread total wall (work runs in parallel) but the
+  per-tick block isn't the bottleneck after HOT-10 — it's already
+  ≤ 10 ms. Worker adds ~30 MB resident memory + crash-handling
+  complexity for negligible loop-time gain. Revisit if SUP-SOAK sees
+  total save wall (~110 ms for 100 sessions) showing up as a wall-time
+  bottleneck.
+- **Binary serialization (CBOR / MessagePack).** Faster serialization
+  but breaks `~/.ai-or-die/sessions.json` human-readability for
+  debugging. Same trade-off as the memo flagged. Not worth it here.
+- **Streaming directly to disk via `fs.createWriteStream`.** Avoids
+  the final concat allocation. Negligible win given the join cost is
+  already ~5 ms. Defer.

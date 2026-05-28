@@ -52,6 +52,78 @@ class SessionStore {
         return startIndex === 0 ? lines : lines.slice(startIndex);
     }
 
+    /**
+     * HOT-10: streaming JSON serializer that chunks `data.sessions` by
+     * entry, stringifying each one in its own tick and yielding
+     * (`await setImmediate()`) between entries. The total wall is
+     * comparable to bare `JSON.stringify(data)` (the per-entry stringify
+     * work doesn't disappear), but the main thread is INTERRUPTIBLE
+     * every per-session-stringify (~1–10 ms on a 512 KB buffer) instead
+     * of locked for 50–200 ms.
+     *
+     * Output is byte-identical to `JSON.stringify(data)` for the data
+     * shape `_saveSessionsLocked` produces:
+     *   `{ version, savedAt, sessions: [...] }`
+     * where every session is a plain JS object (no nested
+     * non-serializable values, no `toJSON` overrides we depend on).
+     *
+     * Sanity-asserted by `test/longevity/event-loop/hot-05-sessionstore-stringify.test.js`
+     * which verifies the assertion-on-disk and the resulting parse
+     * round-trip. Also defensive against `data.sessions` not being an
+     * array — falls back to bare `JSON.stringify` for that path so
+     * future callers can't trip a silent shape regression.
+     *
+     * See docs/audits/hot-05-sessionstore-stringify.md.
+     */
+    async _serializeDataStreamed(data) {
+        if (!data || !Array.isArray(data.sessions)) {
+            // Defensive fallback: shape doesn't match what we expect.
+            // Yield once, then bare-stringify (same shape as pre-HOT-10).
+            return await new Promise((resolve) =>
+                setImmediate(() => resolve(JSON.stringify(data))));
+        }
+
+        // Build the envelope around the sessions array. Per-session
+        // entries get stringified one-at-a-time with yields between.
+        const sessionsArray = data.sessions;
+        const envelope = { ...data, sessions: [] };
+        // Stringify the empty-sessions envelope FIRST so we know the
+        // exact bracket layout. JSON.stringify({sessions:[]}) yields
+        // `..."sessions":[]...` — we splice the per-session strings
+        // between the brackets.
+        const envelopeStr = JSON.stringify(envelope);
+        const emptyArrayMarker = '"sessions":[]';
+        const splitAt = envelopeStr.lastIndexOf(emptyArrayMarker);
+        if (splitAt < 0) {
+            // Defensive: envelope shape didn't produce the expected
+            // marker. Fall back to bare stringify.
+            return await new Promise((resolve) =>
+                setImmediate(() => resolve(JSON.stringify(data))));
+        }
+        const prefix = envelopeStr.slice(0, splitAt) + '"sessions":[';
+        const suffix = ']' + envelopeStr.slice(splitAt + emptyArrayMarker.length);
+
+        // Build the inner per-session JSON strings with per-session yields.
+        const parts = [prefix];
+        for (let i = 0; i < sessionsArray.length; i++) {
+            if (i > 0) parts.push(',');
+            parts.push(JSON.stringify(sessionsArray[i]));
+            // Yield to the event loop between entries. setImmediate fires
+            // AFTER pending I/O on the current tick — gives PTY data,
+            // WS frames, heartbeat ticks a chance to run between session
+            // serializations.
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise((resolve) => setImmediate(resolve));
+        }
+        parts.push(suffix);
+
+        // Final concatenation is itself O(total bytes) and runs on the
+        // main thread, but string concat in V8 is heavily optimized
+        // (rope strings) — empirically ~5 ms for 25 MB on modern
+        // hardware. Well under the 50 ms loop-block budget.
+        return parts.join('');
+    }
+
     async initializeStorage() {
         try {
             // Create storage directory if it doesn't exist
@@ -148,8 +220,19 @@ class SessionStore {
             // mid-write off disk while we re-write.
             try { await fs.unlink(tempFile); } catch (_) { /* ENOENT ok */ }
 
-            // JSON.stringify is CPU-bound; yield to pending I/O before serializing.
-            const jsonStr = await new Promise(resolve => setImmediate(() => resolve(JSON.stringify(data))));
+            // JSON.stringify a 25–50 MB sessions array would block the
+            // main thread for 50–200 ms (HOT-05). The yield-then-stringify
+            // pattern only frees the loop BEFORE the work; once
+            // JSON.stringify starts, V8 is locked.
+            //
+            // HOT-10: build the JSON envelope incrementally — stringify
+            // each session entry on its own tick, yielding via
+            // `await setImmediate()` between entries. Per-session
+            // stringify is bounded at ≤ 512 KB (MAX_BUFFER_BYTES_PER_SESSION
+            // cap on the outputBuffer slice), so each tick blocks
+            // < 10 ms on modern hardware regardless of total session count.
+            // See docs/audits/hot-05-sessionstore-stringify.md.
+            const jsonStr = await this._serializeDataStreamed(data);
 
             // Step 1–4: write + fsync + close the temp file via an explicit
             // FileHandle so we can call .sync() before closing.

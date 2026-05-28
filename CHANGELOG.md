@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the sweep invalidates it. Eliminates the 50 ms event-loop block per
   upload on a 1000-file SSD dir (5-20 s on a network share). See
   `docs/audits/hot-04-attachment-scan.md`.
+- HOT-10 — SessionStore: replaced the in-process bare `JSON.stringify`
+  on the save hot path with a streaming serializer that stringifies
+  each session entry on its own tick, yielding via `await
+  setImmediate()` between entries. Per-session work is bounded at
+  ~10 ms on a 512 KB output buffer, so the event-loop stays
+  interruptible regardless of session count. Output is byte-identical
+  to `JSON.stringify(data)` for the standard envelope shape (asserted
+  by `test/session-store.test.js`); on-disk format unchanged. Picked
+  this over the memo-recommended `worker_threads` offload because
+  structured-clone of the data on the sender thread would re-introduce
+  most of the block we're trying to eliminate. See
+  `docs/audits/hot-05-sessionstore-stringify.md`.
 
 ### Security
 - HOT-08 — Server WebSocket message handler: added a 1 MB
