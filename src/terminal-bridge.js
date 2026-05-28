@@ -14,6 +14,25 @@
 const BaseBridge = require('./base-bridge');
 const Osc7Parser = require('./osc7-parser');
 
+/**
+ * Process-wide OSC 7 validated-path cache size + TTL bounds.
+ *
+ * MAX_ENTRIES: LRU cap. 256 covers any realistic distinct-cwd set under
+ * sustained use; a perverse shell that emits 1000 distinct paths/s still
+ * only ever holds 256 entries.
+ *
+ * TTL_MS: 5 s. Long enough to absorb prompt-redraw bursts (every keystroke
+ * on pwsh + oh-my-posh/Starship), short enough that the user's manual
+ * `mkdir` / `rm` is reflected at the next emission without a server
+ * restart. Combined with the per-session `_lastRawOsc7` fast-path
+ * (sub-microsecond string-identity check), the cache makes cross-session
+ * + alternating-cwd workloads O(unique-paths) instead of O(emissions).
+ *
+ * See docs/audits/hot-01-osc7-dedupe.md and HOT-06 fix-PR.
+ */
+const OSC7_CACHE_MAX_ENTRIES = 256;
+const OSC7_CACHE_TTL_MS = 5000;
+
 class TerminalBridge extends BaseBridge {
   constructor() {
     super('Terminal', {
@@ -44,17 +63,43 @@ class TerminalBridge extends BaseBridge {
     this._liveCwd = new Map();
 
     /**
-     * Raw OSC 7 path most recently seen for each session — used to skip the
-     * entire validate-and-emit chain when the shell re-emits the same path
-     * (every prompt redraw on pwsh/oh-my-posh/Starship). Without this, each
-     * redraw fires 3–4 fs.realpathSync syscalls per session; on a SUBST or
-     * mapped Windows drive (e.g. Q:\), those syscalls are 10–50ms each and
-     * pending requests pile up faster than they complete, blocking the event
-     * loop. The dedupe at line ~205 below only saves the *broadcast* — this
-     * one saves the syscalls.
+     * Raw OSC 7 path most recently seen for each session — first-level
+     * filter, sub-microsecond string-identity compare. Catches the common
+     * "shell re-emits the same path on every prompt redraw" pattern
+     * (pwsh + oh-my-posh/Starship on every keystroke).
+     *
+     * Defeated by intra-session alternation (e.g. `pushd`/`popd` patterns,
+     * multi-segment prompts that emit cwd then git-root then cwd) and by
+     * multi-session same-cwd ⇒ the second-level process-wide cache below
+     * is what catches those.
+     *
      * @type {Map<string, string|null>}
      */
     this._lastRawOsc7 = new Map();
+
+    /**
+     * Process-wide OSC 7 validated-path cache. Second-level dedupe after
+     * `_lastRawOsc7` — keyed by the RAW decoded OSC 7 path (NOT the
+     * validatePath-canonical form, because that would require syscalls
+     * to compute), valued by `{ validated, expiresAt }`. Caches both
+     * VALID and INVALID results so a junk path doesn't pay validatePath
+     * syscalls on every emission across sessions.
+     *
+     * Cache invariants:
+     *   - Map insertion order = LRU order (ES2015+ Maps preserve it;
+     *     pre-existing pattern in Node). Cache hits delete + re-set to
+     *     bump entry to the end (most-recently-used).
+     *   - Bounded at OSC7_CACHE_MAX_ENTRIES; oldest entries evicted on
+     *     overflow.
+     *   - TTL = OSC7_CACHE_TTL_MS from the insertion moment; expired
+     *     entries are re-validated on next miss.
+     *
+     * Closes the cross-session-validation-cost gap documented in
+     * docs/audits/hot-01-osc7-dedupe.md.
+     *
+     * @type {Map<string, {validated: {valid:boolean, path?:string}, expiresAt:number}>}
+     */
+    this._osc7ValidationCache = new Map();
   }
 
   // Override async command discovery — use default shell instead of searching PATH
@@ -151,6 +196,10 @@ class TerminalBridge extends BaseBridge {
   async cleanup() {
     const ids = Array.from(this._osc7Hooks.keys());
     for (const id of ids) this._uninstallOsc7State(id);
+    // The validation cache is process-wide (not per-session), but on
+    // full bridge cleanup we drop it too so a fresh start gets a fresh
+    // cache. This matches the behaviour callers got before HOT-06.
+    this._osc7ValidationCache.clear();
     return super.cleanup();
   }
 
@@ -201,24 +250,52 @@ class TerminalBridge extends BaseBridge {
     if (!decoded.length) return;
 
     for (const raw of decoded) {
-      // Fast-path: skip the entire validate-and-emit chain when the shell
-      // re-emits the same raw path. pwsh + oh-my-posh/Starship redraws on
-      // every keystroke, so the same `file:///Q:/src` arrives N times per
-      // second. validatePath does 3–4 fs.realpathSync syscalls per call;
-      // on a SUBST/mapped/network drive each syscall is 10–50ms, and
-      // pending requests pile up faster than they complete. The dedupe
-      // at the cwd-level below (line 207) only saves the BROADCAST — it
-      // can't save the syscalls because they happen during validation.
+      // ---- Level 1: per-session same-raw fast-path. ---------------------
+      // Catches the steady-state shell-emits-same-cwd-every-keystroke
+      // case (pwsh + oh-my-posh / Starship). Sub-microsecond string
+      // identity compare; no Map insertion churn.
       const lastRaw = this._lastRawOsc7.get(sessionId);
       if (raw === lastRaw) continue;
       this._lastRawOsc7.set(sessionId, raw);
 
+      // ---- Level 2: process-wide validated-path cache. ------------------
+      // Catches multi-tab same-cwd AND intra-session alternating-cwd
+      // workloads, both of which defeat Level 1. Caches valid AND invalid
+      // results (an out-of-sandbox path doesn't pay validatePath syscalls
+      // on every emission across every session). See
+      // docs/audits/hot-01-osc7-dedupe.md.
+      const now = Date.now();
+      const cached = this._osc7ValidationCache.get(raw);
       let validated;
-      try {
-        validated = hooks.validatePath(raw);
-      } catch (_) {
-        continue; // validator threw — treat as rejection.
+      if (cached && cached.expiresAt > now) {
+        // Cache hit — bump to MRU via delete + reinsert (preserves Map
+        // insertion order = LRU order).
+        this._osc7ValidationCache.delete(raw);
+        this._osc7ValidationCache.set(raw, cached);
+        validated = cached.validated;
+      } else {
+        try {
+          validated = hooks.validatePath(raw);
+        } catch (_) {
+          validated = { valid: false }; // validator threw — treat as rejection.
+        }
+        // Normalize so the cache always stores a plain `{valid, path?}`
+        // shape regardless of what the caller returned.
+        const normalized = validated && validated.valid
+          ? { valid: true, path: validated.path || raw }
+          : { valid: false };
+        this._osc7ValidationCache.set(raw, {
+          validated: normalized,
+          expiresAt: now + OSC7_CACHE_TTL_MS,
+        });
+        validated = normalized;
+        // Bounded-LRU eviction — drop oldest entries first.
+        while (this._osc7ValidationCache.size > OSC7_CACHE_MAX_ENTRIES) {
+          const oldest = this._osc7ValidationCache.keys().next().value;
+          this._osc7ValidationCache.delete(oldest);
+        }
       }
+
       if (!validated || !validated.valid) continue;
 
       // Prefer the canonical path from validatePath (it realpaths symlinks

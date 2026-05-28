@@ -415,7 +415,15 @@ describe('TerminalBridge OSC 7 wiring', function () {
     bridge._uninstallOsc7State(sessionId);
   });
 
-  it('clears _lastRawOsc7 on session uninstall so a re-installed session re-validates', function () {
+  it('process-wide validation cache survives session uninstall (HOT-06)', function () {
+    // Post-HOT-06 contract: the per-session `_lastRawOsc7` IS cleared on
+    // uninstall, but the process-wide `_osc7ValidationCache` is NOT
+    // (that's the whole point — multi-tab same-cwd should pay validation
+    // exactly once, not once per session). A re-installed session that
+    // re-emits an already-validated raw path within OSC7_CACHE_TTL_MS
+    // (5 s) should hit the process-wide cache and skip validatePath.
+    //
+    // See docs/audits/hot-01-osc7-dedupe.md.
     const bridge = makeBridge();
     const sessionId = 'sess-reinstall';
     let validateCalls = 0;
@@ -426,16 +434,46 @@ describe('TerminalBridge OSC 7 wiring', function () {
 
     bridge._installOsc7State(sessionId, hooks);
     bridge._handleOsc7Chunk(sessionId, '\x1b]7;file:///tmp\x07');
-    assert.strictEqual(validateCalls, 1);
+    assert.strictEqual(validateCalls, 1, 'first emission populates cache');
 
     bridge._uninstallOsc7State(sessionId);
     bridge._installOsc7State(sessionId, hooks);
 
-    // Same raw path on the new session — the previous run's lastRaw must
-    // not leak through, so validatePath should fire again.
+    // Same raw on the re-installed session: per-session lastRaw is cleared
+    // (so we don't take the Level-1 fast-path), but the process-wide
+    // validation cache should serve the hit ⇒ validatePath does NOT fire.
     bridge._handleOsc7Chunk(sessionId, '\x1b]7;file:///tmp\x07');
-    assert.strictEqual(validateCalls, 2);
+    assert.strictEqual(validateCalls, 1, 'process-wide cache served the re-installed session');
+
+    // A DIFFERENT raw still flows through validation (cache miss).
+    bridge._handleOsc7Chunk(sessionId, '\x1b]7;file:///var\x07');
+    assert.strictEqual(validateCalls, 2, 'distinct raw still triggers validation');
 
     bridge._uninstallOsc7State(sessionId);
+  });
+
+  it('full bridge cleanup() drops the process-wide validation cache (HOT-06)', function () {
+    // cleanup() is the destruct point — it's called when the bridge is
+    // being torn down for good (or in tests between cases). The
+    // process-wide cache MUST be cleared there so a fresh bridge starts
+    // with a fresh cache, matching pre-HOT-06 cross-bridge isolation.
+    const bridge = makeBridge();
+    const sessionId = 'sess-cleanup';
+    let validateCalls = 0;
+    const hooks = {
+      onCwdChange: () => {},
+      validatePath: (p) => { validateCalls++; return { valid: true, path: p }; },
+    };
+
+    bridge._installOsc7State(sessionId, hooks);
+    bridge._handleOsc7Chunk(sessionId, '\x1b]7;file:///tmp\x07');
+    assert.strictEqual(validateCalls, 1);
+
+    return bridge.cleanup().then(() => {
+      bridge._installOsc7State(sessionId, hooks);
+      bridge._handleOsc7Chunk(sessionId, '\x1b]7;file:///tmp\x07');
+      assert.strictEqual(validateCalls, 2, 'post-cleanup the cache is gone, so re-validation runs');
+      bridge._uninstallOsc7State(sessionId);
+    });
   });
 });
