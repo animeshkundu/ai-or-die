@@ -33,6 +33,12 @@ class VSCodeTunnelManager {
     this.onEvent = options.onEvent || (() => {}); // callback(sessionId, event)
     this.dev = options.dev || false;
 
+    // PROC-02 gap 3: per-instance stability-threshold override so the
+    // regression test (test/longevity/process/vscode-tunnel-respawn.test.js
+    // test 3) can verify the reset-on-stable-uptime path without waiting
+    // 60 s of wall-clock per cycle. Mirrors tunnel-manager.js:36.
+    this._stabilityThresholdMs = options._stabilityThresholdMs || STABILITY_THRESHOLD_MS;
+
     // VS Code CLI discovery
     this._command = null;
     this._commandChecked = false;
@@ -854,12 +860,15 @@ class VSCodeTunnelManager {
    */
   _startStabilityTimer(tunnel) {
     this._clearStabilityTimer(tunnel);
+    // PROC-02 gap 3: use per-instance override (set in constructor) so
+    // tests can shrink the threshold from 60 s.
+    const thresholdMs = this._stabilityThresholdMs;
     tunnel._stabilityTimer = setTimeout(() => {
       if (tunnel.retryCount > 0) {
-        console.warn(`[VSCODE-TUNNEL] Session ${tunnel.sessionId} stable for ${STABILITY_THRESHOLD_MS / 1000}s — retry counter reset (was ${tunnel.retryCount}).`);
+        console.warn(`[VSCODE-TUNNEL] Session ${tunnel.sessionId} stable for ${thresholdMs / 1000}s — retry counter reset (was ${tunnel.retryCount}).`);
         tunnel.retryCount = 0;
       }
-    }, STABILITY_THRESHOLD_MS);
+    }, thresholdMs);
     if (tunnel._stabilityTimer.unref) {
       tunnel._stabilityTimer.unref();
     }
@@ -882,106 +891,121 @@ class VSCodeTunnelManager {
     const tunnel = this.tunnels.get(sessionId);
     if (!tunnel || tunnel.stopping) return;
 
-    tunnel._totalRestarts++;
-    tunnel.retryCount++;
-    this._clearStabilityTimer(tunnel);
+    // PROC-02 gap 2: re-entrancy guard. Both the natural exit handler
+    // (~line 843) and the health-check sweep (~line 1005) can call
+    // `_restart(sessionId)` for the SAME death event in rapid succession.
+    // Without this guard, `_totalRestarts` and `retryCount` are
+    // double-incremented and a duplicate respawn cycle is scheduled,
+    // which can chew through the MAX_RETRIES budget in half the time.
+    // Mirrors the `_restarting` pattern from tunnel-manager.js:96.
+    // See docs/audits/proc-child-processes.md gap 2.
+    if (tunnel._restarting) return;
+    tunnel._restarting = true;
 
-    const whichDied = tunnel._whichDied || 'server';
-    tunnel._whichDied = null;
+    try {
+      tunnel._totalRestarts++;
+      tunnel.retryCount++;
+      this._clearStabilityTimer(tunnel);
 
-    const uptimeMs = tunnel._lastSpawnTime ? Date.now() - tunnel._lastSpawnTime : 0;
-    const uptimeStr = uptimeMs > 60000
-      ? `${(uptimeMs / 60000).toFixed(1)}m`
-      : `${(uptimeMs / 1000).toFixed(0)}s`;
+      const whichDied = tunnel._whichDied || 'server';
+      tunnel._whichDied = null;
 
-    if (tunnel.retryCount > MAX_RETRIES) {
-      tunnel.status = 'error';
-      tunnel.lastError = `Tunnel crashed ${MAX_RETRIES} times in quick succession. Giving up.`;
-      this._emitEvent(sessionId, 'vscode_tunnel_error', {
-        message: tunnel.lastError,
-        fatal: true,
-      });
-      console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: ${tunnel.lastError} Total lifetime restarts: ${tunnel._totalRestarts}. Last uptime: ${uptimeStr}.`);
-      // Kill remaining process
-      if (tunnel.serverProcess) await this._killProcess(tunnel.serverProcess);
-      if (tunnel.tunnelProcess) await this._killProcess(tunnel.tunnelProcess);
-      this._cleanupTunnel(sessionId);
-      return;
-    }
+      const uptimeMs = tunnel._lastSpawnTime ? Date.now() - tunnel._lastSpawnTime : 0;
+      const uptimeStr = uptimeMs > 60000
+        ? `${(uptimeMs / 60000).toFixed(1)}m`
+        : `${(uptimeMs / 1000).toFixed(0)}s`;
 
-    const delay = Math.min(
-      Math.pow(2, tunnel.retryCount - 1) * MIN_RESTART_DELAY_MS,
-      MAX_RESTART_DELAY_MS
-    );
+      if (tunnel.retryCount > MAX_RETRIES) {
+        tunnel.status = 'error';
+        tunnel.lastError = `Tunnel crashed ${MAX_RETRIES} times in quick succession. Giving up.`;
+        this._emitEvent(sessionId, 'vscode_tunnel_error', {
+          message: tunnel.lastError,
+          fatal: true,
+        });
+        console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: ${tunnel.lastError} Total lifetime restarts: ${tunnel._totalRestarts}. Last uptime: ${uptimeStr}.`);
+        // Kill remaining process
+        if (tunnel.serverProcess) await this._killProcess(tunnel.serverProcess);
+        if (tunnel.tunnelProcess) await this._killProcess(tunnel.tunnelProcess);
+        this._cleanupTunnel(sessionId);
+        return;
+      }
 
-    if (whichDied === 'tunnel' && tunnel.serverProcess) {
-      // Tunnel died but server is still alive — degraded mode
-      tunnel.status = 'degraded';
-      tunnel.publicUrl = null;
-      this._emitEvent(sessionId, 'vscode_tunnel_status', {
-        status: 'degraded',
-        localUrl: tunnel.localUrl,
-        attempt: tunnel.retryCount,
-        maxRetries: MAX_RETRIES,
-      });
-      console.warn(
-        `[VSCODE-TUNNEL] Session ${sessionId}: tunnel lost after ${uptimeStr}. ` +
-        `Server still running. Restarting tunnel in ${delay / 1000}s ` +
-        `(attempt ${tunnel.retryCount}/${MAX_RETRIES}).`
+      const delay = Math.min(
+        Math.pow(2, tunnel.retryCount - 1) * MIN_RESTART_DELAY_MS,
+        MAX_RESTART_DELAY_MS
       );
-    } else {
-      // Server died — kill tunnel too, restart both
-      if (tunnel.tunnelProcess) {
-        try { tunnel.tunnelProcess.kill(); } catch {}
-        tunnel.tunnelProcess = null;
+
+      if (whichDied === 'tunnel' && tunnel.serverProcess) {
+        // Tunnel died but server is still alive — degraded mode
+        tunnel.status = 'degraded';
+        tunnel.publicUrl = null;
+        this._emitEvent(sessionId, 'vscode_tunnel_status', {
+          status: 'degraded',
+          localUrl: tunnel.localUrl,
+          attempt: tunnel.retryCount,
+          maxRetries: MAX_RETRIES,
+        });
+        console.warn(
+          `[VSCODE-TUNNEL] Session ${sessionId}: tunnel lost after ${uptimeStr}. ` +
+          `Server still running. Restarting tunnel in ${delay / 1000}s ` +
+          `(attempt ${tunnel.retryCount}/${MAX_RETRIES}).`
+        );
+      } else {
+        // Server died — kill tunnel too, restart both
+        if (tunnel.tunnelProcess) {
+          try { tunnel.tunnelProcess.kill(); } catch {}
+          tunnel.tunnelProcess = null;
+        }
+        tunnel.status = 'restarting';
+        tunnel.localUrl = null;
+        tunnel.publicUrl = null;
+        this._emitEvent(sessionId, 'vscode_tunnel_status', {
+          status: 'restarting',
+          attempt: tunnel.retryCount,
+          maxRetries: MAX_RETRIES,
+        });
+        console.warn(
+          `[VSCODE-TUNNEL] Session ${sessionId}: server lost after ${uptimeStr}. ` +
+          `Restarting in ${delay / 1000}s (attempt ${tunnel.retryCount}/${MAX_RETRIES}, ` +
+          `lifetime restarts: ${tunnel._totalRestarts}).`
+        );
       }
-      tunnel.status = 'restarting';
-      tunnel.localUrl = null;
-      tunnel.publicUrl = null;
-      this._emitEvent(sessionId, 'vscode_tunnel_status', {
-        status: 'restarting',
-        attempt: tunnel.retryCount,
-        maxRetries: MAX_RETRIES,
+
+      // Wait with backoff
+      await new Promise((resolve) => {
+        tunnel._restartDelayResolve = resolve;
+        tunnel._restartDelayTimer = setTimeout(resolve, delay);
+        if (tunnel._restartDelayTimer.unref) {
+          tunnel._restartDelayTimer.unref();
+        }
       });
-      console.warn(
-        `[VSCODE-TUNNEL] Session ${sessionId}: server lost after ${uptimeStr}. ` +
-        `Restarting in ${delay / 1000}s (attempt ${tunnel.retryCount}/${MAX_RETRIES}, ` +
-        `lifetime restarts: ${tunnel._totalRestarts}).`
-      );
-    }
+      tunnel._restartDelayResolve = null;
 
-    // Wait with backoff
-    await new Promise((resolve) => {
-      tunnel._restartDelayResolve = resolve;
-      tunnel._restartDelayTimer = setTimeout(resolve, delay);
-      if (tunnel._restartDelayTimer.unref) {
-        tunnel._restartDelayTimer.unref();
-      }
-    });
-    tunnel._restartDelayResolve = null;
+      if (tunnel.stopping || !this.tunnels.has(sessionId)) return;
 
-    if (tunnel.stopping || !this.tunnels.has(sessionId)) return;
-
-    if (whichDied === 'tunnel' && tunnel.serverProcess) {
-      // Restart tunnel only
-      tunnel.status = 'starting';
-      const tunnelReady = await this._ensureDevtunnel(sessionId);
-      if (tunnelReady && !tunnel.stopping) {
-        await this._spawnTunnel(sessionId);
-      }
-    } else {
-      // Restart both
-      tunnel.status = 'starting';
-      const serverOk = await this._spawnServer(sessionId);
-      if (serverOk && !tunnel.stopping) {
-        await this._waitForPort(tunnel.localPort, PORT_WAIT_TIMEOUT_MS);
-        if (!tunnel.stopping) {
-          const tunnelReady = await this._ensureDevtunnel(sessionId);
-          if (tunnelReady && !tunnel.stopping) {
-            await this._spawnTunnel(sessionId);
+      if (whichDied === 'tunnel' && tunnel.serverProcess) {
+        // Restart tunnel only
+        tunnel.status = 'starting';
+        const tunnelReady = await this._ensureDevtunnel(sessionId);
+        if (tunnelReady && !tunnel.stopping) {
+          await this._spawnTunnel(sessionId);
+        }
+      } else {
+        // Restart both
+        tunnel.status = 'starting';
+        const serverOk = await this._spawnServer(sessionId);
+        if (serverOk && !tunnel.stopping) {
+          await this._waitForPort(tunnel.localPort, PORT_WAIT_TIMEOUT_MS);
+          if (!tunnel.stopping) {
+            const tunnelReady = await this._ensureDevtunnel(sessionId);
+            if (tunnelReady && !tunnel.stopping) {
+              await this._spawnTunnel(sessionId);
+            }
           }
         }
       }
+    } finally {
+      tunnel._restarting = false;
     }
   }
 
