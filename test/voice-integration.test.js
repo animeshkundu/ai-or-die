@@ -178,24 +178,69 @@ describe('voice-integration: WebSocket voice protocol', function () {
     wsSend(ws, { type: 'start_terminal' });
     await waitForMessage(ws, 'terminal_started', 15000);
 
-    // Create oversized audio (>3,840,000 bytes = >120s at 16kHz 16-bit mono)
+    // Create oversized audio (>3,840,000 bytes = >120s at 16kHz 16-bit mono).
+    // Once base64-encoded and JSON-wrapped, the frame is ~5 MB — well over
+    // the 1 MB MAX_WS_MESSAGE_BYTES guard introduced in HOT-08 (see
+    // docs/audits/hot-03-ws-frame-size.md). Pre-HOT-08, the voice handler
+    // rejected with `voice_transcription_error` once it parsed the frame.
+    // Post-HOT-08, the WS guard rejects the entire frame BEFORE the
+    // handler runs and the connection closes with WS-standard 1009
+    // ("message too big"). Accept either outcome.
     const oversizedSamples = 120 * 16000 + 1; // just over limit
     const oversizedBuf = Buffer.alloc(oversizedSamples * 2);
     const oversizedAudio = oversizedBuf.toString('base64');
+
+    // Race the three possible terminal signals before sending:
+    const terminalSignal = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('No terminal signal within 8s')), 8000);
+      function onMessage(raw, isBinary) {
+        if (isBinary) return;
+        let msg;
+        try { msg = JSON.parse(raw.toString()); } catch (_) { return; }
+        if (msg.type === 'error' && msg.code === 'message_too_large') {
+          cleanup(); resolve({ kind: 'guard_error', msg });
+        } else if (msg.type === 'voice_transcription_error') {
+          cleanup(); resolve({ kind: 'handler_error', msg });
+        }
+      }
+      function onClose(code) {
+        cleanup(); resolve({ kind: 'close', code });
+      }
+      function cleanup() {
+        clearTimeout(timeout);
+        ws.removeListener('message', onMessage);
+        ws.removeListener('close', onClose);
+      }
+      ws.on('message', onMessage);
+      ws.on('close', onClose);
+    });
 
     wsSend(ws, {
       type: 'voice_upload',
       audio: oversizedAudio
     });
 
-    const err = await waitForMessage(ws, 'voice_transcription_error');
-    assert(
-      err.message.includes('too long') || err.message.includes('not ready'),
-      `Expected size error, got: ${err.message}`
-    );
+    const outcome = await terminalSignal;
 
-    wsSend(ws, { type: 'stop' });
-    await waitForMessage(ws, 'terminal_stopped', 10000).catch(() => {});
+    if (outcome.kind === 'guard_error') {
+      assert.strictEqual(outcome.msg.code, 'message_too_large',
+        `Expected HOT-08 message_too_large code; got ${JSON.stringify(outcome.msg)}`);
+    } else if (outcome.kind === 'handler_error') {
+      // Pre-HOT-08 path — preserved for back-compat if HOT-08 is reverted.
+      assert(
+        outcome.msg.message.includes('too long') || outcome.msg.message.includes('not ready'),
+        `Expected size error, got: ${outcome.msg.message}`
+      );
+    } else {
+      assert.strictEqual(outcome.code, 1009,
+        `Expected WS-standard 1009 close ("message too big"); got ${outcome.code}`);
+    }
+
+    // Connection may already be closed by HOT-08's 1009 — stop is best-effort.
+    if (ws.readyState === WebSocket.OPEN) {
+      wsSend(ws, { type: 'stop' });
+      await waitForMessage(ws, 'terminal_stopped', 5000).catch(() => {});
+    }
     await closeWs(ws);
   });
 

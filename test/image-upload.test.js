@@ -108,8 +108,43 @@ describe('Image upload WebSocket protocol', function () {
     send(ws, { type: 'create_session', name: 'img-test-big' });
     await waitForMessage(ws, 'session_created');
 
-    // 6MB base64 string (exceeds the 5.5MB base64 threshold)
+    // 6 MB base64 string. Wrapped in JSON this exceeds the 1 MB
+    // MAX_WS_MESSAGE_BYTES application-layer guard introduced in HOT-08
+    // (see docs/audits/hot-03-ws-frame-size.md). The guard rejects the
+    // entire frame BEFORE the image handler runs, so the test must
+    // expect EITHER the new `{type:'error', code:'message_too_large'}`
+    // response (with subsequent 1009 close) OR the pre-HOT-08
+    // `image_upload_error` from the handler's own size check (only
+    // reachable for sub-1MB frames the WS guard doesn't catch — i.e.
+    // never for this 6 MB payload). Post-HOT-08: always the former.
     const largeBase64 = 'A'.repeat(6 * 1024 * 1024);
+
+    // Race the three possible terminal signals. Set up listeners
+    // BEFORE the send so we don't miss the response, but resolve into
+    // a stored promise so the send call below actually runs.
+    const terminalSignal = new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('No terminal signal within 8s')), 8000);
+      function onMessage(raw) {
+        let msg;
+        try { msg = JSON.parse(raw); } catch (_) { return; }
+        if (msg.type === 'error' && msg.code === 'message_too_large') {
+          cleanup(); resolve({ kind: 'guard_error', msg });
+        } else if (msg.type === 'image_upload_error') {
+          cleanup(); resolve({ kind: 'handler_error', msg });
+        }
+      }
+      function onClose(code) {
+        cleanup(); resolve({ kind: 'close', code });
+      }
+      function cleanup() {
+        clearTimeout(timeout);
+        ws.removeListener('message', onMessage);
+        ws.removeListener('close', onClose);
+      }
+      ws.on('message', onMessage);
+      ws.on('close', onClose);
+    });
+
     send(ws, {
       type: 'image_upload',
       base64: largeBase64,
@@ -117,11 +152,25 @@ describe('Image upload WebSocket protocol', function () {
       fileName: 'huge.png'
     });
 
-    const error = await waitForMessage(ws, 'image_upload_error');
-    assert(error.message.toLowerCase().includes('size') || error.message.toLowerCase().includes('large'),
-      'Expected size-related error: ' + error.message);
+    const outcome = await terminalSignal;
+    if (outcome.kind === 'guard_error') {
+      assert.strictEqual(outcome.msg.code, 'message_too_large',
+        'Expected HOT-08 message_too_large code; got ' + JSON.stringify(outcome.msg));
+    } else if (outcome.kind === 'handler_error') {
+      // Pre-HOT-08 path — would have asserted message contains 'size'/'large'.
+      // Preserve that legacy assertion for back-compat in case HOT-08 is
+      // ever reverted.
+      assert(outcome.msg.message.toLowerCase().includes('size') ||
+             outcome.msg.message.toLowerCase().includes('large'),
+        'Expected size-related error: ' + outcome.msg.message);
+    } else {
+      // 1009 close arrived without an error frame (acceptable per HOT-08
+      // — server may close before send drains on a half-closed socket).
+      assert.strictEqual(outcome.code, 1009,
+        'Expected WS-standard 1009 close ("message too big"); got ' + outcome.code);
+    }
 
-    ws.close();
+    try { ws.terminate(); } catch (_) {}
   });
 
   it('should reject unsupported MIME types', async function () {
