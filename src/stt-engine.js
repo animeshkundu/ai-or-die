@@ -158,6 +158,19 @@ class SttEngine {
 
     this._worker = null;
 
+    // PROC-02 gap 1: if shutdown() ran, do NOT schedule a respawn.
+    // Without this guard, `await engine.shutdown()` would call
+    // `worker.terminate()`, which fires _onWorkerExit synchronously and
+    // re-schedules a worker via _restartWorker → setTimeout. The respawn
+    // races the process exit and either keeps the engine "loading" forever
+    // (in a long-lived parent) or leaks a half-loaded Worker into the next
+    // process restart. The flag is set by shutdown() before terminate().
+    // See docs/audits/proc-child-processes.md gap 1.
+    if (this._stopping) {
+      this._status = 'unavailable';
+      return;
+    }
+
     // Don't retry if the dependency is fundamentally missing
     if (this._lastSpawnError === 'MODULE_NOT_FOUND') {
       console.error('[stt-engine] sherpa-onnx-node not installed — STT unavailable. Install with: npm install sherpa-onnx-node');
@@ -326,6 +339,11 @@ class SttEngine {
   }
 
   async shutdown() {
+    // PROC-02 gap 1: signal _onWorkerExit to skip the respawn path BEFORE
+    // calling worker.terminate(), which fires the exit listener synchronously.
+    // See docs/audits/proc-child-processes.md gap 1.
+    this._stopping = true;
+
     // Reject all queued requests
     for (const req of this._queue) {
       clearTimeout(req.timer);
