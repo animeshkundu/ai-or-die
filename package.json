@@ -17,7 +17,9 @@
     "test:browser": "npx playwright test --config e2e/playwright.config.js",
     "soak": "node test/longevity/harness/cli.js",
     "test:longevity-smoke": "mocha --exit --timeout 120000 test/longevity/smoke.test.js",
-    "test:longevity": "mocha --exit --timeout 120000 test/longevity/**/*.test.js",
+    "test:longevity:server": "mocha --exit --timeout 120000 'test/longevity/event-loop/**/*.test.js' 'test/longevity/disk/**/*.test.js' 'test/longevity/process/**/*.test.js' 'test/longevity/*.test.js'",
+    "test:longevity:browser": "playwright test --config test/longevity/playwright.config.js",
+    "test:longevity": "npm run test:longevity:server && npm run test:longevity:browser",
     "build:bundle": "node scripts/build-sea.js bundle",
     "build:sea": "node scripts/build-sea.js",
     "release:pr": "bash scripts/release-pr.sh"
