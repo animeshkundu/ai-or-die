@@ -24,6 +24,7 @@ const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
 const SttEngine = require('./stt-engine');
 const CircularBuffer = require('./utils/circular-buffer');
+const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
 
 // HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
@@ -110,6 +111,12 @@ class ClaudeCodeWebServer {
     
     this.app = express();
     this.claudeSessions = new Map(); // Persistent sessions (claude, codex, or agent)
+    // PROC-04: min-heap of {id, lastActivity} pairs keyed by lastActivity.
+    // Used by _evictStaleSessions to find the oldest session in O(log n)
+    // rather than scanning the full Map every 5 min. Lazy-tombstone protocol
+    // — see src/utils/eviction-heap.js. Push via _pushEvictionEntry(id) at
+    // every site that creates a session or bumps session.lastActivity.
+    this._evictionHeap = new MinHeap();
     this.webSocketConnections = new Map(); // Maps WebSocket connection ID to session info
     this.claudeBridge = new ClaudeBridge();
     this.codexBridge = new CodexBridge();
@@ -175,6 +182,7 @@ class ClaudeCodeWebServer {
       for (const [id, session] of sessions) {
         if (!this.claudeSessions.has(id)) {
           this.claudeSessions.set(id, session);
+          this._pushEvictionEntry(id); // PROC-04
         }
       }
       if (sessions.size > 0) {
@@ -1135,6 +1143,7 @@ class ClaudeCodeWebServer {
       };
       
       this.claudeSessions.set(sessionId, session);
+      this._pushEvictionEntry(sessionId); // PROC-04
       this.sessionStore.markDirty();
 
       // Save sessions after creating new one
@@ -3454,6 +3463,7 @@ class ClaudeCodeWebServer {
     };
     
     this.claudeSessions.set(sessionId, session);
+    this._pushEvictionEntry(sessionId); // PROC-04
     wsInfo.claudeSessionId = sessionId;
     this.sessionStore.markDirty();
 
@@ -3496,6 +3506,7 @@ class ClaudeCodeWebServer {
     wsInfo.claudeSessionId = claudeSessionId;
     session.connections.add(wsId);
     session.lastActivity = new Date();
+    this._pushEvictionEntry(claudeSessionId); // PROC-04
     session.lastAccessed = Date.now();
 
     // Send session info and replay buffer
@@ -3525,6 +3536,7 @@ class ClaudeCodeWebServer {
     if (session) {
       session.connections.delete(wsId);
       session.lastActivity = new Date();
+      this._pushEvictionEntry(leftSessionId); // PROC-04
     }
 
     wsInfo.claudeSessionId = null;
@@ -3694,6 +3706,7 @@ class ClaudeCodeWebServer {
       });
 
       session.lastActivity = new Date();
+      this._pushEvictionEntry(sessionId); // PROC-04
       if (!session.sessionStartTime) {
         session.sessionStartTime = new Date();
       }
@@ -3746,6 +3759,7 @@ class ClaudeCodeWebServer {
     session.active = false;
     session.agent = null;
     session.lastActivity = new Date();
+    this._pushEvictionEntry(sessionId); // PROC-04
     this.sessionStore.markDirty();
     this.broadcastToSession(sessionId, { type: `${agentType}_stopped` });
     this.activityBroadcastTimestamps.delete(sessionId);
@@ -3918,45 +3932,167 @@ class ClaudeCodeWebServer {
   async _evictStaleSessions() {
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     let evictedCount = 0;
-    // Snapshot keys first — claudeSessions is mutated inside the loop and we
-    // would otherwise risk Map-iterator UB on V8.
-    const entries = Array.from(this.claudeSessions.entries());
-    for (const [id, session] of entries) {
-      if (!session) continue;
-      const connections = session.connections;
-      const connCount = connections && typeof connections.size === 'number' ? connections.size : 0;
-      const lastActivity = new Date(session.lastActivity || session.created).getTime();
-      if (session.active) continue;
-      if (connCount !== 0) continue;
-      if (lastActivity >= sevenDaysAgo) continue;
 
-      // Drive PTY teardown for the evicted session. stopSession is
-      // idempotent — if the bridge already lost the session (PTY exited
-      // by itself, hadn't been started, etc.) the call is a cheap no-op.
-      // The bridge owns the FD-leak prevention (listener disposal); calling
-      // it on eviction is the only chance a hung/zombie PTY gets to be
-      // cleaned up before its parent session disappears from claudeSessions.
-      const bridge = this.getBridgeForAgent(session.agent);
-      if (bridge && typeof bridge.stopSession === 'function') {
-        try {
-          await bridge.stopSession(id);
-        } catch (err) {
-          console.warn(`Eviction stopSession failed for ${id}: ${err && err.message}`);
+    // PROC-04: lazy-tombstone min-heap sweep. Pop the oldest entry;
+    // if its lastActivity no longer matches the source-of-truth Map,
+    // treat as a tombstone and continue. If the top is fresh, the
+    // heap invariant says every other entry is fresh too — early exit
+    // in O(log n) instead of O(n). See docs/audits/proc-04-sublinear-eviction.md.
+    //
+    // PROC-04 fix-up: at most one self-healing rebuild per sweep. If the
+    // first pass exhausts the heap while the Map still has entries,
+    // some sessions are missing from the heap (e.g. direct
+    // `claudeSessions.set(...)` from tests or any future code path that
+    // bypassed `_pushEvictionEntry`). Rebuild O(n) and run pass 2.
+    // Zero overhead in the hot path — the rebuild only fires when the
+    // heap is observably under-covering the Map.
+    let didOneTimeRebuild = false;
+
+    for (let pass = 0; pass < 2; pass++) {
+      let popsThisSweep = 0;
+      const popBudget = 4 * (this.claudeSessions.size + 1) + 1024;
+
+      while (this._evictionHeap.size > 0 && popsThisSweep < popBudget) {
+        const top = this._evictionHeap.peek();
+        const session = top ? this.claudeSessions.get(top.id) : null;
+
+        if (!session) {
+          // Session deleted between the push and this pop — tombstone.
+          this._evictionHeap.pop();
+          popsThisSweep++;
+          continue;
         }
+
+        const currentLA = new Date(session.lastActivity || session.created).getTime();
+        if (currentLA !== top.lastActivity) {
+          // lastActivity was bumped after this entry was pushed —
+          // tombstone (a fresher entry exists deeper in the heap).
+          this._evictionHeap.pop();
+          popsThisSweep++;
+          continue;
+        }
+
+        if (currentLA >= sevenDaysAgo) {
+          // Top is the genuinely-oldest current entry AND it's fresh.
+          // Heap invariant: every other entry is at least as fresh.
+          // We may have to rebuild if tombstones have ballooned the heap.
+          this._maybeRebuildEvictionHeap();
+          return evictedCount;
+        }
+
+        // Top is stale by time. Check the other two eviction predicates.
+        const connections = session.connections;
+        const connCount = connections && typeof connections.size === 'number' ? connections.size : 0;
+        if (session.active || connCount !== 0) {
+          // In use — pop the entry. A future bump of lastActivity will
+          // re-push a current entry. If the session truly stays pinned
+          // and silent forever, it stays out of the heap, matching the
+          // pre-PROC-04 loop's behaviour (which also skipped it).
+          this._evictionHeap.pop();
+          popsThisSweep++;
+          continue;
+        }
+
+        // Evict.
+        this._evictionHeap.pop();
+        popsThisSweep++;
+
+        // Drive PTY teardown for the evicted session. stopSession is
+        // idempotent — if the bridge already lost the session (PTY exited
+        // by itself, hadn't been started, etc.) the call is a cheap no-op.
+        // The bridge owns the FD-leak prevention (listener disposal); calling
+        // it on eviction is the only chance a hung/zombie PTY gets to be
+        // cleaned up before its parent session disappears from claudeSessions.
+        const bridge = this.getBridgeForAgent(session.agent);
+        if (bridge && typeof bridge.stopSession === 'function') {
+          try {
+            await bridge.stopSession(top.id);
+          } catch (err) {
+            console.warn(`Eviction stopSession failed for ${top.id}: ${err && err.message}`);
+          }
+        }
+
+        // Same per-session cleanup contract as the DELETE handler:
+        // tear down any orphan fs-watch SSE + voice-upload history
+        // BEFORE removing the parent session entry, otherwise the
+        // chokidar watcher leaks (PR #99 regression).
+        try { this._cleanupFsWatchSession(top.id, 'session_evicted'); } catch (_) { /* ignore */ }
+        try { this._voiceUploadCounts.delete(top.id); } catch (_) { /* ignore */ }
+        this.claudeSessions.delete(top.id);
+        this.activityBroadcastTimestamps.delete(top.id);
+        try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
+        evictedCount++;
       }
 
-      // Same per-session cleanup contract as the DELETE handler:
-      // tear down any orphan fs-watch SSE + voice-upload history
-      // BEFORE removing the parent session entry, otherwise the
-      // chokidar watcher leaks (PR #99 regression).
-      try { this._cleanupFsWatchSession(id, 'session_evicted'); } catch (_) { /* ignore */ }
-      try { this._voiceUploadCounts.delete(id); } catch (_) { /* ignore */ }
-      this.claudeSessions.delete(id);
-      this.activityBroadcastTimestamps.delete(id);
-      try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
-      evictedCount++;
+      // Pass-end: if the heap is drained but the Map still has entries,
+      // some sessions never made it into the heap. Rebuild and run pass 2.
+      if (
+        !didOneTimeRebuild &&
+        this._evictionHeap.size === 0 &&
+        this.claudeSessions.size > 0
+      ) {
+        this._rebuildEvictionHeapNow();
+        didOneTimeRebuild = true;
+        continue;
+      }
+      break;
     }
+
+    this._maybeRebuildEvictionHeap();
     return evictedCount;
+  }
+
+  /**
+   * PROC-04: push a {id, lastActivity} entry into the eviction heap.
+   * Call AFTER `claudeSessions.set(...)` for new sessions, and AFTER
+   * any `session.lastActivity = new Date()` mutation. Reading
+   * `session.lastActivity` inside this helper avoids storing it twice
+   * at call sites; the lazy-tombstone protocol handles the case where
+   * a later bump invalidates this entry.
+   */
+  _pushEvictionEntry(sessionId) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    const la = session.lastActivity || session.created;
+    const ts = la instanceof Date ? la.getTime() : new Date(la).getTime();
+    if (!Number.isFinite(ts)) return;
+    this._evictionHeap.push({ id: sessionId, lastActivity: ts });
+  }
+
+  /**
+   * PROC-04: rebuild the heap from a fresh snapshot of claudeSessions
+   * when tombstones outnumber live entries 2:1. Bounds heap-size growth
+   * under sustained activity bursts (e.g. 100 messages/sec for an hour
+   * is 360 K pushes — without rebuild, every pop would walk past
+   * tombstones forever). Cheap when sessions are few (< 100); only
+   * matters for the long-running large-N case.
+   */
+  _maybeRebuildEvictionHeap() {
+    const live = this.claudeSessions.size;
+    if (live <= 100) return;
+    if (this._evictionHeap.size <= 2 * live) return;
+    this._rebuildEvictionHeapNow();
+  }
+
+  /**
+   * PROC-04 fix-up: unconditional heap rebuild from the current Map.
+   * Used both as the implementation of `_maybeRebuildEvictionHeap` (when
+   * the tombstone-bound trigger fires) and as the safety-net repair at
+   * the start of every sweep (when heap.size < live, indicating some
+   * Map entry never made it into the heap — e.g. direct
+   * `claudeSessions.set(...)` from a test that didn't go through
+   * `_pushEvictionEntry`). O(n) via Floyd's heapify.
+   */
+  _rebuildEvictionHeapNow() {
+    const fresh = [];
+    for (const [id, session] of this.claudeSessions) {
+      if (!session) continue;
+      const la = session.lastActivity || session.created;
+      const ts = la instanceof Date ? la.getTime() : new Date(la).getTime();
+      if (!Number.isFinite(ts)) continue;
+      fresh.push({ id, lastActivity: ts });
+    }
+    this._evictionHeap.rebuild(fresh);
   }
 
   /**
@@ -4269,6 +4405,7 @@ class ClaudeCodeWebServer {
       if (session) {
         session.connections.delete(wsId);
         session.lastActivity = new Date();
+        this._pushEvictionEntry(wsInfo.claudeSessionId); // PROC-04
 
         // Don't stop Claude if other connections exist
         if (session.connections.size === 0 && this.dev) {

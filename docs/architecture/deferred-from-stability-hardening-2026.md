@@ -16,7 +16,26 @@ The trio shares a cross-cutting pattern, called out at the bottom.
 
 ---
 
-## 1. PROC-04 — Sub-linear `_evictStaleSessions`
+## 1. PROC-04 — Sub-linear `_evictStaleSessions` ✅ SHIPPED IN CAMPAIGN
+
+**Status (2026-05-28):** Activated by user pushback ("don't defer what we
+can fix"). Shipped as `sup-proc/proc-04-sublinear-eviction` —
+lazy-tombstone min-heap, O(log n) sweep when no work is needed,
+O(k log n + t) when k sessions need eviction. Memo:
+[`docs/audits/proc-04-sublinear-eviction.md`](../audits/proc-04-sublinear-eviction.md).
+Regression test: `test/longevity/process/eviction-sublinear.test.js`
+(6 tests, ~500 ms). Bundled into `stability-hardening-2026` via SUP-REL.
+
+The original deferral context (below) is retained for posterity — the
+fix is now landed but the architectural notes about Bet 2 ("sub-linear
+eviction across all evictable Maps") remain valid for future evictable
+Maps the daemon may grow (file-watcher cache, restartManager history,
+etc.). PROC-04's min-heap pattern + lazy-tombstone protocol +
+`_maybeRebuild` trigger are reusable templates.
+
+---
+
+**Original deferral context (pre-2026-05-28, retained as historical record):**
 
 **Symptom:** `_evictStaleSessions` is O(n) per sweep. Invisible at
 realistic single-user session counts (≤ 500). At 178 k synthetic
