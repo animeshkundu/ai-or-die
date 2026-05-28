@@ -13,6 +13,9 @@
  *   --label=<slug>          appended to the results dir name
  *   --out=<dir>             override results dir          default test/longevity/results/<utc>
  *   --resume                continue an existing run dir (12h split-chunk soak)
+ *   --browser-page          open a Playwright page and sample window.__diagnostics() (SOAK-05b)
+ *   --browser-interval=<n><u> browser sampling cadence    default 60s
+ *   --browser-headed        launch Chromium with head visible (debug only)
  *   --json                  emit verdict as JSON on stdout (for CI scraping)
  *
  * Exit code: 0 on overall pass, 1 on any failed gate or abort.
@@ -60,6 +63,9 @@ function printHelp() {
   console.log('  --label=baseline        appended to results dir (optional)');
   console.log('  --out=/abs/dir          override results dir  (optional)');
   console.log('  --resume                continue existing run dir (12h split-chunk soak)');
+  console.log('  --browser-page          launch Chromium and sample window.__diagnostics()');
+  console.log('  --browser-interval=60s  browser sampling cadence (default 60s)');
+  console.log('  --browser-headed        Chromium with head visible (debug only)');
   console.log('  --json                  print verdict JSON to stdout');
   console.log('  --help');
   console.log('');
@@ -84,6 +90,11 @@ async function main() {
   const prTag = args.pr || null;
   const label = args.label || null;
   const resume = !!args.resume;
+  const browserPage = !!args['browser-page'];
+  const browserHeadless = !args['browser-headed']; // default headless; --browser-headed flips it
+  const browserIntervalMs = args['browser-interval']
+    ? parseDuration(args['browser-interval'])
+    : 60_000;
 
   let outputDir = args.out;
   if (!outputDir) {
@@ -108,6 +119,9 @@ async function main() {
     label,
     outputDir,
     resume,
+    browserPage,
+    browserIntervalMs,
+    browserHeadless,
     // Auto-relax the disk breaker / quota gates when the deliberate-trip
     // workload is in the set. Caller can still override via gate-evaluator
     // thresholds if they want stricter semantics.

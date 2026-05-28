@@ -27,6 +27,7 @@ const { GateEvaluator } = require('./gate-evaluator');
 const { Rng } = require('./rng');
 const JsonlWriter = require('./jsonl-writer');
 const { getWorkload } = require('./workloads');
+const { BrowserSampler } = require('./browser-sampler');
 
 function utcLabel(d = new Date()) {
   // 20260527T140532Z
@@ -50,6 +51,9 @@ async function runSoak(options = {}) {
     label = null,
     resume = false,
     thresholds = {},
+    browserPage = false,
+    browserIntervalMs = 60_000,
+    browserHeadless = true,
     log = (msg) => process.stderr.write(`[soak] ${msg}\n`),
   } = options;
 
@@ -157,6 +161,7 @@ async function runSoak(options = {}) {
 
   let ctl;
   let sampler;
+  let browserSampler;
   const workloadInstances = [];
   let abnormalError = null;
 
@@ -174,6 +179,30 @@ async function runSoak(options = {}) {
       },
     });
     sampler.start();
+
+    // Browser-side sampler (CLIENT-03 integration) — only when explicitly
+    // requested via --browser-page. Adds ~5s startup for Chromium launch.
+    // Skipping without it keeps existing server-only soaks identical.
+    if (browserPage) {
+      browserSampler = new BrowserSampler({
+        appUrl: ctl.baseUrl + '/',
+        intervalMs: browserIntervalMs,
+        headless: browserHeadless,
+        sink: (row) => {
+          samplesWriter.write(row);
+          evaluator.ingest(row);
+        },
+      });
+      try {
+        await browserSampler.start();
+        log(`browser sampler up on ${ctl.baseUrl}/ (interval=${browserIntervalMs}ms)`);
+        logEvent('browser_sampler_up', { interval_ms: browserIntervalMs });
+      } catch (err) {
+        log(`browser sampler failed to start: ${err.message}`);
+        logEvent('browser_sampler_start_error', { error: err.message });
+        browserSampler = null;
+      }
+    }
 
     const masterRng = new Rng(seed);
     for (const name of workloadNames) {
@@ -211,6 +240,9 @@ async function runSoak(options = {}) {
     if (sampler) {
       try { await sampler.stop(); } catch (_) { /* ignore */ }
     }
+    if (browserSampler) {
+      try { await browserSampler.stop(); } catch (_) { /* ignore */ }
+    }
     if (ctl) {
       try { await ctl.close(); } catch (_) { /* ignore */ }
     }
@@ -223,6 +255,7 @@ async function runSoak(options = {}) {
 
   const finishedAtIso = new Date().toISOString();
   const samplerStats = sampler ? sampler.stats() : { samples: 0, errors: 0 };
+  const browserSamplerStats = browserSampler ? browserSampler.stats() : null;
 
   // Append this chunk to metadata.chunks[]; preserve started_at from the
   // initial chunk so the soak's wall-clock start stays meaningful.
@@ -234,6 +267,7 @@ async function runSoak(options = {}) {
     sample_interval_ms: sampleIntervalMs,
     workloads: workloadNames,
     sampler_stats: samplerStats,
+    browser_sampler_stats: browserSamplerStats,
     aborted: !!abnormalError,
     abort_error: abnormalError ? abnormalError.message : null,
     seed,

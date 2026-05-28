@@ -272,6 +272,57 @@ the diff:
 
 > Gates I affect: memory, event_loop
 
+## Browser-side sampling (`--browser-page`) — SOAK-05b
+
+The `--browser-page` flag opts the harness into client-side sampling via
+Playwright. When enabled the harness:
+
+1. Launches a headless Chromium and opens a long-lived page against
+   `http://127.0.0.1:<assigned-port>/`.
+2. Joins a session and starts a terminal (so PTY output from `pty-flood`
+   actually flows into the client's plan-detector buffer; per SUP-CLIENT
+   design discussion).
+3. Polls `await page.evaluate(() => window.__diagnostics())` every
+   `--browser-interval` (default 60 s, matching CLIENT-03 spec §5).
+4. Emits per-metric rows into the same `samples.jsonl` with `gate`
+   prefixed `client.*` so the existing GateEvaluator handles them.
+
+### Client gates registered (`harness/gates.js`)
+
+| Gate | Threshold / pattern | Source |
+|---|---|---|
+| `client.plan_detector.bytes` | peak ≤ 8 MB hard cap | CLIENT-01 |
+| `client.dom.total_nodes` | linear slope ≤ 100 nodes/h | CLIENT-02 |
+| `client.xterm.scrollback_lines` | peak ≤ 10 100 | CLIENT-03 §1 |
+| `client.ws.state` | no ≥ 2 consecutive samples at `2`/`3` post-baseline | CLIENT-03 §3 |
+| `client.sse.streams` | steady-state slope ≤ 0.5/h | CLIENT-03 §3 |
+
+### Graceful degradation
+
+If running against a server build without CLIENT-03 (i.e. `window.__diagnostics`
+is absent), the sampler emits one `{gate: 'meta', metric: 'window_diagnostics_present', value: 0}`
+row and short-circuits subsequent ticks. The harness still completes
+normally; every `client.*` gate then reports `pass: null` with a
+"not sampled" summary.
+
+### Smoke test
+
+```bash
+npx mocha --exit --timeout 60000 test/longevity/browser-sampler.test.js
+```
+
+Auto-skips if Chromium isn't installed via Playwright (looks for the
+"Executable doesn't exist" error class).
+
+### Memory metric caveat
+
+`memory.bytes` requires `performance.measureUserAgentSpecificMemory()`,
+which is gated on `crossOriginIsolated`. The dev server doesn't set
+COOP+COEP today, so the sampler falls back to
+`navigator.deviceMemory` (coarse GB hint). When SUP-REL adds those
+headers to the test-only server profile, the sampler automatically
+starts capturing real byte counts.
+
 ## Determinism
 
 - **Sampling cadence**: fixed by `--interval` (default min(30s, ⌊duration/6⌋)).
