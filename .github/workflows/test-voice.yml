@@ -1,10 +1,13 @@
 name: Voice Input Tests
 
+# Trigger policy (per user directive, 2026-05-27): PR-only.
+# Avoid auto-fanout on every push — feature-branch pushes are throwaway
+# and main-push runs are redundant with the PR run that just merged.
+# Use workflow_dispatch for manual re-runs (e.g. retry voice-real-inference).
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: voice-${{ github.event.pull_request.number || github.sha }}
