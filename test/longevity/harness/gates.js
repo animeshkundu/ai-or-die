@@ -203,6 +203,134 @@ const GATES = [
       };
     },
   },
+
+  // ── DISK gates (SOAK-05e) ──────────────────────────────────────────────
+  // Per SUP-REL spec + SUP-DISK per-PR convention. All four read from
+  // `diag.disk.*` fields that DISK-02 / DISK-03 wire into _collectDiagnostics.
+  // Each gate gracefully degrades to pass:null when the field is missing
+  // (i.e. running against main HEAD before the DISK PRs are bundled) — the
+  // harness still works; just doesn't produce a verdict for that gate.
+
+  {
+    name: 'disk.atomic_write',
+    description: 'sessions.json atomic-write durability (DISK-01).',
+    metrics: [
+      {
+        name: 'atomic_write_ok',
+        extract: ({ diag }) => diag.disk && typeof diag.disk.atomic_write_ok === 'boolean'
+          ? (diag.disk.atomic_write_ok ? 1 : 0) : null,
+        threshold: 1,
+        spotCheck: (v) => v === 1,
+      },
+    ],
+    evaluate(rows) {
+      const xs = filterMetric(rows, 'atomic_write_ok');
+      if (!xs.length) return { pass: null, summary: 'disk.atomic_write_ok not exposed (pre-DISK-01 bundle)' };
+      const fails = xs.filter(r => r.value !== 1);
+      return {
+        pass: fails.length === 0,
+        summary: fails.length === 0
+          ? `atomic_write_ok=true across ${xs.length} samples`
+          : `atomic_write_ok=false in ${fails.length}/${xs.length} samples`,
+        samples: xs.length,
+        failures: fails.length,
+      };
+    },
+  },
+
+  {
+    name: 'disk.bytes_used',
+    description: 'Total ~/.ai-or-die/ bytes — slope must stay bounded under steady load (DISK-02).',
+    metrics: [
+      {
+        name: 'bytes_used_mb',
+        extract: ({ diag }) => diag.disk && typeof diag.disk.usage_mb === 'number'
+          ? diag.disk.usage_mb : null,
+      },
+    ],
+    evaluate(rows, ctx) {
+      const xs = filterMetric(rows, 'bytes_used_mb');
+      if (xs.length < 2) return { pass: null, summary: 'disk.usage_mb not exposed or insufficient samples (pre-DISK-02 bundle)' };
+      const slopeMbPerHour = linearRegressionSlope(xs) * 3600 * 1000;
+      const threshold = ctx.thresholds.disk_bytes_slope_mb_per_hour ?? 100;
+      const pass = slopeMbPerHour <= threshold;
+      const last = xs[xs.length - 1].value;
+      const peak = Math.max(...xs.map(r => r.value));
+      return {
+        pass,
+        summary: `disk.usage_mb slope ${slopeMbPerHour.toFixed(2)} MB/h (threshold ${threshold}), final ${last} MB, peak ${peak} MB`,
+        slope_mb_per_hour: slopeMbPerHour,
+        threshold,
+        final_mb: last,
+        peak_mb: peak,
+        samples: xs.length,
+      };
+    },
+  },
+
+  {
+    name: 'disk.circuit_breaker',
+    description: 'ENOSPC circuit breaker — must stay closed under normal soak load (DISK-03).',
+    metrics: [
+      {
+        name: 'circuit_breaker_open',
+        extract: ({ diag }) => diag.disk && typeof diag.disk.circuit_breaker_open === 'boolean'
+          ? (diag.disk.circuit_breaker_open ? 1 : 0) : null,
+        threshold: 0,
+        // pass = false (breaker stays closed); deliberate-fill tests opt out.
+        spotCheck: (v) => v === 0,
+      },
+    ],
+    evaluate(rows, ctx) {
+      const xs = filterMetric(rows, 'circuit_breaker_open');
+      if (!xs.length) return { pass: null, summary: 'disk.circuit_breaker_open not exposed (pre-DISK-03 bundle)' };
+      // The disk-bloat-quota workload deliberately trips the breaker; let
+      // callers opt out via thresholds.disk_breaker_allow_trip = true.
+      const allowTrip = ctx.thresholds.disk_breaker_allow_trip === true;
+      const tripped = xs.filter(r => r.value === 1);
+      const pass = allowTrip ? null : tripped.length === 0;
+      return {
+        pass,
+        summary: allowTrip
+          ? `disk_breaker tripped ${tripped.length}/${xs.length} samples (allowed by disk-bloat-quota workload)`
+          : (tripped.length === 0
+            ? `disk_breaker stayed closed across ${xs.length} samples`
+            : `disk_breaker OPENED in ${tripped.length}/${xs.length} samples`),
+        samples: xs.length,
+        trip_count: tripped.length,
+      };
+    },
+  },
+
+  {
+    name: 'disk.quota',
+    description: 'Quota usage % — must stay below 90% under normal soak load (DISK-03).',
+    metrics: [
+      {
+        name: 'quota_used_pct',
+        extract: ({ diag }) => diag.disk && typeof diag.disk.quota_used_pct === 'number'
+          ? diag.disk.quota_used_pct : null,
+        threshold: 90,
+        spotCheck: (v) => v < 90,
+      },
+    ],
+    evaluate(rows, ctx) {
+      const xs = filterMetric(rows, 'quota_used_pct');
+      if (!xs.length) return { pass: null, summary: 'disk.quota_used_pct not exposed (pre-DISK-03 bundle)' };
+      const allowOver = ctx.thresholds.disk_breaker_allow_trip === true;
+      const peak = Math.max(...xs.map(r => r.value));
+      const last = xs[xs.length - 1].value;
+      const threshold = ctx.thresholds.disk_quota_max_pct ?? 90;
+      const pass = allowOver ? null : peak < threshold;
+      return {
+        pass,
+        summary: `quota_used_pct peak ${peak.toFixed(1)}%, final ${last.toFixed(1)}% (threshold ${threshold}%)`,
+        peak_pct: peak,
+        final_pct: last,
+        threshold_pct: threshold,
+      };
+    },
+  },
 ];
 
 // ── helpers ─────────────────────────────────────────────────────────────

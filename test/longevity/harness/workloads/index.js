@@ -23,6 +23,8 @@ const { WsFuzzWorkload } = require('./ws-fuzz-workload');
 const { AttachmentGrowthWorkload } = require('./attachment-growth-workload');
 const { SessionStringifyWorkload } = require('./session-stringify-workload');
 const { MockClockWorkload } = require('./mock-clock-workload');
+const { DiskBloatJsonlWorkload } = require('./disk-bloat-jsonl-workload');
+const { DiskBloatQuotaWorkload } = require('./disk-bloat-quota-workload');
 
 const WORKLOADS = {
   'noop':              NoopWorkload,
@@ -33,6 +35,8 @@ const WORKLOADS = {
   'attachment-growth': AttachmentGrowthWorkload,
   'session-stringify': SessionStringifyWorkload,
   'mock-clock':        MockClockWorkload,
+  'disk-bloat-jsonl':  DiskBloatJsonlWorkload,
+  'disk-bloat-quota':  DiskBloatQuotaWorkload,
 };
 
 function getWorkload(name) {

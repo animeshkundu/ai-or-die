@@ -108,6 +108,12 @@ async function main() {
     label,
     outputDir,
     resume,
+    // Auto-relax the disk breaker / quota gates when the deliberate-trip
+    // workload is in the set. Caller can still override via gate-evaluator
+    // thresholds if they want stricter semantics.
+    thresholds: workloads.includes('disk-bloat-quota')
+      ? { disk_breaker_allow_trip: true }
+      : {},
   });
 
   if (args.json) {
