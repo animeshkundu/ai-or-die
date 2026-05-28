@@ -1,0 +1,82 @@
+{
+  "started_at": "2026-05-28T05:12:08.129Z",
+  "duration_ms": 600000,
+  "sample_interval_ms": 30000,
+  "workloads": [
+    "watcher-flood"
+  ],
+  "gates": [
+    "event_loop",
+    "handles",
+    "memory"
+  ],
+  "seed": 42,
+  "label": "watcher-flood-only-baseline",
+  "pr": null,
+  "node_version": "v24.15.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "output_dir": "test/longevity/results/baseline-watcher-flood-20260528T051208Z",
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "started_at": "2026-05-28T05:12:08.129Z",
+      "finished_at": "2026-05-28T05:22:13.264Z",
+      "duration_ms": 600000,
+      "sample_interval_ms": 30000,
+      "workloads": [
+        "watcher-flood"
+      ],
+      "sampler_stats": {
+        "samples": 22,
+        "errors": 0,
+        "lastSample": {
+          "ts": "2026-05-28T05:22:13.259Z",
+          "diag": {
+            "uptime_seconds": 605,
+            "node_version": "v24.15.0",
+            "platform": "darwin",
+            "arch": "arm64",
+            "memory": {
+              "rss_mb": 59.2,
+              "heap_used_mb": 14.2,
+              "heap_total_mb": 15.5,
+              "external_mb": 2.5,
+              "array_buffers_mb": 0
+            },
+            "process": {
+              "active_handles": 5,
+              "active_requests": 1,
+              "fd_count": null
+            },
+            "sessions": {
+              "total": 0,
+              "ws_connections": 0,
+              "fs_watch_sessions": 0,
+              "voice_upload_counts": 0,
+              "activity_broadcast_timestamps": 0
+            }
+          },
+          "eventLoop": {
+            "p50_ms": 22.053,
+            "p99_ms": 22.266,
+            "max_ms": 71.369,
+            "mean_ms": 22.099
+          }
+        }
+      },
+      "aborted": false,
+      "abort_error": null,
+      "seed": 42
+    }
+  ],
+  "finished_at": "2026-05-28T05:22:13.264Z",
+  "total_duration_ms": 600000,
+  "chunk_count": 1,
+  "aborted": false,
+  "abort_error": null,
+  "sampler_stats": {
+    "samples": 22,
+    "errors": 0
+  }
+}
