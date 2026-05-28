@@ -1,0 +1,45 @@
+{
+  "overall": false,
+  "gate_count": 3,
+  "decidable_count": 3,
+  "thresholds": {
+    "heap_slope_mb_per_hour": 2.5,
+    "handles_abs_delta": 5,
+    "handles_pct_delta": 2,
+    "fd_pct_delta": 1,
+    "fs_watch_tail_max": 0,
+    "disk_bytes_slope_mb_per_hour": 100,
+    "disk_quota_max_pct": 90,
+    "disk_breaker_allow_trip": false
+  },
+  "gates": [
+    {
+      "name": "memory",
+      "description": "Heap and RSS — must not grow unboundedly over the soak window.",
+      "pass": false,
+      "summary": "heap slope 10.377 MB/h (threshold 2.5) over 22 samples",
+      "slope_mb_per_hour": 10.377214796617649,
+      "threshold": 2.5,
+      "samples": 22
+    },
+    {
+      "name": "handles",
+      "description": "process.active_handles — drift must stay bounded.",
+      "pass": true,
+      "summary": "active_handles 7 → 5 (Δ -2, -28.57%, peak 7)",
+      "first": 7,
+      "last": 5,
+      "abs_delta": -2,
+      "pct_delta": -28.57142857142857,
+      "peak": 7
+    },
+    {
+      "name": "event_loop",
+      "description": "perf_hooks histogram — p99 < 50ms; no sample > 200ms.",
+      "pass": true,
+      "summary": "event-loop p99 peak 22.87ms (limit 50), single-sample peak 75.30ms (limit 200)",
+      "p99_peak_ms": 22.872,
+      "max_peak_ms": 75.301
+    }
+  ]
+}

@@ -239,6 +239,41 @@ const GATES = [
   },
 
   {
+    name: 'disk.save_failure_count',
+    description: 'Cumulative SessionStore save failures — catches concurrent-save race + future fan-out bugs (DISK-04b).',
+    // Why this is separate from disk.atomic_write_ok: the rename race
+    // (DISK-04) does NOT corrupt sessions.json — the winning rename writes
+    // intact data; only the losing rename ENOENTs and stderrs.
+    // atomic_write_ok would report TRUE during the race. SUP-DISK pushed
+    // back on the consolidation and pointed out we need a counter on
+    // saveSessions() === false returns. This gate watches that counter
+    // for ANY non-zero growth across the soak window — a single failed
+    // save (whether from rename race, fsync error, or a future
+    // concurrency bug we haven't seen yet) trips the gate.
+    metrics: [
+      {
+        name: 'save_failure_count',
+        extract: ({ diag }) => diag.disk && typeof diag.disk.save_failure_count === 'number'
+          ? diag.disk.save_failure_count : null,
+      },
+    ],
+    evaluate(rows) {
+      const xs = filterMetric(rows, 'save_failure_count');
+      if (xs.length < 2) return { pass: null, summary: 'disk.save_failure_count not exposed (pre-DISK-04b bundle)' };
+      const first = xs[0].value;
+      const last = xs[xs.length - 1].value;
+      const delta = last - first;
+      return {
+        pass: delta === 0,
+        summary: delta === 0
+          ? `save_failure_count stable at ${first} across ${xs.length} samples`
+          : `save_failure_count grew ${first} → ${last} (Δ +${delta}) — regression detected`,
+        first, last, delta,
+      };
+    },
+  },
+
+  {
     name: 'disk.bytes_used',
     description: 'Total ~/.ai-or-die/ bytes — slope must stay bounded under steady load (DISK-02).',
     metrics: [
@@ -328,6 +363,135 @@ const GATES = [
         peak_pct: peak,
         final_pct: last,
         threshold_pct: threshold,
+      };
+    },
+  },
+
+  // ── CLIENT gates (SOAK-05b) ─────────────────────────────────────────────
+  // Browser-side metrics emitted by BrowserSampler (Playwright +
+  // window.__diagnostics() per CLIENT-03 spec). The sampler emits with the
+  // gate names below — the evaluator below consumes them. All client gates
+  // gracefully report pass:null when no rows are present (CLIENT-03 not
+  // bundled OR --browser-page flag absent).
+
+  {
+    name: 'client.plan_detector',
+    description: 'plan-detector buffer must stay under 8 MB hard cap (CLIENT-01).',
+    metrics: [
+      // BrowserSampler emits these; extract from `null` so we never crash
+      // on a server-only sample row.
+      { name: 'bytes', extract: () => null },
+    ],
+    evaluate(rows, _ctx) {
+      const xs = filterMetric(rows, 'bytes');
+      if (!xs.length) return { pass: null, summary: 'client.plan_detector.bytes not sampled (no browser page)' };
+      const peak = Math.max(...xs.map(r => r.value));
+      const cap = 8 * 1024 * 1024;
+      const pass = peak <= cap;
+      return {
+        pass,
+        summary: `plan_detector.bytes peak ${(peak / 1024 / 1024).toFixed(2)} MB (cap ${(cap / 1024 / 1024)} MB)`,
+        peak_bytes: peak,
+        cap_bytes: cap,
+        samples: xs.length,
+      };
+    },
+  },
+
+  {
+    name: 'client.dom',
+    description: 'DOM total_nodes slope must stay < 100 nodes/h (CLIENT-02).',
+    metrics: [
+      { name: 'total_nodes', extract: () => null },
+    ],
+    evaluate(rows, ctx) {
+      const xs = filterMetric(rows, 'total_nodes');
+      if (xs.length < 2) return { pass: null, summary: 'client.dom.total_nodes not sampled / insufficient samples' };
+      const slopePerHour = linearRegressionSlope(xs) * 3600 * 1000;
+      const threshold = ctx.thresholds.client_dom_slope_per_hour ?? 100;
+      const pass = slopePerHour <= threshold;
+      const first = xs[0].value;
+      const last = xs[xs.length - 1].value;
+      return {
+        pass,
+        summary: `dom.total_nodes slope ${slopePerHour.toFixed(1)}/h (threshold ${threshold}/h), ${first} → ${last} over ${xs.length} samples`,
+        slope_per_hour: slopePerHour,
+        threshold,
+        first, last,
+      };
+    },
+  },
+
+  {
+    name: 'client.xterm',
+    description: 'xterm scrollback line count must stay ≤ 10100 (CLIENT-03 §1).',
+    metrics: [
+      { name: 'scrollback_lines', extract: () => null },
+    ],
+    evaluate(rows, _ctx) {
+      const xs = filterMetric(rows, 'scrollback_lines');
+      if (!xs.length) return { pass: null, summary: 'client.xterm.scrollback_lines not sampled' };
+      const peak = Math.max(...xs.map(r => r.value));
+      const cap = 10100;
+      return {
+        pass: peak <= cap,
+        summary: `xterm.scrollback_lines peak ${peak} (cap ${cap})`,
+        peak,
+        cap,
+      };
+    },
+  },
+
+  {
+    name: 'client.ws',
+    description: 'WebSocket state must stay OPEN (1) post-baseline (CLIENT-03 §3 reconnect-failure detection).',
+    metrics: [
+      { name: 'state', extract: () => null },
+    ],
+    evaluate(rows, _ctx) {
+      const xs = filterMetric(rows, 'state');
+      if (xs.length < 2) return { pass: null, summary: 'client.ws.state not sampled / insufficient samples' };
+      // Skip the very first sample (pre-session); CLIENT-03 spec §5 allows
+      // ws.state to be null/closed at baseline. Subsequent samples must be 1.
+      const postBaseline = xs.slice(1);
+      const stuck = postBaseline.filter(r => r.value === 2 || r.value === 3);
+      // Per spec: failure = state stuck at 2/3 for MORE than one sample period.
+      // We approximate as: ≥ 2 consecutive samples at 2/3.
+      let maxRun = 0, run = 0;
+      for (const r of postBaseline) {
+        if (r.value === 2 || r.value === 3) { run++; if (run > maxRun) maxRun = run; }
+        else run = 0;
+      }
+      const pass = maxRun < 2;
+      return {
+        pass,
+        summary: `ws.state max consecutive 2/3 = ${maxRun} (fail if ≥ 2)`,
+        max_consecutive_closing_or_closed: maxRun,
+        post_baseline_samples: postBaseline.length,
+      };
+    },
+  },
+
+  {
+    name: 'client.sse',
+    description: 'SSE stream count slope must stay ≤ 0 in steady state (CLIENT-03 §3).',
+    metrics: [
+      { name: 'streams', extract: () => null },
+    ],
+    evaluate(rows, _ctx) {
+      const xs = filterMetric(rows, 'streams');
+      if (xs.length < 3) return { pass: null, summary: 'client.sse.streams not sampled / insufficient samples' };
+      // Steady-state slope: skip the first sample (baseline) and last (post-stop drain).
+      const steady = xs.slice(1, -1);
+      if (steady.length < 2) return { pass: null, summary: 'insufficient steady-state samples' };
+      const slopePerHour = linearRegressionSlope(steady) * 3600 * 1000;
+      const pass = slopePerHour <= 0.5;
+      const peak = Math.max(...steady.map(r => r.value));
+      return {
+        pass,
+        summary: `sse.streams steady-state slope ${slopePerHour.toFixed(2)}/h (peak ${peak})`,
+        slope_per_hour: slopePerHour,
+        peak,
       };
     },
   },
