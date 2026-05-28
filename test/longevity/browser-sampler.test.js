@@ -86,6 +86,20 @@ describe('Longevity harness BrowserSampler smoke', function () {
 
   it('emits window_diagnostics_present meta row', async function () {
     if (chromiumUnavailable) return this.skip();
+    // SOAK-05v: also skip when the sampler couldn't start in this env.
+    // Ubuntu CI without --no-sandbox throws a non-"Executable doesn't exist"
+    // error that chromiumUnavailable doesn't catch; the sampler logs
+    // browser_sampler_start_error in events.jsonl and never gets to emit
+    // any client.* or meta.* rows. Skip cleanly in that case — the prior
+    // assertion ("records browser_sampler_up event OR graceful start-error")
+    // already covers the start-error case.
+    const eventsPath = path.join(outputDir, 'events.jsonl');
+    if (fs.existsSync(eventsPath)) {
+      const events = await loadJsonl(eventsPath);
+      if (events.some(e => e.type === 'browser_sampler_start_error')) {
+        return this.skip();
+      }
+    }
     const samplesPath = path.join(outputDir, 'samples.jsonl');
     if (!fs.existsSync(samplesPath)) {
       // Sampler may have failed to start; skip without failing — covered
@@ -105,6 +119,16 @@ describe('Longevity harness BrowserSampler smoke', function () {
 
   it('completes the soak end-to-end with browser sampler in loop', async function () {
     if (chromiumUnavailable) return this.skip();
+    // SOAK-05v: same start-error skip as above. The soak itself completes
+    // even when the sampler fails to start, but metadata.chunks[0]
+    // .browser_sampler_stats is null in that case rather than an object.
+    const eventsPath = path.join(outputDir, 'events.jsonl');
+    if (fs.existsSync(eventsPath)) {
+      const events = await loadJsonl(eventsPath);
+      if (events.some(e => e.type === 'browser_sampler_start_error')) {
+        return this.skip();
+      }
+    }
     const meta = JSON.parse(fs.readFileSync(path.join(outputDir, 'metadata.json'), 'utf8'));
     assert.ok(meta.finished_at, 'soak finished');
     assert.ok(meta.chunks && meta.chunks.length === 1, 'one chunk recorded');

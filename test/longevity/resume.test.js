@@ -85,8 +85,14 @@ describe('Longevity harness --resume', function () {
     assert.strictEqual(meta.chunks.length, 2, 'two chunk entries');
     assert.strictEqual(meta.chunks[0].chunk_index, 0);
     assert.strictEqual(meta.chunks[1].chunk_index, 1);
-    assert.ok(meta.chunks[0].finished_at < meta.chunks[1].started_at,
-      'chunk[0] finished before chunk[1] started');
+    // SOAK-05w: relaxed from strict `<` to `<=` because on fast Ubuntu IO
+    // the two ISO-ms-resolution timestamps can land in the same millisecond.
+    // The semantic invariant we care about is "chunk[0]'s end is not after
+    // chunk[1]'s start" — `<=` captures that cleanly without flaking on
+    // sub-ms tail wall-clock gaps. The `=` case is rare but legitimate
+    // when chunk[0]'s finalize + chunk[1]'s init both happen in <1 ms.
+    assert.ok(meta.chunks[0].finished_at <= meta.chunks[1].started_at,
+      `chunk[0] finished_at (${meta.chunks[0].finished_at}) should be <= chunk[1] started_at (${meta.chunks[1].started_at})`);
   });
 
   it('appends to samples.jsonl rather than truncating', async function () {
