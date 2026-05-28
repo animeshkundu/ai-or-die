@@ -171,6 +171,7 @@ by editing `DEFAULT_THRESHOLDS` in `gate-evaluator.js`.
 | `fs_watch`   | `fs_watch_sessions`                                                     | final value                                | ≤ 0 at end-of-run                |
 | `event_loop` | `p50_ms`, `p99_ms`, `max_ms`, `mean_ms`                                 | spot-check every sample                    | p99 < 50 ms, max < 200 ms        |
 | `disk.atomic_write`     | `atomic_write_ok`        | spot-check every sample           | == true (DISK-01)                          |
+| `disk.save_failure_count` | `save_failure_count`   | delta (last − first)              | == 0 (DISK-04b counter; catches DISK-04 rename race + future concurrency bugs) |
 | `disk.bytes_used`       | `bytes_used_mb`          | linear-regression slope           | < 100 MB/h (DISK-02)                       |
 | `disk.circuit_breaker`  | `circuit_breaker_open`   | spot-check every sample           | == false (DISK-03; auto-relaxed when disk-bloat-quota workload selected) |
 | `disk.quota`            | `quota_used_pct`         | peak value                        | < 90 % (DISK-03; auto-relaxed as above)    |

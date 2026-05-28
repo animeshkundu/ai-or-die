@@ -239,6 +239,41 @@ const GATES = [
   },
 
   {
+    name: 'disk.save_failure_count',
+    description: 'Cumulative SessionStore save failures — catches concurrent-save race + future fan-out bugs (DISK-04b).',
+    // Why this is separate from disk.atomic_write_ok: the rename race
+    // (DISK-04) does NOT corrupt sessions.json — the winning rename writes
+    // intact data; only the losing rename ENOENTs and stderrs.
+    // atomic_write_ok would report TRUE during the race. SUP-DISK pushed
+    // back on the consolidation and pointed out we need a counter on
+    // saveSessions() === false returns. This gate watches that counter
+    // for ANY non-zero growth across the soak window — a single failed
+    // save (whether from rename race, fsync error, or a future
+    // concurrency bug we haven't seen yet) trips the gate.
+    metrics: [
+      {
+        name: 'save_failure_count',
+        extract: ({ diag }) => diag.disk && typeof diag.disk.save_failure_count === 'number'
+          ? diag.disk.save_failure_count : null,
+      },
+    ],
+    evaluate(rows) {
+      const xs = filterMetric(rows, 'save_failure_count');
+      if (xs.length < 2) return { pass: null, summary: 'disk.save_failure_count not exposed (pre-DISK-04b bundle)' };
+      const first = xs[0].value;
+      const last = xs[xs.length - 1].value;
+      const delta = last - first;
+      return {
+        pass: delta === 0,
+        summary: delta === 0
+          ? `save_failure_count stable at ${first} across ${xs.length} samples`
+          : `save_failure_count grew ${first} → ${last} (Δ +${delta}) — regression detected`,
+        first, last, delta,
+      };
+    },
+  },
+
+  {
     name: 'disk.bytes_used',
     description: 'Total ~/.ai-or-die/ bytes — slope must stay bounded under steady load (DISK-02).',
     metrics: [
