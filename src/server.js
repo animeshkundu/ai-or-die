@@ -192,6 +192,39 @@ class ClaudeCodeWebServer {
       } catch (_) { /* never break the timer */ }
     }, 5 * 60 * 1000);
 
+    // DISK-02: opt-in usage-JSONL compaction + crash-file pruning.
+    // Runs on the same 5 min cadence as diagnostics but offset so the
+    // two don't pile up. Behind an env flag for the first release; once
+    // soak verifies, the default flips on.
+    if (process.env.AI_OR_DIE_USAGE_COMPACT === '1') {
+      this.diskCompactInterval = setInterval(() => {
+        this._diskCompactionSweep().catch((err) => {
+          console.warn('Disk compaction sweep failed:', err && err.message);
+        });
+      }, 5 * 60 * 1000);
+    }
+
+    // DISK-02: prune stale .crash files on startup. Always-on (low risk:
+    // keeps the most recent crash for inspection, deletes anything > 7
+    // days old). Schedule via setImmediate so we don't block startup.
+    setImmediate(() => {
+      this._pruneCrashFilesOnce().catch((err) => {
+        console.warn('Crash-file pruning failed:', err && err.message);
+      });
+    });
+
+    // DISK-02/03: warm the disk-usage sample so /api/diagnostics returns
+    // real numbers within the first 60 s. Bounded time budget; never
+    // blocks the event loop.
+    setImmediate(() => {
+      this._sampleDiskUsage(150).catch(() => { /* ignore */ });
+    });
+    // Re-sample on the 5 min cadence (cheap; 60 s cache hit is the
+    // common path).
+    this.diskUsageSampleInterval = setInterval(() => {
+      this._sampleDiskUsage(150).catch(() => { /* ignore */ });
+    }, 5 * 60 * 1000);
+
     // Also save on process exit
     process.on('SIGINT', () => this.handleShutdown());
     process.on('SIGTERM', () => this.handleShutdown());
@@ -3822,7 +3855,133 @@ class ClaudeCodeWebServer {
         voice_upload_counts: (this._voiceUploadCounts && this._voiceUploadCounts.size) || 0,
         activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
       },
+      // DISK-02/03: cached disk usage sample (60 s TTL, never blocks the
+      // event loop). Populated by _sampleDiskUsage() — see method
+      // comment for the time-budget contract.
+      disk: this._diskUsageCache || { stale: true, note: 'no sample yet' },
     };
+  }
+
+  /**
+   * DISK-02/03: sample disk usage under ~/.ai-or-die/ and
+   * ~/.claude/projects/ with a strict time budget. Caches the result
+   * for 60 s. NEVER blocks the event loop: each directory walk is
+   * yield-friendly (async readdir) and aborts after `budgetMs`.
+   *
+   * Returns the cached result (which is also stored on
+   * this._diskUsageCache for the diagnostics endpoint to pick up).
+   */
+  async _sampleDiskUsage(budgetMs = 50) {
+    const now = Date.now();
+    if (this._diskUsageCache && (now - this._diskUsageCacheAt < 60 * 1000)) {
+      return this._diskUsageCache;
+    }
+    const deadline = now + budgetMs;
+    const sample = { sampled_at: new Date(now).toISOString() };
+
+    // Sample ~/.ai-or-die/ (sessions.json + .crash + future content).
+    try {
+      const sessionsDir = this.sessionStore && this.sessionStore.storageDir;
+      if (sessionsDir) {
+        const r = await this._dirSizeWithBudget(sessionsDir, deadline);
+        sample.ai_or_die_dir_bytes = r.bytes;
+        sample.ai_or_die_dir_files = r.files;
+        sample.ai_or_die_dir_stale = r.timedOut || false;
+      }
+    } catch (_) { /* ignore */ }
+
+    // Sample ~/.claude/projects/ (the JSONL corpus we read).
+    try {
+      const projectsDir = this.usageReader && this.usageReader.claudeProjectsPath;
+      if (projectsDir) {
+        const r = await this._dirSizeWithBudget(projectsDir, deadline);
+        sample.claude_projects_bytes = r.bytes;
+        sample.claude_projects_files = r.files;
+        sample.claude_projects_stale = r.timedOut || false;
+      }
+    } catch (_) { /* ignore */ }
+
+    this._diskUsageCache = sample;
+    this._diskUsageCacheAt = now;
+    return sample;
+  }
+
+  /**
+   * Async recursive directory size with a wall-clock deadline. Returns
+   * { bytes, files, timedOut } and never throws. On deadline, returns
+   * partial counts and timedOut: true.
+   */
+  async _dirSizeWithBudget(dir, deadline) {
+    const fsP = require('fs').promises;
+    let bytes = 0;
+    let files = 0;
+    const queue = [dir];
+    while (queue.length > 0) {
+      if (Date.now() > deadline) {
+        return { bytes, files, timedOut: true };
+      }
+      const cur = queue.shift();
+      let entries;
+      try {
+        entries = await fsP.readdir(cur, { withFileTypes: true });
+      } catch (_) { continue; }
+      for (const ent of entries) {
+        if (Date.now() > deadline) {
+          return { bytes, files, timedOut: true };
+        }
+        const p = require('path').join(cur, ent.name);
+        if (ent.isDirectory()) {
+          queue.push(p);
+        } else if (ent.isFile()) {
+          try {
+            const st = await fsP.stat(p);
+            bytes += st.size;
+            files++;
+          } catch (_) { /* racy unlink */ }
+        }
+      }
+    }
+    return { bytes, files, timedOut: false };
+  }
+
+  /**
+   * DISK-02: opt-in compaction sweep wired from setupAutoSave.
+   * Composes UsageReader#compactStale() and a usage-cache refresh.
+   */
+  async _diskCompactionSweep() {
+    if (!this.usageReader || typeof this.usageReader.compactStale !== 'function') return;
+    const result = await this.usageReader.compactStale();
+    if (result && (result.compacted.length > 0 || result.errors.length > 0)) {
+      console.log('[disk-compact]', JSON.stringify({
+        scanned: result.scanned,
+        compacted_count: result.compacted.length,
+        compacted_bytes_in: result.compacted.reduce((s, c) => s + (c.bytesIn || 0), 0),
+        compacted_bytes_out: result.compacted.reduce((s, c) => s + (c.bytesOut || 0), 0),
+        errors: result.errors.length,
+      }));
+    }
+    // Invalidate disk-usage cache so the next diagnostics tick reports fresh numbers.
+    this._diskUsageCacheAt = 0;
+    // Refresh in background (non-blocking).
+    this._sampleDiskUsage(150).catch(() => {});
+  }
+
+  /**
+   * DISK-02 (rides along): one-shot startup pruning of stale .crash
+   * files. Always-on. Keeps the most recent crash file for inspection.
+   */
+  async _pruneCrashFilesOnce() {
+    if (!this.sessionStore || !this.sessionStore.storageDir) return;
+    const UsageReader = require('./usage-reader');
+    try {
+      const result = await UsageReader.pruneCrashFiles(this.sessionStore.storageDir);
+      if (result && result.pruned && result.pruned.length > 0) {
+        console.log('[disk-prune-crash]', JSON.stringify({
+          pruned_count: result.pruned.length,
+          kept_count: result.skipped.length,
+        }));
+      }
+    } catch (_) { /* best effort */ }
   }
 
   cleanupWebSocketConnection(wsId) {
@@ -3919,6 +4078,12 @@ class ClaudeCodeWebServer {
     }
     if (this.diagnosticsHeartbeatInterval) {
       clearInterval(this.diagnosticsHeartbeatInterval);
+    }
+    if (this.diskCompactInterval) {
+      clearInterval(this.diskCompactInterval);
+    }
+    if (this.diskUsageSampleInterval) {
+      clearInterval(this.diskUsageSampleInterval);
     }
 
     // Stop memory monitoring to release the interval timer

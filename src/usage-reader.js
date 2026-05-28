@@ -2,16 +2,53 @@ const fs = require('fs').promises;
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
+const zlib = require('zlib');
 const { createReadStream } = require('fs');
+const { compactJsonlFile, pruneOldFiles } = require('./utils/log-rotator');
 
 class UsageReader {
-  constructor(sessionDurationHours = 5) {
-    this.claudeProjectsPath = path.join(os.homedir(), '.claude', 'projects');
+  /**
+   * @param {number|object} [arg1]  Legacy number = sessionDurationHours,
+   *                                 or an options object:
+   *                                 { sessionDurationHours, claudeProjectsPath,
+   *                                   compactPolicy }
+   */
+  constructor(arg1) {
+    let sessionDurationHours = 5;
+    let claudeProjectsPath = null;
+    let compactPolicy = null;
+
+    if (typeof arg1 === 'number') {
+      sessionDurationHours = arg1;
+    } else if (arg1 && typeof arg1 === 'object') {
+      if (typeof arg1.sessionDurationHours === 'number') {
+        sessionDurationHours = arg1.sessionDurationHours;
+      }
+      if (typeof arg1.claudeProjectsPath === 'string') {
+        claudeProjectsPath = arg1.claudeProjectsPath;
+      }
+      if (arg1.compactPolicy && typeof arg1.compactPolicy === 'object') {
+        compactPolicy = arg1.compactPolicy;
+      }
+    }
+
+    this.claudeProjectsPath = claudeProjectsPath
+      || path.join(os.homedir(), '.claude', 'projects');
     this.cache = null;
     this.cacheTime = null;
     this.cacheTimeout = 5000; // Cache for 5 seconds for more real-time updates
     this.sessionDurationHours = sessionDurationHours; // Default 5 hours from first message
     this.overlappingSessions = []; // Track overlapping sessions
+
+    // Compaction policy (see docs/specs/disk-budget.md, DISK-02).
+    // Defaults are conservative for the first opt-in release.
+    this.compactPolicy = Object.assign({
+      maxFileBytes: 100 * 1024 * 1024,   // 100 MB per-file gzip trigger
+      maxDirBytes: 500 * 1024 * 1024,    // 500 MB per-project-dir gzip trigger
+      maxAgeMs: 90 * 24 * 60 * 60 * 1000, // 90 days age-based gzip
+      preserveLatestN: 3,                 // never touch latest 3 per project
+      minIdleMs: 60 * 60 * 1000,          // skip files modified in last hour
+    }, compactPolicy || {});
   }
 
   /**
@@ -328,26 +365,29 @@ class UsageReader {
   
   async findJsonlFiles(onlyRecent = false) {
     const files = [];
-    
+
     try {
       const projectDirs = await fs.readdir(this.claudeProjectsPath);
-      
+
       for (const projectDir of projectDirs) {
         const projectPath = path.join(this.claudeProjectsPath, projectDir);
         const stat = await fs.stat(projectPath);
-        
+
         if (stat.isDirectory()) {
           const projectFiles = await fs.readdir(projectPath);
-          const jsonlFiles = projectFiles.filter(f => f.endsWith('.jsonl'));
-          
+          // Accept both raw .jsonl and gzipped .jsonl.gz (DISK-02 rotation).
+          const jsonlFiles = projectFiles.filter(f =>
+            f.endsWith('.jsonl') || f.endsWith('.jsonl.gz')
+          );
+
           // If onlyRecent is true, only include files modified in the last 24 hours
           for (const jsonlFile of jsonlFiles) {
             const filePath = path.join(projectPath, jsonlFile);
-            
+
             if (onlyRecent) {
               const fileStat = await fs.stat(filePath);
               const hoursSinceModified = (Date.now() - fileStat.mtime.getTime()) / (1000 * 60 * 60);
-              
+
               // Only include files modified in the last 24 hours
               if (hoursSinceModified <= 24) {
                 files.push(filePath);
@@ -361,7 +401,7 @@ class UsageReader {
     } catch (error) {
       console.error('Error finding JSONL files:', error);
     }
-    
+
     return files;
   }
 
@@ -369,10 +409,24 @@ class UsageReader {
     const entries = [];
     // File-level deduplication cache - prevents duplicates within this file only
     const fileProcessedEntries = new Set();
-    
+
+    // Build the read stream — transparently gunzip if .jsonl.gz.
+    let inputStream;
+    try {
+      const raw = createReadStream(filePath);
+      if (filePath.endsWith('.jsonl.gz')) {
+        inputStream = raw.pipe(zlib.createGunzip());
+      } else {
+        inputStream = raw;
+      }
+    } catch (err) {
+      console.error('Error opening file:', filePath, err);
+      return entries;
+    }
+
     return new Promise((resolve) => {
       const rl = readline.createInterface({
-        input: createReadStream(filePath),
+        input: inputStream,
         crlfDelay: Infinity
       });
 
@@ -889,6 +943,143 @@ class UsageReader {
       console.error('Error getting current session:', error);
       return null;
     }
+  }
+
+  /**
+   * DISK-02: scan all project dirs under claudeProjectsPath and gzip
+   * any .jsonl file that meets the compaction policy (size, age, or
+   * dir-total). Skips the latest N files per project (CLI may still
+   * hold a handle) and any file modified within `minIdleMs`.
+   *
+   * Behavior: opt-in. The caller controls when to invoke (typically
+   * the 5 min diagnostics tick in server.js).
+   *
+   * Returns: { ok, scanned, compacted, skipped, errors }.
+   */
+  async compactStale() {
+    const policy = this.compactPolicy;
+    const result = { ok: true, scanned: 0, compacted: [], skipped: [], errors: [] };
+
+    let projectDirs;
+    try {
+      projectDirs = await fs.readdir(this.claudeProjectsPath);
+    } catch (err) {
+      if (err.code === 'ENOENT') return result; // no projects yet
+      result.ok = false;
+      result.errors.push({ stage: 'readdir', error: err.message });
+      return result;
+    }
+
+    const now = Date.now();
+
+    for (const projectName of projectDirs) {
+      const projectPath = path.join(this.claudeProjectsPath, projectName);
+      let stat;
+      try {
+        stat = await fs.stat(projectPath);
+      } catch (_) { continue; }
+      if (!stat.isDirectory()) continue;
+
+      // Enumerate files with metadata.
+      let entries;
+      try {
+        entries = await fs.readdir(projectPath);
+      } catch (_) { continue; }
+
+      const jsonlFiles = [];
+      let dirTotalBytes = 0;
+      for (const name of entries) {
+        if (!name.endsWith('.jsonl')) continue; // skip already-gzipped
+        const full = path.join(projectPath, name);
+        try {
+          const st = await fs.stat(full);
+          jsonlFiles.push({ path: full, name, sizeBytes: st.size, mtimeMs: st.mtimeMs });
+          dirTotalBytes += st.size;
+          result.scanned++;
+        } catch (_) { /* racy unlink */ }
+      }
+
+      if (jsonlFiles.length === 0) continue;
+
+      // Sort newest first so we can preserve the latest N.
+      jsonlFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      const preserveSet = new Set(jsonlFiles.slice(0, policy.preserveLatestN).map(f => f.path));
+
+      // Decide which files to compact.
+      const targets = [];
+      for (const f of jsonlFiles) {
+        if (preserveSet.has(f.path)) continue;
+        // Clamp idleMs to 0: Date.now() returns integer ms but
+        // fs.stat().mtimeMs is sub-ms float, so a just-written file can
+        // report a fractionally-future mtime relative to the captured
+        // now. We never want negative idleMs.
+        const idleMs = Math.max(0, now - f.mtimeMs);
+        if (idleMs < policy.minIdleMs) {
+          result.skipped.push({ path: f.path, reason: 'idle-protection' });
+          continue;
+        }
+        const triggers = [];
+        if (f.sizeBytes >= policy.maxFileBytes) triggers.push('size');
+        if (idleMs >= policy.maxAgeMs) triggers.push('age');
+        if (dirTotalBytes >= policy.maxDirBytes) triggers.push('dir-quota');
+        if (triggers.length === 0) {
+          result.skipped.push({ path: f.path, reason: 'no-trigger' });
+          continue;
+        }
+        targets.push({ ...f, triggers });
+      }
+
+      // Compact oldest first (so dir-quota relief actually relieves).
+      targets.sort((a, b) => a.mtimeMs - b.mtimeMs);
+
+      for (const t of targets) {
+        const cr = await compactJsonlFile(t.path);
+        if (cr.ok) {
+          result.compacted.push({
+            path: t.path,
+            triggers: t.triggers,
+            bytesIn: cr.bytesIn,
+            bytesOut: cr.bytesOut,
+            skipped: cr.skipped || false,
+          });
+          if (typeof cr.bytesIn === 'number') {
+            dirTotalBytes -= cr.bytesIn;
+          }
+        } else {
+          result.errors.push({
+            path: t.path,
+            stage: 'compact',
+            error: cr.error ? cr.error.message : 'unknown',
+          });
+        }
+
+        // If we were compacting for dir-quota and we're now under the
+        // cap, stop early.
+        if (dirTotalBytes < policy.maxDirBytes && !t.triggers.includes('size') && !t.triggers.includes('age')) {
+          break;
+        }
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * DISK-02 (rides along): prune .crash orphan files from the session
+   * storage dir. Keeps the most recent crash file for operator
+   * inspection; deletes anything older than `maxAgeMs` (default 7 days).
+   *
+   * @param {string} sessionsDir   ~/.ai-or-die (or override)
+   * @param {object} [opts]
+   * @returns {Promise<{ok, pruned, skipped, error?}>}
+   */
+  static async pruneCrashFiles(sessionsDir, opts = {}) {
+    const maxAgeMs = opts.maxAgeMs || (7 * 24 * 60 * 60 * 1000);
+    return pruneOldFiles(
+      sessionsDir,
+      /^sessions\.json\.crash(\.\d+)?$/,
+      { maxAgeMs, preserveLatestN: 1 }
+    );
   }
 }
 
