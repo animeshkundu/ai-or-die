@@ -282,6 +282,93 @@ that task lands.
   can wrap the same `setImmediate` line whether DISK-01 has landed or
   not.
 
+## Cross-lane integration pattern
+
+Two cross-lane integrations in this campaign worked unusually well —
+clean enough that both SUP-HOT and SUP-SOAK independently called it
+out, worth capturing for future multi-supervisor campaigns:
+
+### The pattern
+
+**Publisher posts an API brief upfront** (before the consumer
+implements). Just specific enough that the consumer knows the exact
+surface they'll integrate against — file path, method name, argument
+shape, contract guarantees, surrounding-code constraints. Not a
+spec; a tight integration contract.
+
+**Consumer implements, publisher reviews integration at the end.**
+The review focuses on the 1–2 integration assumptions the brief
+left implicit (the things the publisher knew but didn't write down
+because they were "obvious"). Catches the silent integration bugs
+that don't trip tests on either side but would corrupt composition
+at the seam.
+
+### Where it worked
+
+1. **DISK ↔ HOT-10** (JSON.stringify offload). DISK posted a brief
+   describing `_saveSessionsLocked`'s shape, the integration point
+   (the `setImmediate(() => resolve(JSON.stringify(data)))` line),
+   and the DISK-04 mutex semantics that wrap it. HOT-10 implemented
+   against that shape; DISK reviewed the resulting `_serializeData
+   Streamed` integration and confirmed the critical-section
+   composition was correct. SUP-HOT noted: "the cleanest cross-lane
+   handoff I've had this campaign."
+
+2. **DISK ↔ SOAK** (rename race). SOAK posted a workload-level
+   reproduction (`session-stringify` at 6 saves/min × 50 sessions
+   produces ENOENT every ~12 saves), then offered a gate proposal
+   based on a coverage hypothesis. DISK reproduced, fixed, ran the
+   regression test, then pushed back gently on the gate hypothesis
+   (it had a coverage gap — the race doesn't corrupt, so
+   `atomic_write_ok` would miss it). SOAK accepted the push-back
+   and shipped the corrected gate (`disk.save_failure_count`). The
+   loop closed with a 5-LOC counter (`DISK-04b`) the harness gate
+   could actually watch.
+
+### Why it outperforms the alternatives
+
+| Anti-pattern | Failure mode | This pattern's fix |
+|---|---|---|
+| "No coordination, hope it composes" | Silent integration bugs caught only by production users. The HOT-10 worker_threads path would have hit the structured-clone trap if HOT hadn't been told about the DISK-01 fsync constraints early. | Brief upfront makes the constraints explicit before they're sealed in code. |
+| "Huge upfront spec for every detail" | Slows everyone down; the spec rots faster than the code; over-coordination prevents emergent design. | Brief is bounded to the integration surface, not the whole module. |
+| "Late code review, no upfront brief" | Reviewer either rubber-stamps (because they didn't see the design phase) or rewrites everything (because the design is wrong but it's now committed). | Publisher reviewed the integration *after* an aligned implementation, not before — small targeted comments, not a redesign. |
+
+### When NOT to use
+
+- Two supervisors touching truly orthogonal code with no shared API
+  surface (e.g., CLIENT-side scroll behavior + SERVER-side log
+  rotation). No brief needed; no review needed; just commit.
+- One-off scripts / non-production utilities. The pattern's value is
+  in catching seam bugs that would survive to production; for code
+  that won't ship, it's overhead.
+
+### Template for next campaign
+
+```
+1. Lane A (publisher): posts brief in 5-15 lines covering:
+   - Integration surface (file + method/symbol)
+   - Argument shape + return contract
+   - Surrounding-code invariants the consumer must preserve
+   - Where the consumer's code physically goes in the file
+
+2. Lane B (consumer): implements against the brief. Asks publisher
+   for clarification on any ambiguity BEFORE landing the change.
+
+3. Lane B notifies Lane A with: branch + tip SHA + description of
+   the integration shape ("I replaced line X with call to Y").
+
+4. Lane A: reads the actual diff, confirms or flags any seam bugs.
+   Sends back: "clean", or "one concern: ...".
+
+5. Both lanes treat the brief + review thread as authoritative
+   campaign documentation. Future contributors can read it to
+   understand WHY the seam is shaped the way it is.
+```
+
+The pattern has zero process overhead (no meeting, no review board,
+no approval gate) but produces dramatically better integration
+hygiene than the no-coordination default.
+
 ## Verification
 
 Local: 41 specs across `test/longevity/disk/{atomic-write-power-loss,
