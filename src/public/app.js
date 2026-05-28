@@ -5781,3 +5781,118 @@ document.addEventListener('DOMContentLoaded', () => {
     window.app = app;
     app.startHeartbeat();
 });
+
+// CLIENT-03 (stability-hardening-2026): browser-side diagnostics surface.
+// Mirrors the server `/api/diagnostics` shape so SUP-SOAK's browser soak
+// can sample uniformly. Installed at module level so it is callable from
+// the moment app.js finishes loading — independent of when `window.app`
+// is constructed or whether a session has been joined. All sub-collectors
+// are wrapped in try/catch so the function never throws; safe to call
+// pre-session. Returns a Promise (the optional
+// `performance.measureUserAgentSpecificMemory()` call is async).
+// Idempotent: re-loading app.js (e.g. HMR) overwrites the previous
+// install — last loader wins.
+// Spec: docs/specs/client-longevity.md
+window.__diagnostics = async function __diagnostics() {
+    const ts = Date.now();
+    const snap = {
+        ts: ts,
+        dom: { total_nodes: 0 },
+        buffers: { plan_detector_bytes: 0, xterm_scrollback_lines: 0 },
+        ws: { state: null, url: null },
+        sse: { connected: false, streams: 0 },
+        memory: null
+    };
+
+    // dom.total_nodes
+    try {
+        snap.dom.total_nodes = document.querySelectorAll('*').length;
+    } catch (_) { /* leave 0 */ }
+
+    // dom.listeners_tracked — only emit if a tracker exists. No tracker
+    // ships today; SUP-SOAK must tolerate absence per spec v1.
+    try {
+        if (typeof window.__listenerCount === 'number') {
+            snap.dom.listeners_tracked = window.__listenerCount;
+        }
+    } catch (_) { /* leave omitted */ }
+
+    // buffers.plan_detector_bytes — prefer the CLIENT-01 `bufferBytes`
+    // field; fall back to inline sum if running against an older detector.
+    try {
+        const pd = window.app && window.app.planDetector;
+        if (pd) {
+            if (typeof pd.bufferBytes === 'number') {
+                snap.buffers.plan_detector_bytes = pd.bufferBytes;
+            } else if (Array.isArray(pd.outputBuffer)) {
+                let sum = 0;
+                for (let i = 0; i < pd.outputBuffer.length; i++) {
+                    const e = pd.outputBuffer[i];
+                    if (e && typeof e.data === 'string') sum += e.data.length;
+                }
+                snap.buffers.plan_detector_bytes = sum;
+            }
+        }
+    } catch (_) { /* leave 0 */ }
+
+    // buffers.xterm_scrollback_lines — xterm.js buffer line count.
+    try {
+        const term = window.app && window.app.terminal;
+        if (term && term.buffer && term.buffer.active
+                && typeof term.buffer.active.length === 'number') {
+            snap.buffers.xterm_scrollback_lines = term.buffer.active.length;
+        }
+    } catch (_) { /* leave 0 */ }
+
+    // ws.state / ws.url
+    try {
+        const sock = window.app && window.app.socket;
+        if (sock) {
+            if (typeof sock.readyState === 'number') snap.ws.state = sock.readyState;
+            if (typeof sock.url === 'string') snap.ws.url = sock.url;
+        }
+    } catch (_) { /* leave null */ }
+
+    // sse — best-effort walk of known holders. No global EventSource count
+    // is exposed by browsers, so this is a lower bound.
+    try {
+        let streams = 0;
+        const candidates = [
+            window.app && window.app._fileBrowserPanel
+                && window.app._fileBrowserPanel._fileWatcher
+                && window.app._fileBrowserPanel._fileWatcher._eventSource,
+            window.app && window.app._fileSearchPanel
+                && window.app._fileSearchPanel._eventSource,
+            window.app && window.app._fileWatcher
+                && window.app._fileWatcher._eventSource,
+        ];
+        for (let i = 0; i < candidates.length; i++) {
+            const es = candidates[i];
+            // EventSource.OPEN === 1; CONNECTING === 0; CLOSED === 2.
+            if (es && typeof es.readyState === 'number' && es.readyState !== 2) {
+                streams++;
+            }
+        }
+        snap.sse.streams = streams;
+        snap.sse.connected = streams > 0;
+    } catch (_) { /* leave defaults */ }
+
+    // memory — cross-origin-isolated Chrome only; fall back to
+    // navigator.deviceMemory; else null.
+    try {
+        if (typeof performance !== 'undefined'
+                && typeof performance.measureUserAgentSpecificMemory === 'function') {
+            try {
+                snap.memory = await performance.measureUserAgentSpecificMemory();
+            } catch (_) {
+                if (typeof navigator !== 'undefined' && typeof navigator.deviceMemory === 'number') {
+                    snap.memory = { deviceMemoryGB: navigator.deviceMemory };
+                }
+            }
+        } else if (typeof navigator !== 'undefined' && typeof navigator.deviceMemory === 'number') {
+            snap.memory = { deviceMemoryGB: navigator.deviceMemory };
+        }
+    } catch (_) { /* leave null */ }
+
+    return snap;
+};
