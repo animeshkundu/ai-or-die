@@ -12,6 +12,7 @@
  *   --pr=<tag>              tag embedded in metadata.json (for SUP-REL re-runs)
  *   --label=<slug>          appended to the results dir name
  *   --out=<dir>             override results dir          default test/longevity/results/<utc>
+ *   --resume                continue an existing run dir (12h split-chunk soak)
  *   --json                  emit verdict as JSON on stdout (for CI scraping)
  *
  * Exit code: 0 on overall pass, 1 on any failed gate or abort.
@@ -58,6 +59,7 @@ function printHelp() {
   console.log('  --pr=123                tag in metadata.json  (optional)');
   console.log('  --label=baseline        appended to results dir (optional)');
   console.log('  --out=/abs/dir          override results dir  (optional)');
+  console.log('  --resume                continue existing run dir (12h split-chunk soak)');
   console.log('  --json                  print verdict JSON to stdout');
   console.log('  --help');
   console.log('');
@@ -81,9 +83,16 @@ async function main() {
   const seed = args.seed ? parseInt(args.seed, 10) : 42;
   const prTag = args.pr || null;
   const label = args.label || null;
+  const resume = !!args.resume;
 
   let outputDir = args.out;
   if (!outputDir) {
+    if (resume) {
+      // Resume needs an explicit --out pointing to the prior chunk's dir.
+      // We can't infer it — defaulting to a new utc dir would defeat resume.
+      process.stderr.write('[soak/cli] --resume requires --out=<existing dir>\n');
+      process.exit(2);
+    }
     const stamp = utcLabel();
     const suffix = label ? `-${label}` : '';
     outputDir = path.join(defaultResultsRoot(), `${stamp}${suffix}`);
@@ -98,6 +107,7 @@ async function main() {
     prTag,
     label,
     outputDir,
+    resume,
   });
 
   if (args.json) {

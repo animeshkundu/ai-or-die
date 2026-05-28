@@ -86,6 +86,7 @@ test/longevity/
 | `--pr=<tag>`        | _none_             | Embedded in `metadata.json` for SUP-REL diffs |
 | `--label=<slug>`    | _none_             | Appended to results dir name |
 | `--out=<dir>`       | `results/<utc>[-<label>]` | Override results dir entirely |
+| `--resume`          | off                | Continue an existing run dir (12h split-chunk soak) |
 | `--json`            | off                | Print verdict JSON to stdout (CI scraping) |
 
 **Exit code**: `0` on overall pass or indeterminate verdict, `1` on any
@@ -210,7 +211,39 @@ const { SessionStringifyWorkload } = require('./test/longevity/harness/workloads
 (`--workload-opts=name.key=value` is a planned follow-up; for now the
 smoke-default profile is what `--workloads=` selects.)
 
-## Per-PR re-run workflow (for fix supervisors)
+## Split-chunk soaks (`--resume`)
+
+GitHub-hosted runners cap a single job at 6 hours, so the 12-hour weekly
+soak (plan §"Verification" item 4) is run as two consecutive 6-hour
+chunks. The second chunk continues into the **same `--out=` directory**
+with `--resume`, which:
+
+- Appends to `samples.jsonl` and `events.jsonl` rather than truncating
+  (`JsonlWriter` already opens with `'a'`).
+- Preserves the original `started_at` in `metadata.json` and adds a new
+  entry to `metadata.chunks[]` with `chunk_index: N`.
+- Re-ingests prior samples into the `GateEvaluator` so the final verdict
+  (`gate-result.json`) spans **every chunk that wrote into the dir**.
+- Stamps `soak_resume` / `soak_resume_end` markers in `events.jsonl`
+  with a `chunk` field on every event so the timeline is unambiguous.
+
+```bash
+# Chunk 0: 6 hours — fresh run, creates results/<utc>-12h-soak/
+npm run soak -- --duration=6h --out=results/12h-soak --workloads=all --label=12h-soak
+
+# Chunk 1: another 6 hours into the same dir
+npm run soak -- --duration=6h --out=results/12h-soak --resume --workloads=all
+```
+
+Note: `--resume` requires `--out=<existing dir>` — the harness can't infer
+which run to continue. A workload-set change across chunks is allowed (a
+soft warning is logged) so an operator can run e.g. `pty-flood` for chunk
+0 and `session-stringify` for chunk 1 in the same soak window if needed.
+
+The roll-up fields `total_duration_ms`, `chunk_count`, and
+`sampler_stats.{samples,errors}` (summed across chunks) appear at the
+top of `metadata.json` so `summarize.js` and SUP-REL's diff workflow
+keep working without walking `chunks[]`.
 
 When SUP-HOT lands a PR that affects gate `memory` or `event_loop`, they
 ping SUP-SOAK with:
