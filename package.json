@@ -15,6 +15,9 @@
     "test": "mocha --exit test/*.test.js",
     "test:integration": "mocha --exit --timeout 60000 test/supervisor-integration.test.js test/integration/*.test.js",
     "test:browser": "npx playwright test --config e2e/playwright.config.js",
+    "soak": "node test/longevity/harness/cli.js",
+    "test:longevity-smoke": "mocha --exit --timeout 120000 test/longevity/smoke.test.js",
+    "test:longevity": "mocha --exit --timeout 120000 test/longevity/**/*.test.js",
     "build:bundle": "node scripts/build-sea.js bundle",
     "build:sea": "node scripts/build-sea.js",
     "release:pr": "bash scripts/release-pr.sh"
