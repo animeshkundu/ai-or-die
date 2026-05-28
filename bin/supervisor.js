@@ -32,6 +32,13 @@ const SUSTAINED_CRASH_WINDOW_MS    = parseInt(process.env.SUSTAINED_CRASH_WINDOW
 const SUSTAINED_CRASH_MAX          = parseInt(process.env.SUSTAINED_CRASH_MAX, 10)          || 5;
 const TIER2_RESTART_DELAY_MS       = parseInt(process.env.TIER2_RESTART_DELAY_MS, 10)       || 300000;  // 5 min
 
+// Hard cap on the crashTimestamps array so a pathological 100/sec crash loop
+// over an hour can't grow it to 360 k entries. 1024 is comfortably more than
+// any realistic backoff cadence would produce in 1 h (even at tier-2's
+// minimum 5-min cadence that's 12 entries/h; at tier-1's 60-s cadence it's
+// 60/h). Trimming oldest-first preserves the most-recent-N invariant.
+const CRASH_TIMESTAMPS_CAP         = parseInt(process.env.CRASH_TIMESTAMPS_CAP, 10)         || 1024;
+
 const serverScript = process.env.SUPERVISOR_CHILD_SCRIPT
   || path.join(__dirname, 'ai-or-die.js');
 const forwardedArgs = process.argv.slice(2);
@@ -58,6 +65,16 @@ function classifyCrash(now) {
   // Trim to the longer of the two windows so the array stays bounded.
   const cutoff = now - Math.max(CIRCUIT_BREAKER_WINDOW_MS, SUSTAINED_CRASH_WINDOW_MS);
   crashTimestamps = crashTimestamps.filter((t) => t >= cutoff);
+
+  // Defence-in-depth cap (SUP-REL review). The time-window trim already
+  // bounds the array to "crashes in the last hour"; this guards against
+  // an extreme pathological case (e.g. CRASH_RESTART_DELAY_MS overridden
+  // to 0 in a test, or a future env-var injection raising the window).
+  // Keep the most-recent entries — classification only ever cares about
+  // the head of the array.
+  if (crashTimestamps.length > CRASH_TIMESTAMPS_CAP) {
+    crashTimestamps = crashTimestamps.slice(-CRASH_TIMESTAMPS_CAP);
+  }
 
   const inSustained = crashTimestamps.filter((t) => now - t < SUSTAINED_CRASH_WINDOW_MS).length;
   const inTight     = crashTimestamps.filter((t) => now - t < CIRCUIT_BREAKER_WINDOW_MS).length;
@@ -99,11 +116,29 @@ function startServer() {
   });
 
   // Flush a queued supervisor_warning into the new child's IPC channel.
-  // Best-effort: if the child hasn't yet installed an IPC listener, the
-  // message is buffered by Node until it does (or dropped on early exit).
-  if (pendingWarning && child.connected) {
-    try { child.send(pendingWarning); } catch (_) { /* IPC race during spawn — ignore */ }
+  // SUP-REL review: the immediately-after-spawn `child.connected` is false
+  // (the IPC handshake hasn't completed yet), so this block used to silently
+  // drop the warning. Defer via the 'spawn' event, which Node fires AFTER
+  // the child has been successfully spawned and the IPC channel is wired.
+  // Future CLIENT-04 server-side wiring will then receive it deterministically.
+  if (pendingWarning) {
+    const warning = pendingWarning;
     pendingWarning = null;
+    const flush = () => {
+      try {
+        if (child && child.connected) child.send(warning);
+      } catch (_) { /* IPC may have closed between spawn and send — best-effort */ }
+    };
+    // Node ≥ 16: 'spawn' event fires once when spawn succeeds. If the child
+    // already crashed before 'spawn' fires, we never send; that's correct
+    // behaviour — the next-next child will get its own warning if the crash
+    // sequence re-escalates.
+    if (typeof child.once === 'function') {
+      child.once('spawn', flush);
+    } else {
+      // Defensive: pre-Node-16 fallback (unsupported but harmless).
+      process.nextTick(flush);
+    }
   }
 
   child.on('exit', (code, signal) => {
