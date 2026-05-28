@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (~600 ms cumulative for a 20-file burst). Per-path hash cache
   preserves `file-tabs.js`'s content-unchanged short-circuit for
   rapid same-mtime re-touches. See `docs/audits/hot-02-filewatcher-hash.md`.
+- HOT-09 — Server attachment-dir size check: replaced the per-upload
+  O(N) `readdirSync` + per-entry `statSync` scan with a per-dir
+  `(bytes, mtimeMs)` cache. Freshness is verified by a single
+  `fs.statSync(dir)` to compare mtimes; matching mtime returns cached
+  bytes (no scan). Successful uploads incrementally update the cache;
+  the sweep invalidates it. Eliminates the 50 ms event-loop block per
+  upload on a 1000-file SSD dir (5-20 s on a network share). See
+  `docs/audits/hot-04-attachment-scan.md`.
 
 ### Security
 - HOT-08 — Server WebSocket message handler: added a 1 MB

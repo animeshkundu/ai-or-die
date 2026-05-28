@@ -667,18 +667,84 @@ class ClaudeCodeWebServer {
   }
 
   /**
+   * Cache used by `_attachmentDirBytes` to avoid the O(N) `readdirSync` +
+   * per-entry `statSync` scan on every `/api/files/upload` request. Keyed
+   * by the input directory path (whatever the caller passed — typically
+   * the canonicalized path from `validatePath`). Value: `{bytes, mtimeMs}`
+   * where `mtimeMs` is the directory's last-modified time at the moment
+   * the byte count was computed.
+   *
+   * Freshness check is a single `fs.statSync(dir)` to read the dir's
+   * current mtime. On match → cache hit, return cached bytes (0 syscalls
+   * beyond the stat). On mismatch or first-touch → re-scan + populate.
+   *
+   * Known-write paths in the upload handler use
+   * `_attachmentDirCacheRecordWrite` to incrementally update the cache
+   * after a successful `fs.writeFile`, avoiding the next-upload re-scan
+   * entirely. The sweep path uses `_attachmentDirCacheInvalidate` to
+   * force a re-scan on the next upload.
+   *
+   * Cardinality is bounded by the number of distinct attachment dirs the
+   * user has across all working dirs (typically 1-50). No explicit cap.
+   *
+   * Closes the per-upload O(N) scan gap documented in
+   * docs/audits/hot-04-attachment-scan.md (HOT-09).
+   *
+   * @type {Map<string, {bytes:number, mtimeMs:number}>}
+   * @private
+   */
+  // Initialized lazily on first access since instance fields can't see
+  // sibling instance state in older Node ESM; the underscore-prefixed
+  // accessor below handles the one-shot init.
+
+  _getAttachmentDirCache() {
+    if (!this._attachmentDirCache) this._attachmentDirCache = new Map();
+    return this._attachmentDirCache;
+  }
+
+  /**
    * Sum of bytes for all top-level files inside an attachments directory.
    * Top-level only — generic drop never creates subdirectories there, and
    * walking deep would let a user-side `ln -s /` symlink balloon the
    * computation. Robust to a missing directory (returns 0).
+   *
+   * HOT-09: cached by `(canonicalDir, mtimeMs)`. The check pays one
+   * `fs.statSync(dir)` to read the dir's current mtime; if it matches the
+   * cached entry, returns the cached bytes (no readdir, no per-entry
+   * stats). The previous unconditional O(N) scan blocked the event loop
+   * for 50 ms on a 1000-file SSD and up to 20 s on a 1000-file network
+   * share — per upload. See `docs/audits/hot-04-attachment-scan.md`.
    */
   _attachmentDirBytes(attachmentsDir) {
+    const cache = this._getAttachmentDirCache();
+
+    // Single dir-stat for freshness check. If the dir is missing
+    // (ENOENT), drop any stale cache entry and return 0.
+    let dirStat;
+    try {
+      dirStat = fs.statSync(attachmentsDir);
+    } catch (_) {
+      cache.delete(attachmentsDir);
+      return 0;
+    }
+    if (!dirStat.isDirectory()) {
+      cache.delete(attachmentsDir);
+      return 0;
+    }
+
+    const cached = cache.get(attachmentsDir);
+    if (cached && cached.mtimeMs === dirStat.mtimeMs) {
+      return cached.bytes; // fresh — skip the O(N) scan
+    }
+
+    // STALE or first-touch. Re-scan and populate.
     let total = 0;
     let entries;
     try {
       entries = fs.readdirSync(attachmentsDir, { withFileTypes: true });
     } catch (_) {
-      return 0; // missing dir → 0 bytes used
+      cache.delete(attachmentsDir);
+      return 0;
     }
     for (const ent of entries) {
       if (!ent.isFile()) continue;
@@ -687,7 +753,43 @@ class ClaudeCodeWebServer {
         total += st.size;
       } catch (_) { /* file vanished mid-readdir — skip */ }
     }
+    cache.set(attachmentsDir, { bytes: total, mtimeMs: dirStat.mtimeMs });
     return total;
+  }
+
+  /**
+   * HOT-09: called by the upload handler after a successful
+   * `fs.writeFile` to incrementally update the cache. Avoids the
+   * next-upload re-scan that would otherwise fire because the new file
+   * advanced the dir's mtime.
+   *
+   * If no cache entry exists yet, this is a no-op (the next read will
+   * full-scan and populate naturally).
+   * @private
+   */
+  _attachmentDirCacheRecordWrite(attachmentsDir, addedBytes) {
+    const cache = this._getAttachmentDirCache();
+    const cached = cache.get(attachmentsDir);
+    if (!cached) return; // not populated → next read full-scans
+    let dirStat;
+    try { dirStat = fs.statSync(attachmentsDir); }
+    catch (_) { cache.delete(attachmentsDir); return; }
+    cache.set(attachmentsDir, {
+      bytes: cached.bytes + addedBytes,
+      mtimeMs: dirStat.mtimeMs,
+    });
+  }
+
+  /**
+   * HOT-09: drop the cache entry for `attachmentsDir`, forcing the next
+   * `_attachmentDirBytes` call to re-scan. Used after delete/unlink
+   * operations on the dir (the sweep path) where computing the delta
+   * incrementally would require knowing each removed file's size.
+   * @private
+   */
+  _attachmentDirCacheInvalidate(attachmentsDir) {
+    const cache = this._getAttachmentDirCache();
+    cache.delete(attachmentsDir);
   }
 
   /**
@@ -738,13 +840,21 @@ class ClaudeCodeWebServer {
       return; // missing dir → nothing to do
     }
     const cutoff = Date.now() - maxAgeMs;
+    let unlinked = 0;
     for (const ent of entries) {
       if (!ent.isFile()) continue;
       const fp = path.join(dir, ent.name);
       try {
         const st = fs.statSync(fp);
-        if (st.mtimeMs < cutoff) fs.unlinkSync(fp);
+        if (st.mtimeMs < cutoff) { fs.unlinkSync(fp); unlinked++; }
       } catch (_) { /* tolerate races */ }
+    }
+    // HOT-09: any unlink advances the dir's mtime AND drops bytes the
+    // cached entry doesn't know about. Computing the delta incrementally
+    // would require knowing each removed file's pre-unlink size; simpler
+    // to invalidate and let the next upload re-scan once.
+    if (unlinked > 0) {
+      this._attachmentDirCacheInvalidate(dir);
     }
   }
 
@@ -2711,6 +2821,13 @@ class ClaudeCodeWebServer {
 
         await fs.promises.writeFile(targetPath, buffer);
         const stat = await fs.promises.stat(targetPath);
+
+        // HOT-09: incrementally update the attachment-dir bytes cache so
+        // the next upload doesn't pay an O(N) re-scan. Safe no-op if the
+        // cache isn't populated yet (next read will full-scan).
+        if (isAttachmentDir) {
+          this._attachmentDirCacheRecordWrite(dirValidation.path, stat.size);
+        }
 
         // Best-effort .gitignore guard — never fails the upload on error.
         if (isAttachmentDir) {
