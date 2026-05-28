@@ -2,9 +2,9 @@
 
 **Lane**: SUP-HOT (event-loop hot paths)
 **Owner**: SUP-HOT
-**Status**: Investigation complete; fix deferred to HOT-08 (post-baseline)
+**Status**: Investigation complete. **Fix landed in HOT-08** (`src/server.js`).
 **Files**: `src/server.js:2855–2884`, `src/server.js:2800–2806` (`maxPayload`)
-**Date**: 2026-05-27
+**Date**: 2026-05-27 (investigation), 2026-05-28 (fix)
 
 ## Symptom
 
@@ -184,3 +184,58 @@ abusive clients in long-running soaks.
 - `src/server.js:2529` — `/api/files/upload` 10 MB (HTTP only)
 - `test/longevity/event-loop/hot-03-ws-frame-size.test.js` —
   regression test
+
+## Fix landed (HOT-08)
+
+Application-layer size guard added to `src/server.js`:
+
+- New module-level constant `MAX_WS_MESSAGE_BYTES = 1 * 1024 * 1024`
+  near the top of the file (commented citing this memo).
+- `ws.on('message', ...)` handler gated by `Buffer.byteLength(message)
+  > MAX_WS_MESSAGE_BYTES` BEFORE `JSON.parse`. `Buffer.byteLength`
+  handles both string and Buffer message types uniformly.
+- On oversize: emits `{type:'error', code:'message_too_large', message,
+  received_bytes, limit_bytes}` then closes with WS-standard 1009
+  ("message too big"). Both `send` and `close` are try-wrapped so a
+  half-closed socket can't throw from inside the handler.
+- The ws library's protocol-layer `maxPayload: 8 * 1024 * 1024` is
+  kept unchanged as a second-line defence — the application guard runs
+  first regardless.
+
+### Decision divergence from memo
+
+- **Did NOT lower `maxPayload`.** The 8 MB protocol-layer cap is fine
+  as defence-in-depth; the 1 MB application guard runs first and is
+  the binding limit. Lowering protocol-layer would risk breaking
+  hypothetical future flows that need short bursts of large frames
+  (e.g. uploading a session-export blob over WS instead of HTTP).
+- **Did NOT extend `_collectDiagnostics` with `ws.oversized_message_drops`
+  counter.** Useful for spotting abusive clients in long soaks but not
+  load-bearing for the fix. Defer to a future diagnostics enrichment
+  PR (could pair with the OSC 7 cache hit-rate counter SUP-REL noted
+  in HOT-06 review).
+
+### Test surface
+
+- `test/longevity/event-loop/hot-03-ws-frame-size.test.js` —
+  regression assertion flips from failing on main → passing. Server
+  responds to a 5 MB frame within 8 s with either
+  `{type:'error', code:'message_too_large'}` or WS-standard 1009 close.
+  The current implementation does BOTH (error frame, then close).
+- Adjacent sweep (`e2e`, `heartbeat-watchdog`, `output-throttle`,
+  `session-deleted-cleanup`, `supervisor-integration`):
+  **91 passing / 0 failing**. None of those tests send WS frames
+  larger than the 1 MB cap, so the guard doesn't affect their
+  behaviour.
+
+### Out-of-scope follow-ups (deliberately deferred)
+
+- Per-client rate limiting on WS message frequency (oversized OR
+  legitimate). Partly addressed by `_perIpRateLimit` for specific
+  endpoints; extending to all WS messages is a separate concern.
+- Streaming JSON parser for the message body. Not needed — the goal
+  is to REJECT oversized frames, not parse them faster.
+- A dynamic per-message-type cap (input frames smaller cap, control
+  frames larger). The 256 KB cap on `data.data` for `type === 'input'`
+  (`src/server.js:2946–2948`) already provides this layered semantics;
+  the 1 MB global guard is the safety net.

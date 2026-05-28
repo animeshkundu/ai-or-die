@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   preserves `file-tabs.js`'s content-unchanged short-circuit for
   rapid same-mtime re-touches. See `docs/audits/hot-02-filewatcher-hash.md`.
 
+### Security
+- HOT-08 — Server WebSocket message handler: added a 1 MB
+  application-layer size guard (`MAX_WS_MESSAGE_BYTES`) before
+  `JSON.parse`. Oversized frames now receive
+  `{type:'error', code:'message_too_large'}` and a WS-standard 1009
+  close. Prevents a buggy or malicious client from blocking the event
+  loop for tens-to-hundreds of ms per frame (the ws library's
+  protocol-layer `maxPayload: 8 MB` was the only prior gate, and it
+  doesn't prevent JSON.parse cost). See
+  `docs/audits/hot-03-ws-frame-size.md`.
+
 ## [0.1.0] - 2025-02-06
 
 ### Added
