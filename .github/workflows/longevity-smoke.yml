@@ -21,10 +21,14 @@ name: Longevity Smoke (PR-blocking)
 # ubuntu+windows only).
 
 on:
-  push:
-    branches: [main]
+  # Trigger policy per user directive (dfe95c0, 2026-05-27): PR-only.
+  # No push trigger — avoids auto-fanout on feature-branch pushes and the
+  # redundant main-push run that mirrors the just-merged PR's CI.
+  # workflow_dispatch lets SUP-REL fire a manual smoke before bundling
+  # (e.g. against an integration branch tip pre-PR).
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: longevity-smoke-${{ github.event.pull_request.number || github.sha }}
