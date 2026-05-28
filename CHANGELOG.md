@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Performance
+- HOT-09 — Server attachment-dir size check: replaced the per-upload
+  O(N) `readdirSync` + per-entry `statSync` scan with a per-dir
+  `(bytes, mtimeMs)` cache. Freshness is verified by a single
+  `fs.statSync(dir)` to compare mtimes; matching mtime returns cached
+  bytes (no scan). Successful uploads incrementally update the cache;
+  the sweep invalidates it. Eliminates the 50 ms event-loop block per
+  upload on a 1000-file SSD dir (5-20 s on a network share). See
+  `docs/audits/hot-04-attachment-scan.md`.
+
 ## [0.1.0] - 2025-02-06
 
 ### Added
