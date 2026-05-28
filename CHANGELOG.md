@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Performance
+- HOT-07 — FileWatcher: moved MD5 hashing off the `_flush()` hot path
+  into a bounded async queue (`fs.promises.readFile`, concurrency 8).
+  Eliminates the synchronous `fs.readFileSync` that blocked the event
+  loop for the duration of each disk read under bulk-edit storms
+  (~600 ms cumulative for a 20-file burst). Per-path hash cache
+  preserves `file-tabs.js`'s content-unchanged short-circuit for
+  rapid same-mtime re-touches. See `docs/audits/hot-02-filewatcher-hash.md`.
+
 ## [0.1.0] - 2025-02-06
 
 ### Added

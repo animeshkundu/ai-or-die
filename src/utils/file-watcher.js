@@ -75,16 +75,43 @@ function buildIgnoreRegexes(ignoreDirs) {
 }
 
 const HASH_MAX_BYTES = 5 * 1024 * 1024;
+const HASH_DEFAULT_CONCURRENCY = 8;
+const HASH_CACHE_MAX_ENTRIES = 1024;
 
 function normalizePath(p) {
   return process.platform === 'win32' ? p.replace(/\\/g, '/') : p;
 }
 
+/**
+ * Synchronous MD5 hash. Retained for back-compat with any direct callers
+ * (test fixtures, external consumers). DO NOT use from inside the
+ * chokidar-event hot path — `FileWatcher._flush` now delegates to the
+ * bounded async hash queue (`_hashFileAsync` + `_drainHashQueue`) which
+ * keeps the event loop free under bulk-edit storms. See HOT-07 +
+ * docs/audits/hot-02-filewatcher-hash.md.
+ */
 function _hashFileSync(absPath) {
   try {
     const stat = fs.statSync(absPath);
     if (!stat.isFile() || stat.size > HASH_MAX_BYTES) return null;
     const data = fs.readFileSync(absPath);
+    return crypto.createHash('md5').update(data).digest('hex');
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Async MD5 hash via fs.promises — used by `FileWatcher._drainHashQueue`.
+ * Bounded by HASH_MAX_BYTES (same cap as the sync version). Returns null
+ * on any failure (file vanished, permission denied, oversized, etc.) —
+ * callers treat null identically to "no hash available."
+ */
+async function _hashFileAsync(absPath) {
+  try {
+    const stat = await fs.promises.stat(absPath);
+    if (!stat.isFile() || stat.size > HASH_MAX_BYTES) return null;
+    const data = await fs.promises.readFile(absPath);
     return crypto.createHash('md5').update(data).digest('hex');
   } catch (_) {
     return null;
@@ -198,6 +225,37 @@ class FileWatcher extends EventEmitter {
 
     // Recent adds for add+change dedup: Map<path, {timestamp, timer}>.
     this._recentAdds = new Map();
+
+    // ----- HOT-07: async hash queue + per-path hash cache. ------------------
+    //
+    // Async hashing keeps `_flush()` off the synchronous-readFileSync hot
+    // path. The previous design (`_hashFileSync` inline) blocked the event
+    // loop for the duration of a 5 MB read; under a 50-file Claude bulk
+    // edit that compounded into ~1 s of cumulative loop block.
+    //
+    // Flow:
+    //   1. `_flush()` emits the event SYNCHRONOUSLY (no hash on the hot path).
+    //   2. If `_includeHash` is on AND the path's cached hash matches the
+    //      event's mtime, the emitted payload INCLUDES the hash (late-
+    //      inclusion path — preserves `file-tabs.js`'s "did the disk
+    //      content actually change" short-circuit for rapid same-content
+    //      touches).
+    //   3. Otherwise `_flush()` enqueues an async hash so the NEXT event
+    //      for the same path can take the late-inclusion path. The first
+    //      event for a given path post-content-change falls through to the
+    //      HTTP-refresh path (which is what consumers already do when the
+    //      hash field is absent — strictly safe).
+    //
+    // The queue caps in-flight reads at HASH_DEFAULT_CONCURRENCY (8) to
+    // bound the EMFILE risk under a 1000-file burst.
+    this._hashCache = new Map();         // absPath → { hash, mtime }
+    this._hashPending = [];              // queue: [{ absPath, mtime }, ...]
+    this._hashInflight = 0;
+    this._hashConcurrency = typeof opts.hashConcurrency === 'number'
+      ? opts.hashConcurrency : HASH_DEFAULT_CONCURRENCY;
+    // Test affordance: resolves once the queue has drained AND every
+    // in-flight hash has settled. Used by HOT-07 regression test.
+    this._hashIdleWaiters = [];
   }
 
   async start() {
@@ -581,15 +639,10 @@ class FileWatcher extends EventEmitter {
     if (this._closed) return;
 
     let mtime = null;
-    let hash = null;
     if (type !== 'unlink') {
       try {
         const st = stat || fs.statSync(absPath);
         mtime = st.mtimeMs != null ? st.mtimeMs : (st.mtime ? st.mtime.getTime() : null);
-        if (this._includeHash && (type === 'change' || type === 'rename') &&
-            st.isFile && st.isFile() && st.size <= HASH_MAX_BYTES) {
-          hash = _hashFileSync(absPath);
-        }
       } catch (_) { /* file may have been removed in the debounce window */ }
     }
 
@@ -601,10 +654,110 @@ class FileWatcher extends EventEmitter {
       relPath: relPath,
       mtime: mtime,
     };
-    if (hash) payload.hash = hash;
+
+    // HOT-07: hash on the hot path is async-via-queue, never sync.
+    //
+    // Late-inclusion: if we previously hashed this path AND the cached
+    // hash matches the event's mtime, include it on this emit so the
+    // file-tabs.js "did the disk content actually change" short-circuit
+    // fires for rapid same-content touches. Otherwise enqueue an async
+    // hash so the NEXT event for this path can take the late-inclusion
+    // path; the FIRST event after a content change falls through to the
+    // consumer's HTTP-refresh path (strictly safe — `evt.hash`-undefined
+    // is already a recognized non-short-circuit case in file-tabs.js).
+    if (this._includeHash && (type === 'change' || type === 'rename') &&
+        mtime != null) {
+      const cached = this._hashCache.get(absPath);
+      if (cached && cached.mtime === mtime) {
+        payload.hash = cached.hash;
+      } else {
+        this._enqueueHash(absPath, mtime);
+      }
+    }
+
     if (prevPath) payload.prevPath = normalizePath(prevPath);
 
     this.emit('event', payload);
+  }
+
+  /**
+   * Enqueue an async hash for `absPath`. The queue caps in-flight reads
+   * at `_hashConcurrency` to bound EMFILE risk under bursts.
+   *
+   * Dedupe: if the queue already has an entry for this path with the
+   * same mtime, skip the enqueue (we'd compute the same value). If the
+   * queue has an entry with a STALE mtime, replace it (the newer write
+   * supersedes; computing the stale hash would just race the cache).
+   * @private
+   */
+  _enqueueHash(absPath, mtime) {
+    if (this._closed) return;
+    // Replace any stale entry for the same path so the queue always
+    // resolves to the LATEST observed mtime per path.
+    const existingIdx = this._hashPending.findIndex((e) => e.absPath === absPath);
+    if (existingIdx >= 0) {
+      this._hashPending[existingIdx] = { absPath, mtime };
+    } else {
+      this._hashPending.push({ absPath, mtime });
+    }
+    this._drainHashQueue();
+  }
+
+  /**
+   * Pull from `_hashPending` while `_hashInflight < _hashConcurrency`,
+   * compute hashes off the main thread (well, off the synchronous code
+   * path — `fs.promises.readFile` still runs on libuv's thread pool but
+   * that's the whole point), and populate `_hashCache` on success.
+   * @private
+   */
+  _drainHashQueue() {
+    while (!this._closed &&
+           this._hashInflight < this._hashConcurrency &&
+           this._hashPending.length > 0) {
+      const { absPath, mtime } = this._hashPending.shift();
+      this._hashInflight++;
+      _hashFileAsync(absPath).then((hash) => {
+        if (hash && !this._closed) {
+          this._hashCache.set(absPath, { hash, mtime });
+          // Bound the cache against unbounded watched-path counts. LRU
+          // approximation via insertion-order eviction (delete-oldest-on-
+          // overflow); good enough for a side-effect cache that doesn't
+          // need strict LRU semantics.
+          while (this._hashCache.size > HASH_CACHE_MAX_ENTRIES) {
+            const oldest = this._hashCache.keys().next().value;
+            this._hashCache.delete(oldest);
+          }
+        }
+      }).catch(() => { /* swallow — null-hash treated as absent */ })
+        .finally(() => {
+          this._hashInflight--;
+          if (!this._closed) this._drainHashQueue();
+          if (this._hashInflight === 0 && this._hashPending.length === 0) {
+            this._fireHashIdleWaiters();
+          }
+        });
+    }
+  }
+
+  /**
+   * Test helper — returns a Promise that resolves once the async hash
+   * queue is fully drained (no pending entries, no in-flight reads).
+   * Used by HOT-07 regression tests to assert post-burst final state.
+   */
+  hashQueueIdle() {
+    if (this._hashInflight === 0 && this._hashPending.length === 0) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => { this._hashIdleWaiters.push(resolve); });
+  }
+
+  _fireHashIdleWaiters() {
+    if (this._hashIdleWaiters.length === 0) return;
+    const waiters = this._hashIdleWaiters.slice();
+    this._hashIdleWaiters.length = 0;
+    for (const w of waiters) {
+      try { w(); } catch (_) {}
+    }
   }
 
   async close() {
@@ -620,6 +773,11 @@ class FileWatcher extends EventEmitter {
     this._dirSubscriptions.clear();
     this._dirRefcount.clear();
     this._watchedDirs.clear();
+    // HOT-07: drop the pending hash queue + cache and unblock any
+    // hashQueueIdle() waiters so test cleanup doesn't hang.
+    this._hashPending.length = 0;
+    this._hashCache.clear();
+    this._fireHashIdleWaiters();
     if (this._watcher) {
       try { await this._watcher.close(); } catch (_) {}
       this._watcher = null;
