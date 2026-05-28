@@ -19,6 +19,15 @@ class SessionStore {
         // caller having to wrap saveSessions. Null after a successful
         // save; otherwise an Error-shaped object carrying .code.
         this._lastSaveError = null;
+        // DISK-01 follow-up (SOAK-reported race): serialize concurrent
+        // saveSessions() calls. The 30 s autosave can overlap with
+        // explicit saves from session-create/delete, beforeExit, and
+        // SIGINT/SIGTERM handlers. Two concurrent writers both produce
+        // a `.tmp` and race on rename — the loser ENOENTs because the
+        // winner's rename removed the tmp. Chain via promise so each
+        // call waits for the prior in-flight save to settle before
+        // entering the write critical section.
+        this._inFlightSave = Promise.resolve();
         this.initializeStorage();
     }
 
@@ -53,6 +62,27 @@ class SessionStore {
     }
 
     async saveSessions(sessions) {
+        if (!this._dirty) return true;
+
+        // DISK-01 follow-up (SOAK-reported race): chain onto any prior
+        // in-flight save so two callers don't both writeFile() the same
+        // `.tmp` and race on rename. We attach to the prior promise but
+        // swallow its rejection — the prior save's failure is its own
+        // problem, not ours; we still want to run.
+        const prior = this._inFlightSave;
+        let release;
+        this._inFlightSave = new Promise((resolve) => { release = resolve; });
+        try {
+            await prior.catch(() => {});
+            return await this._saveSessionsLocked(sessions);
+        } finally {
+            release();
+        }
+    }
+
+    async _saveSessionsLocked(sessions) {
+        // Re-check dirty after acquiring the lock: a prior save in the
+        // queue may have already flushed our state. (Cheap; no-op fast path.)
         if (!this._dirty) return true;
 
         try {

@@ -243,6 +243,54 @@ on a real machine with `sync && echo b > /proc/sysrq-trigger`.
   DISK-02.
 - `.crash` file rotation — see DISK-02 (reuses the log-rotator).
 
+## Follow-up (post-merge): concurrent saveSessions rename race
+
+**Reporter:** SUP-SOAK via the `session-stringify` workload at 6
+saves/min × 50 sessions.
+**Symptom:** Two callers of `saveSessions` both `writeFile` to
+`${sessionsFile}.tmp`, then both `rename` it. The first wins; the
+second's `rename` ENOENTs because the winner's rename removed the
+shared tmp:
+
+```
+Failed to save sessions: ENOENT: no such file or directory,
+  rename '<storage>/sessions.json.tmp' -> '<storage>/sessions.json'
+```
+
+This is not a corruption bug — the temp+rename invariant still holds
+for the call that wins — but the losing caller's `false` return
+trickles up into `saveSessionsToDisk` and (post-DISK-03) misfires the
+disk-full circuit breaker because `_lastSaveError.code === 'ENOENT'`
+looks like real disk trouble. Operationally it spams stderr every
+30 s.
+
+**Root cause.** The 30 s autosave timer overlaps in practice with
+explicit saves from session-create / session-delete / `beforeExit` /
+SIGINT/SIGTERM handlers. There is no mutual exclusion on the
+`saveSessions` entry — anyone can race in.
+
+**Fix (same PR scope as DISK-01).** Per-instance promise chain
+(`_inFlightSave`) serializes calls. Each call awaits the prior
+call's settle (success or failure — we catch+ignore the prior's
+rejection so a failed save doesn't block subsequent retries
+forever), then enters its own write critical section via
+`_saveSessionsLocked`. The dirty-flag fast-path stays — a queued
+call that finds `_dirty=false` on entry returns `true` without
+doing redundant work (its state was already persisted by the
+preceding save).
+
+**Regression test:** `test/longevity/disk/concurrent-save-race.test.js`
+exercises:
+1. 50 concurrent saves: all return `true`, file well-formed,
+   no `.tmp` orphan. **Fails on `main` HEAD with the exact ENOENT
+   SOAK reported.**
+2. Mutating state across concurrent saves: persisted name must be
+   one of the queued snapshots (last-write semantics intact).
+3. Slow prior save (200 ms): subsequent caller serializes behind
+   it and both complete cleanly.
+4. Failed prior save (mocked EIO): the lock releases so the next
+   caller is not stuck forever.
+
 ## References
 
 - `src/utils/session-store.js:50–109` — current `saveSessions`
@@ -251,3 +299,5 @@ on a real machine with `sync && echo b > /proc/sysrq-trigger`.
 - POSIX rationale: <https://lwn.net/Articles/322823/> (Ext4 + delayed
   allocation + rename safety)
 - `test/longevity/disk/atomic-write-power-loss.test.js` — regression test
+- `test/longevity/disk/concurrent-save-race.test.js` — follow-up
+  regression test for the SOAK-reported rename race
