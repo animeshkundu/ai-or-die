@@ -3835,13 +3835,28 @@ class ClaudeCodeWebServer {
       if (session) {
         session.connections.delete(wsId);
         session.lastActivity = new Date();
-        
+
         // Don't stop Claude if other connections exist
         if (session.connections.size === 0 && this.dev) {
           console.log(`No more connections to session ${wsInfo.claudeSessionId}`);
         }
       }
     }
+
+    // PROC-03 defense-in-depth: explicitly drop the message/close/error
+    // listeners attached in handleWebSocketConnection (lines ~2855-2898).
+    // Today there is no observed leak — GC reclaims listeners once the
+    // Map entry is dropped — but the explicit teardown mirrors the
+    // `_ptyDisposables` pattern (base-bridge.js) and `_cleanupFsWatchSession`
+    // (this file). Belt-and-suspenders against (a) future delayed callbacks
+    // executing post-close, (b) future handler additions that forget
+    // teardown, and (c) listener-closure GC pressure under reconnect storms.
+    // See docs/audits/proc-ws-listener-cleanup.md.
+    try {
+      if (wsInfo.ws && typeof wsInfo.ws.removeAllListeners === 'function') {
+        wsInfo.ws.removeAllListeners();
+      }
+    } catch (_) { /* cleanup must never throw — runs from inside ws.on('close')/('error') */ }
 
     this.webSocketConnections.delete(wsId);
   }
