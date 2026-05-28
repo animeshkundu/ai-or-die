@@ -1,11 +1,11 @@
-# PROC Supervisor — Tiered Restart, Native-Child Crash Discipline, WS Listener Hygiene
+# PROC Supervisor — Tiered Restart, Native-Child Crash Discipline, WS Listener Hygiene, Sub-linear Eviction
 
-**Date:** 2026-05-27
+**Date:** 2026-05-27 (PROC-01/02/03), addended 2026-05-28 (PROC-04)
 **Campaign:** stability-hardening-2026 (SUP-PROC lane)
-**Files:** `bin/supervisor.js`, `src/server.js` (cleanupWebSocketConnection), `src/stt-engine.js`, `src/vscode-tunnel.js`
-**Branches:** `sup-proc/proc-03-ws-cleanup` (`889bcf7`), `sup-proc/proc-01-supervisor-breaker` (`0887043`+`5813e71`), `sup-proc/proc-02-stt-stopping` (`534d7ca`), `sup-proc/proc-02-vscode-tunnel-guards` (`1f4179c`)
-**Memos:** `docs/audits/proc-supervisor-breaker.md`, `docs/audits/proc-ws-listener-cleanup.md`, `docs/audits/proc-child-processes.md`
-**Tests:** `test/longevity/process/{ws-listener-cleanup,supervisor-slow-crash,stt-worker-respawn,tunnel-restart-backoff,vscode-tunnel-respawn}.test.js` (21 tests, ~21 s total)
+**Files:** `bin/supervisor.js`, `src/server.js` (cleanupWebSocketConnection + _evictStaleSessions + 8 push-sites), `src/stt-engine.js`, `src/vscode-tunnel.js`, `src/utils/eviction-heap.js` (new)
+**Branches:** `sup-proc/proc-03-ws-cleanup` (`889bcf7`), `sup-proc/proc-01-supervisor-breaker` (`0887043`+`5813e71`), `sup-proc/proc-02-stt-stopping` (`534d7ca`), `sup-proc/proc-02-vscode-tunnel-guards` (`1f4179c`), `sup-proc/proc-04-sublinear-eviction` (`7b3d668`)
+**Memos:** `docs/audits/proc-supervisor-breaker.md`, `docs/audits/proc-ws-listener-cleanup.md`, `docs/audits/proc-child-processes.md`, `docs/audits/proc-04-sublinear-eviction.md`
+**Tests:** `test/longevity/process/{ws-listener-cleanup,supervisor-slow-crash,stt-worker-respawn,tunnel-restart-backoff,vscode-tunnel-respawn,eviction-sublinear}.test.js` (27 tests, ~22 s total)
 
 ## Problem
 
@@ -112,3 +112,83 @@ SUP-SOAK accepted the per-PR gate-affected matrix: PROC-03 + PROC-02-STT touch t
 Plus 19 existing tests verified clean: `supervisor-integration` (1), `restart-manager` (12), `fs-watch-cleanup` (6) — all green pre- and post-fix.
 
 Bundle merge order recommended: `sup-proc/proc-02-stt-stopping` → `sup-proc/proc-02-vscode-tunnel-guards` → `sup-proc/proc-01-supervisor-breaker` → `sup-proc/proc-03-ws-cleanup`. The PROC-02 ordering is load-bearing: the shared audit memo `docs/audits/proc-child-processes.md` ships with the STT branch; merging vscode-tunnel first leaves dangling memo references in the vscode test's comments until STT lands (cosmetic, not functional).
+
+---
+
+## Addendum (2026-05-28) — PROC-04: sub-linear `_evictStaleSessions`
+
+PROC-04 was originally deferred at the end of the campaign (see
+[`docs/architecture/deferred-from-stability-hardening-2026.md`](../architecture/deferred-from-stability-hardening-2026.md))
+behind a trigger condition of "10K real-user sessions observed in
+diagnostics". User pushback during the deferred-doc review — "don't
+defer what we can fix" — reactivated it. **Shipped as
+`sup-proc/proc-04-sublinear-eviction` (`7b3d668`)**, bundled into
+`stability-hardening-2026` alongside the original four PROC fix branches.
+
+### What changed
+
+`_evictStaleSessions` was O(n) — `Array.from(this.claudeSessions.entries())`
++ full iteration every 5 minutes. SOAK-05o's mock-clock-uncapped
+eviction-storm workload exposed this as the **single BLOCKING signal**
+in the final 60-minute bundled soak: 2,709 ms event-loop max with 178 K
+synthetic sessions.
+
+Replaced with a **lazy-tombstone min-heap** of `{id, lastActivity}`
+pairs keyed by `lastActivity`. Sweep cost drops from O(n) to:
+
+- **O(log n)** common case — `heap.peek` + early exit if top is fresh.
+- **O(k log n + t)** worst case — k = evicted, t = tombstones popped.
+
+Insert sites instrumented at 3 session creations + 5 `lastActivity`
+bumps (8 total), with a `_pushEvictionEntry` helper. A
+`_maybeRebuildEvictionHeap` trigger (heap size > 2× live, sessions > 100)
+bounds tombstone accumulation via Floyd's O(n) heapify. A pop-budget
+(`4 × (sessions.size + 1) + 1024`) is a defensive safety valve.
+
+### Why this is one more "lesson" worth adding
+
+The new lessons captured by the audit memo:
+
+- **O(n) is fine — until it isn't.** The pre-fix loop was correct for
+  every realistic single-user session count (≤ 500). The bug only
+  surfaced under a workload that the production daemon shouldn't ever
+  hit — but the harness's mock-clock made it reach 178 K. Whether or
+  not real users will hit it, the architectural shape ("scan every
+  Map entry on every sweep, regardless of evictability") is a latent
+  contract the daemon's months-uptime promise had silently accepted.
+  Worth fixing the structure rather than betting that n stays small.
+- **Lazy-tombstone protocols compose with mutation-heavy state.**
+  Every WS message bumps `session.lastActivity`. A naive `decreaseKey`
+  heap would re-heapify on every bump → O(n × log n) per minute under
+  load. Lazy-tombstone shifts the work to pop time, where we'd be
+  doing comparisons anyway. The tombstone overhead is bounded by the
+  rebuild trigger.
+- **The `_maybeRebuild` pattern is reusable.** Any future evictable
+  Map in the daemon (file-watcher cache, restartManager history,
+  per-tab subscription state) can adopt the same `MinHeap` +
+  `_pushEvictionEntry` + `_maybeRebuild` triple. The utility
+  `src/utils/eviction-heap.js` was designed for that — generic key
+  extractor, no Map-specific assumptions.
+
+### Verification (PROC-04)
+
+6 tests in `test/longevity/process/eviction-sublinear.test.js` (~500 ms):
+
+1. **Correctness** — stale evicted, fresh survive (500 + 500 → 500 evicted).
+2. **Correctness** — active/connected sessions skipped (200 in-use survive).
+3. **PERF** — 100K all-fresh sweep < 10 ms (heap early-exit). The
+   load-bearing assertion; pre-fix this took 30-150 ms.
+4. **PERF** — 99K fresh + 1K stale sweep < 100 ms (mixed workload).
+5. **Event-loop p99 < 50 ms across 5 sweeps of 100K sessions** —
+   pre-fix the same workload produced 2,709 ms max in SOAK-05o.
+6. **Tombstone rebuild bounded** — 1M synthetic pushes across 1K
+   sessions → final heap size ≤ 4× live.
+
+All 6 PROC-04 tests pass; 19 existing tests verified clean (`fs-watch-cleanup`,
+`supervisor-integration`, `restart-manager`). SUP-ARCH consulted on
+algorithm choice (lazy-tombstone vs indexed-heap vs batched) before
+commit per team-lead directive; implementation proceeded on
+working-assumption-of-go.
+
+Lane totals updated: **5 branches, 7 commits, 27 PROC longevity tests +
+19 unregressed existing tests = 46/46 green, 4 audit memos.**
