@@ -54,6 +54,17 @@ jobs:
           cache: 'npm'
       - run: npm ci
 
+      # Playwright Chromium binary required by test:longevity:browser
+      # (test/longevity/browser/*.test.js — CLIENT-01 byte-cap, CLIENT-02
+      # listener accumulation, CLIENT-03 __diagnostics shape). `npm ci`
+      # installs the playwright npm package but not the browser binaries;
+      # those live in a separate cache (~/.cache/ms-playwright/...).
+      # --with-deps is a no-op on Windows/macOS but installs apt deps on Linux.
+      # Round-5 (REL-04, dd9d4ad): test:longevity split into :server + :browser
+      # surfaced this gap once browser tests actually started running in CI.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
       # Fast regression-test gate (< 2 min). Catches per-lane regression-
       # test failures before the expensive 5-min soak.
       - name: Longevity regression tests
