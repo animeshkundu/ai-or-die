@@ -22,6 +22,13 @@ const DEFAULT_THRESHOLDS = {
   handles_pct_delta: 2,
   fd_pct_delta: 1,
   fs_watch_tail_max: 0,
+  // DISK gates (SOAK-05e). Defaults match SUP-REL's spec; the
+  // disk-bloat-quota workload sets disk_breaker_allow_trip=true via
+  // GateEvaluator({thresholds: {...}}) to opt the breaker/quota gates
+  // out of failure when deliberately tripping them.
+  disk_bytes_slope_mb_per_hour: 100,
+  disk_quota_max_pct: 90,
+  disk_breaker_allow_trip: false,
 };
 
 class GateEvaluator {

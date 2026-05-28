@@ -170,6 +170,10 @@ by editing `DEFAULT_THRESHOLDS` in `gate-evaluator.js`.
 | `ws`         | `ws_connections`                                                        | informational (caller asserts)             | —                                |
 | `fs_watch`   | `fs_watch_sessions`                                                     | final value                                | ≤ 0 at end-of-run                |
 | `event_loop` | `p50_ms`, `p99_ms`, `max_ms`, `mean_ms`                                 | spot-check every sample                    | p99 < 50 ms, max < 200 ms        |
+| `disk.atomic_write`     | `atomic_write_ok`        | spot-check every sample           | == true (DISK-01)                          |
+| `disk.bytes_used`       | `bytes_used_mb`          | linear-regression slope           | < 100 MB/h (DISK-02)                       |
+| `disk.circuit_breaker`  | `circuit_breaker_open`   | spot-check every sample           | == false (DISK-03; auto-relaxed when disk-bloat-quota workload selected) |
+| `disk.quota`            | `quota_used_pct`         | peak value                        | < 90 % (DISK-03; auto-relaxed as above)    |
 
 **Verdict patterns:**
 - **spot-check** — per-sample `pass` boolean is the verdict; gate fails if any sample fails.
@@ -194,6 +198,8 @@ bit-for-bit reproducible.
 | `attachment-growth` | dir-bytes sync scan (HOT-04)      | 100-file dir × 5 probes/s              | 1000-file dir                              |
 | `session-stringify` | shutdown stringify (HOT-05)       | 50 sessions × 50 KB × 6 saves/min      | 500 sessions × 200 KB                      |
 | `mock-clock`        | 7-day eviction sweep              | 50/sweep × 5 sweeps/s × 90 d-old       | same                                       |
+| `disk-bloat-jsonl`  | UsageReader JSONL growth (DISK-02)| 2 projects × ~1 MB/s of fake usage.jsonl| 4 projects × 10 MB/s                       |
+| `disk-bloat-quota`  | ENOSPC breaker (DISK-03)          | 8 files/s × 256 KB (=2 MB/s)            | same; relies on `AIORDIE_DISK_QUOTA_MB=50` env to trip the breaker fast |
 
 ### Stress profiles
 

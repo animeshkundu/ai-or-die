@@ -49,6 +49,7 @@ async function runSoak(options = {}) {
     prTag = null,
     label = null,
     resume = false,
+    thresholds = {},
     log = (msg) => process.stderr.write(`[soak] ${msg}\n`),
   } = options;
 
@@ -131,7 +132,7 @@ async function runSoak(options = {}) {
   await samplesWriter.open();
   await eventsWriter.open();
 
-  const evaluator = new GateEvaluator({ gates });
+  const evaluator = new GateEvaluator({ gates, thresholds });
   // Pre-load prior samples so end-of-run verdict spans every chunk that
   // wrote into the same outputDir.
   let priorSampleCount = 0;
