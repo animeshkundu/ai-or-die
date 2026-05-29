@@ -63,6 +63,14 @@ jobs:
       - run: npm ci
 
       - name: Longevity nightly soak
+        # SOAK-05z (2026-05-28): `shell: bash` for cross-shell line-continuation
+        # compatibility. Matrix includes windows-latest, which defaults to
+        # PowerShell — PowerShell parses bash continuation char `\` as
+        # malformed. Git Bash ships on all GitHub-hosted Windows runners.
+        # Same fix applied prophylactically here as in longevity-smoke.yml
+        # (where it was caught at runtime); nightly hasn't fired against a
+        # Windows runner yet but would deterministically fail when it does.
+        shell: bash
         run: |
           node test/longevity/harness/cli.js \
             --duration=${{ github.event.inputs.duration || '4h' }} \

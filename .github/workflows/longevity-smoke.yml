@@ -92,7 +92,20 @@ jobs:
       # will codify multi-tier thresholds (single-workload steady-state
       # vs multi-workload-stress) so the noisy thresholds become
       # configuration-aware rather than smoke needing to dodge them.
+      # SOAK-05z (2026-05-28): `shell: bash` for cross-shell line-continuation
+      # compatibility. Windows runners default to PowerShell, which uses
+      # backtick (`) for line continuation; PowerShell parses the trailing
+      # `\` as malformed and fails with
+      #   ParserError: --duration=5m \
+      #                                ~
+      #   Missing expression after unary operator '--'.
+      # Round-7 Windows CI surfaced this as a deterministic parse error on
+      # `5d602ac`. Git Bash ships on all GitHub-hosted Windows runners by
+      # default, so `shell: bash` makes the bash-continuation `\` portable
+      # across ubuntu-latest, macos-latest, and windows-latest. Apply the
+      # same treatment to any future multi-line `run:` block here.
       - name: Longevity smoke soak (5 min)
+        shell: bash
         run: |
           node test/longevity/harness/cli.js \
             --duration=5m \
