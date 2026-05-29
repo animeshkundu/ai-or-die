@@ -1,0 +1,64 @@
+{
+  "started_at": "2026-05-28T04:25:45.665Z",
+  "duration_ms": 600000,
+  "sample_interval_ms": 30000,
+  "workloads": [
+    "noop",
+    "pty-flood",
+    "reconnect-storm",
+    "watcher-flood",
+    "ws-fuzz",
+    "attachment-growth",
+    "session-stringify",
+    "mock-clock"
+  ],
+  "gates": null,
+  "seed": 42,
+  "label": "baseline-main",
+  "pr": null,
+  "node_version": "v24.15.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "output_dir": "test/longevity/results/baseline-20260528T042545Z",
+  "finished_at": "2026-05-28T04:35:57.960Z",
+  "aborted": false,
+  "abort_error": null,
+  "sampler_stats": {
+    "samples": 22,
+    "errors": 0,
+    "lastSample": {
+      "ts": "2026-05-28T04:35:57.770Z",
+      "diag": {
+        "uptime_seconds": 612,
+        "node_version": "v24.15.0",
+        "platform": "darwin",
+        "arch": "arm64",
+        "memory": {
+          "rss_mb": 1023.7,
+          "heap_used_mb": 184.1,
+          "heap_total_mb": 370,
+          "external_mb": 282.9,
+          "array_buffers_mb": 0
+        },
+        "process": {
+          "active_handles": 3,
+          "active_requests": 1,
+          "fd_count": null
+        },
+        "sessions": {
+          "total": 18170,
+          "ws_connections": 0,
+          "fs_watch_sessions": 0,
+          "voice_upload_counts": 0,
+          "activity_broadcast_timestamps": 0
+        }
+      },
+      "eventLoop": {
+        "p50_ms": 22.053,
+        "p99_ms": 42.205,
+        "max_ms": 53.576,
+        "mean_ms": 22.435
+      }
+    }
+  }
+}

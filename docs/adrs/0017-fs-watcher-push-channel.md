@@ -147,10 +147,19 @@ One chokidar watcher per Claude session, rooted at `session.workingDir`.
   normalisation.
 - `mtime` lets clients detect ordering / staleness without re-fetching
   content.
-- `hash` (MD5) is included for `change` events on text files ≤ 5 MB
-  (matches `/api/files/stat` behaviour). Omitted for binary / large
-  files. Lets the client skip the round-trip if the new hash matches the
-  in-buffer content (rare, but cheap).
+- `hash` (MD5) is included for `change` and `rename` events on text
+  files ≤ 5 MB (matches `/api/files/stat` behaviour). Omitted for
+  binary / large files. **Hashing is async** since HOT-07 (was
+  synchronous on the hot path before; that blocked the event loop
+  for the duration of a 5 MB read under bulk-edit storms): the first
+  event for a freshly-changed file arrives WITHOUT `hash`, the async
+  hash computes off the hot path via a bounded queue (concurrency 8),
+  and the SECOND+ event for the same mtime carries the cached hash.
+  Lets the client skip the round-trip when a rapid metadata-only
+  re-touch (`touch foo.js && touch foo.js`) follows a content change.
+  Absent-`hash` is a documented non-short-circuit case in
+  `file-tabs.js`; consumers always fall through to the HTTP-refresh
+  path safely.
 - `prevPath` is included **only on `rename` events** (server-side
   synthesis — see "Rename detection" below).
 

@@ -1,5 +1,11 @@
 name: Deploy to GitHub Pages
 
+# INTENTIONAL auto-trigger on push to main, scoped to `site/**`.
+# Per ci-trigger-architecture.md, this is the SECOND of two allowed
+# auto-trigger exceptions (release-on-main.yml is the first). The
+# paths: [site/**] filter means it does NOT fan out on every push —
+# it fires only when the docs-site content actually changes.
+# DO NOT widen the paths filter or remove it without re-reading the design doc.
 on:
   push:
     branches: [main]

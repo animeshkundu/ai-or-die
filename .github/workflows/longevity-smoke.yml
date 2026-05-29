@@ -1,0 +1,128 @@
+name: Longevity Smoke (PR-blocking)
+
+# Tier 1 of the longevity-suite trio (smoke / nightly / weekly) added during
+# the stability-hardening-2026 campaign. Runs on every PR (PR-only post-
+# dfe95c0, see docs/audits/ci-trigger-architecture.md).
+#
+# Scope: 5-minute soak with workload subset = `noop` only (per SOAK-05x
+#        after the 2026-05-28 round-6 calibration miss). The originally-
+#        negotiated `noop,reconnect-storm,ws-fuzz` set produced ramp-only
+#        heap growth that tripped the steady-state `memory.heap_slope`
+#        threshold. SOAK-05q deferred work will codify multi-tier
+#        thresholds; until then, smoke is intentionally minimal:
+#          --workloads=noop
+#          --duration=5m
+#          --interval=20s   (15 samples — safe floor for linear-regression
+#            slope confidence; per SOAK negotiation item #3)
+#        Real workload + gate verification under sustained load is the
+#        longevity-nightly tier's job (see longevity-nightly.yml).
+#
+# Also runs `npm run test:longevity` (mocha test/longevity/**/*.test.js)
+# BEFORE the soak as a fast pre-gate. Catches regression-test failures
+# in <2 min vs the 6-min soak round-trip.
+#
+# Matrix: ubuntu-latest, windows-latest, macos-latest (REL-01 task
+# description explicitly mandates "Win + macOS + Linux" for longevity tier;
+# diverges from the existing 18 PR-blocking browser jobs which are
+# ubuntu+windows only).
+
+on:
+  # Trigger policy per user directive (dfe95c0, 2026-05-27): PR-only.
+  # No push trigger — avoids auto-fanout on feature-branch pushes and the
+  # redundant main-push run that mirrors the just-merged PR's CI.
+  # workflow_dispatch lets SUP-REL fire a manual smoke before bundling
+  # (e.g. against an integration branch tip pre-PR).
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: longevity-smoke-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  longevity-smoke:
+    # Explicit name so branch protection can reference
+    # "Longevity Smoke (PR-blocking) / smoke (ubuntu-latest)" etc.
+    name: smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+
+      # Playwright Chromium binary required by test:longevity:browser
+      # (test/longevity/browser/*.test.js — CLIENT-01 byte-cap, CLIENT-02
+      # listener accumulation, CLIENT-03 __diagnostics shape). `npm ci`
+      # installs the playwright npm package but not the browser binaries;
+      # those live in a separate cache (~/.cache/ms-playwright/...).
+      # --with-deps is a no-op on Windows/macOS but installs apt deps on Linux.
+      # Round-5 (REL-04, dd9d4ad): test:longevity split into :server + :browser
+      # surfaced this gap once browser tests actually started running in CI.
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Fast regression-test gate (< 2 min). Catches per-lane regression-
+      # test failures before the expensive 5-min soak.
+      - name: Longevity regression tests
+        run: npm run test:longevity
+
+      # 5-min soak. SOAK-05x: workload set simplified to `noop` only.
+      # The prior `noop,reconnect-storm,ws-fuzz` set ran an aggregate
+      # 250+ sessions/min through reconnect-storm, putting the heap
+      # squarely in the warm-up ramp (NOT steady-state) for the entire
+      # 5-min window. The default 2.5 MB/h `memory.heap_slope` threshold
+      # is calibrated for steady-state load (60-min runs that reach
+      # equilibrium); applied to a 5-min warm-up ramp it produces a
+      # 3000+ MB/h slope-FAIL purely from the synthetic stress, not from
+      # any real leak. Smoke's job is fast + PR-blocking + reliable on
+      # shared CI; per the team-lead's recommendation B, smoke verifies
+      # the harness boots + samples + the contract-direct gates work
+      # (event_loop, handles, fs_watch, all disk.* gates), while real
+      # workload + gate verification under sustained load is the
+      # longevity-nightly tier's job. The SOAK-05q deferred follow-up
+      # will codify multi-tier thresholds (single-workload steady-state
+      # vs multi-workload-stress) so the noisy thresholds become
+      # configuration-aware rather than smoke needing to dodge them.
+      # SOAK-05z (2026-05-28): `shell: bash` for cross-shell line-continuation
+      # compatibility. Windows runners default to PowerShell, which uses
+      # backtick (`) for line continuation; PowerShell parses the trailing
+      # `\` as malformed and fails with
+      #   ParserError: --duration=5m \
+      #                                ~
+      #   Missing expression after unary operator '--'.
+      # Round-7 Windows CI surfaced this as a deterministic parse error on
+      # `5d602ac`. Git Bash ships on all GitHub-hosted Windows runners by
+      # default, so `shell: bash` makes the bash-continuation `\` portable
+      # across ubuntu-latest, macos-latest, and windows-latest. Apply the
+      # same treatment to any future multi-line `run:` block here.
+      - name: Longevity smoke soak (5 min)
+        shell: bash
+        run: |
+          node test/longevity/harness/cli.js \
+            --duration=5m \
+            --interval=20s \
+            --workloads=noop \
+            --label=ci-smoke \
+            --out=test/longevity/results/ci-smoke
+
+      # Upload JSONL + verdict so REL-02 per-PR diff workflow can compare.
+      - name: Upload soak artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: longevity-smoke-${{ matrix.os }}
+          path: |
+            test/longevity/results/ci-smoke/**/samples.jsonl
+            test/longevity/results/ci-smoke/**/events.jsonl
+            test/longevity/results/ci-smoke/**/metadata.json
+            test/longevity/results/ci-smoke/**/gate-result.json
+          retention-days: 14

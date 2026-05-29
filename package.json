@@ -15,6 +15,11 @@
     "test": "mocha --exit test/*.test.js",
     "test:integration": "mocha --exit --timeout 60000 test/supervisor-integration.test.js test/integration/*.test.js",
     "test:browser": "npx playwright test --config e2e/playwright.config.js",
+    "soak": "node test/longevity/harness/cli.js",
+    "test:longevity-smoke": "mocha --exit --timeout 120000 test/longevity/smoke.test.js",
+    "test:longevity:server": "mocha --exit --timeout 120000 --recursive --extension .test.js test/longevity/event-loop test/longevity/disk test/longevity/process test/longevity/browser-sampler.test.js test/longevity/cli.test.js test/longevity/gate-evaluator-directional.test.js test/longevity/gate-evaluator-vacuous.test.js test/longevity/resume.test.js test/longevity/smoke.test.js",
+    "test:longevity:browser": "playwright test --config test/longevity/playwright.config.js",
+    "test:longevity": "npm run test:longevity:server && npm run test:longevity:browser",
     "build:bundle": "node scripts/build-sea.js bundle",
     "build:sea": "node scripts/build-sea.js",
     "release:pr": "bash scripts/release-pr.sh"

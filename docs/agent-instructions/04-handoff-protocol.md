@@ -4,6 +4,26 @@
 
 Every session ends with a cleaner repo than it started. If you touched it, you documented it. If you broke it, you fixed it. If you couldn't finish, you left a trail.
 
+## HEAD-discipline (worktree-mandatory rule)
+
+**Ratified during the stability-hardening-2026 campaign after multi-supervisor HEAD-collision losses on the shared root checkout.**
+
+Rule: **only SUP-REL (the release / integration supervisor) operates on the shared root checkout, and only READ-ONLY.** Every other supervisor — including any single-context agent doing work alongside a campaign — commits and switches branches ONLY inside their own dedicated git worktree.
+
+Why this rule exists: the shared root's `HEAD` is a single mutable pointer. When supervisor A runs `git checkout sup-a/feature`, supervisor B's subsequent `git commit -a` for what they think is a main-bound change lands on `sup-a/feature` instead. We hit this 4× during one campaign — each recovery cost 3 min via patch-extract → reset → checkout → `git am`, and one collision contaminated SUP-B's commit with SUP-A's staged files (resolved via soft-reset + selective re-stage). Cumulative cost: ~15 min in PROC's lane alone, equivalent to a 30 % tax on their day-1 throughput.
+
+Operational specifics:
+
+- **Each supervisor** creates exactly one worktree per concurrent line of work: `git worktree add .claude/worktrees/sup-<lane> <branch-or-base-ref>`. All commits, branch switches, and `git push`es happen from that worktree's working directory.
+- **SUP-REL** never `git checkout`s on the shared root. Read-only verification uses path-targeted forms:
+  - `git show <branch>:<path>` to read a file at a specific branch
+  - `git ls-tree <branch> -- <path>` to enumerate a branch's files
+  - `git -C <worktree-path> <command>` to inspect another supervisor's worktree without changing the root
+  - `git ls-remote --heads origin <pattern>` to verify what's pushed without local-state confusion
+- **5-worktree cap** (slots 1–5 per the campaign plan). Slot 5 is SUP-REL's spare for urgent regression-fix turns. Plan supervisors with shared codepaths to alternate (e.g. PROC and DISK both touch persistence; never concurrent).
+- **24-hour cleanup discipline**: once a supervisor's fix-PR cycle is merged, they `ExitWorktree({action:"remove"})` within 24 h. SUP-REL audits daily via `git worktree list`.
+- **Verify-pushed-to-origin** is a hard step before declaring "done": local-only work on a worktree is fragile (the worktree could be removed or the disk lost). SUP-SOAK and SUP-HOT both lost work to "I'll commit at the end" patterns during the campaign — push as you go.
+
 ## Pre-Handoff Checklist
 
 Before ending any work session, verify:

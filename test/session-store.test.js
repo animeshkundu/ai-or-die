@@ -265,4 +265,88 @@ describe('SessionStore', function() {
       assert.ok(session.outputBuffer.length > 0, 'should have some lines');
     });
   });
+
+  describe('streamed serializer (HOT-10)', function() {
+    // HOT-10 replaces the in-process bare JSON.stringify on the save
+    // hot path with a per-session-yield streaming builder. The
+    // serialized output MUST be byte-identical to bare JSON.stringify
+    // so the on-disk format stays compatible and any external
+    // consumer of `sessions.json` keeps working.
+
+    it('produces byte-identical output to JSON.stringify for the standard envelope shape', async function() {
+      const data = {
+        version: '1.0',
+        savedAt: new Date('2026-05-28T05:00:00Z').toISOString(),
+        sessions: [
+          { id: 's1', name: 'A', outputBuffer: ['line1', 'line2'], lastAccessed: 100 },
+          { id: 's2', name: 'B', outputBuffer: ['x'.repeat(2048)], lastAccessed: 200 },
+          { id: 's3', name: 'C', outputBuffer: [], lastAccessed: 300 },
+        ],
+      };
+      const streamed = await sessionStore._serializeDataStreamed(data);
+      const bare = JSON.stringify(data);
+      assert.strictEqual(streamed, bare,
+        'streamed serializer must produce byte-identical output to JSON.stringify');
+    });
+
+    it('produces parseable output that round-trips back to the input data', async function() {
+      const data = {
+        version: '1.0',
+        savedAt: new Date().toISOString(),
+        sessions: Array.from({ length: 25 }, (_, i) => ({
+          id: `s${i}`,
+          name: `Session ${i}`,
+          outputBuffer: [`line a ${i}`, `line b ${i}`, `unicode: ${String.fromCodePoint(0x1f600 + (i % 16))}`],
+          // Edge-case characters that JSON encoding must escape:
+          // quote, backslash, newline, tab, control char.
+          edge: `quote:" backslash:\\ newline:\n tab:\t bell:`,
+        })),
+      };
+      const streamed = await sessionStore._serializeDataStreamed(data);
+      const parsed = JSON.parse(streamed);
+      assert.deepStrictEqual(parsed, JSON.parse(JSON.stringify(data)),
+        'streamed output should parse back to the same structure');
+    });
+
+    it('falls back to bare JSON.stringify when data.sessions is missing or not an array', async function() {
+      const noSessions = { version: '1.0', savedAt: 'x', sessions: undefined };
+      const out1 = await sessionStore._serializeDataStreamed(noSessions);
+      assert.strictEqual(out1, JSON.stringify(noSessions),
+        'missing sessions should fall back to bare stringify');
+
+      const objectSessions = { version: '1.0', savedAt: 'x', sessions: { not: 'array' } };
+      const out2 = await sessionStore._serializeDataStreamed(objectSessions);
+      assert.strictEqual(out2, JSON.stringify(objectSessions),
+        'non-array sessions should fall back to bare stringify');
+    });
+
+    it('handles an empty sessions array', async function() {
+      const data = { version: '1.0', savedAt: 'x', sessions: [] };
+      const streamed = await sessionStore._serializeDataStreamed(data);
+      assert.strictEqual(streamed, JSON.stringify(data));
+    });
+
+    it('relies on JSON.stringify producing the exact "sessions":[] marker (no whitespace)', function() {
+      // HOT-10 follow-up — invariant guard flagged by SUP-DISK's
+      // integration review. The streaming serializer's envelope-splice
+      // strategy depends on `JSON.stringify(envelope)` (no indent
+      // argument) producing literally `"sessions":[]` so the splice
+      // marker matches. If a future caller threads an indent argument
+      // through somewhere upstream (e.g.
+      // `JSON.stringify(envelope, null, 2)`), the marker becomes
+      // `"sessions": []` with a space and the splice silently falls
+      // back to bare `JSON.stringify` — correctness preserved, but the
+      // perf win disappears without warning.
+      //
+      // This test pins down the marker shape so a Node.js / V8 change
+      // to default JSON.stringify formatting, OR an accidental
+      // indent-arg slip, surfaces as a hard failure rather than a
+      // silent perf cliff.
+      assert.strictEqual(JSON.stringify({ sessions: [] }), '{"sessions":[]}',
+        'JSON.stringify default format produced unexpected whitespace — ' +
+        'the streamed serializer envelope-splice marker is invalidated');
+      assert.ok(JSON.stringify({ a: 1, sessions: [], b: 2 }).includes('"sessions":[]'),
+        'embedded envelope should still contain the literal marker');
+    });
+  });
 });

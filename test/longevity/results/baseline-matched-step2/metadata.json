@@ -1,0 +1,101 @@
+{
+  "started_at": "2026-05-28T07:27:44.830Z",
+  "duration_ms": 3600000,
+  "sample_interval_ms": 30000,
+  "workloads": [
+    "noop",
+    "pty-flood",
+    "reconnect-storm",
+    "watcher-flood",
+    "ws-fuzz",
+    "attachment-growth",
+    "session-stringify",
+    "mock-clock",
+    "disk-bloat-jsonl",
+    "disk-bloat-quota"
+  ],
+  "gates": null,
+  "seed": 42,
+  "label": "baseline-matched-pre-bundle",
+  "pr": null,
+  "node_version": "v24.15.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "output_dir": "/private/tmp/rebaseline-step2-59866/test/longevity/results/baseline-matched-20260528T072744Z",
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "started_at": "2026-05-28T07:27:44.830Z",
+      "finished_at": "2026-05-28T08:28:13.639Z",
+      "duration_ms": 3600000,
+      "sample_interval_ms": 30000,
+      "workloads": [
+        "noop",
+        "pty-flood",
+        "reconnect-storm",
+        "watcher-flood",
+        "ws-fuzz",
+        "attachment-growth",
+        "session-stringify",
+        "mock-clock",
+        "disk-bloat-jsonl",
+        "disk-bloat-quota"
+      ],
+      "sampler_stats": {
+        "samples": 122,
+        "errors": 0,
+        "lastSample": {
+          "ts": "2026-05-28T08:28:10.135Z",
+          "diag": {
+            "uptime_seconds": 3626,
+            "node_version": "v24.15.0",
+            "platform": "darwin",
+            "arch": "arm64",
+            "memory": {
+              "rss_mb": 1491.7,
+              "heap_used_mb": 755.7,
+              "heap_total_mb": 1037.9,
+              "external_mb": 43.8,
+              "array_buffers_mb": 40.2
+            },
+            "process": {
+              "active_handles": 11,
+              "active_requests": 166,
+              "fd_count": null
+            },
+            "sessions": {
+              "total": 31891,
+              "ws_connections": 1,
+              "fs_watch_sessions": 0,
+              "voice_upload_counts": 0,
+              "activity_broadcast_timestamps": 0
+            }
+          },
+          "eventLoop": {
+            "p50_ms": 37.224,
+            "p99_ms": 151.912,
+            "max_ms": 1954.546,
+            "mean_ms": 46.863
+          }
+        }
+      },
+      "browser_sampler_stats": {
+        "samples": 0,
+        "errors": 0,
+        "diagnostics_available": false
+      },
+      "aborted": false,
+      "abort_error": null,
+      "seed": 42
+    }
+  ],
+  "finished_at": "2026-05-28T08:28:13.639Z",
+  "total_duration_ms": 3600000,
+  "chunk_count": 1,
+  "aborted": false,
+  "abort_error": null,
+  "sampler_stats": {
+    "samples": 122,
+    "errors": 0
+  }
+}

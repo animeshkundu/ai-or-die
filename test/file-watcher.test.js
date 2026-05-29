@@ -306,3 +306,94 @@ describe('FileWatcher recursive backward compat (no depth)', function () {
     }
   });
 });
+
+describe('FileWatcher async hash queue (HOT-07)', function () {
+  this.timeout(15000);
+
+  it('first event for a changed path has no hash; second event (post-queue-drain) includes it', async function () {
+    const root = mkdtemp();
+    const file = path.join(root, 'a.js');
+    fs.writeFileSync(file, 'first');
+    // Realpath the file path so it matches what chokidar emits + what
+    // _hashCache stores (canonicalization via realpathSync, e.g.
+    // /var → /private/var on macOS).
+    const canonicalFile = fs.realpathSync(file);
+    // includeHash:true explicitly — exercises the legacy-default
+    // footgun-prone code path the fix structurally repairs.
+    const w = newWatcher(root, { includeHash: true });
+    try {
+      await w.start();
+      await w.subscribe(file);
+
+      // Trigger a first change → first event arrives WITHOUT hash (cache
+      // is cold); async hash kicks off in the background.
+      const ev1 = waitForEvent(w, (evt) => evt.type === 'change' && evt.path.endsWith('a.js'), 5000);
+      await new Promise((r) => setTimeout(r, 60));
+      fs.writeFileSync(file, 'second');
+      const evt1 = await ev1;
+      assert.strictEqual(evt1.hash, undefined,
+        'first event after a content change should have no hash on the hot path');
+
+      // Wait for the async hash queue to drain. Cache is now populated
+      // with the hash of 'second'.
+      await w.hashQueueIdle();
+      assert.strictEqual(w._hashCache.size, 1, 'hash cache should hold one entry');
+
+      const cached = w._hashCache.get(canonicalFile);
+      assert.ok(cached && /^[0-9a-f]{32}$/.test(cached.hash),
+        `cached entry shape valid; got ${JSON.stringify(cached)} for ${canonicalFile}`);
+
+      // Drive a synthetic same-mtime _flush to prove late-inclusion:
+      // simulate chokidar firing two events for the SAME mtime (the
+      // metadata-only-write pattern). The second emit should carry the
+      // hash from the cache.
+      const ev2 = waitForEvent(w, (evt) => evt.type === 'change' && evt.hash, 2000);
+      // Synthesize a stat object with the SAME mtime as the cached entry.
+      // Use the canonical path so the _hashCache.get lookup hits.
+      w._flush('change', canonicalFile, {
+        ino: 1, size: 6, mtimeMs: cached.mtime, isFile: () => true,
+      }, null);
+      const evt2 = await ev2;
+      assert.strictEqual(evt2.hash, cached.hash,
+        'second emit with matching mtime should include cached hash (late-inclusion path)');
+    } finally {
+      await w.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('_flush() never calls fs.readFileSync synchronously, even with includeHash:true', function () {
+    const root = mkdtemp();
+    const file = path.join(root, 'b.js');
+    fs.writeFileSync(file, Buffer.alloc(1024));
+    const w = new FileWatcher({ watchRoot: root, includeHash: true });
+    try {
+      const origReadFileSync = fs.readFileSync;
+      let syncReads = 0;
+      fs.readFileSync = function patched(p, ...rest) {
+        if (typeof p === 'string' && p === file) syncReads++;
+        return origReadFileSync.call(this, p, ...rest);
+      };
+      try {
+        // Drive _flush directly with a fabricated stat that takes the
+        // hash-eligible branch (isFile + size ≤ HASH_MAX_BYTES). On the
+        // pre-HOT-07 path this would call _hashFileSync → fs.readFileSync.
+        w._flush('change', file, {
+          ino: 1, size: 1024, mtimeMs: Date.now(), isFile: () => true,
+        }, null);
+        // The async queue is drained off-thread; assertions on the SYNC
+        // path are independent of when it completes.
+        assert.strictEqual(syncReads, 0,
+          'fs.readFileSync called synchronously from _flush() — HOT-07 fix not in place');
+      } finally {
+        fs.readFileSync = origReadFileSync;
+      }
+    } finally {
+      // Don't await close() since we never started the watcher; just
+      // clean up the hash queue + temp dir.
+      w._closed = true;
+      w._fireHashIdleWaiters();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -104,13 +104,58 @@ describe('PlanDetector', () => {
   });
 
   describe('buffer management', () => {
-    it('should trim buffer when exceeding maxBufferSize', () => {
-      detector.maxBufferSize = 10;
+    it('should evict oldest entries when exceeding maxBufferBytes', () => {
+      // Shrink the cap so the test runs fast and deterministically.
+      detector.maxBufferBytes = 1000; // 1 KB
       for (let i = 0; i < 15; i++) {
-        detector.processOutput(`line ${i}\r\n`);
+        detector.processOutput('x'.repeat(100)); // 100 chars each, 1.5 KB total
       }
-      assert.ok(detector.outputBuffer.length <= 10,
-        `buffer should not exceed maxBufferSize (got ${detector.outputBuffer.length})`);
+      assert.ok(detector.bufferBytes <= detector.maxBufferBytes,
+        `bufferBytes should not exceed maxBufferBytes (got ${detector.bufferBytes})`);
+      // Accounting invariant: bufferBytes equals the sum of data.length
+      // across the live buffer at all times.
+      const recomputed = detector.outputBuffer.reduce((n, e) => n + e.data.length, 0);
+      assert.strictEqual(detector.bufferBytes, recomputed,
+        `bufferBytes (${detector.bufferBytes}) should match sum of data.length (${recomputed})`);
+    });
+
+    it('should bound memory under sustained 100MB synthetic flood', () => {
+      // CLIENT-01 regression: confirm bufferBytes stays under the cap when
+      // we push two orders of magnitude more data than the cap allows.
+      // Pre-fix this test would have observed outputBuffer.length capping
+      // at 5000 entries while in-memory bytes grew unbounded.
+      detector.maxBufferBytes = 8 * 1024 * 1024; // 8 MB cap
+      const chunk = 'x'.repeat(8 * 1024); // 8 KB per chunk
+      const target = 100 * 1024 * 1024;   // 100 MB total
+      const iters = Math.ceil(target / chunk.length);
+      for (let i = 0; i < iters; i++) {
+        detector.processOutput(chunk);
+      }
+      assert.ok(detector.bufferBytes <= detector.maxBufferBytes,
+        `bufferBytes (${detector.bufferBytes}) must stay <= maxBufferBytes (${detector.maxBufferBytes})`);
+      // Sanity: we should have evicted most of what we pushed; live buffer
+      // should be roughly cap / chunk = 1024 entries, not iters.
+      assert.ok(detector.outputBuffer.length < iters / 2,
+        `live buffer (${detector.outputBuffer.length}) should be much smaller than total pushes (${iters})`);
+      // Accounting invariant survives the flood.
+      const recomputed = detector.outputBuffer.reduce((n, e) => n + e.data.length, 0);
+      assert.strictEqual(detector.bufferBytes, recomputed,
+        'bufferBytes accounting must match live buffer sum after sustained flood');
+    });
+
+    it('should reset bufferBytes on startMonitoring', () => {
+      detector.processOutput('some text');
+      assert.ok(detector.bufferBytes > 0);
+      detector.stopMonitoring();
+      detector.startMonitoring();
+      assert.strictEqual(detector.bufferBytes, 0);
+    });
+
+    it('should reset bufferBytes on clearBuffer', () => {
+      detector.processOutput('some text');
+      assert.ok(detector.bufferBytes > 0);
+      detector.clearBuffer();
+      assert.strictEqual(detector.bufferBytes, 0);
     });
 
     it('should reset overlap buffer on startMonitoring', () => {

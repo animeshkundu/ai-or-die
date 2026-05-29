@@ -2,9 +2,9 @@
 
 **Lane**: SUP-HOT (event-loop hot paths)
 **Owner**: SUP-HOT
-**Status**: Investigation complete; fix deferred to HOT-06 (post-baseline)
+**Status**: Investigation complete. **Fix landed in HOT-06** (`src/terminal-bridge.js`).
 **Files**: `src/terminal-bridge.js:195–243`, `src/server.js:341–421` (`isPathWithinBase` / `validatePath`)
-**Date**: 2026-05-27
+**Date**: 2026-05-27 (investigation), 2026-05-28 (fix)
 
 ## Symptom
 
@@ -147,3 +147,62 @@ a second level after the parser decodes the URI but before `validatePath`.
 - `src/server.js:341–372` — `isPathWithinBase` (calls `_canonicalizePathSync`)
 - `src/osc7-parser.js:67–147` — `Osc7Parser#feed`
 - `test/longevity/event-loop/hot-01-osc7-dedupe.test.js` — regression test
+
+## Fix landed (HOT-06)
+
+Process-wide validated-path cache added to `TerminalBridge`
+(`src/terminal-bridge.js`):
+
+- New module constants `OSC7_CACHE_MAX_ENTRIES = 256` and
+  `OSC7_CACHE_TTL_MS = 5000`.
+- New instance field `_osc7ValidationCache: Map<rawPath, {validated,
+  expiresAt}>` — caches both VALID and INVALID `validatePath` results
+  (an out-of-sandbox path stops paying syscalls on every emission too).
+- Cache hits are bumped to MRU via delete+reinsert (Map insertion order
+  = LRU order, pre-existing pattern in Node).
+- Bounded-LRU eviction drops oldest entries on overflow.
+- 5 s TTL means a user-side `mkdir` or `rm` of a cached path is reflected
+  on the next emission after expiry; the cache is **not** cleared
+  proactively on session uninstall (that's the whole point — multi-tab
+  same-cwd should pay validation exactly once across all tabs).
+- Full `bridge.cleanup()` clears the cache so a fresh bridge starts
+  fresh.
+
+The pre-existing per-session `_lastRawOsc7` fast-path is kept as Level 1
+(sub-microsecond string-identity compare for the same-raw-redraw case);
+the new cache is Level 2 (sub-microsecond Map lookup for cross-session
++ alternation cases that defeat Level 1).
+
+**Decision divergence from this memo's "Proposed fix":** the memo
+described an mtime-keyed canonical-path cache. The implementation
+instead uses a TTL-only raw-path cache because:
+- mtime-based invalidation requires a `statSync` on every cache hit,
+  which would re-introduce most of the syscall cost the fix is meant to
+  eliminate.
+- Canonicalizing for the key requires a syscall on every miss, just to
+  decide whether two raws collide.
+- The 5 s TTL bounds the staleness window; the LRU caps the cardinality
+  blowup that raw-keying could theoretically cause (it doesn't in
+  practice — shells emit ONE form per cwd, not alternating
+  trailing-slash variants).
+- Lexical-variant raws (same cwd, different string form) get cached
+  separately at most once each, bounded by the LRU cap.
+
+Test surface:
+- `test/longevity/event-loop/hot-01-osc7-dedupe.test.js` — both
+  regression assertions pass (validatePath called ≤ 16 across 160
+  emissions; observed: 2 calls. p99 event-loop lag < 50 ms; observed:
+  well under).
+- `test/osc7-parser.test.js` — pre-existing same-raw-redraw test still
+  passes; new `process-wide validation cache survives session uninstall
+  (HOT-06)` and `full bridge cleanup() drops the process-wide validation
+  cache (HOT-06)` tests document the new contract.
+
+Out-of-scope follow-ups (deliberately deferred):
+- Variance-collapsing canonicalization in the cache key (would catch
+  `/tmp/x` vs `/tmp/x/` as the same hit). The shell-output assumption
+  holds in practice; revisit if SUP-SOAK sees evidence otherwise in
+  long soak runs.
+- Surfacing cache hit-rate via `_collectDiagnostics`. Useful for tuning
+  TTL/cap but not load-bearing; defer to a future diagnostics
+  enrichment PR.

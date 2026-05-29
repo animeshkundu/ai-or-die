@@ -2,10 +2,10 @@
 
 **Lane**: SUP-HOT (event-loop hot paths)
 **Owner**: SUP-HOT
-**Status**: Investigation complete; fix deferred to HOT-07 (post-baseline)
+**Status**: Investigation complete. **Fix landed in HOT-07** (`src/utils/file-watcher.js`).
 **Files**: `src/utils/file-watcher.js:83–92`, `src/utils/file-watcher.js:580–608`,
 `src/utils/file-watcher.js:130–161` (constructor / `includeHash` default)
-**Date**: 2026-05-27
+**Date**: 2026-05-27 (investigation), 2026-05-28 (fix)
 
 ## Symptom
 
@@ -188,3 +188,92 @@ the sync path during a future refactor.
   hash via HTTP-refetch fallback)
 - `test/longevity/event-loop/hot-02-filewatcher-hash.test.js` —
   regression test
+
+## Fix landed (HOT-07)
+
+Picked **Option B** (async hash via bounded worker queue) per the memo
+recommendation. Structural fix that survives future callers.
+
+Implementation in `src/utils/file-watcher.js`:
+
+- New module-level constants `HASH_DEFAULT_CONCURRENCY = 8` (caps
+  concurrent reads to avoid EMFILE under a 1000-file burst) and
+  `HASH_CACHE_MAX_ENTRIES = 1024` (bounds the per-FileWatcher hash
+  cache against unbounded watched-path counts).
+- New module-level function `_hashFileAsync` using `fs.promises.stat` +
+  `fs.promises.readFile`. The synchronous `_hashFileSync` is retained
+  for back-compat but is no longer called from `_flush()`.
+- New instance fields: `_hashCache: Map<absPath, {hash, mtime}>`,
+  `_hashPending: [{absPath, mtime}, ...]`, `_hashInflight: number`,
+  `_hashConcurrency: number`, `_hashIdleWaiters: [resolve, ...]`.
+- New instance methods `_enqueueHash`, `_drainHashQueue`,
+  `hashQueueIdle()` (test affordance), `_fireHashIdleWaiters`.
+- `_flush()` rewritten: emits event synchronously WITHOUT hash on the
+  hot path; if `_includeHash` and the path's cached hash matches the
+  event's mtime, the emitted payload INCLUDES the hash (late-inclusion
+  path); otherwise the path is enqueued for async hashing so the NEXT
+  event for the same path can take the late-inclusion path.
+- `close()` extended to drop the pending queue + cache and resolve any
+  outstanding `hashQueueIdle()` waiters (test cleanup hygiene).
+
+### API-shape compatibility
+
+- The `event` payload's `hash` field remains OPTIONAL (same shape as
+  before). The only observable behaviour change is *when* it appears:
+  pre-fix it appeared on the first event after a content change (with a
+  blocking read); post-fix it appears on the SECOND and subsequent
+  events for the same mtime (after the async queue populates the cache).
+- `file-tabs.js`'s hash short-circuit (`evt.hash && panel._fileHash &&
+  evt.hash === panel._fileHash`) still fires for rapid-repeated-touch
+  patterns — the first event flows through HTTP refresh which populates
+  `panel._fileHash`, the second event's `evt.hash` arrives from the
+  async cache, comparison fires, no-op.
+- The very first event for a freshly-changed file no longer pays the
+  hash-skip optimization; it falls through to the HTTP-refresh path.
+  This is a strictly safer trade-off (no event-loop block) and `file-
+  tabs.js` documents the absent-hash path as supported
+  (file-watcher.js:122–128).
+
+### Decision divergence from this memo
+
+- **Did NOT add the `AI_OR_DIE_HASH_DEBUG` hot-path guard.** Would be
+  load-bearing only if a future dev re-introduced a sync `readFileSync`
+  inside `_flush()`. The new HOT-07 regression test
+  (`test/file-watcher.test.js: '_flush() never calls fs.readFileSync
+  synchronously'`) covers that explicitly via wrap-and-count, which is
+  catch-via-CI rather than catch-via-runtime — same protection, lower
+  runtime cost.
+- **Did NOT add a follow-up `hash` event.** The per-path cache + late-
+  inclusion design fits the existing `event`-payload contract better.
+  No new event type, no new wire format, no need to update the SSE
+  forwarding code in `server.js:2364–2377`.
+
+### Test surface
+
+- `test/longevity/event-loop/hot-02-filewatcher-hash.test.js` —
+  both assertions flip from failing on main → passing:
+  - `fs.readFileSync` called 0 times from `_flush()` hot path (was 20
+    on a 20-file burst).
+  - `h.max < 50 ms` (was ~600 ms on bunched flushes).
+- `test/file-watcher.test.js` — two new HOT-07 tests:
+  - `first event for a changed path has no hash; second event
+    (post-queue-drain) includes it` — proves the late-inclusion
+    contract end-to-end with a real chokidar drive.
+  - `_flush() never calls fs.readFileSync synchronously, even with
+    includeHash:true` — wrap-and-count guard.
+- Adjacent sweep: `file-watcher`, `fs-watch-cleanup`,
+  `file-watcher-client` — **42 passing / 0 failing**.
+
+### Out-of-scope follow-ups (deliberately deferred)
+
+- Streaming hash via `createReadStream` for files near `HASH_MAX_BYTES`.
+  Not needed — `fs.promises.readFile` on a 5 MB file takes <10 ms on a
+  worker thread and the queue caps concurrency, so memory pressure is
+  bounded.
+- Surfacing hash queue depth / hit-rate via `_collectDiagnostics`.
+  Useful for tuning the queue under sustained soak but not load-bearing.
+- Diagnostic-style drop-rate logging on queue overflow. The dedupe-by-
+  path inside `_enqueueHash` already collapses repeated writes to the
+  same path; an unbounded distinct-path burst would still grow the
+  pending array (no explicit cap). Revisit if SUP-SOAK sees pending
+  array growth in long runs.

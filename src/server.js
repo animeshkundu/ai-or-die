@@ -24,7 +24,22 @@ const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
 const SttEngine = require('./stt-engine');
 const CircularBuffer = require('./utils/circular-buffer');
+const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
+
+// HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
+// large frame can't block the event loop for tens-to-hundreds of ms.
+//
+// The ws library's protocol-layer `maxPayload` (8 MB, see WebSocket.Server
+// construction below) is a SECOND-LINE defence; this constant is the
+// application-layer FIRST-LINE. 1 MB matches the realistic upper bound
+// for legitimate WS control frames (paste-image and file uploads go via
+// HTTP `/api/files/upload` at 10 MB; WS carries small JSON control
+// messages). Frames exceeding this cap get a `message_too_large` error
+// reply + a ws-standard 1009 close — explicit, debuggable.
+//
+// See docs/audits/hot-03-ws-frame-size.md.
+const MAX_WS_MESSAGE_BYTES = 1 * 1024 * 1024;
 
 // Pre-built PWA screenshot SVG buffers (served at /screenshot-wide.png and /screenshot-narrow.png)
 const SCREENSHOT_WIDE_BUF = Buffer.from(`
@@ -96,6 +111,12 @@ class ClaudeCodeWebServer {
     
     this.app = express();
     this.claudeSessions = new Map(); // Persistent sessions (claude, codex, or agent)
+    // PROC-04: min-heap of {id, lastActivity} pairs keyed by lastActivity.
+    // Used by _evictStaleSessions to find the oldest session in O(log n)
+    // rather than scanning the full Map every 5 min. Lazy-tombstone protocol
+    // — see src/utils/eviction-heap.js. Push via _pushEvictionEntry(id) at
+    // every site that creates a session or bumps session.lastActivity.
+    this._evictionHeap = new MinHeap();
     this.webSocketConnections = new Map(); // Maps WebSocket connection ID to session info
     this.claudeBridge = new ClaudeBridge();
     this.codexBridge = new CodexBridge();
@@ -126,6 +147,14 @@ class ClaudeCodeWebServer {
     this.activityBroadcastTimestamps = new Map(); // sessionId -> last broadcast timestamp
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
+    // DISK-03: disk quota + circuit breaker state.
+    // Default 1 GB ceiling on ~/.ai-or-die/; override with AIORDIE_DISK_QUOTA_MB.
+    const quotaEnv = parseInt(process.env.AIORDIE_DISK_QUOTA_MB, 10);
+    this._diskQuotaMb = (Number.isFinite(quotaEnv) && quotaEnv > 0) ? quotaEnv : 1024;
+    this._diskFull = false;          // circuit breaker state
+    this._diskFullSince = null;      // ms timestamp of last IDLE→FULL transition
+    this._diskUsageCache = null;     // populated by _sampleDiskUsage
+    this._diskUsageCacheAt = 0;
     this.supervised = typeof process.send === 'function'; // Running under supervisor with IPC
     this.restartManager = new RestartManager(this);
     this.restartManager.startMemoryMonitoring();
@@ -153,6 +182,7 @@ class ClaudeCodeWebServer {
       for (const [id, session] of sessions) {
         if (!this.claudeSessions.has(id)) {
           this.claudeSessions.set(id, session);
+          this._pushEvictionEntry(id); // PROC-04
         }
       }
       if (sessions.size > 0) {
@@ -190,6 +220,39 @@ class ClaudeCodeWebServer {
       try {
         console.log('[diagnostics]', JSON.stringify(this._collectDiagnostics()));
       } catch (_) { /* never break the timer */ }
+    }, 5 * 60 * 1000);
+
+    // DISK-02: opt-in usage-JSONL compaction + crash-file pruning.
+    // Runs on the same 5 min cadence as diagnostics but offset so the
+    // two don't pile up. Behind an env flag for the first release; once
+    // soak verifies, the default flips on.
+    if (process.env.AI_OR_DIE_USAGE_COMPACT === '1') {
+      this.diskCompactInterval = setInterval(() => {
+        this._diskCompactionSweep().catch((err) => {
+          console.warn('Disk compaction sweep failed:', err && err.message);
+        });
+      }, 5 * 60 * 1000);
+    }
+
+    // DISK-02: prune stale .crash files on startup. Always-on (low risk:
+    // keeps the most recent crash for inspection, deletes anything > 7
+    // days old). Schedule via setImmediate so we don't block startup.
+    setImmediate(() => {
+      this._pruneCrashFilesOnce().catch((err) => {
+        console.warn('Crash-file pruning failed:', err && err.message);
+      });
+    });
+
+    // DISK-02/03: warm the disk-usage sample so /api/diagnostics returns
+    // real numbers within the first 60 s. Bounded time budget; never
+    // blocks the event loop.
+    setImmediate(() => {
+      this._sampleDiskUsage(150).catch(() => { /* ignore */ });
+    });
+    // Re-sample on the 5 min cadence (cheap; 60 s cache hit is the
+    // common path).
+    this.diskUsageSampleInterval = setInterval(() => {
+      this._sampleDiskUsage(150).catch(() => { /* ignore */ });
     }, 5 * 60 * 1000);
 
     // Also save on process exit
@@ -240,7 +303,69 @@ class ClaudeCodeWebServer {
     if (force) {
       this.sessionStore.markDirty();
     }
-    await this.sessionStore.saveSessions(this.claudeSessions);
+    const ok = await this.sessionStore.saveSessions(this.claudeSessions);
+    // DISK-03: detect ENOSPC and open the circuit breaker. Edge-triggered
+    // — broadcast `disk_full` exactly once per IDLE→FULL transition.
+    if (!ok && this.sessionStore._lastSaveError) {
+      const err = this.sessionStore._lastSaveError;
+      if (err.code === 'ENOSPC' || err.code === 'EDQUOT') {
+        this._enterDiskFull({ source: 'fs', op: 'session-save', code: err.code });
+      }
+    }
+    return ok;
+  }
+
+  /**
+   * DISK-03: open the disk-full circuit breaker. Broadcasts
+   * { type: 'disk_full', detail: {...} } to all connected WS clients
+   * exactly once per IDLE→FULL transition.
+   */
+  _enterDiskFull(detail) {
+    if (this._diskFull) return; // already open — no broadcast spam
+    this._diskFull = true;
+    this._diskFullSince = Date.now();
+    console.warn('[disk-full] entering disk-full state:', JSON.stringify(detail));
+    this._broadcastDiskFull({
+      ...detail,
+      quota_total_mb: this._diskQuotaMb,
+      quota_used_pct: this._diskUsagePercentOfQuota(),
+    });
+  }
+
+  /**
+   * DISK-03: close the circuit breaker when disk pressure clears.
+   * Hysteresis: only clears when usage drops 10% below the quota.
+   */
+  _maybeExitDiskFull() {
+    if (!this._diskFull) return;
+    const pct = this._diskUsagePercentOfQuota();
+    // Clear when below 80% of quota (10% hysteresis below the 90% open threshold).
+    if (pct !== null && pct < 80) {
+      this._diskFull = false;
+      this._diskFullSince = null;
+      console.log('[disk-full] exiting disk-full state; quota_used_pct=', pct);
+    }
+  }
+
+  _diskUsagePercentOfQuota() {
+    if (!this._diskQuotaMb) return null;
+    const sample = this._diskUsageCache;
+    if (!sample || typeof sample.ai_or_die_dir_bytes !== 'number') return null;
+    return (sample.ai_or_die_dir_bytes / (this._diskQuotaMb * 1024 * 1024)) * 100;
+  }
+
+  _broadcastDiskFull(detail) {
+    try {
+      const msg = { type: 'disk_full', detail };
+      const json = JSON.stringify(msg);
+      if (this.webSocketConnections) {
+        for (const [, wsInfo] of this.webSocketConnections) {
+          if (wsInfo && wsInfo.ws && wsInfo.ws.readyState === 1) {
+            try { wsInfo.ws.send(json); } catch (_) { /* best effort */ }
+          }
+        }
+      }
+    } catch (_) { /* never break the caller */ }
   }
 
   async handleShutdown(exitCode = 0) {
@@ -550,18 +675,84 @@ class ClaudeCodeWebServer {
   }
 
   /**
+   * Cache used by `_attachmentDirBytes` to avoid the O(N) `readdirSync` +
+   * per-entry `statSync` scan on every `/api/files/upload` request. Keyed
+   * by the input directory path (whatever the caller passed — typically
+   * the canonicalized path from `validatePath`). Value: `{bytes, mtimeMs}`
+   * where `mtimeMs` is the directory's last-modified time at the moment
+   * the byte count was computed.
+   *
+   * Freshness check is a single `fs.statSync(dir)` to read the dir's
+   * current mtime. On match → cache hit, return cached bytes (0 syscalls
+   * beyond the stat). On mismatch or first-touch → re-scan + populate.
+   *
+   * Known-write paths in the upload handler use
+   * `_attachmentDirCacheRecordWrite` to incrementally update the cache
+   * after a successful `fs.writeFile`, avoiding the next-upload re-scan
+   * entirely. The sweep path uses `_attachmentDirCacheInvalidate` to
+   * force a re-scan on the next upload.
+   *
+   * Cardinality is bounded by the number of distinct attachment dirs the
+   * user has across all working dirs (typically 1-50). No explicit cap.
+   *
+   * Closes the per-upload O(N) scan gap documented in
+   * docs/audits/hot-04-attachment-scan.md (HOT-09).
+   *
+   * @type {Map<string, {bytes:number, mtimeMs:number}>}
+   * @private
+   */
+  // Initialized lazily on first access since instance fields can't see
+  // sibling instance state in older Node ESM; the underscore-prefixed
+  // accessor below handles the one-shot init.
+
+  _getAttachmentDirCache() {
+    if (!this._attachmentDirCache) this._attachmentDirCache = new Map();
+    return this._attachmentDirCache;
+  }
+
+  /**
    * Sum of bytes for all top-level files inside an attachments directory.
    * Top-level only — generic drop never creates subdirectories there, and
    * walking deep would let a user-side `ln -s /` symlink balloon the
    * computation. Robust to a missing directory (returns 0).
+   *
+   * HOT-09: cached by `(canonicalDir, mtimeMs)`. The check pays one
+   * `fs.statSync(dir)` to read the dir's current mtime; if it matches the
+   * cached entry, returns the cached bytes (no readdir, no per-entry
+   * stats). The previous unconditional O(N) scan blocked the event loop
+   * for 50 ms on a 1000-file SSD and up to 20 s on a 1000-file network
+   * share — per upload. See `docs/audits/hot-04-attachment-scan.md`.
    */
   _attachmentDirBytes(attachmentsDir) {
+    const cache = this._getAttachmentDirCache();
+
+    // Single dir-stat for freshness check. If the dir is missing
+    // (ENOENT), drop any stale cache entry and return 0.
+    let dirStat;
+    try {
+      dirStat = fs.statSync(attachmentsDir);
+    } catch (_) {
+      cache.delete(attachmentsDir);
+      return 0;
+    }
+    if (!dirStat.isDirectory()) {
+      cache.delete(attachmentsDir);
+      return 0;
+    }
+
+    const cached = cache.get(attachmentsDir);
+    if (cached && cached.mtimeMs === dirStat.mtimeMs) {
+      return cached.bytes; // fresh — skip the O(N) scan
+    }
+
+    // STALE or first-touch. Re-scan and populate.
     let total = 0;
     let entries;
     try {
       entries = fs.readdirSync(attachmentsDir, { withFileTypes: true });
     } catch (_) {
-      return 0; // missing dir → 0 bytes used
+      cache.delete(attachmentsDir);
+      return 0;
     }
     for (const ent of entries) {
       if (!ent.isFile()) continue;
@@ -570,7 +761,43 @@ class ClaudeCodeWebServer {
         total += st.size;
       } catch (_) { /* file vanished mid-readdir — skip */ }
     }
+    cache.set(attachmentsDir, { bytes: total, mtimeMs: dirStat.mtimeMs });
     return total;
+  }
+
+  /**
+   * HOT-09: called by the upload handler after a successful
+   * `fs.writeFile` to incrementally update the cache. Avoids the
+   * next-upload re-scan that would otherwise fire because the new file
+   * advanced the dir's mtime.
+   *
+   * If no cache entry exists yet, this is a no-op (the next read will
+   * full-scan and populate naturally).
+   * @private
+   */
+  _attachmentDirCacheRecordWrite(attachmentsDir, addedBytes) {
+    const cache = this._getAttachmentDirCache();
+    const cached = cache.get(attachmentsDir);
+    if (!cached) return; // not populated → next read full-scans
+    let dirStat;
+    try { dirStat = fs.statSync(attachmentsDir); }
+    catch (_) { cache.delete(attachmentsDir); return; }
+    cache.set(attachmentsDir, {
+      bytes: cached.bytes + addedBytes,
+      mtimeMs: dirStat.mtimeMs,
+    });
+  }
+
+  /**
+   * HOT-09: drop the cache entry for `attachmentsDir`, forcing the next
+   * `_attachmentDirBytes` call to re-scan. Used after delete/unlink
+   * operations on the dir (the sweep path) where computing the delta
+   * incrementally would require knowing each removed file's size.
+   * @private
+   */
+  _attachmentDirCacheInvalidate(attachmentsDir) {
+    const cache = this._getAttachmentDirCache();
+    cache.delete(attachmentsDir);
   }
 
   /**
@@ -621,13 +848,21 @@ class ClaudeCodeWebServer {
       return; // missing dir → nothing to do
     }
     const cutoff = Date.now() - maxAgeMs;
+    let unlinked = 0;
     for (const ent of entries) {
       if (!ent.isFile()) continue;
       const fp = path.join(dir, ent.name);
       try {
         const st = fs.statSync(fp);
-        if (st.mtimeMs < cutoff) fs.unlinkSync(fp);
+        if (st.mtimeMs < cutoff) { fs.unlinkSync(fp); unlinked++; }
       } catch (_) { /* tolerate races */ }
+    }
+    // HOT-09: any unlink advances the dir's mtime AND drops bytes the
+    // cached entry doesn't know about. Computing the delta incrementally
+    // would require knowing each removed file's pre-unlink size; simpler
+    // to invalidate and let the next upload re-scan once.
+    if (unlinked > 0) {
+      this._attachmentDirCacheInvalidate(dir);
     }
   }
 
@@ -908,6 +1143,7 @@ class ClaudeCodeWebServer {
       };
       
       this.claudeSessions.set(sessionId, session);
+      this._pushEvictionEntry(sessionId); // PROC-04
       this.sessionStore.markDirty();
 
       // Save sessions after creating new one
@@ -2595,6 +2831,13 @@ class ClaudeCodeWebServer {
         await fs.promises.writeFile(targetPath, buffer);
         const stat = await fs.promises.stat(targetPath);
 
+        // HOT-09: incrementally update the attachment-dir bytes cache so
+        // the next upload doesn't pay an O(N) re-scan. Safe no-op if the
+        // cache isn't populated yet (next read will full-scan).
+        if (isAttachmentDir) {
+          this._attachmentDirCacheRecordWrite(dirValidation.path, stat.size);
+        }
+
         // Best-effort .gitignore guard — never fails the upload on error.
         if (isAttachmentDir) {
           this._ensureAttachmentsGitignore(path.dirname(dirValidation.path));
@@ -2853,6 +3096,26 @@ class ClaudeCodeWebServer {
     this.webSocketConnections.set(wsId, wsInfo);
 
     ws.on('message', (message) => {
+      // HOT-08: application-layer size guard, runs BEFORE JSON.parse.
+      // Buffer.byteLength handles both string and Buffer message types.
+      // On oversize, send a marker error frame and close with WS-standard
+      // 1009 ("message too big"). A buggy or malicious client repeatedly
+      // sending 8 MB frames at 10 Hz would otherwise stall the event loop
+      // for ~400 ms/s (per HOT-03 memo).
+      const byteLen = Buffer.byteLength(message);
+      if (byteLen > MAX_WS_MESSAGE_BYTES) {
+        try {
+          this.sendToWebSocket(ws, {
+            type: 'error',
+            code: 'message_too_large',
+            message: `WebSocket message exceeds ${MAX_WS_MESSAGE_BYTES} bytes`,
+            received_bytes: byteLen,
+            limit_bytes: MAX_WS_MESSAGE_BYTES,
+          });
+        } catch (_) { /* socket may be already half-closed */ }
+        try { ws.close(1009, 'message_too_large'); } catch (_) {}
+        return;
+      }
       try {
         const data = JSON.parse(message);
         if (data.type === 'input') {
@@ -3147,6 +3410,18 @@ class ClaudeCodeWebServer {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
 
+    // DISK-03: refuse new sessions when the circuit breaker is open.
+    // Existing sessions continue to function read-only-ish (output
+    // buffer is bounded; we just can't durably persist new state).
+    if (this._diskFull) {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'error',
+        code: 'disk_full',
+        message: 'Cannot create new session — local disk is full. Delete some sessions or free disk space.'
+      });
+      return;
+    }
+
     // Validate working directory if provided
     let validWorkingDir = this.baseFolder;
     if (workingDir) {
@@ -3188,6 +3463,7 @@ class ClaudeCodeWebServer {
     };
     
     this.claudeSessions.set(sessionId, session);
+    this._pushEvictionEntry(sessionId); // PROC-04
     wsInfo.claudeSessionId = sessionId;
     this.sessionStore.markDirty();
 
@@ -3230,6 +3506,7 @@ class ClaudeCodeWebServer {
     wsInfo.claudeSessionId = claudeSessionId;
     session.connections.add(wsId);
     session.lastActivity = new Date();
+    this._pushEvictionEntry(claudeSessionId); // PROC-04
     session.lastAccessed = Date.now();
 
     // Send session info and replay buffer
@@ -3259,6 +3536,7 @@ class ClaudeCodeWebServer {
     if (session) {
       session.connections.delete(wsId);
       session.lastActivity = new Date();
+      this._pushEvictionEntry(leftSessionId); // PROC-04
     }
 
     wsInfo.claudeSessionId = null;
@@ -3428,6 +3706,7 @@ class ClaudeCodeWebServer {
       });
 
       session.lastActivity = new Date();
+      this._pushEvictionEntry(sessionId); // PROC-04
       if (!session.sessionStartTime) {
         session.sessionStartTime = new Date();
       }
@@ -3480,6 +3759,7 @@ class ClaudeCodeWebServer {
     session.active = false;
     session.agent = null;
     session.lastActivity = new Date();
+    this._pushEvictionEntry(sessionId); // PROC-04
     this.sessionStore.markDirty();
     this.broadcastToSession(sessionId, { type: `${agentType}_stopped` });
     this.activityBroadcastTimestamps.delete(sessionId);
@@ -3652,45 +3932,167 @@ class ClaudeCodeWebServer {
   async _evictStaleSessions() {
     const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
     let evictedCount = 0;
-    // Snapshot keys first — claudeSessions is mutated inside the loop and we
-    // would otherwise risk Map-iterator UB on V8.
-    const entries = Array.from(this.claudeSessions.entries());
-    for (const [id, session] of entries) {
-      if (!session) continue;
-      const connections = session.connections;
-      const connCount = connections && typeof connections.size === 'number' ? connections.size : 0;
-      const lastActivity = new Date(session.lastActivity || session.created).getTime();
-      if (session.active) continue;
-      if (connCount !== 0) continue;
-      if (lastActivity >= sevenDaysAgo) continue;
 
-      // Drive PTY teardown for the evicted session. stopSession is
-      // idempotent — if the bridge already lost the session (PTY exited
-      // by itself, hadn't been started, etc.) the call is a cheap no-op.
-      // The bridge owns the FD-leak prevention (listener disposal); calling
-      // it on eviction is the only chance a hung/zombie PTY gets to be
-      // cleaned up before its parent session disappears from claudeSessions.
-      const bridge = this.getBridgeForAgent(session.agent);
-      if (bridge && typeof bridge.stopSession === 'function') {
-        try {
-          await bridge.stopSession(id);
-        } catch (err) {
-          console.warn(`Eviction stopSession failed for ${id}: ${err && err.message}`);
+    // PROC-04: lazy-tombstone min-heap sweep. Pop the oldest entry;
+    // if its lastActivity no longer matches the source-of-truth Map,
+    // treat as a tombstone and continue. If the top is fresh, the
+    // heap invariant says every other entry is fresh too — early exit
+    // in O(log n) instead of O(n). See docs/audits/proc-04-sublinear-eviction.md.
+    //
+    // PROC-04 fix-up: at most one self-healing rebuild per sweep. If the
+    // first pass exhausts the heap while the Map still has entries,
+    // some sessions are missing from the heap (e.g. direct
+    // `claudeSessions.set(...)` from tests or any future code path that
+    // bypassed `_pushEvictionEntry`). Rebuild O(n) and run pass 2.
+    // Zero overhead in the hot path — the rebuild only fires when the
+    // heap is observably under-covering the Map.
+    let didOneTimeRebuild = false;
+
+    for (let pass = 0; pass < 2; pass++) {
+      let popsThisSweep = 0;
+      const popBudget = 4 * (this.claudeSessions.size + 1) + 1024;
+
+      while (this._evictionHeap.size > 0 && popsThisSweep < popBudget) {
+        const top = this._evictionHeap.peek();
+        const session = top ? this.claudeSessions.get(top.id) : null;
+
+        if (!session) {
+          // Session deleted between the push and this pop — tombstone.
+          this._evictionHeap.pop();
+          popsThisSweep++;
+          continue;
         }
+
+        const currentLA = new Date(session.lastActivity || session.created).getTime();
+        if (currentLA !== top.lastActivity) {
+          // lastActivity was bumped after this entry was pushed —
+          // tombstone (a fresher entry exists deeper in the heap).
+          this._evictionHeap.pop();
+          popsThisSweep++;
+          continue;
+        }
+
+        if (currentLA >= sevenDaysAgo) {
+          // Top is the genuinely-oldest current entry AND it's fresh.
+          // Heap invariant: every other entry is at least as fresh.
+          // We may have to rebuild if tombstones have ballooned the heap.
+          this._maybeRebuildEvictionHeap();
+          return evictedCount;
+        }
+
+        // Top is stale by time. Check the other two eviction predicates.
+        const connections = session.connections;
+        const connCount = connections && typeof connections.size === 'number' ? connections.size : 0;
+        if (session.active || connCount !== 0) {
+          // In use — pop the entry. A future bump of lastActivity will
+          // re-push a current entry. If the session truly stays pinned
+          // and silent forever, it stays out of the heap, matching the
+          // pre-PROC-04 loop's behaviour (which also skipped it).
+          this._evictionHeap.pop();
+          popsThisSweep++;
+          continue;
+        }
+
+        // Evict.
+        this._evictionHeap.pop();
+        popsThisSweep++;
+
+        // Drive PTY teardown for the evicted session. stopSession is
+        // idempotent — if the bridge already lost the session (PTY exited
+        // by itself, hadn't been started, etc.) the call is a cheap no-op.
+        // The bridge owns the FD-leak prevention (listener disposal); calling
+        // it on eviction is the only chance a hung/zombie PTY gets to be
+        // cleaned up before its parent session disappears from claudeSessions.
+        const bridge = this.getBridgeForAgent(session.agent);
+        if (bridge && typeof bridge.stopSession === 'function') {
+          try {
+            await bridge.stopSession(top.id);
+          } catch (err) {
+            console.warn(`Eviction stopSession failed for ${top.id}: ${err && err.message}`);
+          }
+        }
+
+        // Same per-session cleanup contract as the DELETE handler:
+        // tear down any orphan fs-watch SSE + voice-upload history
+        // BEFORE removing the parent session entry, otherwise the
+        // chokidar watcher leaks (PR #99 regression).
+        try { this._cleanupFsWatchSession(top.id, 'session_evicted'); } catch (_) { /* ignore */ }
+        try { this._voiceUploadCounts.delete(top.id); } catch (_) { /* ignore */ }
+        this.claudeSessions.delete(top.id);
+        this.activityBroadcastTimestamps.delete(top.id);
+        try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
+        evictedCount++;
       }
 
-      // Same per-session cleanup contract as the DELETE handler:
-      // tear down any orphan fs-watch SSE + voice-upload history
-      // BEFORE removing the parent session entry, otherwise the
-      // chokidar watcher leaks (PR #99 regression).
-      try { this._cleanupFsWatchSession(id, 'session_evicted'); } catch (_) { /* ignore */ }
-      try { this._voiceUploadCounts.delete(id); } catch (_) { /* ignore */ }
-      this.claudeSessions.delete(id);
-      this.activityBroadcastTimestamps.delete(id);
-      try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
-      evictedCount++;
+      // Pass-end: if the heap is drained but the Map still has entries,
+      // some sessions never made it into the heap. Rebuild and run pass 2.
+      if (
+        !didOneTimeRebuild &&
+        this._evictionHeap.size === 0 &&
+        this.claudeSessions.size > 0
+      ) {
+        this._rebuildEvictionHeapNow();
+        didOneTimeRebuild = true;
+        continue;
+      }
+      break;
     }
+
+    this._maybeRebuildEvictionHeap();
     return evictedCount;
+  }
+
+  /**
+   * PROC-04: push a {id, lastActivity} entry into the eviction heap.
+   * Call AFTER `claudeSessions.set(...)` for new sessions, and AFTER
+   * any `session.lastActivity = new Date()` mutation. Reading
+   * `session.lastActivity` inside this helper avoids storing it twice
+   * at call sites; the lazy-tombstone protocol handles the case where
+   * a later bump invalidates this entry.
+   */
+  _pushEvictionEntry(sessionId) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    const la = session.lastActivity || session.created;
+    const ts = la instanceof Date ? la.getTime() : new Date(la).getTime();
+    if (!Number.isFinite(ts)) return;
+    this._evictionHeap.push({ id: sessionId, lastActivity: ts });
+  }
+
+  /**
+   * PROC-04: rebuild the heap from a fresh snapshot of claudeSessions
+   * when tombstones outnumber live entries 2:1. Bounds heap-size growth
+   * under sustained activity bursts (e.g. 100 messages/sec for an hour
+   * is 360 K pushes — without rebuild, every pop would walk past
+   * tombstones forever). Cheap when sessions are few (< 100); only
+   * matters for the long-running large-N case.
+   */
+  _maybeRebuildEvictionHeap() {
+    const live = this.claudeSessions.size;
+    if (live <= 100) return;
+    if (this._evictionHeap.size <= 2 * live) return;
+    this._rebuildEvictionHeapNow();
+  }
+
+  /**
+   * PROC-04 fix-up: unconditional heap rebuild from the current Map.
+   * Used both as the implementation of `_maybeRebuildEvictionHeap` (when
+   * the tombstone-bound trigger fires) and as the safety-net repair at
+   * the start of every sweep (when heap.size < live, indicating some
+   * Map entry never made it into the heap — e.g. direct
+   * `claudeSessions.set(...)` from a test that didn't go through
+   * `_pushEvictionEntry`). O(n) via Floyd's heapify.
+   */
+  _rebuildEvictionHeapNow() {
+    const fresh = [];
+    for (const [id, session] of this.claudeSessions) {
+      if (!session) continue;
+      const la = session.lastActivity || session.created;
+      const ts = la instanceof Date ? la.getTime() : new Date(la).getTime();
+      if (!Number.isFinite(ts)) continue;
+      fresh.push({ id, lastActivity: ts });
+    }
+    this._evictionHeap.rebuild(fresh);
   }
 
   /**
@@ -3822,7 +4224,175 @@ class ClaudeCodeWebServer {
         voice_upload_counts: (this._voiceUploadCounts && this._voiceUploadCounts.size) || 0,
         activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
       },
+      // DISK-02/03: cached disk usage sample (60 s TTL, never blocks the
+      // event loop). Populated by _sampleDiskUsage() — see method
+      // comment for the time-budget contract.
+      disk: this._buildDiagnosticsDiskBlock(),
     };
+  }
+
+  /**
+   * DISK-03: build the `disk` block for diagnostics, combining the
+   * cached _diskUsageCache sample with quota state + circuit breaker
+   * status.
+   */
+  _buildDiagnosticsDiskBlock() {
+    const sample = this._diskUsageCache || { stale: true, note: 'no sample yet' };
+    const totalMb = this._diskQuotaMb;
+    let usedPct = null;
+    if (totalMb && typeof sample.ai_or_die_dir_bytes === 'number') {
+      usedPct = +((sample.ai_or_die_dir_bytes / (totalMb * 1024 * 1024)) * 100).toFixed(2);
+    }
+    return {
+      ...sample,
+      quota_total_mb: totalMb,
+      quota_used_pct: usedPct,
+      circuit_breaker_open: !!this._diskFull,
+      circuit_breaker_since: this._diskFullSince,
+      // DISK-04b: drift-watch counter for SessionStore save failures.
+      // Increments monotonically on every saveSessions() failure (rename
+      // race regression, ENOSPC, EBUSY, EACCES, EIO, etc.). Decoupled
+      // from log-line format so soak harness gates can watch for
+      // non-zero delta without stderr-grep coupling. Should remain at 0
+      // under sustained load post-DISK-04 fix.
+      save_failure_count: (this.sessionStore && this.sessionStore._saveFailureCount) || 0,
+    };
+  }
+
+  /**
+   * DISK-02/03: sample disk usage under ~/.ai-or-die/ and
+   * ~/.claude/projects/ with a strict time budget. Caches the result
+   * for 60 s. NEVER blocks the event loop: each directory walk is
+   * yield-friendly (async readdir) and aborts after `budgetMs`.
+   *
+   * Returns the cached result (which is also stored on
+   * this._diskUsageCache for the diagnostics endpoint to pick up).
+   */
+  async _sampleDiskUsage(budgetMs = 50) {
+    const now = Date.now();
+    if (this._diskUsageCache && (now - this._diskUsageCacheAt < 60 * 1000)) {
+      return this._diskUsageCache;
+    }
+    const deadline = now + budgetMs;
+    const sample = { sampled_at: new Date(now).toISOString() };
+
+    // Sample ~/.ai-or-die/ (sessions.json + .crash + future content).
+    try {
+      const sessionsDir = this.sessionStore && this.sessionStore.storageDir;
+      if (sessionsDir) {
+        const r = await this._dirSizeWithBudget(sessionsDir, deadline);
+        sample.ai_or_die_dir_bytes = r.bytes;
+        sample.ai_or_die_dir_files = r.files;
+        sample.ai_or_die_dir_stale = r.timedOut || false;
+      }
+    } catch (_) { /* ignore */ }
+
+    // Sample ~/.claude/projects/ (the JSONL corpus we read).
+    try {
+      const projectsDir = this.usageReader && this.usageReader.claudeProjectsPath;
+      if (projectsDir) {
+        const r = await this._dirSizeWithBudget(projectsDir, deadline);
+        sample.claude_projects_bytes = r.bytes;
+        sample.claude_projects_files = r.files;
+        sample.claude_projects_stale = r.timedOut || false;
+      }
+    } catch (_) { /* ignore */ }
+
+    this._diskUsageCache = sample;
+    this._diskUsageCacheAt = now;
+
+    // DISK-03: quota-pressure detection. Open the circuit breaker at
+    // 90% of quota; let _maybeExitDiskFull close it at 80% (hysteresis).
+    const pct = this._diskUsagePercentOfQuota();
+    if (pct !== null && pct >= 90 && !this._diskFull) {
+      this._enterDiskFull({
+        source: 'quota',
+        op: 'sample',
+        quota_used_pct: pct,
+      });
+    } else if (this._diskFull) {
+      this._maybeExitDiskFull();
+    }
+
+    return sample;
+  }
+
+  /**
+   * Async recursive directory size with a wall-clock deadline. Returns
+   * { bytes, files, timedOut } and never throws. On deadline, returns
+   * partial counts and timedOut: true.
+   */
+  async _dirSizeWithBudget(dir, deadline) {
+    const fsP = require('fs').promises;
+    let bytes = 0;
+    let files = 0;
+    const queue = [dir];
+    while (queue.length > 0) {
+      if (Date.now() > deadline) {
+        return { bytes, files, timedOut: true };
+      }
+      const cur = queue.shift();
+      let entries;
+      try {
+        entries = await fsP.readdir(cur, { withFileTypes: true });
+      } catch (_) { continue; }
+      for (const ent of entries) {
+        if (Date.now() > deadline) {
+          return { bytes, files, timedOut: true };
+        }
+        const p = require('path').join(cur, ent.name);
+        if (ent.isDirectory()) {
+          queue.push(p);
+        } else if (ent.isFile()) {
+          try {
+            const st = await fsP.stat(p);
+            bytes += st.size;
+            files++;
+          } catch (_) { /* racy unlink */ }
+        }
+      }
+    }
+    return { bytes, files, timedOut: false };
+  }
+
+  /**
+   * DISK-02: opt-in compaction sweep wired from setupAutoSave.
+   * Composes UsageReader#compactStale() and a usage-cache refresh.
+   */
+  async _diskCompactionSweep() {
+    if (!this.usageReader || typeof this.usageReader.compactStale !== 'function') return;
+    const result = await this.usageReader.compactStale();
+    if (result && (result.compacted.length > 0 || result.errors.length > 0)) {
+      console.log('[disk-compact]', JSON.stringify({
+        scanned: result.scanned,
+        compacted_count: result.compacted.length,
+        compacted_bytes_in: result.compacted.reduce((s, c) => s + (c.bytesIn || 0), 0),
+        compacted_bytes_out: result.compacted.reduce((s, c) => s + (c.bytesOut || 0), 0),
+        errors: result.errors.length,
+      }));
+    }
+    // Invalidate disk-usage cache so the next diagnostics tick reports fresh numbers.
+    this._diskUsageCacheAt = 0;
+    // Refresh in background (non-blocking).
+    this._sampleDiskUsage(150).catch(() => {});
+  }
+
+  /**
+   * DISK-02 (rides along): one-shot startup pruning of stale .crash
+   * files. Always-on. Keeps the most recent crash file for inspection.
+   */
+  async _pruneCrashFilesOnce() {
+    if (!this.sessionStore || !this.sessionStore.storageDir) return;
+    const UsageReader = require('./usage-reader');
+    try {
+      const result = await UsageReader.pruneCrashFiles(this.sessionStore.storageDir);
+      if (result && result.pruned && result.pruned.length > 0) {
+        console.log('[disk-prune-crash]', JSON.stringify({
+          pruned_count: result.pruned.length,
+          kept_count: result.skipped.length,
+        }));
+      }
+    } catch (_) { /* best effort */ }
   }
 
   cleanupWebSocketConnection(wsId) {
@@ -3835,13 +4405,29 @@ class ClaudeCodeWebServer {
       if (session) {
         session.connections.delete(wsId);
         session.lastActivity = new Date();
-        
+        this._pushEvictionEntry(wsInfo.claudeSessionId); // PROC-04
+
         // Don't stop Claude if other connections exist
         if (session.connections.size === 0 && this.dev) {
           console.log(`No more connections to session ${wsInfo.claudeSessionId}`);
         }
       }
     }
+
+    // PROC-03 defense-in-depth: explicitly drop the message/close/error
+    // listeners attached in handleWebSocketConnection (lines ~2855-2898).
+    // Today there is no observed leak — GC reclaims listeners once the
+    // Map entry is dropped — but the explicit teardown mirrors the
+    // `_ptyDisposables` pattern (base-bridge.js) and `_cleanupFsWatchSession`
+    // (this file). Belt-and-suspenders against (a) future delayed callbacks
+    // executing post-close, (b) future handler additions that forget
+    // teardown, and (c) listener-closure GC pressure under reconnect storms.
+    // See docs/audits/proc-ws-listener-cleanup.md.
+    try {
+      if (wsInfo.ws && typeof wsInfo.ws.removeAllListeners === 'function') {
+        wsInfo.ws.removeAllListeners();
+      }
+    } catch (_) { /* cleanup must never throw — runs from inside ws.on('close')/('error') */ }
 
     this.webSocketConnections.delete(wsId);
   }
@@ -3919,6 +4505,12 @@ class ClaudeCodeWebServer {
     }
     if (this.diagnosticsHeartbeatInterval) {
       clearInterval(this.diagnosticsHeartbeatInterval);
+    }
+    if (this.diskCompactInterval) {
+      clearInterval(this.diskCompactInterval);
+    }
+    if (this.diskUsageSampleInterval) {
+      clearInterval(this.diskUsageSampleInterval);
     }
 
     // Stop memory monitoring to release the interval timer

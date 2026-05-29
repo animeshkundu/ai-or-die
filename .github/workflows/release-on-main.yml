@@ -1,5 +1,10 @@
 name: Release on main
 
+# INTENTIONAL auto-trigger on push to main.
+# Per user directive (2026-05-27), CI and Voice workflows were narrowed to
+# PR-only to avoid fan-out on every push. This release workflow is the one
+# exception: it must fire on main push to auto-tag, publish to npm, and
+# build release binaries. DO NOT convert this to PR-only or manual.
 on:
   push:
     branches: [ main ]

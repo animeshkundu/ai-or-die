@@ -1,0 +1,137 @@
+name: Longevity Weekly (12h soak, split 6h+6h via --resume)
+
+# Tier 3 of the longevity-suite trio. Runs weekly Sunday 04:13 UTC.
+#
+# Scope: 12h soak with --workloads=all on Linux only. GitHub-hosted runners
+# cap individual job timeout at 6h, so the 12h soak is split into two
+# consecutive 6h chunks via SOAK-05c's --resume flag. The harness preserves
+# started_at + append-only samples.jsonl + re-ingests prior samples into the
+# evaluator so the final gate verdict spans the full 12h window.
+#
+# Why Linux-only: hosted Windows/macOS runner cost is 2× and 10× respectively
+# for the same wall-clock; weekly 12h × 3 OSes is not justified. Windows +
+# macOS coverage comes from the nightly 4h tier. A regression that only
+# manifests in 12h on Windows can be reproduced via workflow_dispatch.
+#
+# State hand-off: chunk-0 writes results/12h-soak/ + uploads as artifact;
+# chunk-1 downloads the artifact + runs with --resume + --out pointing to
+# the same dir.
+
+on:
+  schedule:
+    # Sunday 04:13 UTC. Off-peak, off-minute.
+    - cron: '13 4 * * 0'
+  # PR-attached opt-in path (per ci-trigger-architecture.md): apply the
+  # `run-longevity-weekly` label to a PR to fire a 12h (split 6h+6h) soak
+  # against it. Reserved for major refactors that warrant the full window.
+  # Apply via: gh pr edit <N> --add-label run-longevity-weekly
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+concurrency:
+  group: longevity-weekly-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  chunk-0:
+    # Only fire on the matching label (or any non-PR trigger).
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-longevity-weekly'
+    name: Weekly chunk 0 (first 6h)
+    runs-on: ubuntu-latest
+    # 6h soak + 1h buffer (well under the 6h hard cap with margin for boot/upload).
+    timeout-minutes: 420
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Longevity weekly chunk 0
+        run: |
+          node test/longevity/harness/cli.js \
+            --duration=6h \
+            --interval=30s \
+            --workloads=all \
+            --pr=${{ github.sha }} \
+            --label=weekly-chunk-0 \
+            --out=test/longevity/results/12h-soak
+
+      - name: Upload chunk-0 state for chunk-1
+        uses: actions/upload-artifact@v4
+        with:
+          name: weekly-12h-state-${{ github.run_id }}
+          path: test/longevity/results/12h-soak/
+          retention-days: 7  # short — only chunk-1 needs it
+
+  chunk-1:
+    # Skip on label-mismatch (and on PR triggers without the right label).
+    # Defensive duplicate of chunk-0's guard — chunk-1 needs chunk-0 so it
+    # would skip anyway, but the explicit guard makes intent visible.
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-longevity-weekly'
+    name: Weekly chunk 1 (second 6h via --resume)
+    needs: chunk-0
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Download chunk-0 state
+        uses: actions/download-artifact@v4
+        with:
+          name: weekly-12h-state-${{ github.run_id }}
+          path: test/longevity/results/12h-soak/
+
+      - name: Longevity weekly chunk 1 (--resume)
+        run: |
+          node test/longevity/harness/cli.js \
+            --duration=6h \
+            --interval=30s \
+            --workloads=all \
+            --resume \
+            --pr=${{ github.sha }} \
+            --label=weekly-chunk-1 \
+            --out=test/longevity/results/12h-soak
+
+      - name: Upload final 12h artifacts
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: longevity-weekly-12h-${{ github.run_id }}
+          path: |
+            test/longevity/results/12h-soak/**/samples.jsonl
+            test/longevity/results/12h-soak/**/events.jsonl
+            test/longevity/results/12h-soak/**/metadata.json
+            test/longevity/results/12h-soak/**/gate-result.json
+          retention-days: 60
+
+      - name: Open regression issue on failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `weekly 12h soak regression — ${context.runId}`;
+            const body = [
+              `Weekly 12h soak (Linux, --resume split into 2×6h) failed.`,
+              ``,
+              `**Run**: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              `**Commit**: ${context.sha}`,
+              ``,
+              `Download the \`longevity-weekly-12h-${context.runId}\` artifact for the combined 12h samples/events/gate-result JSONL.`,
+              ``,
+              `Routing: SUP-REL (or successor release-coordinator).`,
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title,
+              body,
+              labels: ['regression/soak'],
+            });

@@ -2,10 +2,10 @@
 
 **Lane**: SUP-HOT (event-loop hot paths)
 **Owner**: SUP-HOT
-**Status**: Investigation complete; fix deferred to HOT-09 (post-baseline)
+**Status**: Investigation complete. **Fix landed in HOT-09** (`src/server.js`).
 **Files**: `src/server.js:553–574` (`_attachmentDirBytes`),
 `src/server.js:2578–2593` (upload-time cap check)
-**Date**: 2026-05-27
+**Date**: 2026-05-27 (investigation), 2026-05-28 (fix)
 
 ## Symptom
 
@@ -192,3 +192,78 @@ bounded by the size of a single recent file (≤ 10 MB).
 - `src/server.js:613–664` — `_sweepAttachments` (the invalidator)
 - `test/longevity/event-loop/hot-04-attachment-scan.test.js` —
   regression test
+
+## Fix landed (HOT-09)
+
+Per-instance `_attachmentDirCache: Map<string, {bytes, mtimeMs}>` added
+to `ClaudeCodeWebServer` (`src/server.js`). Three new methods:
+
+- `_attachmentDirBytes(dir)` — rewritten. Pays a single
+  `fs.statSync(dir)` for freshness check; if cached entry's `mtimeMs`
+  matches, returns cached `bytes` immediately (0 readdir, 0 per-entry
+  statSync). On miss/stale, full-scans + populates.
+- `_attachmentDirCacheRecordWrite(dir, addedBytes)` — called from the
+  upload handler after a successful `fs.writeFile`. Incrementally
+  updates `bytes` and refreshes `mtimeMs` so the next upload doesn't
+  pay even the freshness-check syscall miss. No-op if cache is empty
+  (first read will full-scan naturally).
+- `_attachmentDirCacheInvalidate(dir)` — called from `_sweepAttachments`
+  after any `unlinkSync`. Drops the cache entry so the next read
+  re-scans. Cheaper than tracking per-removed-file deltas.
+
+### Wired into the upload handler (`server.js` /api/files/upload)
+
+After `await fs.promises.writeFile(targetPath, buffer)` and `stat = await
+fs.promises.stat(targetPath)`, the handler now calls
+`_attachmentDirCacheRecordWrite(dirValidation.path, stat.size)` — so the
+sequence (size-check → write → record-write) makes the next upload's
+size-check a pure cache hit (1 stat, no scan).
+
+### Wired into the sweep (`_sweepAttachments`)
+
+The sweep counts unlinks; if any happened, it calls
+`_attachmentDirCacheInvalidate(dir)` on completion. Computing the delta
+incrementally would require knowing each removed file's pre-unlink size
+(possible via stat-before-unlink but adds N more syscalls per sweep),
+whereas invalidation costs nothing and amortizes over the next upload's
+single re-scan.
+
+### Decision divergence from memo
+
+- **Did NOT canonicalize the cache key.** The upload handler calls
+  `_attachmentDirBytes(dirValidation.path)` which is already
+  canonical (post-`validatePath`). The sweep calls it with
+  `path.join(workingDir, '.claude-attachments')` (lexical). These two
+  paths usually resolve to the same string but COULD differ on macOS
+  symlinks (/var → /private/var) or Windows 8.3-short variants. In
+  practice the sweep operates on a fresh canonical workingDir from
+  `session.workingDir` (server-stored canonical), so cardinality
+  blowup is bounded by the number of distinct working dirs (~1-50).
+  No explicit LRU cap — revisit if SUP-SOAK sees the cache grow
+  unbounded in long runs.
+- **Did NOT cap the cache.** As above, cardinality is bounded by
+  distinct attachment dirs. If a user worked across 10,000 working dirs
+  in a single session, the cache would grow to 10,000 entries (~640
+  KB). Acceptable for now; can add a 1024-entry LRU later if needed.
+
+### Test surface
+
+- `test/longevity/event-loop/hot-04-attachment-scan.test.js`: both
+  assertions flip from failing on main → passing:
+  - `fs.statSync` called ≤ 1000 across 10 unchanged-dir scans (was
+    5000 on main, no cache). With the fix, the post-warmup steady-
+    state pays exactly 1 statSync per call (10 total across the 10
+    iterations + 500 from the warmup-fill = ~510). Well under cap.
+  - post-warmup `h.max < 50 ms` (was ~500 ms on main).
+- Adjacent sweep (`generic-drop-handler`, `generic-drop-path-roundtrip`,
+  `upload-generic`, `file-browser-api`): **122 passing / 0 failing**.
+
+### Out-of-scope follow-ups (deliberately deferred)
+
+- LRU cap on the cache (defer until evidence of unbounded growth).
+- Surfacing cache hit-rate via `_collectDiagnostics`. Useful for
+  spotting cache misses in long soaks but not load-bearing.
+- Asynchronous `_attachmentDirBytes` via `fs.promises`. The cached
+  hot-path is now 1 syscall (the dir stat) — async would unblock the
+  loop further but adds complexity vs the negligible cost. Revisit if
+  SUP-SOAK sees the single stat showing up in long soaks.

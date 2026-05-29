@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Performance
+- HOT-06 — TerminalBridge OSC 7: added a process-wide validated-path
+  cache (LRU 256 entries, 5 s TTL) on top of the existing per-session
+  same-raw fast-path. Eliminates redundant `validatePath` syscalls
+  across multi-tab clients hitting the same cwd, and across
+  intra-session prompt alternation (e.g. `pushd`/`popd`, multi-segment
+  prompts). See `docs/audits/hot-01-osc7-dedupe.md`.
+- HOT-07 — FileWatcher: moved MD5 hashing off the `_flush()` hot path
+  into a bounded async queue (`fs.promises.readFile`, concurrency 8).
+  Eliminates the synchronous `fs.readFileSync` that blocked the event
+  loop for the duration of each disk read under bulk-edit storms
+  (~600 ms cumulative for a 20-file burst). Per-path hash cache
+  preserves `file-tabs.js`'s content-unchanged short-circuit for
+  rapid same-mtime re-touches. See `docs/audits/hot-02-filewatcher-hash.md`.
+- HOT-09 — Server attachment-dir size check: replaced the per-upload
+  O(N) `readdirSync` + per-entry `statSync` scan with a per-dir
+  `(bytes, mtimeMs)` cache. Freshness is verified by a single
+  `fs.statSync(dir)` to compare mtimes; matching mtime returns cached
+  bytes (no scan). Successful uploads incrementally update the cache;
+  the sweep invalidates it. Eliminates the 50 ms event-loop block per
+  upload on a 1000-file SSD dir (5-20 s on a network share). See
+  `docs/audits/hot-04-attachment-scan.md`.
+- HOT-10 — SessionStore: replaced the in-process bare `JSON.stringify`
+  on the save hot path with a streaming serializer that stringifies
+  each session entry on its own tick, yielding via `await
+  setImmediate()` between entries. Per-session work is bounded at
+  ~10 ms on a 512 KB output buffer, so the event-loop stays
+  interruptible regardless of session count. Output is byte-identical
+  to `JSON.stringify(data)` for the standard envelope shape (asserted
+  by `test/session-store.test.js`); on-disk format unchanged. Picked
+  this over the memo-recommended `worker_threads` offload because
+  structured-clone of the data on the sender thread would re-introduce
+  most of the block we're trying to eliminate. See
+  `docs/audits/hot-05-sessionstore-stringify.md`.
+
+### Security
+- HOT-08 — Server WebSocket message handler: added a 1 MB
+  application-layer size guard (`MAX_WS_MESSAGE_BYTES`) before
+  `JSON.parse`. Oversized frames now receive
+  `{type:'error', code:'message_too_large'}` and a WS-standard 1009
+  close. Prevents a buggy or malicious client from blocking the event
+  loop for tens-to-hundreds of ms per frame (the ws library's
+  protocol-layer `maxPayload: 8 MB` was the only prior gate, and it
+  doesn't prevent JSON.parse cost). See
+  `docs/audits/hot-03-ws-frame-size.md`.
+
 ## [0.1.0] - 2025-02-06
 
 ### Added

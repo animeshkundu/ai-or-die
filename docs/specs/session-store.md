@@ -42,7 +42,7 @@ Serializes the session Map to disk.
 2. Converts the `Map` to an array of plain objects, applying these transformations:
    - `active` is always set to `false` (processes cannot survive restarts).
    - `connections` is serialized as an empty array (WebSocket references are not persistable).
-   - `outputBuffer` is truncated to the **last 100 lines** to limit file size.
+   - `outputBuffer` is truncated to the **last 1000 lines** and capped at **512 KB** total bytes (see `_capBufferByBytes`).
    - `sessionStartTime` and `sessionUsage` are preserved if present, otherwise default values are used.
 3. Wraps the array in an envelope:
    ```json
@@ -52,10 +52,22 @@ Serializes the session Map to disk.
      "sessions": [ ... ]
    }
    ```
-4. Writes to a temp file (`sessions.json.tmp`) first.
-5. Renames temp file to `sessions.json` (atomic write to prevent corruption on crash).
+4. **Atomic, durable write** (DISK-01 — see `docs/audits/disk-atomic-write.md`):
+   1. Opportunistically `unlink` any stale `${sessionsFile}.tmp` from a prior aborted run (defense-in-depth).
+   2. `setImmediate` yield, then `JSON.stringify` the envelope (CPU-bound; HOT-05 covers full off-loop migration).
+   3. `fs.open(temp, 'w', 0o600)` → `writeFile(jsonStr)` → **`fsync` the temp fd** → `close`. The fsync makes the file contents durable before the rename publishes them.
+   4. `fs.rename(temp, target)` — atomic via `rename(2)` on POSIX, `MoveFileExW(MOVEFILE_REPLACE_EXISTING)` on Windows (libuv).
+   5. **POSIX only:** `fs.open(storageDir, 'r')` → `fsync` the directory fd → `close`. Makes the rename itself durable. Skipped on Windows (NTFS journal + MoveFileExW provide the equivalent guarantee, and Node's fsync on a directory handle EPERMs).
+   6. Errors on the directory fsync are caught and ignored (some exotic filesystems — procfs, FUSE — refuse fsync on directory handles).
 
 **Returns:** `true` on success, `false` on error.
+
+**Last-error surfacing (DISK-03):** After every call, `this._lastSaveError`
+is either `null` (success) or the `Error` that aborted the save. The
+server reads `_lastSaveError.code` and opens the disk-full circuit
+breaker on `ENOSPC` / `EDQUOT` — see `docs/specs/disk-budget.md` §4.
+
+**Durability guarantee:** After `saveSessions` resolves with `true`, a power loss or hard reboot will leave `sessionsFile` either fully containing the just-saved content OR fully containing the previously saved content (or no file at all, for the first-ever save). It will NOT leave a partial, empty, or torn file. This is enforced by the regression test `test/longevity/disk/atomic-write-power-loss.test.js`.
 
 ### `loadSessions() => Promise<Map>`
 

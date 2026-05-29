@@ -1,10 +1,14 @@
 name: CI
 
+# Trigger policy (per user directive, 2026-05-27): PR-only.
+# Avoid auto-fanout on every push — feature-branch pushes are throwaway
+# and main-push CI is redundant with the PR run that just merged.
+# Release/publish on main push lives in release-on-main.yml.
+# Use workflow_dispatch for manual re-runs (e.g. retry a flaky job).
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-main-${{ github.event.pull_request.number || github.sha }}
@@ -12,6 +16,10 @@ concurrency:
 
 jobs:
   test:
+    # Explicit name so branch protection can reliably reference the check
+    # context as "CI / test (ubuntu-latest)" etc. (See
+    # docs/audits/ci-branch-protection-checklist.md.)
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     strategy:
@@ -587,6 +595,7 @@ jobs:
           retention-days: 14
 
   test-package:
+    name: test-package (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     needs: test
     timeout-minutes: 10
@@ -605,6 +614,7 @@ jobs:
         run: node scripts/smoke-test-package.js
 
   build-binary:
+    name: build-binary (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 12
     strategy:
