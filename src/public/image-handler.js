@@ -115,6 +115,45 @@ function detectImageInClipboard(clipboardData) {
   return null;
 }
 
+/**
+ * Collect NON-image File objects from a paste clipboard (files copied from a
+ * file manager surface as clipboardData.files / items with kind === 'file').
+ * Accepted image types are excluded — those go through the image preview flow.
+ * Used by onPaste's fall-through so non-image paste reaches the generic upload
+ * pipeline. Returns [] when there are no such files (normal text paste).
+ *
+ * @param {DataTransfer} clipboardData
+ * @returns {File[]}
+ */
+function collectNonImageFiles(clipboardData) {
+  var out = [];
+  if (!clipboardData) return out;
+
+  if (clipboardData.files && clipboardData.files.length > 0) {
+    for (var i = 0; i < clipboardData.files.length; i++) {
+      var f = clipboardData.files[i];
+      if (f && !isAcceptedImageType(f.type)) out.push(f);
+    }
+    // `files` is the authoritative FileList when present; `items` mirrors the
+    // same files (plus non-file entries), so scanning both would double-count.
+    // Fall back to `items` ONLY when `files` yielded nothing — same precedence
+    // as detectImageInClipboard above.
+    if (out.length) return out;
+  }
+
+  if (clipboardData.items && clipboardData.items.length > 0) {
+    for (var j = 0; j < clipboardData.items.length; j++) {
+      var item = clipboardData.items[j];
+      if (item.kind === 'file' && !isAcceptedImageType(item.type)) {
+        var asFile = item.getAsFile();
+        if (asFile) out.push(asFile);
+      }
+    }
+  }
+
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Blob → base64
 // ---------------------------------------------------------------------------
@@ -504,6 +543,20 @@ function attachImageHandler(terminal, containerEl, options) {
           e.preventDefault();
           e.stopPropagation();
           showImagePreview(image, options.onImageReady);
+          return;
+        }
+        // No image — if non-image files were pasted (e.g. copied from a file
+        // manager) and a handler is wired, route them to the generic pipeline.
+        // Purely additive: when there are no such files this is a no-op and the
+        // normal text paste proceeds untouched.
+        if (typeof options.onFilesPaste === 'function') {
+          var nonImageFiles = collectNonImageFiles(e.clipboardData);
+          if (nonImageFiles.length) {
+            e.preventDefault();
+            e.stopPropagation();
+            options.onFilesPaste(nonImageFiles);
+            return;
+          }
         }
         // No image found — let the normal text paste proceed
       }
@@ -636,6 +689,7 @@ var imageHandlerExports = {
   mimeToExtension: mimeToExtension,
   formatFileSize: formatFileSize,
   detectImageInClipboard: detectImageInClipboard,
+  collectNonImageFiles: collectNonImageFiles,
   blobToBase64: blobToBase64,
   showImagePreview: showImagePreview,
   triggerFilePicker: triggerFilePicker,

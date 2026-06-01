@@ -132,17 +132,31 @@ function sanitizeFileName(name) {
     throw new Error('File name is required');
   }
 
-  // Strip path separators, null bytes, and control characters
+  // Strip path separators, null bytes, and control characters. Windows-first
+  // (primary deployment target): also strip the characters NTFS forbids in a
+  // file name — `< > : " | ? *`. Stripping ':' additionally neutralizes NTFS
+  // Alternate Data Streams (`name:stream`) and any stray drive-letter colon.
   let sanitized = name
     .replace(/[/\\]/g, '')
+    .replace(/[<>:"|?*]/g, '')
     .replace(/\0/g, '')
     .replace(/[\x01-\x1f\x7f]/g, '');
 
-  // Trim whitespace and dots from start/end
+  // Trim whitespace and dots from start/end (also covers Windows' rule that a
+  // file name may not end in a dot or space).
   sanitized = sanitized.replace(/^[\s.]+|[\s.]+$/g, '');
 
   if (!sanitized) {
     throw new Error('File name is empty after sanitization');
+  }
+
+  // Windows reserved device names (CON, PRN, AUX, NUL, COM1-9, LPT1-9) are
+  // illegal as a file's base name regardless of extension — `COM1.tar.gz` is
+  // still the COM1 device. Windows matches on the stem before the first dot,
+  // case-insensitively. Prefix with '_' to neutralize while staying readable.
+  const stem = sanitized.split('.')[0];
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) {
+    sanitized = '_' + sanitized;
   }
 
   if (sanitized.length > 255) {

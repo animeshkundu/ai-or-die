@@ -1083,7 +1083,7 @@ When uploading a file that already exists:
 
 ## Generic file drop
 
-A page-wide drop target that accepts **any** file MIME type (not just images). Cross-link with [`image-paste.md`](image-paste.md) — the image flow is unchanged; this section adds the generic flow that runs alongside it.
+A page-wide attachment pipeline that accepts **any** file MIME type (not just images), reachable from **four surfaces**: drag-drop, the attach button, the context-menu "Attach File…" item, and OS paste of files. Cross-link with [`image-paste.md`](image-paste.md) — the image flow is unchanged; this section adds the generic flow that runs alongside it.
 
 ### Dispatcher
 
@@ -1096,11 +1096,20 @@ A page-wide drop target that accepts **any** file MIME type (not just images). C
 
 `image-handler.js` is **not renamed** — the image flow just shipped, the rename buys nothing functional, and adversarial review (codex) flagged the rename as unjustified blast radius. The new code lives in a sibling module `generic-drop-handler.js` that exports an `attachGenericDropHandler` and an internal `_isImageMime(file)` helper used by the dispatcher.
 
+### Non-drop surfaces (attach button + paste)
+
+The same partition→upload→inject pipeline is reused — never duplicated — by the non-drop surfaces:
+
+- `attachGenericDropHandler(...)` returns a **`dispatchFiles(fileList)`** method (the internal drop dispatcher, surfaced) so any caller can feed it files and get identical routing (image → preview modal, non-image → upload + `@<path>`, same `MAX_FILES_PER_DROP` cap).
+- The module also exports **`triggerFilePicker(onFiles, { multiple })`** — a hidden `<input type="file">` with **no `accept` filter** (any file type).
+- `app.js` `_attachFiles(files)` partitions client-side: image files (via `imageHandler.isAcceptedImageType`) take the **existing, unchanged** image preview → `image_upload` path; everything else goes to `dispatchFiles`. The **attach button** and **context-menu "Attach File…"** open `triggerFilePicker` → `_attachFiles`.
+- **Paste:** `attachImageHandler`'s paste listener keeps image precedence; *after* the image branch declines, non-image files in `clipboardData` (e.g. a file copied from the OS file manager) are surfaced via `options.onFilesPaste(files)` → `_attachFiles`. Plain text paste is untouched. (The async-clipboard context-menu "Paste Image" stays image-only — the Clipboard API cannot retrieve arbitrary files; the OS Ctrl+V path above is the non-image route.)
+
 ### Generic upload pipeline
 
 For each non-image file dropped:
 
-1. Upload to `path.join(session.workingDir, '.claude-attachments', '<uuid>-<sanitized-basename>')` via the existing `POST /api/files/upload` (which already enforces base64 JSON, 10 MB cap, blocked-extension list, sanitization, and `validatePath()`).
+1. Upload to `path.join(session.workingDir, '.claude-attachments', '<uuid>-<sanitized-basename>')` via the existing `POST /api/files/upload` (which already enforces base64 JSON, 10 MB cap, blocked-extension list, sanitization, and `validatePath()`). The basename passes through `sanitizeFileName` (`src/utils/file-utils.js`), which is **Windows-hardened** (primary deployment target): it strips path separators, control chars, and the NTFS-forbidden set `< > : " | ? *` (the `:` also neutralizes Alternate Data Streams), trims trailing dot/space, and prefixes reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`) with `_`.
 2. On 201, inject **`@<absolute-path>`** into the terminal as bracketed paste — Claude's native file reference syntax. Avoids shell-quoting hazards entirely. Codex/Gemini bridges accept the same `@<path>` form (or can branch on `bridgeType` for variant syntaxes if those CLIs diverge in future).
 3. On per-file failure, surface a toast with the basename + the server's error code (size / blocked / 4xx).
 

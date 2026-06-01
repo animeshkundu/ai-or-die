@@ -429,4 +429,112 @@ describe('generic-drop-handler.js (pure helpers)', function () {
       });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // dispatchFiles — the public entry point that non-drop surfaces (attach
+  // button, paste) feed. Must route through the exact same partition + upload
+  // + @path injection pipeline as a drop, so behavior can't diverge.
+  // -------------------------------------------------------------------------
+  describe('dispatchFiles (public entry point)', function () {
+    it('is exposed on the handler return object', function () {
+      var handler = attachGenericDropHandler({
+        containerEl: container,
+        getWorkingDir: function () { return '/Users/foo'; },
+        onImageDrop: function () {},
+        uploadImpl: function () { return Promise.resolve({ ok: true, status: 201 }); },
+        injectAtPath: function () {},
+      });
+      assert.strictEqual(typeof handler.dispatchFiles, 'function');
+    });
+
+    it('routes non-image files to upload + @path injection', function (done) {
+      var injects = [];
+      var handler = attachGenericDropHandler({
+        containerEl: container,
+        getWorkingDir: function () { return '/Users/foo'; },
+        onImageDrop: function () {},
+        uploadImpl: function (target) {
+          return Promise.resolve({
+            ok: true, status: 201,
+            json: function () { return Promise.resolve({ path: target }); },
+          });
+        },
+        injectAtPath: function (atPath) { injects.push(atPath); },
+      });
+      handler.dispatchFiles([makeFile('notes.txt', 'text/plain')]);
+      var tries = 0;
+      (function wait() {
+        if (injects.length || tries++ > 50) {
+          try {
+            assert.strictEqual(injects.length, 1, 'one @path injected');
+            assert.strictEqual(injects[0].indexOf('@'), 0, 'starts with @: ' + injects[0]);
+            done();
+          } catch (e) { done(e); }
+          return;
+        }
+        setImmediate(wait);
+      })();
+    });
+
+    it('routes image files to the image hook, not upload', function () {
+      var imageCalls = [];
+      var uploadCalls = 0;
+      var handler = attachGenericDropHandler({
+        containerEl: container,
+        getWorkingDir: function () { return '/Users/foo'; },
+        onImageDrop: function (files) { imageCalls.push(files); },
+        uploadImpl: function () { uploadCalls++; return Promise.resolve({ ok: true, status: 201 }); },
+        injectAtPath: function () {},
+      });
+      handler.dispatchFiles([makeFile('cat.png', 'image/png')]);
+      assert.strictEqual(imageCalls.length, 1, 'image hook fired');
+      assert.strictEqual(uploadCalls, 0, 'image must not upload via generic path');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // triggerFilePicker — the attach button / context-menu picker. Must accept
+  // ANY file type (no `accept` filter) so non-image files can be attached.
+  // -------------------------------------------------------------------------
+  describe('triggerFilePicker', function () {
+    it('opens a file input with NO accept filter and multiple when asked', function () {
+      var created = null;
+      var origCreate = document.createElement.bind(document);
+      document.createElement = function (tag) {
+        var el = origCreate(tag);
+        if (tag === 'input') created = el;
+        return el;
+      };
+      try {
+        window.genericDropHandler.triggerFilePicker(function () {}, { multiple: true });
+      } finally {
+        document.createElement = origCreate;
+      }
+      assert.ok(created, 'an <input> was created');
+      assert.strictEqual(created.type, 'file');
+      assert.strictEqual(created.getAttribute('accept'), null, 'no accept filter — any file type');
+      assert.strictEqual(created.multiple, true, 'multiple enabled');
+    });
+
+    it('invokes onFiles with the selected files', function () {
+      var origCreate = document.createElement.bind(document);
+      var input = null;
+      document.createElement = function (tag) {
+        var el = origCreate(tag);
+        if (tag === 'input') input = el;
+        return el;
+      };
+      var received = null;
+      try {
+        window.genericDropHandler.triggerFilePicker(function (files) { received = files; });
+      } finally {
+        document.createElement = origCreate;
+      }
+      // Simulate a selection: define files then fire change.
+      Object.defineProperty(input, 'files', { value: [makeFile('a.bin', 'application/octet-stream')], configurable: true });
+      input.dispatchEvent(new window.Event('change'));
+      assert.ok(received && received.length === 1, 'onFiles received the selection');
+      assert.strictEqual(received[0].name, 'a.bin');
+    });
+  });
 });

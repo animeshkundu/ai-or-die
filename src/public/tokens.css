@@ -127,6 +127,17 @@
   --z-input-overlay: 550;
   --z-auth: 9999;
   --z-max: 9999;
+
+  /* --- Safe-area insets (PWA standalone / notched devices) ---
+     Consumed by fixed/absolute overlays so they clear the iOS Dynamic Island
+     (top) and home indicator (bottom). The JS polyfill in app.js sets
+     --safe-area-inset-top/-bottom as VARIABLES to work around the WebKit bug
+     where env(safe-area-inset-*) returns 0px in iOS standalone; we fall back to
+     env() then 0. In normal (non-standalone) mode these resolve to 0, and the
+     consuming rules are gated behind html.pwa-standalone anyway, so there is no
+     effect on browser-tab or desktop-non-PWA layouts. */
+  --sa-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --sa-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
 }
 
 /* ============================================================

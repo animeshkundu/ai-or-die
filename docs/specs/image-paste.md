@@ -38,9 +38,9 @@ A standalone module that attaches to the terminal container and intercepts image
 
 | Source | Trigger | Notes |
 |--------|---------|-------|
-| Clipboard paste | `paste` event on `document` | Filters for `image/*` MIME types from `clipboardData.items` |
+| Clipboard paste | `paste` event on `document` | Filters for `image/*` MIME types from `clipboardData.items`. Non-image files in the clipboard fall through to the [Generic file drop](file-browser.md#generic-file-drop) pipeline via `options.onFilesPaste`. |
 | Drag and drop | `drop` event on terminal container | Filters for `image/*` files from `dataTransfer.files`. The shared `drop` dispatcher routes non-image MIMEs to [Generic file drop](file-browser.md#generic-file-drop) instead. |
-| File picker | Click on "Attach Image" button or context menu item | Opens a hidden `<input type="file" accept="image/*">` |
+| File picker | Click on "Attach File" button or context-menu item | Opens a hidden `<input type="file">` (no `accept` filter — any file type). Picked images keep this preview-modal flow; non-images route to [Generic file drop](file-browser.md#generic-file-drop). |
 
 #### Preview Modal
 

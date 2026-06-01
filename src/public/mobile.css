@@ -2,17 +2,39 @@
    Component-level responsive styles belong in their respective component CSS files.
    This file contains ONLY cross-cutting mobile concerns that span multiple components. */
 
-/* Safe area insets for notched devices (iPhone X+, etc.) */
+/* Safe area insets for notched devices (iPhone X+, etc.)
+   Top-axis padding is gated to PWA standalone mode (html.pwa-standalone) because
+   apple-mobile-web-app-status-bar-style="black-translucent" only causes the
+   Dynamic Island / status-bar collision when launched from the home screen.
+   In normal mobile-Safari/Edge tab mode the browser chrome already occupies that
+   space, so adding padding-top there would visibly push content down for no gain.
+   The CSS variable --safe-area-inset-top is populated by a JS polyfill in app.js
+   to work around the known WebKit bug where env(safe-area-inset-top) sometimes
+   returns 0px in iOS PWA standalone; env() is kept as the secondary fallback. */
 @supports (padding: env(safe-area-inset-top)) {
     .session-tabs-bar {
         padding-left: max(10px, env(safe-area-inset-left));
         padding-right: max(10px, env(safe-area-inset-right));
     }
+    html.pwa-standalone .session-tabs-bar {
+        padding-top: var(--safe-area-inset-top, env(safe-area-inset-top));
+    }
+    html.pwa-standalone .file-browser-panel .file-browser-header {
+        padding-top: var(--safe-area-inset-top, env(safe-area-inset-top));
+    }
+    /* Baseline (any env()-capable browser) preserves the long-standing menu
+       inset; in tab mode env(safe-area-inset-top) is 0 so this is a no-op,
+       but it guards against any non-PWA notched case the standalone rule
+       below wouldn't cover. The standalone rule wins by specificity and
+       routes through the JS-populated --safe-area-inset-top variable. */
     .mobile-menu {
         padding-top: env(safe-area-inset-top);
     }
+    html.pwa-standalone .mobile-menu {
+        padding-top: var(--safe-area-inset-top, env(safe-area-inset-top));
+    }
     .mode-switcher {
-        bottom: max(80px, calc(80px + env(safe-area-inset-bottom)));
+        bottom: max(80px, calc(80px + var(--sa-bottom)));
         right: max(20px, env(safe-area-inset-right));
     }
 }
@@ -183,12 +205,12 @@
 
     /* Account for bottom nav height */
     #app {
-        padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(52px + var(--sa-bottom));
     }
 
     /* Move mode switcher above bottom nav */
     .mode-switcher {
-        bottom: calc(62px + env(safe-area-inset-bottom, 0px));
+        bottom: calc(62px + var(--sa-bottom));
     }
 }
 

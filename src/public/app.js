@@ -194,6 +194,7 @@ class ClaudeCodeWebInterface {
         this.setupTerminal();
         this._setupExtraKeys();
         this._setupOrientationHandler();
+        this._setupPwaStandaloneListener();
         this.setupUI();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
@@ -691,7 +692,12 @@ class ClaudeCodeWebInterface {
                                 caption: imageData.caption || ''
                             });
                         }
-                    }
+                    },
+                    // Non-image files pasted from a file manager (clipboardData
+                    // carries File objects) — route through the generic pipeline.
+                    // Fires only AFTER the image branch declines, so image paste
+                    // precedence is unchanged.
+                    onFilesPaste: (files) => this._attachFiles(files)
                 }
             );
         }
@@ -827,6 +833,7 @@ class ClaudeCodeWebInterface {
         const handleOrientationChange = () => {
             setTimeout(() => {
                 this.fitTerminal();
+                this._polyfillSafeAreaInsets();
                 // Re-evaluate keyboard state
                 if (window.visualViewport && this._keyboardOpen !== undefined) {
                     const heightDiff = window.innerHeight - window.visualViewport.height;
@@ -1091,9 +1098,20 @@ class ClaudeCodeWebInterface {
             }, 3000);
         };
 
-        // Attach Image button
+        // Attach File button (id is historical: attachImageBtn). Opens a picker
+        // for ANY file type — images go through the preview flow, other files
+        // upload to .claude-attachments/ and inject `@<path>`.
         const attachBtn = document.getElementById('attachImageBtn');
-        if (attachBtn && window.imageHandler) {
+        if (attachBtn && window.genericDropHandler
+                && typeof window.genericDropHandler.triggerFilePicker === 'function') {
+            attachBtn.addEventListener('click', () => {
+                window.genericDropHandler.triggerFilePicker(
+                    (files) => this._attachFiles(files),
+                    { multiple: true }
+                );
+            });
+        } else if (attachBtn && window.imageHandler) {
+            // Fallback: generic handler unavailable — keep the legacy image-only picker.
             attachBtn.addEventListener('click', () => {
                 window.imageHandler.triggerFilePicker((imageData) => {
                     this._pendingImageCaption = imageData.caption;
@@ -3419,7 +3437,7 @@ class ClaudeCodeWebInterface {
                             }
                         } else {
                             if (activeTerminal) {
-                                activeTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach Image instead.\x1b[0m\r\n');
+                                activeTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach File instead.\x1b[0m\r\n');
                             }
                         }
                     } catch (err) {
@@ -3428,8 +3446,15 @@ class ClaudeCodeWebInterface {
                     break;
                 }
                 case 'attachImage': {
-                    const attachSocket = activeSocket;
-                    if (window.imageHandler) {
+                    // Generalized to any file type (action id is historical).
+                    if (window.genericDropHandler
+                            && typeof window.genericDropHandler.triggerFilePicker === 'function') {
+                        window.genericDropHandler.triggerFilePicker(
+                            (files) => this._attachFiles(files),
+                            { multiple: true }
+                        );
+                    } else if (window.imageHandler) {
+                        const attachSocket = activeSocket;
                         window.imageHandler.triggerFilePicker((imageData) => {
                             this._pendingImageCaption = imageData.caption;
                             const msg = JSON.stringify({
@@ -3658,6 +3683,140 @@ class ClaudeCodeWebInterface {
             || window.matchMedia('(display-mode: minimal-ui)').matches
             || window.matchMedia('(display-mode: fullscreen)').matches
             || navigator.standalone === true;
+    }
+
+    // Shared attachment router for the non-drop surfaces (attach button,
+    // context-menu, paste). Partitions the selected files: anything that passes
+    // the image allowlist goes through the EXISTING image preview → image_upload
+    // path (unchanged), everything else is routed to the generic drop pipeline
+    // (upload to .claude-attachments/ + `@<path>` injection). Drag-and-drop does
+    // NOT use this — it already partitions internally in generic-drop-handler.
+    _attachFiles(files) {
+        if (!files) return;
+        const list = Array.prototype.slice.call(files);
+        if (!list.length) return;
+        const ih = window.imageHandler;
+        const isImg = (f) => !!(ih && typeof ih.isAcceptedImageType === 'function'
+            && ih.isAcceptedImageType(f.type));
+        const images = list.filter(isImg);
+        const others = list.filter((f) => !isImg(f));
+
+        // Capture the socket at attach-initiation time. The image preview modal
+        // is async (user-driven); the active session/socket can change while it
+        // is open. Sending on a captured target avoids the upload landing on a
+        // different session (mirrors the context-menu's existing capture).
+        const targetSocket = this.socket;
+
+        // Images: reuse the existing single-preview flow. The modal handles one
+        // image at a time, so if several images are selected we attach the first
+        // and tell the user rather than silently dropping the rest.
+        if (images.length && ih && typeof ih.showImagePreview === 'function') {
+            if (images.length > 1 && window.feedback && typeof window.feedback.info === 'function') {
+                window.feedback.info('Only the first image is attached — attach images one at a time.');
+            }
+            ih.showImagePreview(images[0], (imageData) => {
+                this._pendingImageCaption = imageData.caption;
+                if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
+                    targetSocket.send(JSON.stringify({
+                        type: 'image_upload',
+                        base64: imageData.base64,
+                        mimeType: imageData.mimeType,
+                        fileName: imageData.fileName || 'attached-image.png',
+                        caption: imageData.caption || ''
+                    }));
+                }
+            });
+        }
+
+        // Non-images: shared generic pipeline (upload + @path inject).
+        if (others.length && this._genericDropHandler
+                && typeof this._genericDropHandler.dispatchFiles === 'function') {
+            this._genericDropHandler.dispatchFiles(others);
+        } else if (others.length && window.feedback && typeof window.feedback.error === 'function') {
+            window.feedback.error('File upload is not available right now.');
+        }
+    }
+
+    _setupPwaStandaloneListener() {
+        const apply = () => {
+            const standalone = this._isInstalledPWA();
+            document.documentElement.classList.toggle('pwa-standalone', standalone);
+            if (standalone) this._polyfillSafeAreaInsets();
+        };
+        apply();
+        try {
+            const queries = [
+                '(display-mode: standalone)',
+                '(display-mode: fullscreen)',
+                '(display-mode: minimal-ui)',
+                '(display-mode: window-controls-overlay)',
+            ];
+            queries.forEach((q) => {
+                const mql = window.matchMedia(q);
+                if (mql.addEventListener) mql.addEventListener('change', apply);
+                else if (mql.addListener) mql.addListener(apply);
+            });
+        } catch (_) { /* ignore */ }
+    }
+
+    _polyfillSafeAreaInsets() {
+        // WebKit bug: env(safe-area-inset-top|bottom) sometimes returns 0px in
+        // iOS PWA standalone on Dynamic Island / notched devices. Probe the
+        // actual env() value per axis; if zero on a notch-class iOS device in
+        // portrait, substitute the known defaults (59px island, 34px home
+        // indicator). Results are exposed as the --safe-area-inset-* variables
+        // that tokens.css (--sa-top/--sa-bottom) and the gated rules consume.
+        if (!document.body) return;
+
+        const root = document.documentElement;
+
+        // Only ever set fake insets in installed-PWA standalone mode. In a
+        // normal browser tab env() is authoritative (and legitimately 0 at the
+        // top), so forcing a fallback there would push content down for no
+        // reason — and the converted `var(--sa-*)` consumers are ungated, so a
+        // stray value WOULD change non-PWA layout. Clear and bail when not PWA.
+        if (!this._isInstalledPWA()) {
+            root.style.removeProperty('--safe-area-inset-top');
+            root.style.removeProperty('--safe-area-inset-bottom');
+            return;
+        }
+
+        const measure = (axis) => {
+            const probe = document.createElement('div');
+            probe.style.cssText = 'position:fixed;left:0;width:1px;pointer-events:none;visibility:hidden;'
+                + (axis === 'top' ? 'top:0;' : 'bottom:0;')
+                + 'height:env(safe-area-inset-' + axis + ');';
+            document.body.appendChild(probe);
+            const px = probe.offsetHeight;
+            document.body.removeChild(probe);
+            return px;
+        };
+
+        const isPortrait = window.matchMedia('(orientation: portrait)').matches;
+        // Notch / Dynamic-Island iPhones are tall (aspect > 2); home-button
+        // iPhones (SE, 8) are ~1.78 and iPads ~1.33. Only those tall devices
+        // have a top cutout + bottom home indicator, so only they get the
+        // fallback when env() reports a (buggy) 0. This keeps the SE/iPad from
+        // gaining a phantom inset.
+        const longSide = Math.max(window.innerWidth, window.innerHeight);
+        const shortSide = Math.min(window.innerWidth, window.innerHeight);
+        const tall = shortSide > 0 && (longSide / shortSide) > 2;
+        const notchClass = isPortrait && this._isIOS() && tall;
+
+        const apply = (axis, fallback) => {
+            const measured = measure(axis);
+            const prop = '--safe-area-inset-' + axis;
+            if (measured > 0) {
+                root.style.setProperty(prop, measured + 'px');
+            } else if (notchClass) {
+                root.style.setProperty(prop, fallback);
+            } else {
+                root.style.removeProperty(prop);
+            }
+        };
+
+        apply('top', '59px');
+        apply('bottom', '34px');
     }
 
     _isIOS() {

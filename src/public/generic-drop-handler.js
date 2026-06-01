@@ -365,7 +365,41 @@
     return {
       cancelInFlight: cancelInFlight,
       destroy: destroy,
+      // Public entry point so non-drop surfaces (attach button, paste) can
+      // route a FileList/array of File objects through the EXACT same pipeline:
+      // image/* → onImageDrop, everything else → upload + @path inject, with the
+      // same MAX_FILES_PER_DROP cap and bounded-parallel queue.
+      dispatchFiles: dispatchDrop,
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // triggerFilePicker — open a hidden <input type="file"> with NO accept filter
+  // (any file type), used by the attach button / context menu. Mirrors
+  // image-handler.js's picker minus the image-only constraint. Resolves the
+  // selected files via the onFiles callback. Browser-only.
+  // ---------------------------------------------------------------------------
+  function triggerFilePicker(onFiles, opts) {
+    if (typeof document === 'undefined') return;
+    opts = opts || {};
+    var input = document.createElement('input');
+    input.type = 'file';
+    if (opts.multiple) input.multiple = true;
+    input.style.display = 'none';
+
+    function cleanup() {
+      if (input.parentNode) input.parentNode.removeChild(input);
+    }
+    input.addEventListener('change', function () {
+      var files = input.files ? Array.prototype.slice.call(input.files) : [];
+      if (files.length && typeof onFiles === 'function') onFiles(files);
+      cleanup();
+    });
+    // Safety net: if the dialog is cancelled, no change fires — sweep the
+    // detached node shortly after to avoid leaking it.
+    document.body.appendChild(input);
+    input.click();
+    setTimeout(cleanup, 60000);
   }
 
   // ---------------------------------------------------------------------------
@@ -374,6 +408,7 @@
 
   var exportsObj = {
     attachGenericDropHandler: attachGenericDropHandler,
+    triggerFilePicker: triggerFilePicker,
     isImageMime: isImageMime,
     sanitizeBasename: sanitizeBasename,
     buildAtPathInjection: buildAtPathInjection,

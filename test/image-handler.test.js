@@ -5,6 +5,7 @@ const {
   mimeToExtension,
   formatFileSize,
   detectImageInClipboard,
+  collectNonImageFiles,
   IMAGE_MAX_SIZE_BYTES,
   ACCEPTED_MIME_TYPES
 } = require('../src/public/image-handler');
@@ -246,6 +247,49 @@ describe('image-handler pure functions', function () {
   describe('IMAGE_MAX_SIZE_BYTES', function () {
     it('should be 4 MB', function () {
       assert.strictEqual(IMAGE_MAX_SIZE_BYTES, 4 * 1024 * 1024);
+    });
+  });
+
+  // collectNonImageFiles powers the paste fall-through: after an image paste is
+  // declined, NON-image files (copied from a file manager) are routed to the
+  // generic upload pipeline. It must NOT pick up accepted image types (those
+  // keep their existing preview path) and must be empty for a plain text paste.
+  describe('collectNonImageFiles', function () {
+    it('returns non-image files from clipboardData.files', function () {
+      const out = collectNonImageFiles(mockClipboardDataWithFiles([
+        mockFile('application/pdf'),
+        mockFile('text/plain'),
+      ]));
+      assert.strictEqual(out.length, 2);
+    });
+
+    it('excludes accepted image types (they keep the preview path)', function () {
+      const out = collectNonImageFiles(mockClipboardDataWithFiles([
+        mockFile('image/png'),
+        mockFile('application/zip'),
+      ]));
+      assert.strictEqual(out.length, 1);
+      assert.strictEqual(out[0].type, 'application/zip');
+    });
+
+    it('falls back to items (kind === "file") when files is empty', function () {
+      const out = collectNonImageFiles(mockClipboardDataWithItems([
+        mockItem('application/json'),
+      ]));
+      assert.strictEqual(out.length, 1);
+      assert.strictEqual(out[0].type, 'application/json');
+    });
+
+    it('returns [] for a plain text paste (no files)', function () {
+      assert.deepStrictEqual(collectNonImageFiles({ files: [], items: [] }), []);
+      assert.deepStrictEqual(collectNonImageFiles(null), []);
+    });
+
+    it('does not pull image items via the items fallback', function () {
+      const out = collectNonImageFiles(mockClipboardDataWithItems([
+        mockItem('image/jpeg'),
+      ]));
+      assert.strictEqual(out.length, 0);
     });
   });
 });
