@@ -28,11 +28,11 @@ class ExtraKeys {
       { label: 'End', data: '\x1b[F' },
       { label: 'PgUp', data: '\x1b[5~' },
       { label: 'PgDn', data: '\x1b[6~' },
-      { label: '\u2190', data: '\x1b[D', aria: 'Left arrow' },
-      { label: '\u2192', data: '\x1b[C', aria: 'Right arrow' },
-      { label: '\u2191', data: '\x1b[A', aria: 'Up arrow' },
-      { label: '\u2193', data: '\x1b[B', aria: 'Down arrow' },
-      { label: '\u21E9', dismiss: true, aria: 'Dismiss keyboard' },
+      { label: '\u2190', data: '\x1b[D', aria: 'Left arrow', title: 'Left arrow' },
+      { label: '\u2192', data: '\x1b[C', aria: 'Right arrow', title: 'Right arrow' },
+      { label: '\u2191', data: '\x1b[A', aria: 'Up arrow', title: 'Up arrow' },
+      { label: '\u2193', data: '\x1b[B', aria: 'Down arrow', title: 'Down arrow' },
+      { label: '\u21E9', dismiss: true, aria: 'Dismiss keyboard', title: 'Dismiss keyboard' },
     ];
 
     const row2Keys = [
@@ -86,13 +86,13 @@ class ExtraKeys {
       btn.className = 'extra-key';
       btn.textContent = key.label;
       btn.setAttribute('aria-label', key.aria || key.label);
+      if (key.title) btn.setAttribute('title', key.title);
 
       if (key.dismiss) {
         btn.classList.add('extra-key-dismiss');
         btn.addEventListener('click', () => this._dismiss());
       } else if (key.handler) {
         btn.classList.add('extra-key-clipboard');
-        if (key.title) btn.setAttribute('title', key.title);
         btn.addEventListener('click', () => {
           if (key.handler === 'copy') {
             this._handleCopy();

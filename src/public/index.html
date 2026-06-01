@@ -42,6 +42,24 @@
         } catch (_) { /* ignore */ }
       })();
     </script>
+
+    <!-- Detect PWA standalone mode before first paint so safe-area-top rules can apply
+         without a layout-shift flash. Class lives on <html> because <body> isn't parsed yet. -->
+    <script>
+      (function() {
+        try {
+          var mm = window.matchMedia;
+          var isStandalone = (mm && (
+              mm('(display-mode: standalone)').matches
+              || mm('(display-mode: fullscreen)').matches
+              || mm('(display-mode: minimal-ui)').matches
+              || mm('(display-mode: window-controls-overlay)').matches
+            ))
+            || navigator.standalone === true;
+          if (isStandalone) document.documentElement.classList.add('pwa-standalone');
+        } catch (_) { /* ignore */ }
+      })();
+    </script>
     <link rel="preload" href="fonts/MesloLGSNerdFont-Regular.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="preload" href="fonts/MesloLGSNerdFont-Bold.woff2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="fonts.css">
