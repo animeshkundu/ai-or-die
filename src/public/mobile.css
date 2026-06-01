@@ -34,7 +34,7 @@
         padding-top: var(--safe-area-inset-top, env(safe-area-inset-top));
     }
     .mode-switcher {
-        bottom: max(80px, calc(80px + env(safe-area-inset-bottom)));
+        bottom: max(80px, calc(80px + var(--sa-bottom)));
         right: max(20px, env(safe-area-inset-right));
     }
 }
@@ -205,12 +205,12 @@
 
     /* Account for bottom nav height */
     #app {
-        padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(52px + var(--sa-bottom));
     }
 
     /* Move mode switcher above bottom nav */
     .mode-switcher {
-        bottom: calc(62px + env(safe-area-inset-bottom, 0px));
+        bottom: calc(62px + var(--sa-bottom));
     }
 }
 

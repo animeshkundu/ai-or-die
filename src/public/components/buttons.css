@@ -264,7 +264,7 @@
 
 @media (max-width: 820px) {
     .install-btn {
-        bottom: calc(52px + 20px + env(safe-area-inset-bottom, 0px));
+        bottom: calc(52px + 20px + var(--sa-bottom));
     }
 }
 

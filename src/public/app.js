@@ -833,7 +833,7 @@ class ClaudeCodeWebInterface {
         const handleOrientationChange = () => {
             setTimeout(() => {
                 this.fitTerminal();
-                this._polyfillSafeAreaInsetTop();
+                this._polyfillSafeAreaInsets();
                 // Re-evaluate keyboard state
                 if (window.visualViewport && this._keyboardOpen !== undefined) {
                     const heightDiff = window.innerHeight - window.visualViewport.height;
@@ -3741,7 +3741,7 @@ class ClaudeCodeWebInterface {
         const apply = () => {
             const standalone = this._isInstalledPWA();
             document.documentElement.classList.toggle('pwa-standalone', standalone);
-            if (standalone) this._polyfillSafeAreaInsetTop();
+            if (standalone) this._polyfillSafeAreaInsets();
         };
         apply();
         try {
@@ -3759,31 +3759,64 @@ class ClaudeCodeWebInterface {
         } catch (_) { /* ignore */ }
     }
 
-    _polyfillSafeAreaInsetTop() {
-        // WebKit bug: env(safe-area-inset-top) sometimes returns 0px in iOS PWA
-        // standalone on Dynamic Island / notched devices in portrait. Probe the
-        // actual value; if zero on iOS *in portrait*, substitute 59px (current
-        // Dynamic Island default). Landscape legitimately reports 0 (status bar
-        // hidden, cutouts move to the sides) — do NOT force a fallback there or
-        // the bar gets a persistent 59px gap.
+    _polyfillSafeAreaInsets() {
+        // WebKit bug: env(safe-area-inset-top|bottom) sometimes returns 0px in
+        // iOS PWA standalone on Dynamic Island / notched devices. Probe the
+        // actual env() value per axis; if zero on a notch-class iOS device in
+        // portrait, substitute the known defaults (59px island, 34px home
+        // indicator). Results are exposed as the --safe-area-inset-* variables
+        // that tokens.css (--sa-top/--sa-bottom) and the gated rules consume.
         if (!document.body) return;
-        const probe = document.createElement('div');
-        probe.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:env(safe-area-inset-top);pointer-events:none;visibility:hidden;';
-        document.body.appendChild(probe);
-        const measured = probe.offsetHeight;
-        document.body.removeChild(probe);
 
         const root = document.documentElement;
-        if (measured > 0) {
-            root.style.setProperty('--safe-area-inset-top', measured + 'px');
+
+        // Only ever set fake insets in installed-PWA standalone mode. In a
+        // normal browser tab env() is authoritative (and legitimately 0 at the
+        // top), so forcing a fallback there would push content down for no
+        // reason — and the converted `var(--sa-*)` consumers are ungated, so a
+        // stray value WOULD change non-PWA layout. Clear and bail when not PWA.
+        if (!this._isInstalledPWA()) {
+            root.style.removeProperty('--safe-area-inset-top');
+            root.style.removeProperty('--safe-area-inset-bottom');
             return;
         }
+
+        const measure = (axis) => {
+            const probe = document.createElement('div');
+            probe.style.cssText = 'position:fixed;left:0;width:1px;pointer-events:none;visibility:hidden;'
+                + (axis === 'top' ? 'top:0;' : 'bottom:0;')
+                + 'height:env(safe-area-inset-' + axis + ');';
+            document.body.appendChild(probe);
+            const px = probe.offsetHeight;
+            document.body.removeChild(probe);
+            return px;
+        };
+
         const isPortrait = window.matchMedia('(orientation: portrait)').matches;
-        if (isPortrait && this._isIOS()) {
-            root.style.setProperty('--safe-area-inset-top', '59px');
-        } else {
-            root.style.removeProperty('--safe-area-inset-top');
-        }
+        // Notch / Dynamic-Island iPhones are tall (aspect > 2); home-button
+        // iPhones (SE, 8) are ~1.78 and iPads ~1.33. Only those tall devices
+        // have a top cutout + bottom home indicator, so only they get the
+        // fallback when env() reports a (buggy) 0. This keeps the SE/iPad from
+        // gaining a phantom inset.
+        const longSide = Math.max(window.innerWidth, window.innerHeight);
+        const shortSide = Math.min(window.innerWidth, window.innerHeight);
+        const tall = shortSide > 0 && (longSide / shortSide) > 2;
+        const notchClass = isPortrait && this._isIOS() && tall;
+
+        const apply = (axis, fallback) => {
+            const measured = measure(axis);
+            const prop = '--safe-area-inset-' + axis;
+            if (measured > 0) {
+                root.style.setProperty(prop, measured + 'px');
+            } else if (notchClass) {
+                root.style.setProperty(prop, fallback);
+            } else {
+                root.style.removeProperty(prop);
+            }
+        };
+
+        apply('top', '59px');
+        apply('bottom', '34px');
     }
 
     _isIOS() {
