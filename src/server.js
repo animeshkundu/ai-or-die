@@ -913,34 +913,11 @@ class ClaudeCodeWebServer {
       fallthrough: false,
     }));
 
-    // PWA Icon routes - generate ai-or-die brain/terminal icon dynamically
-    const iconSizes = [16, 32, 144, 180, 192, 512];
-    iconSizes.forEach(size => {
-      this.app.get(`/icon-${size}.png`, (req, res) => {
-        const s = size;
-        const r = s * 0.1;
-        const svg = `
-          <svg width="${s}" height="${s}" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-            <rect width="100" height="100" fill="#1a1a1a" rx="${r > 1 ? 10 : 0}"/>
-            <path d="M50 18 C28 18 18 32 18 48 C18 58 24 66 32 70 L32 74 C32 78 36 80 40 78 L44 76"
-                  fill="none" stroke="#ff6b00" stroke-width="3.5" stroke-linecap="round" opacity="0.6"/>
-            <path d="M50 18 C72 18 82 32 82 48 C82 58 76 66 68 70 L68 74 C68 78 64 80 60 78 L56 76"
-                  fill="none" stroke="#ff6b00" stroke-width="3.5" stroke-linecap="round" opacity="0.6"/>
-            <circle cx="38" cy="38" r="3" fill="#ff6b00" opacity="0.5"/>
-            <circle cx="62" cy="38" r="3" fill="#ff6b00" opacity="0.5"/>
-            <circle cx="50" cy="28" r="2.5" fill="#ff6b00" opacity="0.4"/>
-            <text x="50" y="62" text-anchor="middle" dominant-baseline="middle"
-                  font-family="'JetBrains Mono',monospace" font-size="28" font-weight="700" fill="#ff6b00">
-              &gt;_
-            </text>
-          </svg>
-        `;
-        const svgBuffer = Buffer.from(svg);
-        res.setHeader('Content-Type', 'image/svg+xml');
-        res.setHeader('Cache-Control', 'public, max-age=31536000');
-        res.send(svgBuffer);
-      });
-    });
+    // PWA icons are static PNG files in src/public/ (icon-<size>.png), served by
+    // express.static above (or the SEA asset middleware). They are real PNGs so the
+    // served Content-Type matches the manifest's declared `image/png` — required for
+    // Chromium installability and iOS apple-touch-icon. Regenerate with
+    // `node scripts/generate-pwa-icons.js`.
 
     // PWA Screenshot routes - serve pre-built branded screenshots
     this.app.get('/screenshot-wide.png', (req, res) => {
@@ -3022,7 +2999,11 @@ class ClaudeCodeWebServer {
         cert = fs.readFileSync(this.certFile);
         key = fs.readFileSync(this.keyFile);
       } else {
-        // Auto-generate self-signed cert for LAN use
+        // Auto-generate self-signed cert for LAN use.
+        // Note: a self-signed cert is not a trusted "secure context", so on a LAN IP the
+        // browser warns and the PWA can't be installed. For an installable trusted origin
+        // use --tunnel (public cert, no admin) or access the app on http://localhost (a
+        // secure context with no cert needed).
         const { ensureCert } = require('./utils/self-signed-cert');
         const certInfo = ensureCert();
         cert = certInfo.cert;
@@ -3034,6 +3015,7 @@ class ClaudeCodeWebServer {
         }
         console.log(`        Cached at: ${certInfo.certPath}`);
         console.log('        Browsers will show a security warning on first visit.');
+        console.log('        For a trusted, installable origin use \x1b[1m--tunnel\x1b[0m.');
       }
       server = https.createServer({ cert, key }, this.app);
     } else {

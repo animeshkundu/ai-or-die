@@ -135,7 +135,7 @@ SpeechRecognitionRecorder.prototype.start = function () {
     var recognition = new SpeechRecognitionCtor();
     recognition.continuous = true;
     recognition.interimResults = false;
-    recognition.lang = 'en-US';
+    recognition.lang = 'en-IN';
 
     self._recognition = recognition;
     self._resultText = '';

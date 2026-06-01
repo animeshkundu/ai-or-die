@@ -112,8 +112,11 @@ Download from [Releases](https://github.com/animeshkundu/ai-or-die/releases) —
 ## Usage
 
 ```bash
-# Default — opens browser with secure token
+# Default — prints the URL (with secure token); does NOT auto-open a browser
 ai-or-die
+
+# Open the browser automatically on start
+ai-or-die --open
 
 # Custom port
 ai-or-die --port 8080
@@ -146,11 +149,11 @@ ai-or-die --stt
 | `--disable-auth` | Disable authentication | `false` |
 | `--tunnel` | Enable Microsoft Dev Tunnel | `false` |
 | `--tunnel-allow-anonymous` | Allow anonymous tunnel access | `false` |
-| `--https` | Enable HTTPS | `false` |
+| `--https` | Enable HTTPS (auto-generates a self-signed cert if `--cert`/`--key` not given) | `false` |
 | `--cert <path>` | SSL certificate file | |
 | `--key <path>` | SSL private key file | |
 | `--dev` | Verbose logging | `false` |
-| `--no-open` | Don't auto-open browser | `false` |
+| `--open` | Open the browser on start (never on supervised restart) | `false` |
 | `--plan <type>` | Subscription plan (`pro`, `max5`, `max20`) | `max20` |
 | `--stt` | Enable local speech-to-text | `false` |
 | `--stt-endpoint <url>` | External STT endpoint (OpenAI-compatible) | |
@@ -190,11 +193,13 @@ ai-or-die is an installable progressive web app. Open Settings → Install in th
 
 **Browser support**: Chrome / Edge / Samsung Internet support one-tap install. Firefox desktop does not have native install — use the browser menu to pin the tab. Safari iOS uses Share → Add to Home Screen.
 
-**Installing on LAN devices**: Browsers refuse to install PWAs over an HTTPS origin whose certificate isn't trusted by the device. The auto-generated cert from `--https` is self-signed, so a phone or tablet connecting to `https://<your-mac-ip>:7777` will see the in-app Install panel say *"Not available in this browser."* even though the browser supports install. Three ways around this:
+**Installing on LAN devices**: Browsers refuse to install PWAs over an HTTPS origin whose certificate isn't trusted by the device, and public CAs (Let's Encrypt etc.) won't issue certs for a LAN IP or `localhost`. The `--https` self-signed cert therefore triggers a browser warning, and the in-app Install panel will say *"Not available in this browser."* on a LAN IP. Ways to get an installable origin:
 
-1. **Use `--tunnel`** *(easiest)* — Microsoft Dev Tunnels gives you a public URL with a real Let's Encrypt cert. Devices install via the public URL with no setup.
-2. **Trust the self-signed cert** on each device — copy `~/.ai-or-die/certs/server.cert` to the device and install it as a trusted root in the OS certificate store.
-3. **Provide a CA-signed cert** via `--cert` / `--key`. [mkcert](https://github.com/FiloSottile/mkcert) is a low-friction option for development.
+1. **On the host machine itself** — just open **`http://localhost:<port>`**. `localhost` is a secure context, so the PWA installs with **no cert and no setup** (no `--https` needed).
+2. **On other devices** — use **`--tunnel`** *(recommended)*: Microsoft Dev Tunnels gives a public URL with a real publicly-trusted cert, so any device installs the PWA with **no per-device setup and no admin**.
+3. **Bring your own trusted cert** via `--cert` / `--key` (e.g. a cert for a hostname your devices already trust).
+
+See [docs/history/pwa-install-lan-self-signed-cert.md](docs/history/pwa-install-lan-self-signed-cert.md) for the underlying browser-policy reasoning.
 
 See [docs/history/pwa-install-lan-self-signed-cert.md](docs/history/pwa-install-lan-self-signed-cert.md) for the device-by-device procedure and the underlying browser-policy reasoning.
 

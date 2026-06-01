@@ -45,6 +45,7 @@ const forwardedArgs = process.argv.slice(2);
 
 let child = null;
 let shuttingDown = false;
+let spawnCount = 0;
 let crashTimestamps = [];
 let pendingRestartTimer = null;
 
@@ -110,9 +111,18 @@ function startServer() {
   pendingRestartTimer = null;
   const nodeArgs = ['--expose-gc', serverScript, ...forwardedArgs];
 
+  // Mark every spawn after the first as a supervised restart, so the child suppresses
+  // browser auto-open (--open) on crash/memory restarts and only opens on first launch.
+  const isRestart = spawnCount > 0;
+  spawnCount += 1;
+
   child = spawn(process.execPath, nodeArgs, {
     stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
-    env: { ...process.env, SUPERVISED: '1' }
+    env: {
+      ...process.env,
+      SUPERVISED: '1',
+      ...(isRestart ? { AOD_SUPERVISOR_RESTART: '1' } : {})
+    }
   });
 
   // Flush a queued supervisor_warning into the new child's IPC channel.
