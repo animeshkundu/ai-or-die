@@ -57,7 +57,10 @@ const SURFACES = [
   { sel: '#planModal .modal-content', anchor: 'modal', reveal: { id: 'planModal' }, label: 'plan modal' },
   { sel: '#shortcutsModal .modal-content', anchor: 'modal', reveal: { id: 'shortcutsModal' }, label: 'shortcuts modal' },
   { sel: '#newSessionModal .modal-content', anchor: 'modal', reveal: { id: 'newSessionModal' }, label: 'new-session modal' },
+  { sel: '#mobileSessionsModal .modal-content', anchor: 'modal', reveal: { id: 'mobileSessionsModal' }, label: 'mobile-sessions modal' },
   { sel: '#folderBrowserModal .modal-content', anchor: 'modal', reveal: { id: 'folderBrowserModal' }, label: 'folder-browser modal' },
+  { sel: '.file-browser-panel', anchor: 'bottom', reveal: { panel: true }, label: 'file-browser panel' },
+  { sel: '.terminal-overlay .overlay-content', anchor: 'modal', reveal: { overlay: true }, label: 'terminal overlay' },
   { sel: '.toast-container', anchor: 'top', reveal: { toast: true }, label: 'toast container' },
   { sel: '.__test-banner', anchor: 'top', reveal: { banner: true }, label: 'top banner' },
   { sel: '.extra-keys-bar', anchor: 'bottom', reveal: { extraKeys: true }, label: 'extra-keys bar' },
@@ -126,6 +129,24 @@ async function reveal(page, r) {
       let e = document.querySelector('.extra-keys-bar');
       if (!e) { e = document.createElement('div'); e.className = 'extra-keys-bar'; e.style.minHeight = '40px'; document.body.appendChild(e); }
       e.classList.add('visible');
+    }
+    if (rev.panel) {
+      const p = document.querySelector('.file-browser-panel');
+      if (p) {
+        p.classList.add('open', 'visible', 'active');
+        p.style.transform = 'none';
+        p.style.display = 'flex';
+      }
+    }
+    if (rev.overlay) {
+      let o = document.querySelector('.terminal-overlay');
+      if (!o) {
+        o = document.createElement('div');
+        o.className = 'terminal-overlay';
+        o.innerHTML = '<div class="overlay-content"><h2>Reconnecting…</h2><p>Connection lost — attempting to restore your session.</p></div>';
+        document.body.appendChild(o);
+      }
+      o.style.display = 'flex';
     }
   }, r);
   await page.waitForTimeout(150);

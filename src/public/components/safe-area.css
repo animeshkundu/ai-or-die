@@ -24,7 +24,8 @@ html.pwa-standalone .session-modal,
 html.pwa-standalone .plan-modal,
 html.pwa-standalone .folder-browser-modal,
 html.pwa-standalone .shortcuts-modal,
-html.pwa-standalone .image-preview-modal {
+html.pwa-standalone .image-preview-modal,
+html.pwa-standalone .terminal-overlay {
     box-sizing: border-box;
     padding-top: var(--sa-top);
     padding-bottom: var(--sa-bottom);
@@ -34,6 +35,14 @@ html.pwa-standalone .image-preview-modal {
    can't overflow back up into the island. dvh tracks the live viewport. */
 html.pwa-standalone .modal-content {
     max-height: calc(100dvh - var(--sa-top) - var(--sa-bottom) - 40px);
+}
+
+/* Full-height slide-in side panel (file browser). Its header already gets the
+   top inset via mobile.css; pad the bottom so the file list clears the home
+   indicator. box-sizing keeps the panel viewport-height. */
+html.pwa-standalone .file-browser-panel {
+    box-sizing: border-box;
+    padding-bottom: var(--sa-bottom);
 }
 
 /* --- Top-anchored transient surfaces ---------------------------------------- */
