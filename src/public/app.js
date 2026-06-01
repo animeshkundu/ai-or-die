@@ -692,7 +692,12 @@ class ClaudeCodeWebInterface {
                                 caption: imageData.caption || ''
                             });
                         }
-                    }
+                    },
+                    // Non-image files pasted from a file manager (clipboardData
+                    // carries File objects) — route through the generic pipeline.
+                    // Fires only AFTER the image branch declines, so image paste
+                    // precedence is unchanged.
+                    onFilesPaste: (files) => this._attachFiles(files)
                 }
             );
         }
@@ -1093,9 +1098,20 @@ class ClaudeCodeWebInterface {
             }, 3000);
         };
 
-        // Attach Image button
+        // Attach File button (id is historical: attachImageBtn). Opens a picker
+        // for ANY file type — images go through the preview flow, other files
+        // upload to .claude-attachments/ and inject `@<path>`.
         const attachBtn = document.getElementById('attachImageBtn');
-        if (attachBtn && window.imageHandler) {
+        if (attachBtn && window.genericDropHandler
+                && typeof window.genericDropHandler.triggerFilePicker === 'function') {
+            attachBtn.addEventListener('click', () => {
+                window.genericDropHandler.triggerFilePicker(
+                    (files) => this._attachFiles(files),
+                    { multiple: true }
+                );
+            });
+        } else if (attachBtn && window.imageHandler) {
+            // Fallback: generic handler unavailable — keep the legacy image-only picker.
             attachBtn.addEventListener('click', () => {
                 window.imageHandler.triggerFilePicker((imageData) => {
                     this._pendingImageCaption = imageData.caption;
@@ -3421,7 +3437,7 @@ class ClaudeCodeWebInterface {
                             }
                         } else {
                             if (activeTerminal) {
-                                activeTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach Image instead.\x1b[0m\r\n');
+                                activeTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach File instead.\x1b[0m\r\n');
                             }
                         }
                     } catch (err) {
@@ -3430,8 +3446,15 @@ class ClaudeCodeWebInterface {
                     break;
                 }
                 case 'attachImage': {
-                    const attachSocket = activeSocket;
-                    if (window.imageHandler) {
+                    // Generalized to any file type (action id is historical).
+                    if (window.genericDropHandler
+                            && typeof window.genericDropHandler.triggerFilePicker === 'function') {
+                        window.genericDropHandler.triggerFilePicker(
+                            (files) => this._attachFiles(files),
+                            { multiple: true }
+                        );
+                    } else if (window.imageHandler) {
+                        const attachSocket = activeSocket;
                         window.imageHandler.triggerFilePicker((imageData) => {
                             this._pendingImageCaption = imageData.caption;
                             const msg = JSON.stringify({
@@ -3660,6 +3683,58 @@ class ClaudeCodeWebInterface {
             || window.matchMedia('(display-mode: minimal-ui)').matches
             || window.matchMedia('(display-mode: fullscreen)').matches
             || navigator.standalone === true;
+    }
+
+    // Shared attachment router for the non-drop surfaces (attach button,
+    // context-menu, paste). Partitions the selected files: anything that passes
+    // the image allowlist goes through the EXISTING image preview → image_upload
+    // path (unchanged), everything else is routed to the generic drop pipeline
+    // (upload to .claude-attachments/ + `@<path>` injection). Drag-and-drop does
+    // NOT use this — it already partitions internally in generic-drop-handler.
+    _attachFiles(files) {
+        if (!files) return;
+        const list = Array.prototype.slice.call(files);
+        if (!list.length) return;
+        const ih = window.imageHandler;
+        const isImg = (f) => !!(ih && typeof ih.isAcceptedImageType === 'function'
+            && ih.isAcceptedImageType(f.type));
+        const images = list.filter(isImg);
+        const others = list.filter((f) => !isImg(f));
+
+        // Capture the socket at attach-initiation time. The image preview modal
+        // is async (user-driven); the active session/socket can change while it
+        // is open. Sending on a captured target avoids the upload landing on a
+        // different session (mirrors the context-menu's existing capture).
+        const targetSocket = this.socket;
+
+        // Images: reuse the existing single-preview flow. The modal handles one
+        // image at a time, so if several images are selected we attach the first
+        // and tell the user rather than silently dropping the rest.
+        if (images.length && ih && typeof ih.showImagePreview === 'function') {
+            if (images.length > 1 && window.feedback && typeof window.feedback.info === 'function') {
+                window.feedback.info('Only the first image is attached — attach images one at a time.');
+            }
+            ih.showImagePreview(images[0], (imageData) => {
+                this._pendingImageCaption = imageData.caption;
+                if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
+                    targetSocket.send(JSON.stringify({
+                        type: 'image_upload',
+                        base64: imageData.base64,
+                        mimeType: imageData.mimeType,
+                        fileName: imageData.fileName || 'attached-image.png',
+                        caption: imageData.caption || ''
+                    }));
+                }
+            });
+        }
+
+        // Non-images: shared generic pipeline (upload + @path inject).
+        if (others.length && this._genericDropHandler
+                && typeof this._genericDropHandler.dispatchFiles === 'function') {
+            this._genericDropHandler.dispatchFiles(others);
+        } else if (others.length && window.feedback && typeof window.feedback.error === 'function') {
+            window.feedback.error('File upload is not available right now.');
+        }
     }
 
     _setupPwaStandaloneListener() {
