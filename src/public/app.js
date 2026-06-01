@@ -3756,6 +3756,14 @@ class ClaudeCodeWebInterface {
             case 'dismissed':
                 statusText.textContent = 'Install was cancelled. Reload the page to try again.';
                 break;
+            case 'unavailable':
+                // Chromium-family browser in a secure context, but beforeinstallprompt
+                // hasn't fired yet (engagement-gated, or already consumed). The app can't
+                // trigger install itself, but the browser's own menu can — and the
+                // beforeinstallprompt listener stays active, so this upgrades to 'available'
+                // if the event fires later.
+                statusText.textContent = 'If no install button appears, use your browser menu → "Install this site as an app".';
+                break;
             default:
                 statusText.textContent = 'Not available in this browser.';
                 break;

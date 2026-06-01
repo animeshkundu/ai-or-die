@@ -324,7 +324,7 @@ ai-or-die</code></pre>
         <ol>
           <li>The server starts on port <strong>7777</strong> (configurable with <code>--port</code>).</li>
           <li>A secure authentication token is generated automatically.</li>
-          <li>Your default browser opens with the token embedded in the URL.</li>
+          <li>The server prints the URL with the token embedded. Pass <code>--open</code> to also open your default browser automatically.</li>
           <li>ai-or-die scans your system for installed CLI tools (Claude, Copilot, Gemini, Codex).</li>
           <li>Available tools appear as clickable cards in the UI. Unavailable tools are shown as disabled.</li>
         </ol>
@@ -347,7 +347,7 @@ ai-or-die</code></pre>
             </thead>
             <tbody>
               <tr><td><code>-p, --port &lt;number&gt;</code></td><td>Server port</td><td>7777</td></tr>
-              <tr><td><code>--no-open</code></td><td>Don't auto-open the browser</td><td>false</td></tr>
+              <tr><td><code>--open</code></td><td>Open the browser on start (never on supervised restart)</td><td>false</td></tr>
               <tr><td><code>--auth &lt;token&gt;</code></td><td>Set a specific auth token</td><td>auto-generated</td></tr>
               <tr><td><code>--disable-auth</code></td><td>Disable authentication entirely</td><td>false</td></tr>
               <tr><td><code>--https</code></td><td>Enable HTTPS</td><td>false</td></tr>
@@ -373,8 +373,8 @@ ai-or-die --port 8080
 # Use a specific auth token
 ai-or-die --auth my-secret-token
 
-# Headless mode (no browser auto-open)
-ai-or-die --no-open --port 3000
+# Open the browser automatically on start (off by default)
+ai-or-die --open --port 3000
 
 # HTTPS with certificates
 ai-or-die --https --cert cert.pem --key key.pem

@@ -16,7 +16,10 @@
     <meta name="format-detection" content="telephone=no">
     
     <!-- Web App Manifest -->
-    <link rel="manifest" href="/manifest.json">
+    <!-- crossorigin=use-credentials: send the session cookie with the manifest (and its icon)
+         fetches so they are not redirected to an auth page behind a credentialed proxy/tunnel
+         (e.g. Microsoft devtunnel), which otherwise 404s the manifest and breaks installability. -->
+    <link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
     
     <!-- Icons for various platforms -->
     <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">

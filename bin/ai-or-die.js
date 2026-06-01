@@ -20,7 +20,7 @@ program
   .description('ai-or-die — Universal AI coding terminal')
   .version(require('../package.json').version)
   .option('-p, --port <number>', 'port to run the server on', '7777')
-  .option('--no-open', 'do not automatically open browser')
+  .option('--open', 'open the browser on start (default: off; never on supervised restart)')
   .option('--auth <token>', 'authentication token for secure access')
   .option('--disable-auth', 'disable authentication (not recommended for production)')
   .option('--https', 'enable HTTPS (auto-generates self-signed cert if --cert/--key not provided)')
@@ -38,8 +38,11 @@ program
   .option('--stt', 'enable local speech-to-text (downloads ~670MB Parakeet V3 model on first use)')
   .option('--stt-endpoint <url>', 'use external STT endpoint (OpenAI-compatible)')
   .option('--stt-model-dir <path>', 'custom directory for STT model files')
-  .option('--stt-threads <number>', 'CPU threads for STT inference (default: auto, max 4)')
-  .parse();
+  .option('--stt-threads <number>', 'CPU threads for STT inference (default: auto, max 4)');
+
+// Auto-open is OFF by default and opt-in via --open. Legacy callers may still pass
+// --no-open (the old opt-out flag); filter it out so it parses harmlessly as a no-op.
+program.parse(process.argv.filter((arg) => arg !== '--no-open'));
 
 const options = program.opts();
 
@@ -131,7 +134,11 @@ async function main() {
       console.log('   For LAN access, restart with \x1b[1m--https\x1b[0m or \x1b[1m--tunnel\x1b[0m.');
     }
 
-    // Dev tunnel or browser open
+    // Dev tunnel or browser open.
+    // Auto-open only when explicitly requested (--open) AND this is the first launch,
+    // never on a supervised restart (the supervisor sets AOD_SUPERVISOR_RESTART on respawn),
+    // so crash/memory restarts don't spawn a new browser tab each time.
+    const shouldOpen = !!options.open && !process.env.AOD_SUPERVISOR_RESTART;
     let tunnel = null;
     if (options.tunnel) {
       const { TunnelManager } = require('../src/tunnel-manager');
@@ -141,12 +148,12 @@ async function main() {
         dev: options.dev,
         onUrl: (tunnelUrl) => {
           console.log(`\n  \x1b[1m\x1b[32mTunnel ready:\x1b[0m \x1b[1m\x1b[4m${tunnelUrl}\x1b[0m\n`);
-          if (open && options.open) open(tunnelUrl).catch(() => {});
+          if (open && shouldOpen) open(tunnelUrl).catch(() => {});
         }
       });
       app.setTunnelManager(tunnel);
       await tunnel.start();
-    } else if (options.open) {
+    } else if (shouldOpen) {
       try { if (open) await open(url); } catch (error) {
         console.warn('  Could not automatically open browser:', error.message);
       }
