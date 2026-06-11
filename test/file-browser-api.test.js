@@ -256,6 +256,87 @@ function encodeParam(val) {
   });
 
   // =========================================================================
+  // GET /api/files — session-rooted default (per-tab file-browser root)
+  // =========================================================================
+
+  describe('GET /api/files — ?session default root', function () {
+    // Inject synthetic sessions into the server's in-memory map. The browse
+    // root for a tab should default to that session's working dir (live OSC 7
+    // cwd if present, else spawn dir) rather than the global baseFolder.
+    let sessDir, liveDir;
+
+    before(function () {
+      sessDir = createDir('proj-A');
+      liveDir = createDir('proj-A/sub-live');
+      server.claudeSessions.set('sess-spawn', { id: 'sess-spawn', workingDir: sessDir });
+      server.claudeSessions.set('sess-live', { id: 'sess-live', workingDir: sessDir, liveCwd: liveDir });
+      server.claudeSessions.set('sess-nocwd', { id: 'sess-nocwd' });
+    });
+
+    after(function () {
+      server.claudeSessions.delete('sess-spawn');
+      server.claudeSessions.delete('sess-live');
+      server.claudeSessions.delete('sess-nocwd');
+      removeIfExists('proj-A');
+    });
+
+    function endsWith(p, name) {
+      return String(p).replace(/\\/g, '/').replace(/\/$/, '').endsWith(name);
+    }
+
+    it('defaults the root to the session workingDir when no path is given', async function () {
+      const res = await request(port, 'GET', '/api/files?session=sess-spawn');
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      assert.ok(endsWith(res.body.currentPath, 'proj-A'),
+        'currentPath should be the session workingDir, got: ' + res.body.currentPath);
+      assert.ok(endsWith(res.body.home, 'proj-A'),
+        'home should be the session workingDir, got: ' + res.body.home);
+    });
+
+    it('prefers liveCwd over workingDir when present', async function () {
+      const res = await request(port, 'GET', '/api/files?session=sess-live');
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      assert.ok(endsWith(res.body.currentPath, 'sub-live'),
+        'currentPath should be liveCwd, got: ' + res.body.currentPath);
+      assert.ok(endsWith(res.body.home, 'sub-live'),
+        'home should be liveCwd, got: ' + res.body.home);
+    });
+
+    it('an explicit path overrides the session default', async function () {
+      const res = await request(port, 'GET',
+        `/api/files?session=sess-spawn&path=${encodeParam(tmpDir)}`);
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      // currentPath should be tmpDir (baseFolder), NOT proj-A.
+      assert.ok(!endsWith(res.body.currentPath, 'proj-A'),
+        'explicit path should win over session root, got: ' + res.body.currentPath);
+    });
+
+    it('falls back to baseFolder for an unknown session id (no 403)', async function () {
+      const res = await request(port, 'GET', '/api/files?session=does-not-exist');
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      assert.strictEqual(res.body.currentPath, res.body.baseFolder,
+        'unknown session should root at baseFolder');
+      assert.strictEqual(res.body.home, res.body.baseFolder,
+        'home should be baseFolder for an unknown session');
+    });
+
+    it('falls back to baseFolder for a session with no working dir (no 403)', async function () {
+      const res = await request(port, 'GET', '/api/files?session=sess-nocwd');
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      assert.strictEqual(res.body.currentPath, res.body.baseFolder);
+    });
+
+    it('home reflects the session root while baseFolder stays the server base', async function () {
+      const res = await request(port, 'GET', '/api/files?session=sess-spawn');
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      assert.notStrictEqual(res.body.home, res.body.baseFolder,
+        'home (session root) and baseFolder (sandbox floor) should differ here');
+      assert.ok(endsWith(res.body.baseFolder, path.basename(tmpDir)) ||
+        res.body.baseFolder.length > 0, 'baseFolder should be the server base');
+    });
+  });
+
+  // =========================================================================
   // GET /api/files/stat (file metadata)
   // =========================================================================
 
