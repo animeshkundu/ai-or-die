@@ -263,7 +263,7 @@ function encodeParam(val) {
     // Inject synthetic sessions into the server's in-memory map. The browse
     // root for a tab should default to that session's working dir (live OSC 7
     // cwd if present, else spawn dir) rather than the global baseFolder.
-    let sessDir, liveDir;
+    let sessDir, liveDir, outsideDir;
 
     before(function () {
       sessDir = createDir('proj-A');
@@ -271,13 +271,21 @@ function encodeParam(val) {
       server.claudeSessions.set('sess-spawn', { id: 'sess-spawn', workingDir: sessDir });
       server.claudeSessions.set('sess-live', { id: 'sess-live', workingDir: sessDir, liveCwd: liveDir });
       server.claudeSessions.set('sess-nocwd', { id: 'sess-nocwd' });
+      // A session whose working dir is OUTSIDE the sandbox (e.g. a stale /
+      // persisted session after the server was relaunched with a narrower
+      // --folder). validatePath must reject it and the route must fall back
+      // to baseFolder rather than 403 or list an out-of-sandbox dir.
+      outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fb-outside-'));
+      server.claudeSessions.set('sess-outside', { id: 'sess-outside', workingDir: outsideDir });
     });
 
     after(function () {
       server.claudeSessions.delete('sess-spawn');
       server.claudeSessions.delete('sess-live');
       server.claudeSessions.delete('sess-nocwd');
+      server.claudeSessions.delete('sess-outside');
       removeIfExists('proj-A');
+      if (outsideDir) { try { fs.rmSync(outsideDir, { recursive: true, force: true }); } catch (_) {} }
     });
 
     function endsWith(p, name) {
@@ -324,6 +332,18 @@ function encodeParam(val) {
       const res = await request(port, 'GET', '/api/files?session=sess-nocwd');
       assert.strictEqual(res.status, 200, JSON.stringify(res.body));
       assert.strictEqual(res.body.currentPath, res.body.baseFolder);
+    });
+
+    it('falls back to baseFolder when the session working dir is outside the sandbox (no 403)', async function () {
+      // Stale/persisted session pointing outside baseFolder: validatePath
+      // rejects it, so the route must NOT 403 and must NOT list the
+      // out-of-sandbox dir — it falls back to baseFolder.
+      const res = await request(port, 'GET', '/api/files?session=sess-outside');
+      assert.strictEqual(res.status, 200, JSON.stringify(res.body));
+      assert.strictEqual(res.body.currentPath, res.body.baseFolder,
+        'out-of-sandbox session dir must fall back to baseFolder');
+      assert.ok(!res.body.currentPath.includes('fb-outside-'),
+        'must not leak/list the out-of-sandbox dir');
     });
 
     it('home reflects the session root while baseFolder stays the server base', async function () {

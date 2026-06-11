@@ -173,6 +173,25 @@ function request(port, method, urlPath, body) {
     assert.ok(fs.existsSync(path.join(attachmentsDir, 'case.bin')));
   });
 
+  it('accepts a near-cap ~9MB file and writes it byte-for-byte (200)', async function () {
+    // Validates two things the smaller tests don't: (1) the 20mb route parser
+    // is actually large enough for a legitimate near-10MB-cap file (base64 of
+    // 9MB ≈ 12MB body, under 20mb), so the limit choice isn't off-by-a-factor;
+    // (2) the decoded bytes round-trip exactly (no truncation/corruption) at
+    // size, which no existing server test checked.
+    const big = Buffer.alloc(9 * 1024 * 1024);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 131 + 17) & 0xff;
+    const r = await request(port, 'POST', '/api/files/upload', {
+      targetDir: attachmentsDir,
+      fileName: 'near-cap.bin',
+      content: big.toString('base64'),
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const onDisk = fs.readFileSync(path.join(attachmentsDir, 'near-cap.bin'));
+    assert.strictEqual(onDisk.length, big.length, 'byte length must match');
+    assert.ok(Buffer.compare(onDisk, big) === 0, 'bytes must round-trip exactly');
+  });
+
   it('rejects content over the decoded 10 MB cap (413)', async function () {
     // base64 of 11 MB (~14.7 MB) fits under the 20mb route parser, so the
     // body is parsed and the decoded-size guard returns the 413.
