@@ -128,19 +128,102 @@ function request(port, method, urlPath, body) {
     assert.strictEqual(r.status, 403);
   });
 
-  it('rejects content larger than the per-request 10 MB cap (413)', async function () {
-    // The route registers express.json({ limit: '10mb' }) but a global
-    // express.json() with the default ~100kb limit runs first, and rejects
-    // anything bigger than ~100 KB before the route handler sees it. Both
-    // cases yield 413 — exercise the global path here, since that's the
-    // actual cap a 10MB upload runs into in production today.
+  it('accepts a body over the old ~100KB global-parser limit but under the decoded 10MB cap (200)', async function () {
+    // Regression guard for the upload fix: the global express.json() (~100kb
+    // default) used to run BEFORE the route's parser and 413'd any base64
+    // body over ~100kb — so non-image drag-drops of normal files silently
+    // failed. The route is now exempt from the global parser and mounts its
+    // own 20mb parser, so a 1 MB file (~1.4 MB JSON body) reaches the handler.
     const big = Buffer.alloc(1024 * 1024, 'a'); // 1 MB → ~1.4 MB JSON body
     const r = await request(port, 'POST', '/api/files/upload', {
       targetDir: attachmentsDir,
       fileName: 'big.bin',
       content: big.toString('base64'),
     });
-    assert.strictEqual(r.status, 413);
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.ok(fs.existsSync(path.join(attachmentsDir, 'big.bin')));
+  });
+
+  it('still exempts the route when addressed with a trailing slash (200)', async function () {
+    // Express routes `/api/files/upload/` to the same handler; the global-parser
+    // exemption normalizes the trailing slash so it is exempt too (a bare
+    // req.path === '/api/files/upload' check would let the global ~100kb
+    // parser 413 it again).
+    const big = Buffer.alloc(300 * 1024, 'b'); // ~400 KB JSON body, > old 100kb
+    const r = await request(port, 'POST', '/api/files/upload/', {
+      targetDir: attachmentsDir,
+      fileName: 'slash.bin',
+      content: big.toString('base64'),
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.ok(fs.existsSync(path.join(attachmentsDir, 'slash.bin')));
+  });
+
+  it('still exempts the route when addressed with a different case (200)', async function () {
+    // Express default routing is case-insensitive, so `/api/FILES/upload`
+    // reaches the handler; the global-parser exemption is lower-cased to match,
+    // otherwise the ~100kb global parser would 413 a case-variant request.
+    const big = Buffer.alloc(300 * 1024, 'c'); // > old 100kb global limit
+    const r = await request(port, 'POST', '/api/FILES/upload', {
+      targetDir: attachmentsDir,
+      fileName: 'case.bin',
+      content: big.toString('base64'),
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.ok(fs.existsSync(path.join(attachmentsDir, 'case.bin')));
+  });
+
+  it('accepts a near-cap ~9MB file and writes it byte-for-byte (200)', async function () {
+    // Validates two things the smaller tests don't: (1) the 20mb route parser
+    // is actually large enough for a legitimate near-10MB-cap file (base64 of
+    // 9MB ≈ 12MB body, under 20mb), so the limit choice isn't off-by-a-factor;
+    // (2) the decoded bytes round-trip exactly (no truncation/corruption) at
+    // size, which no existing server test checked.
+    const big = Buffer.alloc(9 * 1024 * 1024);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 131 + 17) & 0xff;
+    const r = await request(port, 'POST', '/api/files/upload', {
+      targetDir: attachmentsDir,
+      fileName: 'near-cap.bin',
+      content: big.toString('base64'),
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const onDisk = fs.readFileSync(path.join(attachmentsDir, 'near-cap.bin'));
+    assert.strictEqual(onDisk.length, big.length, 'byte length must match');
+    assert.ok(Buffer.compare(onDisk, big) === 0, 'bytes must round-trip exactly');
+  });
+
+  it('rejects content over the decoded 10 MB cap (413)', async function () {
+    // base64 of 11 MB (~14.7 MB) fits under the 20mb route parser, so the
+    // body is parsed and the decoded-size guard returns the 413.
+    const big = Buffer.alloc(11 * 1024 * 1024, 'a');
+    const r = await request(port, 'POST', '/api/files/upload', {
+      targetDir: attachmentsDir,
+      fileName: 'toobig.bin',
+      content: big.toString('base64'),
+    });
+    assert.strictEqual(r.status, 413, JSON.stringify(r.body));
+  });
+
+  it('rejects a body over the 20mb route parser limit with a JSON error (413)', async function () {
+    // base64 of 16 MB (~21.3 MB) exceeds the route parser limit, so the parser
+    // throws entity.too.large; the body-parser error handler must translate it
+    // to the API's { error } JSON shape (not Express default HTML).
+    const big = Buffer.alloc(16 * 1024 * 1024, 'a');
+    const r = await request(port, 'POST', '/api/files/upload', {
+      targetDir: attachmentsDir,
+      fileName: 'huge.bin',
+      content: big.toString('base64'),
+    });
+    assert.strictEqual(r.status, 413, JSON.stringify(r.body));
+    assert.ok(r.body && typeof r.body === 'object' && r.body.error,
+      'expected a JSON { error } body, got: ' + JSON.stringify(r.body).slice(0, 200));
+  });
+
+  it('returns a JSON 400 for a malformed JSON body', async function () {
+    const r = await request(port, 'POST', '/api/files/upload', '{ not valid json');
+    assert.strictEqual(r.status, 400, JSON.stringify(r.body));
+    assert.ok(r.body && typeof r.body === 'object' && r.body.error,
+      'expected a JSON { error } body, got: ' + JSON.stringify(r.body).slice(0, 200));
   });
 
   // ── NEW: per-session 100 MB cap on .claude-attachments/ ──────────────────

@@ -870,7 +870,21 @@ class ClaudeCodeWebServer {
 
   setupExpress() {
     this.app.use(cors());
-    this.app.use(express.json());
+    // Global JSON parser for normal endpoints (Express default ~100kb limit).
+    // The upload route mounts its own higher-limit parser (see
+    // POST /api/files/upload below); exempt it here so a base64 file body
+    // isn't rejected by the ~100kb default before the route runs. The
+    // trailing-slash normalization matches exactly the set of paths Express
+    // routes to that handler (`/api/files/upload` and `/api/files/upload/`).
+    const _globalJsonParser = express.json();
+    this.app.use((req, res, next) => {
+      // Case-insensitive + trailing-slash-normalized to match Express's
+      // default route matching (case-insensitive routing), so every form that
+      // reaches the upload handler is exempt from the ~100kb global parser.
+      const p = req.path.replace(/\/+$/, '').toLowerCase() || '/';
+      if (p === '/api/files/upload') return next();
+      return _globalJsonParser(req, res, next);
+    });
     
     // Serve manifest.json with correct MIME type
     this.app.get('/manifest.json', (req, res) => {
@@ -1403,7 +1417,30 @@ class ClaudeCodeWebServer {
 
     // GET /api/files — List directory (files + folders), paginated
     this.app.get('/api/files', (req, res) => {
-      const requestedPath = req.query.path || this.baseFolder;
+      // Per-tab file-browser root. Resolve the requesting session's home dir
+      // (live OSC 7 cwd if tracked, else the spawn dir) when a `session` id is
+      // supplied and its dir still validates. Used as (a) the default root
+      // when the client sends no explicit `path`, and (b) the `home` value the
+      // client points "Home" at — so Home stays the tab's dir even while
+      // browsing subdirs. Mirrors GET /api/files/find. Falls back to baseFolder
+      // for unknown/stale sessions so the browser never 403s on open.
+      let sessionHome = null;
+      const sid = typeof req.query.session === 'string' ? req.query.session : '';
+      if (sid) {
+        const session = this.claudeSessions.get(sid);
+        if (session) {
+          const candidate = session.liveCwd || session.workingDir;
+          if (candidate && this.validatePath(candidate).valid) {
+            sessionHome = candidate;
+          } else {
+            // Known session but its dir is missing or no longer inside the
+            // sandbox — a real misconfiguration worth logging. (Unknown session
+            // ids fall through silently: expected during cold-cache races.)
+            console.warn(`/api/files: session ${sid} working dir unavailable; using baseFolder`);
+          }
+        }
+      }
+      const requestedPath = req.query.path || sessionHome || this.baseFolder;
       const validation = this.validatePath(requestedPath);
       if (!validation.valid) {
         return res.status(403).json({ error: validation.error });
@@ -1480,7 +1517,7 @@ class ClaudeCodeWebServer {
             totalCount,
             offset,
             limit,
-            home: normalizePath(this.baseFolder),
+            home: normalizePath(sessionHome || this.baseFolder),
             baseFolder: normalizePath(this.baseFolder),
           });
         } catch (error) {
@@ -2739,7 +2776,12 @@ class ClaudeCodeWebServer {
     //     per spec ("user shell config is sacrosanct" applies to .gitignore
     //     too — we don't want to silently introduce a new tracked-by-default
     //     side effect on the user's repo).
-    this.app.post('/api/files/upload', express.json({ limit: '10mb' }), async (req, res) => {
+    // Route parser limit is sized for base64 of the 10 MB decoded cap
+    // (~14 MB) plus the small JSON envelope. The decoded-size guard below
+    // (buffer.length > 10 MB) remains the real per-file cap. This parser is
+    // the ONLY one that runs for this route — the global parser above skips
+    // `/api/files/upload`, so this limit governs (not the ~100kb default).
+    this.app.post('/api/files/upload', express.json({ limit: '20mb' }), async (req, res) => {
       const { targetDir, fileName, content, overwrite } = req.body;
       if (!targetDir || !fileName || !content) {
         return res.status(400).json({ error: 'targetDir, fileName, and content are required' });
@@ -2931,6 +2973,24 @@ class ClaudeCodeWebServer {
       } else {
         res.sendFile(path.join(__dirname, 'public', 'index.html'));
       }
+    });
+
+    // Body-parser error handler (4-arg, must be registered AFTER routes).
+    // express.json() rejects oversized/malformed bodies via next(err) BEFORE
+    // the route runs; without this, Express's default handler returns HTML,
+    // which the JSON API clients can't parse. We key on err.type — the marker
+    // body-parser stamps on its own errors — so unrelated next(err) calls are
+    // left to the default handler.
+    this.app.use((err, req, res, next) => {
+      if (res.headersSent || !err || !err.type) return next(err);
+      if (err.type === 'entity.too.large') {
+        return res.status(413).json({ error: 'Request body too large' });
+      }
+      if (err.type === 'entity.parse.failed' || err.type === 'encoding.unsupported'
+          || err.type === 'charset.unsupported' || err.type === 'entity.verify.failed') {
+        return res.status(err.status || err.statusCode || 400).json({ error: 'Invalid request body' });
+      }
+      return next(err);
     });
   }
 

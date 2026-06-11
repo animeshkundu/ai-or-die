@@ -338,6 +338,17 @@
     // callback is also tolerated (defensive coding per agent-instructions/05).
     this.getCwd = typeof options.getCwd === 'function' ? options.getCwd : null;
 
+    // Optional callback returning the active session's id. Sent as the
+    // `session` query param on /api/files so the SERVER can resolve the
+    // default root (session.liveCwd || session.workingDir) even when the
+    // client's cwd cache is cold (e.g. right after a page reload). Tolerant
+    // of falsy/throwing callbacks like getCwd.
+    this.getSessionId = typeof options.getSessionId === 'function' ? options.getSessionId : null;
+    // Server-reported "home" for the active session (its working dir). Set
+    // from each /api/files response; navigateHome() roots here so "Home"
+    // means the tab's session dir, not the server's global baseFolder.
+    this._homePath = null;
+
     this._open = false;
     this._currentPath = null;
     this._basePath = null;
@@ -858,8 +869,22 @@
     var self = this;
     var params = new URLSearchParams();
     if (dirPath) params.append('path', dirPath);
+    // Always forward the active session id (when known). The server uses it
+    // ONLY to pick the default root when no `path` is given, and to report
+    // `home`; it is ignored when `path` is present, so explicit navigation
+    // (breadcrumbs / up / folder clicks) is unaffected.
+    var sid = null;
+    if (this.getSessionId) { try { sid = this.getSessionId(); } catch (_) { sid = null; } }
+    if (sid) params.append('session', sid);
+    this._lastRenderedSession = sid;
     params.append('limit', '500');
     params.append('offset', '0');
+
+    // Monotonic request token: tab switches / rapid folder clicks can leave
+    // several /api/files fetches in flight at once. Only the LATEST request is
+    // allowed to commit its response, so a slow earlier fetch can't overwrite
+    // the UI (or _homePath / the watcher root) with stale data.
+    var reqId = (this._navSeq = (this._navSeq || 0) + 1);
 
     this._statusBar.textContent = 'Loading...';
 
@@ -869,13 +894,27 @@
         return resp.json();
       })
       .then(function (data) {
+        if (reqId !== self._navSeq) return; // superseded by a newer navigateTo
         self._currentPath = data.currentPath;
         self._basePath = data.baseFolder;
+        // `home` is the session's working dir (server-resolved); navigateHome
+        // roots here. Falls back to baseFolder for sessionless/legacy responses.
+        self._homePath = data.home || data.baseFolder;
         self._items = data.items;
         self._renderBreadcrumbs();
         self._renderItems();
         self._showBrowseView();
         self._statusBar.textContent = data.totalCount + ' item' + (data.totalCount !== 1 ? 's' : '');
+
+        // fs-watcher: (re)connect to the dir the server actually resolved.
+        // open() only connects when it knows the path client-side; on a cold
+        // cache it passes null and the server resolves the session root here,
+        // so connect against data.currentPath to cover that case (and re-root
+        // when a tab switch re-navigates). connect() is idempotent per path.
+        var w = self._ensureFileWatcher();
+        if (w && typeof w.connect === 'function' && data.currentPath) {
+          try { w.connect(data.currentPath); } catch (_) { /* swallow */ }
+        }
 
         // fs-watcher (#41 / ADR-0017 — wire model post-ff79038): one
         // EventSource per session at panel mount, refcount-based per-path
@@ -900,6 +939,7 @@
         }
       })
       .catch(function (err) {
+        if (reqId !== self._navSeq) return; // superseded; don't clobber newer status
         self._statusBar.textContent = 'Error: ' + err.message;
       });
   };
@@ -916,7 +956,9 @@
 
   FileBrowserPanel.prototype.navigateHome = function () {
     this._markManualNav();
-    this.navigateTo(this._basePath);
+    // "Home" is the active session's working dir (server-reported `home`),
+    // falling back to the sandbox base if we haven't loaded a listing yet.
+    this.navigateTo(this._homePath || this._basePath);
   };
 
   // ---------------------------------------------------------------------------
@@ -943,6 +985,22 @@
   FileBrowserPanel.prototype._isActiveSession = function (sessionId) {
     if (!sessionId) return false;
     return this._activeSessionId() === sessionId;
+  };
+
+  /**
+   * Entry point for app.js when the active tab/session changes. The panel is
+   * a singleton shared across tabs, so a tab switch must re-root it to the
+   * new session's working dir — open() short-circuits when already open and
+   * would otherwise keep showing the previous tab's directory. Re-navigates
+   * with NO explicit path so the server resolves the new session's root from
+   * the `?session` param (getSessionId() now returns the new id). No-op when
+   * the panel is closed or the session is unchanged. _markManualNav() is NOT
+   * called: a tab switch should re-root and resume following the new tab.
+   */
+  FileBrowserPanel.prototype.notifyActiveSessionChanged = function (sessionId) {
+    if (!this._open) return;
+    if (!sessionId || sessionId === this._lastRenderedSession) return;
+    this.navigateTo(null);
   };
 
   /**

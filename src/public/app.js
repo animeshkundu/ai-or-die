@@ -2182,6 +2182,16 @@ class ClaudeCodeWebInterface {
                     this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
                 }
                 this.updateSessionButton(message.sessionName);
+
+                // Re-root the (singleton) file-browser panel to the newly
+                // active session's dir. open() short-circuits when already
+                // open, so without this an open panel would keep showing the
+                // previous tab's directory after a tab switch. Fires only when
+                // the panel is open and the session actually changed.
+                if (this._fileBrowserPanel &&
+                    typeof this._fileBrowserPanel.notifyActiveSessionChanged === 'function') {
+                    this._fileBrowserPanel.notifyActiveSessionChanged(message.sessionId);
+                }
                 
                 // Update tab status
                 if (this.sessionTabManager) {
@@ -4138,6 +4148,10 @@ class ClaudeCodeWebInterface {
                 // opens picks up the new cwd (per ADR-0016 / task #14).
                 initialPath: this.getCurrentWorkingDir(),
                 getCwd: () => this.getCurrentWorkingDir(),
+                // Active session id → sent as ?session on /api/files so the
+                // server can resolve the per-tab default root even when the
+                // client cwd cache is cold (e.g. just after a page reload).
+                getSessionId: () => this.currentClaudeSessionId,
             });
         }
         return this._fileBrowserPanel;

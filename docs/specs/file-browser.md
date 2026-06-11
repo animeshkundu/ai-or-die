@@ -57,10 +57,13 @@ List directory contents (files and directories).
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | string | `baseFolder` | Directory to list |
+| `path` | string | session root, else `baseFolder` | Directory to list. When omitted, the default root is resolved from `session` (see below). |
+| `session` | string | — | Active session id. When `path` is omitted, the root defaults to that session's `liveCwd ?? workingDir` (the dir the tab's agent was started in), so the browser opens at the tab's directory rather than the server's launch dir. Ignored when `path` is present. Unknown/stale session ids or sessions without a working dir fall back to `baseFolder` (never 403). |
 | `showHidden` | string | `"false"` | `"true"` to include dotfiles |
 | `offset` | number | `0` | Pagination offset |
 | `limit` | number | `500` | Max items per page (cap: 1000) |
+
+The response `home` field reflects the resolved session root (so the client's "Home" button returns to the tab's dir), while `baseFolder` remains the server sandbox floor — they differ for any session rooted in a subdirectory of `baseFolder`.
 
 **Response (200):**
 
@@ -186,7 +189,9 @@ Save text file content with optimistic concurrency.
 
 #### `POST /api/files/upload`
 
-Upload a file as base64-encoded JSON. Uses route-specific `express.json({ limit: '10mb' })`.
+Upload a file as base64-encoded JSON. Uses route-specific `express.json({ limit: '20mb' })`.
+
+> **Body-parser ordering (important):** the global `app.use(express.json())` (Express default ~100 KB limit) is mounted with an exemption that skips `/api/files/upload` (trailing-slash normalized), so this route's own 20 MB parser is the only one that runs. Without the exemption the ~100 KB global limit rejected any base64 body over ~75 KB with a 413 *before* the route, which silently broke non-image drag-drop uploads (images upload over a separate WebSocket frame and were unaffected). The route parser is sized for base64 of the 10 MB decoded cap (~14 MB); the `buffer.length > 10 MB` check remains the real per-file cap. Body-parser rejections (oversize/malformed) are translated to a JSON `{ error }` response by a trailing error-handling middleware (keyed on `err.type`), not Express's default HTML.
 
 **Request body:**
 
@@ -423,7 +428,8 @@ The navigation panel that displays directory listings and handles file selection
 | `openToFile(filePath)` | Navigate to parent directory, auto-select the file |
 | `navigateTo(path)` | Fetch directory listing from `GET /api/files` and render |
 | `navigateUp()` | Navigate to parent directory |
-| `navigateHome()` | Navigate to session working directory |
+| `navigateHome()` | Navigate to the active session's working dir (server-reported `home`), falling back to the sandbox base before the first listing loads |
+| `notifyActiveSessionChanged(sessionId)` | Re-root an open panel to a newly active tab's session. The panel is a singleton across tabs and `open()` short-circuits when already open, so a tab switch must call this to re-navigate (path-lessly, so the server resolves the new session's root). No-op when closed or the session is unchanged. Wired from the `session_joined` handler in `app.js`. |
 
 **Constructor options:**
 
@@ -433,13 +439,16 @@ The navigation panel that displays directory listings and handles file selection
 | `authFetch` | function | Authenticated fetch wrapper (`(url, opts) => Promise<Response>`) |
 | `initialPath` | string \| null | Captured at construction. Used as a final fallback in `open()`; kept for tests and tooling that don't have a session context |
 | `getCwd` | function \| null | Optional callback returning the active session's effective working directory. **Invoked on every `open()`** so a session switch between opens picks up the new cwd. The callback resolves `liveCwd ?? session.workingDir`, where `liveCwd` is the OSC 7-tracked CWD for Terminal-bridge sessions (per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md)) and is `null` for AI CLI bridges. A throwing or null-returning callback falls through to `initialPath`. |
+| `getSessionId` | function \| null | Optional callback returning the active session id. Sent as the `session` query param on every `GET /api/files` so the **server** can resolve the default root even when the client cwd cache is cold (e.g. right after a page reload). Tolerant of falsy/throwing callbacks. |
 
 **`open(startPath)` resolution order:**
 
 1. Explicit `startPath` argument from the caller (e.g. `openToFile`).
 2. `getCwd()` return value, if `getCwd` is configured and returns a truthy string. This already encodes the `liveCwd ?? session.workingDir` precedence — see ADR-0019 for the live-CWD contract.
 3. `initialPath` captured at construction.
-4. `null` — `navigateTo` falls back to the server's default base folder.
+4. `null` — `navigateTo` sends no `path` but still sends `session`, so the **server** resolves the root from the session (its `liveCwd ?? workingDir`), falling back to the default base folder only when the session is unknown. This closes the cold-cache race where the client couldn't supply a path yet.
+
+After each listing response, the panel stores `home` (used by `navigateHome()`) and reconnects the fs-watcher to the server-resolved `currentPath` (covering the path-less / cold-cache open where `open()` couldn't connect a watcher up front).
 
 **Live CWD follow-toggle (per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md)):**
 
