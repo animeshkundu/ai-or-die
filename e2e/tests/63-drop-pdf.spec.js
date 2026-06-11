@@ -6,6 +6,7 @@
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { createServer } = require('../helpers/server-factory');
 const {
   waitForAppReady,
@@ -115,5 +116,50 @@ test.describe('Drop generic file: PDF', () => {
     const dropped = fs.readdirSync(attachmentsDir);
     expect(dropped.some((f) => f.endsWith('tiny.pdf')),
       'tiny.pdf should have been written inside .claude-attachments/').toBe(true);
+  });
+
+  test('drop a LARGE (512KB) non-image file → uploads intact (bytes round-trip)', async ({ page }) => {
+    // The real-world regression: before the parser fix, the global
+    // express.json() (~100KB) 413'd any base64 body over ~75KB BEFORE the
+    // upload route ran, so normal-sized non-image files silently failed.
+    // This drives the full browser path — drop → FileReader → base64 → POST
+    // → server decode → writeFile — with a 512KB payload (~683KB JSON body,
+    // well over the old limit) and asserts the bytes on disk EQUAL the bytes
+    // dropped. The tiny-PDF test above would have passed even pre-fix.
+    await setupSession(page);
+
+    // Deterministic, non-trivial 512KB payload so we can verify integrity.
+    const big = Buffer.alloc(512 * 1024);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 31 + 7) & 0xff;
+    const sha = crypto.createHash('sha256').update(big).digest('hex');
+
+    await dispatchDrop(page, '#terminal', [{
+      name: 'large.bin',
+      mimeType: 'application/octet-stream',
+      base64: big.toString('base64'),
+    }]);
+
+    // @<path> injected → upload succeeded (no error toast path).
+    const expectedFragments = ['@', '.claude-attachments', 'large.bin'];
+    await page.waitForFunction((needles) => {
+      const term = window.app && window.app.terminal;
+      if (!term) return false;
+      const buf = term.buffer.active;
+      let combined = '';
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        if (line) combined += line.translateToString(true);
+      }
+      return needles.every((n) => combined.includes(n));
+    }, expectedFragments, { timeout: 15000 });
+
+    // The decisive check: the file on disk is byte-for-byte what we dropped.
+    const attachmentsDir = path.join(fixture, '.claude-attachments');
+    const match = fs.readdirSync(attachmentsDir).find((f) => f.endsWith('large.bin'));
+    expect(match, 'large.bin should exist in .claude-attachments/').toBeTruthy();
+    const onDisk = fs.readFileSync(path.join(attachmentsDir, match));
+    expect(onDisk.length, 'uploaded byte length should match').toBe(big.length);
+    expect(crypto.createHash('sha256').update(onDisk).digest('hex'),
+      'uploaded bytes should round-trip exactly (no corruption / truncation)').toBe(sha);
   });
 });
