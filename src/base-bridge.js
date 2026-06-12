@@ -340,6 +340,18 @@ class BaseBridge {
       this._addPtyDisposable(session, onExitDisposable);
 
       const errorHandler = (error) => {
+        // read EAGAIN ("resource temporarily unavailable") is a known transient
+        // PTY-startup condition — node-pty's own socket 'error' handler ignores
+        // it ("fs.ReadStream gets EAGAIN twice at first") and keeps the master
+        // fd alive. Because we attach a *second* 'error' listener on the same
+        // socket, we must ignore it too; otherwise a benign EAGAIN tears the
+        // session down and surfaces a fatal "Connection Error" to the client,
+        // which then retries and double-spawns. Heavier startup load (e.g. a
+        // model download) makes the EAGAIN fire more often. Ignore it entirely:
+        // do not clear the spawn watchdog, broadcast, or tear down.
+        if (error && (error.code === 'EAGAIN' || (error.message && error.message.includes('EAGAIN')))) {
+          return;
+        }
         if (!receivedLifeSign) {
           receivedLifeSign = true;
           clearTimeout(spawnWatchdog);
