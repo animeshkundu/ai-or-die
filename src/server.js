@@ -23,6 +23,9 @@ const UsageAnalytics = require('./usage-analytics');
 const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
 const SttEngine = require('./stt-engine');
+const StickyNoteEngine = require('./sticky-note-engine');
+const StickyNoteSummarizer = require('./sticky-note-summarizer');
+const { redactSecrets } = require('./utils/secret-redact');
 const CircularBuffer = require('./utils/circular-buffer');
 const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
@@ -129,13 +132,44 @@ class ClaudeCodeWebServer {
     });
     this.tunnelManager = null; // Set via setTunnelManager() from CLI entry point
     this.installAdvisor = new InstallAdvisor();
+    // Pure test-runner detection — keeps heavy native/local-model subsystems
+    // (STT, sticky-notes) inert in the suite so it never downloads models or
+    // spawns native workers. Production (npm start / running bin) is unaffected.
+    const underTest =
+      /^test/.test(process.env.npm_lifecycle_event || '') ||
+      typeof global.it === 'function';
     this.sttEngine = new SttEngine({
-      enabled: options.stt || !!options.sttEndpoint,
+      // STT is ON by default (disable with --no-stt / STT_DISABLED=1, handled in
+      // bin); an external endpoint always enables it.
+      enabled: (options.stt !== false && !underTest) || !!options.sttEndpoint,
       sttEndpoint: options.sttEndpoint,
       modelsDir: options.sttModelDir,
       numThreads: options.sttThreads ? parseInt(options.sttThreads, 10) : undefined,
     });
     this._voiceUploadCounts = new Map();
+
+    // Per-tab local-LLM "sticky note" summariser. ON by default for AI-agent
+    // tabs; disable globally with --no-sticky-notes / AIORDIE_DISABLE_STICKY_NOTES=1
+    // (sticky-notes only — does NOT affect STT). The engine lazily downloads its
+    // model + spawns its worker on the FIRST AI session start, and degrades to
+    // "unavailable" if node-llama-cpp / the model is missing.
+    this._stickyNotesEnabledGlobally =
+      options.stickyNotes !== false && !underTest && process.env.AIORDIE_DISABLE_STICKY_NOTES !== '1';
+    this._foregroundSessionId = null;
+    this._stickyInitStarted = false;
+    this.stickyNoteEngine = new StickyNoteEngine({
+      enabled: this._stickyNotesEnabledGlobally,
+      modelsDir: options.stickyNotesModelDir,
+      model: options.stickyNotesModel ? { url: options.stickyNotesModel } : undefined,
+      numThreads: options.stickyNotesThreads ? parseInt(options.stickyNotesThreads, 10) : undefined,
+    });
+    this.stickyNoteSummarizer = new StickyNoteSummarizer({
+      engine: this.stickyNoteEngine,
+      redact: redactSecrets,
+      getForeground: () => this._foregroundSessionId,
+      onResult: (sessionId, payload) => this._onStickyNoteResult(sessionId, payload),
+    });
+
     this.sessionStore = new SessionStore(options.sessionStoreOptions);
     this.usageReader = new UsageReader(this.sessionDurationHours);
     this.usageAnalytics = new UsageAnalytics({
@@ -383,6 +417,10 @@ class ClaudeCodeWebServer {
     forceExitTimer.unref();
 
     console.log(`\nGracefully shutting down (exit code: ${exitCode})...`);
+    // Tear down the local-LLM summariser + worker so the model/worker thread
+    // don't keep the process alive (and don't hold a GGUF file lock on Windows).
+    try { this.stickyNoteSummarizer.shutdown(); } catch (_) { /* ignore */ }
+    try { await this.stickyNoteEngine.shutdown(); } catch (_) { /* ignore */ }
     await this.close();
     clearTimeout(forceExitTimer);
     process.exit(exitCode);
@@ -1235,6 +1273,10 @@ class ClaudeCodeWebServer {
       // grew unbounded across session-create/delete churn on long-lived
       // servers (smaller cousin of the _fsWatchSessions leak).
       this._voiceUploadCounts.delete(sessionId);
+
+      // Stop + tear down the summariser so an in-flight inference is discarded.
+      this.stickyNoteSummarizer.cancel(sessionId);
+      if (this._foregroundSessionId === sessionId) this._foregroundSessionId = null;
 
       this.claudeSessions.delete(sessionId);
       this.activityBroadcastTimestamps.delete(sessionId);
@@ -3290,6 +3332,11 @@ class ClaudeCodeWebServer {
             if (prioSession) {
               const wasBg = prioSession.priority === 'background';
               prioSession.priority = entry.priority;
+              if (entry.priority === 'foreground') {
+                this._foregroundSessionId = entry.sessionId;
+                // Background -> foreground: refresh the note so a peek is current.
+                if (wasBg) this.stickyNoteSummarizer.focus(entry.sessionId);
+              }
               // Flush pending output immediately on background → foreground transition
               if (wasBg && entry.priority === 'foreground' &&
                   prioSession._pendingChunks && prioSession._pendingChunks.length > 0) {
@@ -3325,6 +3372,10 @@ class ClaudeCodeWebServer {
           // Verify the session exists and the WebSocket is part of it
           const session = this.claudeSessions.get(wsInfo.claudeSessionId);
           if (session && session.connections.has(wsId)) {
+            // Keep the summariser's headless terminal width in sync.
+            if (this.stickyNoteSummarizer.isEnabled(wsInfo.claudeSessionId)) {
+              this.stickyNoteSummarizer.resize(wsInfo.claudeSessionId, data.cols, data.rows);
+            }
             // Only resize if an agent is actually running
             if (session.active && session.agent) {
               try {
@@ -3392,6 +3443,22 @@ class ClaudeCodeWebServer {
           type: 'voice_status',
           status: this.sttEngine.getStatus(),
           progress: this.sttEngine.getDownloadProgress(),
+        });
+        break;
+
+      case 'set_sticky_notes':
+        this._handleSetStickyNotes(wsId, data);
+        break;
+
+      case 'set_tab_name':
+        this._handleSetTabName(wsId, data);
+        break;
+
+      case 'sticky_notes_status':
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'sticky_notes_status',
+          status: this.stickyNoteEngine.getStatus(),
+          progress: this.stickyNoteEngine.getDownloadProgress(),
         });
         break;
 
@@ -3501,7 +3568,14 @@ class ClaudeCodeWebServer {
         totalCost: 0,
         models: {}
       },
-      maxBufferSize: 1000
+      maxBufferSize: 1000,
+      // Sticky-note (local-LLM summary) state. Enabled by default for AI tabs;
+      // a client can opt out via set_sticky_notes. autoTitle/nameIsUserSet drive
+      // auto tab titling without clobbering a manual rename.
+      stickyNote: null,
+      autoTitle: null,
+      nameIsUserSet: false,
+      stickyNotesEnabled: this._stickyNotesEnabledGlobally
     };
     
     this.claudeSessions.set(sessionId, session);
@@ -3560,7 +3634,10 @@ class ClaudeCodeWebServer {
       active: session.active,
       wasActive: session.wasActive || false,
       agent: session.agent || null,
-      outputBuffer: session.outputBuffer.slice(-200) // Send last 200 lines
+      outputBuffer: session.outputBuffer.slice(-200), // Send last 200 lines
+      stickyNote: session.stickyNote || null,
+      autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
+      stickyNotesEnabled: session.stickyNotesEnabled !== false
     });
 
     if (this.dev) {
@@ -3713,6 +3790,17 @@ class ClaudeCodeWebServer {
           currentSession.outputBuffer.push(data);
           this.sessionStore.markDirty();
           this._throttledOutputBroadcast(sessionId, data);
+          // Tap for the local-LLM summariser (off the hot path: this only
+          // buffers into a headless terminal + arms timers, never inference).
+          // Isolated so a summariser/parser fault can never break the terminal
+          // output pipeline.
+          if (this.stickyNoteSummarizer.isEnabled(sessionId)) {
+            try {
+              this.stickyNoteSummarizer.feed(sessionId, data);
+            } catch (e) {
+              if (this.dev) console.error('[sticky-notes] feed error:', e && e.message);
+            }
+          }
           // Notify non-joined connections about activity (throttled to 1/sec)
           const now = Date.now();
           const lastBroadcast = this.activityBroadcastTimestamps.get(sessionId) || 0;
@@ -3729,6 +3817,8 @@ class ClaudeCodeWebServer {
             currentSession.agent = null;
             this.sessionStore.markDirty();
           }
+          // Final sticky-note flush to capture the "done" state, then stop.
+          this.stickyNoteSummarizer.flushExit(sessionId);
           this.broadcastToSession(sessionId, { type: 'exit', code, signal });
           this.activityBroadcastTimestamps.delete(sessionId);
           this.broadcastSessionActivity(sessionId, 'session_exit', { code, signal });
@@ -3769,6 +3859,12 @@ class ClaudeCodeWebServer {
         workingDir: session.workingDir,
       });
       this.broadcastSessionActivity(sessionId, 'session_started', { agent: toolName });
+
+      // Spin up the per-tab summariser for AI-agent sessions (no-op for
+      // terminal tabs, when disabled, or when node-llama-cpp is unavailable).
+      session.cols = cols;
+      session.rows = rows;
+      this._maybeStartStickyNotes(sessionId, toolName, cols, rows);
 
     } catch (error) {
       // Roll back the early active flag set before spawn
@@ -3844,6 +3940,126 @@ class ClaudeCodeWebServer {
       if (wsInfo.ws.readyState === WebSocket.OPEN) {
         this.sendToWebSocket(wsInfo.ws, data);
       }
+    }
+  }
+
+  // --- sticky-note (local-LLM session summary) wiring ----------------------
+
+  _isAiAgent(toolName) {
+    return toolName === 'claude' || toolName === 'codex' || toolName === 'copilot' || toolName === 'gemini';
+  }
+
+  // Lazily download the model + spawn the worker on first need (deduped).
+  _ensureStickyNoteEngine() {
+    if (!this.stickyNoteEngine._enabled || this._stickyInitStarted) return;
+    this._stickyInitStarted = true;
+    this.stickyNoteEngine
+      .initialize((progress) => {
+        this.broadcastToAll({
+          type: 'sticky_notes_model_progress',
+          file: progress.file,
+          downloaded: progress.downloaded,
+          total: progress.total,
+          percent: progress.percent,
+        });
+      })
+      .then(() => this._broadcastStickyStatus())
+      .catch((err) => {
+        // Allow a later AI-session start to retry after a transient failure
+        // (download blip). A permanent failure (no binding) just fails fast.
+        this._stickyInitStarted = false;
+        if (this.dev) console.error('[sticky-notes] init failed:', err.message);
+        this._broadcastStickyStatus();
+      });
+  }
+
+  _broadcastStickyStatus() {
+    this.broadcastToAll({
+      type: 'sticky_notes_status',
+      status: this.stickyNoteEngine.getStatus(),
+      progress: this.stickyNoteEngine.getDownloadProgress(),
+    });
+  }
+
+  // Begin summarising an AI-agent session if the feature is enabled for it.
+  _maybeStartStickyNotes(sessionId, toolName, cols, rows) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    if (!this.stickyNoteEngine._enabled) return;
+    if (session.stickyNotesEnabled === false) return;
+    if (!this._isAiAgent(toolName)) return;
+    this._ensureStickyNoteEngine();
+    this.stickyNoteSummarizer.enable(sessionId, {
+      cols: cols || 80,
+      rows: rows || 24,
+      note: session.stickyNote || null,
+      rev: (session.stickyNote && session.stickyNote.rev) || 0,
+    });
+  }
+
+  // Persist + broadcast a freshly generated note (called by the summariser).
+  _onStickyNoteResult(sessionId, payload) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    if (session.stickyNotesEnabled === false) return; // opted out mid-flight
+    // Defensive: never let an older/stale result clobber a newer note.
+    const incomingRev = payload.rev || 0;
+    if (session.stickyNote && incomingRev <= (session.stickyNote.rev || 0)) return;
+    const note = payload.note;
+    session.stickyNote = {
+      title: note.title,
+      goal: note.goal,
+      progress: note.progress,
+      waitingOn: note.waitingOn,
+      rev: payload.rev,
+      updatedAt: new Date().toISOString(),
+      status: 'idle',
+      error: null,
+    };
+    if (!session.nameIsUserSet && payload.autoTitle) {
+      session.autoTitle = payload.autoTitle;
+    }
+    this.sessionStore.markDirty();
+    this.broadcastToSession(sessionId, {
+      type: 'sticky_note_update',
+      sessionId,
+      stickyNote: session.stickyNote,
+      autoTitle: session.nameIsUserSet ? null : session.autoTitle,
+    });
+  }
+
+  _handleSetStickyNotes(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+    const sessionId = data.sessionId || wsInfo.claudeSessionId;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    // Only a socket that belongs to the session may change it (mirrors resize).
+    if (!session.connections.has(wsId)) return;
+    const enabled = data.enabled !== false;
+    session.stickyNotesEnabled = enabled;
+    this.sessionStore.markDirty();
+    if (enabled) {
+      if (session.active && this._isAiAgent(session.agent)) {
+        this._maybeStartStickyNotes(sessionId, session.agent, session.cols, session.rows);
+      }
+    } else {
+      this.stickyNoteSummarizer.disable(sessionId);
+    }
+  }
+
+  _handleSetTabName(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+    const sessionId = data.sessionId || wsInfo.claudeSessionId;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    if (!session.connections.has(wsId)) return;
+    // Only pin the name (blocking auto-titles) when a real name is provided.
+    if (typeof data.name === 'string' && data.name.trim()) {
+      session.name = data.name.trim();
+      session.nameIsUserSet = true;
+      this.sessionStore.markDirty();
     }
   }
 
@@ -4060,6 +4276,8 @@ class ClaudeCodeWebServer {
         // chokidar watcher leaks (PR #99 regression).
         try { this._cleanupFsWatchSession(top.id, 'session_evicted'); } catch (_) { /* ignore */ }
         try { this._voiceUploadCounts.delete(top.id); } catch (_) { /* ignore */ }
+        try { this.stickyNoteSummarizer.cancel(top.id); } catch (_) { /* ignore */ }
+        if (this._foregroundSessionId === top.id) this._foregroundSessionId = null;
         this.claudeSessions.delete(top.id);
         this.activityBroadcastTimestamps.delete(top.id);
         try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
@@ -4322,7 +4540,12 @@ class ClaudeCodeWebServer {
     try {
       const sessionsDir = this.sessionStore && this.sessionStore.storageDir;
       if (sessionsDir) {
-        const r = await this._dirSizeWithBudget(sessionsDir, deadline);
+        // Exclude the local-model cache (~/.ai-or-die/models): a one-time
+        // intentional download (STT ~670MB, sticky-notes ~800MB) is NOT the
+        // runaway session-data growth this quota is meant to bound. Counting
+        // it would trip the disk-full breaker and block session creation.
+        const modelsPath = require('path').join(sessionsDir, 'models');
+        const r = await this._dirSizeWithBudget(sessionsDir, deadline, new Set([modelsPath]));
         sample.ai_or_die_dir_bytes = r.bytes;
         sample.ai_or_die_dir_files = r.files;
         sample.ai_or_die_dir_stale = r.timedOut || false;
@@ -4364,7 +4587,7 @@ class ClaudeCodeWebServer {
    * { bytes, files, timedOut } and never throws. On deadline, returns
    * partial counts and timedOut: true.
    */
-  async _dirSizeWithBudget(dir, deadline) {
+  async _dirSizeWithBudget(dir, deadline, excludePaths) {
     const fsP = require('fs').promises;
     let bytes = 0;
     let files = 0;
@@ -4384,7 +4607,7 @@ class ClaudeCodeWebServer {
         }
         const p = require('path').join(cur, ent.name);
         if (ent.isDirectory()) {
-          queue.push(p);
+          if (!(excludePaths && excludePaths.has(p))) queue.push(p);
         } else if (ent.isFile()) {
           try {
             const st = await fsP.stat(p);

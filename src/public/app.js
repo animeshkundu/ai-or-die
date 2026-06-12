@@ -220,6 +220,16 @@ class ClaudeCodeWebInterface {
         this.sessionTabManager = new SessionTabManager(this);
         await this.sessionTabManager.init();
 
+        // Per-tab sticky-note card (local-LLM session summary overlay).
+        this.stickyNotesEnabled = this.loadSettings().enableSessionStickyNotes !== false;
+        try {
+            if (typeof StickyNoteCard !== 'undefined') {
+                this._stickyNoteCard = new StickyNoteCard(this);
+            }
+        } catch (e) {
+            console.warn('[sticky-notes] card init failed:', e && e.message);
+        }
+
         // Listen for service worker notification clicks (Windows Notification Center)
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.addEventListener('message', (event) => {
@@ -2032,6 +2042,39 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    _handleStickyNoteUpdate(message) {
+        if (!message || !message.sessionId) return;
+        const sm = this.sessionTabManager;
+        if (sm && sm.activeSessions.has(message.sessionId)) {
+            const s = sm.activeSessions.get(message.sessionId);
+            // Drop stale / out-of-order updates by monotonic rev.
+            const incomingRev = (message.stickyNote && message.stickyNote.rev) || 0;
+            const currentRev = (s.stickyNote && s.stickyNote.rev) || 0;
+            if (s.stickyNote && incomingRev <= currentRev) return;
+            s.stickyNote = message.stickyNote || null;
+            // Auto tab title — only when the user hasn't manually renamed the tab.
+            if (message.autoTitle && !s.nameIsUserSet && typeof sm.applyAutoTitle === 'function') {
+                sm.applyAutoTitle(message.sessionId, message.autoTitle);
+            }
+        }
+        if (this._stickyNoteCard && message.sessionId === this.currentClaudeSessionId) {
+            this._stickyNoteCard.render(message.stickyNote || null);
+        }
+    }
+
+    // Apply the sticky-notes on/off preference: tell the server (authoritative)
+    // for the current session and reflect it in the card.
+    _applyStickyNotesSetting(enabled) {
+        this.stickyNotesEnabled = enabled;
+        if (this.currentClaudeSessionId) {
+            this.send({ type: 'set_sticky_notes', sessionId: this.currentClaudeSessionId, enabled });
+        }
+        if (this._stickyNoteCard) {
+            if (!enabled) this._stickyNoteCard.hide();
+            else this._stickyNoteCard.notifyActiveSessionChanged(this.currentClaudeSessionId);
+        }
+    }
+
     // Flush accumulated input buffer to server as a single batched message
     _flushInput() {
         this._inputFlushScheduled = false;
@@ -2191,6 +2234,29 @@ class ClaudeCodeWebInterface {
                 if (this._fileBrowserPanel &&
                     typeof this._fileBrowserPanel.notifyActiveSessionChanged === 'function') {
                     this._fileBrowserPanel.notifyActiveSessionChanged(message.sessionId);
+                }
+
+                // Hydrate the sticky-note card for the (re)joined session and tell
+                // the server this client's enable preference (server-authoritative).
+                if (this.sessionTabManager && this.sessionTabManager.activeSessions.has(message.sessionId)) {
+                    const sdata = this.sessionTabManager.activeSessions.get(message.sessionId);
+                    if (Object.prototype.hasOwnProperty.call(message, 'stickyNote')) {
+                        sdata.stickyNote = message.stickyNote || null;
+                    }
+                    if (message.autoTitle && !sdata.nameIsUserSet &&
+                        typeof this.sessionTabManager.applyAutoTitle === 'function') {
+                        this.sessionTabManager.applyAutoTitle(message.sessionId, message.autoTitle);
+                    }
+                }
+                // Tell the server only if THIS client wants the session OFF.
+                // Never push an "enable" on join — that would let a default-on
+                // browser re-enable a session another browser deliberately
+                // disabled (server state is authoritative + persisted).
+                if (this.stickyNotesEnabled === false) {
+                    this.send({ type: 'set_sticky_notes', sessionId: message.sessionId, enabled: false });
+                }
+                if (this._stickyNoteCard) {
+                    this._stickyNoteCard.notifyActiveSessionChanged(message.sessionId);
                 }
                 
                 // Update tab status
@@ -2411,6 +2477,38 @@ class ClaudeCodeWebInterface {
             case 'pong':
                 if (this._heartbeat) this._heartbeat.onPong();
                 break;
+
+            case 'sticky_note_update':
+                this._handleStickyNoteUpdate(message);
+                break;
+
+            case 'sticky_notes_model_progress': {
+                const banner = document.getElementById('stickyNotesDownloadBanner');
+                const fill = document.getElementById('stickyNotesDownloadFill');
+                const pct = document.getElementById('stickyNotesDownloadPercent');
+                const percent = message.percent || 0;
+                if (banner) {
+                    if (percent >= 100) {
+                        banner.classList.remove('visible');
+                        banner.style.display = 'none';
+                    } else {
+                        banner.style.display = '';
+                        banner.classList.add('visible');
+                    }
+                }
+                if (fill) fill.style.width = Math.min(percent, 100) + '%';
+                if (pct) pct.textContent = Math.round(percent) + '%';
+                break;
+            }
+
+            case 'sticky_notes_status': {
+                const banner = document.getElementById('stickyNotesDownloadBanner');
+                if (banner && message.status !== 'downloading') {
+                    banner.classList.remove('visible');
+                    banner.style.display = 'none';
+                }
+                break;
+            }
 
             case 'cwd_changed': {
                 // OSC 7 in-band CWD update from a Terminal-bridge session
@@ -3681,6 +3779,9 @@ class ClaudeCodeWebInterface {
         const notifDesktop = document.getElementById('notifDesktop');
         if (notifDesktop) notifDesktop.checked = settings.notifDesktop ?? true;
 
+        const enableSessionStickyNotes = document.getElementById('enableSessionStickyNotes');
+        if (enableSessionStickyNotes) enableSessionStickyNotes.checked = settings.enableSessionStickyNotes ?? true;
+
         // Update install section
         this._updateInstallSection();
     }
@@ -3985,7 +4086,8 @@ class ClaudeCodeWebInterface {
             micSounds: true,
             notifSound: true,
             notifVolume: 30,
-            notifDesktop: true
+            notifDesktop: true,
+            enableSessionStickyNotes: true
         };
     }
 
@@ -4026,12 +4128,14 @@ class ClaudeCodeWebInterface {
             micSounds: document.getElementById('micSounds')?.checked ?? true,
             notifSound: document.getElementById('notifSound')?.checked ?? true,
             notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
-            notifDesktop: document.getElementById('notifDesktop')?.checked ?? true
+            notifDesktop: document.getElementById('notifDesktop')?.checked ?? true,
+            enableSessionStickyNotes: document.getElementById('enableSessionStickyNotes')?.checked ?? true
         };
 
         try {
             localStorage.setItem('cc-web-settings', JSON.stringify(settings));
             this.applySettings(settings);
+            this._applyStickyNotesSetting(settings.enableSessionStickyNotes !== false);
 
             // Flash save button green briefly
             const saveBtn = document.getElementById('saveSettingsBtn');

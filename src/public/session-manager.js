@@ -698,7 +698,11 @@ class SessionTabManager {
             lastAccessed: Date.now(),
             lastActivity: Date.now(),
             unreadOutput: false,
-            hasError: false
+            hasError: false,
+            // Sticky-note (local-LLM summary) state mirrored from the server.
+            stickyNote: null,
+            autoTitle: null,
+            nameIsUserSet: false
         });
         
         // Update overflow on mobile
@@ -901,11 +905,17 @@ class SessionTabManager {
             newNameSpan.textContent = newName;
             newNameSpan.title = newName;
             input.replaceWith(newNameSpan);
-            
+
             // Update session data
             const session = this.activeSessions.get(sessionId);
             if (session) {
                 session.name = newName;
+                // A manual rename pins the name so model auto-titles never
+                // override it; tell the server so it stops emitting autoTitle.
+                session.nameIsUserSet = true;
+            }
+            if (this.claudeInterface && typeof this.claudeInterface.send === 'function') {
+                this.claudeInterface.send({ type: 'set_tab_name', sessionId, name: newName });
             }
         };
         
@@ -918,6 +928,32 @@ class SessionTabManager {
                 saveNewName();
             }
         });
+    }
+
+    // Apply a model-generated tab title, unless the user has manually renamed
+    // the tab. Updates the tab label, tooltip, stored name, and overflow menu.
+    applyAutoTitle(sessionId, title) {
+        if (!title) return;
+        const session = this.activeSessions.get(sessionId);
+        if (!session || session.nameIsUserSet) return;
+        const clean = String(title).replace(/\s+/g, ' ').trim().slice(0, 60);
+        if (!clean) return;
+        session.name = clean;
+        session.autoTitle = clean;
+        const tab = this.tabs.get(sessionId);
+        if (tab) {
+            const nameSpan = tab.querySelector('.tab-name');
+            // Don't clobber an in-progress inline rename input.
+            if (nameSpan) {
+                nameSpan.textContent = clean;
+                nameSpan.title = clean;
+            }
+        }
+        try {
+            this.updateOverflowMenu();
+        } catch (_) {
+            /* overflow menu is best-effort */
+        }
     }
 
     // Close all other tabs except the given session

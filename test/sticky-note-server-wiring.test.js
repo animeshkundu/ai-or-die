@@ -1,0 +1,206 @@
+'use strict';
+
+const assert = require('assert');
+const os = require('os');
+const path = require('path');
+const fsp = require('fs').promises;
+const { ClaudeCodeWebServer } = require('../src/server');
+const SessionStore = require('../src/utils/session-store');
+
+// Exercise the sticky-note server wiring at the method level (no port binding):
+// we invoke the handler methods against a lightweight stub `this`, plus a real
+// SessionStore round-trip for the persisted fields.
+
+function makeStub(overrides = {}) {
+  const sessions = new Map();
+  const broadcasts = [];
+  const summarizerCalls = [];
+  const self = {
+    claudeSessions: sessions,
+    webSocketConnections: new Map([['ws1', { claudeSessionId: 's1' }]]),
+    sessionStore: { markDirty() {} },
+    _stickyNotesEnabledGlobally: true,
+    stickyNoteEngine: { _enabled: true, getStatus: () => 'ready', getDownloadProgress: () => null },
+    stickyNoteSummarizer: {
+      enable: (id, opts) => summarizerCalls.push(['enable', id, opts]),
+      disable: (id) => summarizerCalls.push(['disable', id]),
+      cancel: (id) => summarizerCalls.push(['cancel', id]),
+      isEnabled: () => false,
+    },
+    broadcastToSession: (id, data) => broadcasts.push({ id, data }),
+    _ensureStickyNoteEngine: () => {},
+    _maybeStartStickyNotes: ClaudeCodeWebServer.prototype._maybeStartStickyNotes,
+    _isAiAgent: ClaudeCodeWebServer.prototype._isAiAgent,
+  };
+  Object.assign(self, overrides);
+  self._broadcasts = broadcasts;
+  self._summarizerCalls = summarizerCalls;
+  return self;
+}
+
+describe('sticky-note server wiring', function () {
+  it('_isAiAgent recognises AI tools but not terminal', function () {
+    const f = ClaudeCodeWebServer.prototype._isAiAgent;
+    assert.strictEqual(f('claude'), true);
+    assert.strictEqual(f('codex'), true);
+    assert.strictEqual(f('copilot'), true);
+    assert.strictEqual(f('gemini'), true);
+    assert.strictEqual(f('terminal'), false);
+    assert.strictEqual(f(null), false);
+  });
+
+  it('_onStickyNoteResult persists the note and broadcasts with rev', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { nameIsUserSet: false });
+    ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
+      note: { title: 'Fix auth', goal: 'g', progress: ['a'], waitingOn: [] },
+      autoTitle: 'Fix auth',
+      rev: 3,
+    });
+    const session = self.claudeSessions.get('s1');
+    assert.strictEqual(session.stickyNote.title, 'Fix auth');
+    assert.strictEqual(session.stickyNote.rev, 3);
+    assert.strictEqual(session.autoTitle, 'Fix auth');
+    assert.strictEqual(self._broadcasts.length, 1);
+    assert.strictEqual(self._broadcasts[0].data.type, 'sticky_note_update');
+    assert.strictEqual(self._broadcasts[0].data.autoTitle, 'Fix auth');
+  });
+
+  it('_onStickyNoteResult does not override a user-renamed tab title', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { nameIsUserSet: true, name: 'My Tab' });
+    ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
+      note: { title: 'Auto', goal: 'g', progress: [], waitingOn: [] },
+      autoTitle: 'Auto',
+      rev: 1,
+    });
+    const session = self.claudeSessions.get('s1');
+    assert.strictEqual(session.autoTitle, undefined, 'autoTitle not set when user-renamed');
+    assert.strictEqual(self._broadcasts[0].data.autoTitle, null, 'broadcast suppresses autoTitle');
+  });
+
+  it('_handleSetTabName pins the name and sets nameIsUserSet', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { nameIsUserSet: false, name: 'old', connections: new Set(['ws1']) });
+    ClaudeCodeWebServer.prototype._handleSetTabName.call(self, 'ws1', { sessionId: 's1', name: 'Renamed' });
+    const session = self.claudeSessions.get('s1');
+    assert.strictEqual(session.name, 'Renamed');
+    assert.strictEqual(session.nameIsUserSet, true);
+  });
+
+  it('_handleSetTabName ignores an empty name (does not pin)', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { nameIsUserSet: false, name: 'old', connections: new Set(['ws1']) });
+    ClaudeCodeWebServer.prototype._handleSetTabName.call(self, 'ws1', { sessionId: 's1', name: '   ' });
+    const session = self.claudeSessions.get('s1');
+    assert.strictEqual(session.nameIsUserSet, false, 'empty name must not pin the tab');
+    assert.strictEqual(session.name, 'old');
+  });
+
+  it('rejects mutations from a socket that does not belong to the session', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { nameIsUserSet: false, name: 'old', stickyNotesEnabled: true, connections: new Set(['other']) });
+    ClaudeCodeWebServer.prototype._handleSetTabName.call(self, 'ws1', { sessionId: 's1', name: 'Hijack' });
+    ClaudeCodeWebServer.prototype._handleSetStickyNotes.call(self, 'ws1', { sessionId: 's1', enabled: false });
+    const session = self.claudeSessions.get('s1');
+    assert.strictEqual(session.name, 'old', 'cross-session rename rejected');
+    assert.strictEqual(session.nameIsUserSet, false);
+    assert.strictEqual(session.stickyNotesEnabled, true, 'cross-session toggle rejected');
+    assert.strictEqual(self._summarizerCalls.length, 0);
+  });
+
+  it('_onStickyNoteResult drops stale (older rev) and opted-out results', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { nameIsUserSet: false, stickyNotesEnabled: true, stickyNote: { title: 'Cur', rev: 5 } });
+    ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
+      note: { title: 'Old', goal: '', progress: [], waitingOn: [] }, autoTitle: 'Old', rev: 4,
+    });
+    assert.strictEqual(self.claudeSessions.get('s1').stickyNote.title, 'Cur', 'stale rev dropped');
+    assert.strictEqual(self._broadcasts.length, 0);
+
+    self.claudeSessions.set('s2', { nameIsUserSet: false, stickyNotesEnabled: false, stickyNote: null });
+    ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's2', {
+      note: { title: 'X', goal: '', progress: [], waitingOn: [] }, autoTitle: 'X', rev: 1,
+    });
+    assert.strictEqual(self.claudeSessions.get('s2').stickyNote, null, 'opted-out result dropped');
+  });
+
+  it('_handleSetStickyNotes disables and re-enables the summariser', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { active: true, agent: 'claude', stickyNote: null, connections: new Set(['ws1']) });
+
+    ClaudeCodeWebServer.prototype._handleSetStickyNotes.call(self, 'ws1', { sessionId: 's1', enabled: false });
+    assert.strictEqual(self.claudeSessions.get('s1').stickyNotesEnabled, false);
+    assert.deepStrictEqual(self._summarizerCalls.pop(), ['disable', 's1']);
+
+    ClaudeCodeWebServer.prototype._handleSetStickyNotes.call(self, 'ws1', { sessionId: 's1', enabled: true });
+    assert.strictEqual(self.claudeSessions.get('s1').stickyNotesEnabled, true);
+    assert.strictEqual(self._summarizerCalls.pop()[0], 'enable');
+  });
+
+  it('_maybeStartStickyNotes skips terminal tabs and disabled sessions', function () {
+    const self = makeStub();
+    self.claudeSessions.set('term', { stickyNotesEnabled: true });
+    ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'term', 'terminal', 80, 24);
+    assert.strictEqual(self._summarizerCalls.length, 0, 'terminal tab not summarised');
+
+    self.claudeSessions.set('off', { stickyNotesEnabled: false });
+    ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'off', 'claude', 80, 24);
+    assert.strictEqual(self._summarizerCalls.length, 0, 'opted-out session not summarised');
+
+    self.claudeSessions.set('on', { stickyNotesEnabled: true, stickyNote: null });
+    ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'on', 'claude', 80, 24);
+    assert.strictEqual(self._summarizerCalls.length, 1);
+    assert.strictEqual(self._summarizerCalls[0][0], 'enable');
+  });
+});
+
+describe('sticky-note persistence (session-store round-trip)', function () {
+  let dir;
+  beforeEach(async function () {
+    dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'aod-store-'));
+  });
+  afterEach(async function () {
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  it('persists and restores stickyNote / autoTitle / nameIsUserSet / stickyNotesEnabled', async function () {
+    const store = new SessionStore({ storageDir: dir });
+    const sessions = new Map();
+    sessions.set('s1', {
+      name: 'T',
+      workingDir: '/tmp',
+      stickyNote: { title: 'X', goal: 'g', progress: ['a'], waitingOn: [], rev: 2, updatedAt: 'now', status: 'idle', error: null },
+      autoTitle: 'X',
+      nameIsUserSet: true,
+      stickyNotesEnabled: false,
+    });
+    store.markDirty();
+    await store.saveSessions(sessions);
+
+    const loaded = await store.loadSessions();
+    const s = loaded.get('s1');
+    assert.ok(s, 'session restored');
+    assert.strictEqual(s.stickyNote.title, 'X');
+    assert.strictEqual(s.stickyNote.rev, 2);
+    assert.strictEqual(s.autoTitle, 'X');
+    assert.strictEqual(s.nameIsUserSet, true);
+    assert.strictEqual(s.stickyNotesEnabled, false);
+  });
+
+  it('restores old sessions without the new fields (clean migration)', async function () {
+    // Write a legacy file shape directly.
+    const legacy = {
+      version: '1.0',
+      savedAt: new Date().toISOString(),
+      sessions: [{ id: 'old', name: 'Legacy', workingDir: '/tmp', outputBuffer: [] }],
+    };
+    await fsp.writeFile(path.join(dir, 'sessions.json'), JSON.stringify(legacy));
+    const store = new SessionStore({ storageDir: dir });
+    const loaded = await store.loadSessions();
+    const s = loaded.get('old');
+    assert.ok(s, 'legacy session loads without error');
+    assert.strictEqual(s.stickyNote, undefined);
+    assert.notStrictEqual(s.stickyNotesEnabled, false); // undefined -> treated as enabled
+  });
+});

@@ -195,7 +195,14 @@ class SessionStore {
                     totalCost: 0,
                     models: {}
                 },
-                tempImages: Array.isArray(session.tempImages) ? session.tempImages : []
+                tempImages: Array.isArray(session.tempImages) ? session.tempImages : [],
+                // Sticky-note (local-LLM summary) state. Persist the generated
+                // content + the resolved enable preference + manual-rename flag;
+                // never persist the runtime summariser/terminal state.
+                stickyNote: session.stickyNote || null,
+                autoTitle: session.autoTitle || null,
+                nameIsUserSet: session.nameIsUserSet || false,
+                stickyNotesEnabled: session.stickyNotesEnabled !== false
             }));
 
             const data = {

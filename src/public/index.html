@@ -82,6 +82,7 @@
     <link rel="stylesheet" href="components/voice-input.css" media="print" onload="this.media='all'">
     <noscript><link rel="stylesheet" href="components/voice-input.css"></noscript>
     <link rel="stylesheet" href="components/input-overlay.css">
+    <link rel="stylesheet" href="components/sticky-note.css">
     <link rel="stylesheet" href="components/bottom-nav.css">
     <link rel="stylesheet" href="components/extra-keys.css">
     <link rel="stylesheet" href="mobile.css">
@@ -226,6 +227,13 @@
             <div class="voice-download-progress"><div class="voice-download-fill" id="voiceDownloadFill"></div></div>
             <span class="voice-download-percent" id="voiceDownloadPercent">0%</span>
             <button class="voice-download-dismiss" id="voiceDownloadDismiss">&times;</button>
+        </div>
+
+        <div class="voice-download-banner" id="stickyNotesDownloadBanner" style="display: none;">
+            <span class="voice-download-icon">&#11015;</span>
+            <span class="voice-download-text">Downloading session-summary model (~800 MB)...</span>
+            <div class="voice-download-progress"><div class="voice-download-fill" id="stickyNotesDownloadFill"></div></div>
+            <span class="voice-download-percent" id="stickyNotesDownloadPercent">0%</span>
         </div>
 
         <div class="mobile-menu" id="mobileMenu">
@@ -469,6 +477,11 @@
                                 <label for="showTokenStats">Token Stats:</label>
                                 <input type="checkbox" id="showTokenStats" checked>
                             </div>
+                            <div class="setting-group">
+                                <label for="enableSessionStickyNotes">Session sticky notes &amp; auto-titles:</label>
+                                <input type="checkbox" id="enableSessionStickyNotes" checked>
+                            </div>
+                            <div class="setting-hint">Summarises each AI tab with a small local model; nothing leaves your machine.</div>
                         </div>
                     </div>
 
@@ -762,6 +775,7 @@
     <!-- marked.min.js and purify.min.js lazy-loaded on first plan viewer open -->
     <script src="plan-detector.js"></script>
     <script src="session-manager.js"></script>
+    <script src="sticky-note-card.js"></script>
     <script src="heartbeat-watchdog.js"></script>
     <script src="splits.js"></script>
     <script src="icons.js"></script>
