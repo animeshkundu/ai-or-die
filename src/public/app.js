@@ -222,6 +222,10 @@ class ClaudeCodeWebInterface {
 
         // Per-tab sticky-note card (local-LLM session summary overlay).
         this.stickyNotesEnabled = this.loadSettings().enableSessionStickyNotes !== false;
+        // The toolbar toggle only appears once the server reports the engine is
+        // 'ready' (model loaded) — not merely when the setting is on. Keeps the
+        // control out of the UI when the feature can't run (no model, Bun, CI).
+        this._stickyNotesAvailable = false;
         try {
             if (typeof StickyNoteCard !== 'undefined') {
                 this._stickyNoteCard = new StickyNoteCard(this);
@@ -1293,8 +1297,8 @@ class ClaudeCodeWebInterface {
         // The card reports state changes (collapsed/hasNote/summarizing) so the
         // button can show aria-pressed + a status dot for the ACTIVE tab.
         this._stickyNoteCard.onStateChange = (s) => this._updateStickyNoteBtn(s);
-        // Visible only when the feature is enabled.
-        btn.style.display = this.stickyNotesEnabled !== false ? '' : 'none';
+        // Hidden until the feature is both enabled AND ready (see _refreshStickyNoteBtnVisibility).
+        this._refreshStickyNoteBtnVisibility();
         // Keyboard: Ctrl/Cmd+Shift+N toggles the status note.
         document.addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
@@ -1306,6 +1310,14 @@ class ClaudeCodeWebInterface {
             }
         });
         this._updateStickyNoteBtn({ collapsed: this._stickyNoteCard.isCollapsed(), hasNote: false, summarizing: false });
+    }
+
+    /** Show the toolbar toggle only when the feature is enabled AND ready. */
+    _refreshStickyNoteBtnVisibility() {
+        const btn = document.getElementById('stickyNoteBtn');
+        if (!btn) return;
+        const show = this.stickyNotesEnabled !== false && this._stickyNotesAvailable === true;
+        btn.style.display = show ? '' : 'none';
     }
 
     /** Reflect the active tab's note state on the toolbar button (dot + aria). */
@@ -1963,6 +1975,13 @@ class ClaudeCodeWebInterface {
                     
                     // Load available sessions
                     this.loadSessions();
+
+                    // Ask for the current sticky-note engine status so the toolbar
+                    // toggle can appear if the model is already ready (broadcasts
+                    // only fire on init; a reload/late-join needs to request it).
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.send({ type: 'sticky_notes_status' });
+                    }
                     
                     // Only show start prompt if sessionTabManager is initialized and has no sessions
                     // During early init(), sessionTabManager is null — let init() handle the overlay
@@ -2174,7 +2193,7 @@ class ClaudeCodeWebInterface {
             else this._stickyNoteCard.notifyActiveSessionChanged(this.currentClaudeSessionId);
         }
         const sbtn = document.getElementById('stickyNoteBtn');
-        if (sbtn) sbtn.style.display = enabled ? '' : 'none';
+        if (sbtn) this._refreshStickyNoteBtnVisibility();
     }
 
     // Flush accumulated input buffer to server as a single batched message
@@ -2609,6 +2628,9 @@ class ClaudeCodeWebInterface {
                     banner.classList.remove('visible');
                     banner.style.display = 'none';
                 }
+                // The toolbar toggle appears only once the engine is ready.
+                this._stickyNotesAvailable = message.status === 'ready';
+                this._refreshStickyNoteBtnVisibility();
                 break;
             }
 
