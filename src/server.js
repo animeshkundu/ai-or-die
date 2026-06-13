@@ -3882,8 +3882,8 @@ class ClaudeCodeWebServer {
       });
       this.broadcastSessionActivity(sessionId, 'session_started', { agent: toolName });
 
-      // Spin up the per-tab summariser for AI-agent sessions (no-op for
-      // terminal tabs, when disabled, or when node-llama-cpp is unavailable).
+      // Spin up the per-tab summariser for AI-agent AND terminal sessions
+      // (no-op when the tab is opted out, or when node-llama-cpp is unavailable).
       session.cols = cols;
       session.rows = rows;
       this._maybeStartStickyNotes(sessionId, toolName, cols, rows);
@@ -3971,6 +3971,14 @@ class ClaudeCodeWebServer {
     return toolName === 'claude' || toolName === 'codex' || toolName === 'copilot' || toolName === 'gemini';
   }
 
+  // Which session kinds get a sticky note. AI-agent tabs AND plain terminals —
+  // users frequently launch an AI CLI (claude/codex/…) inside a terminal tab, so
+  // the summary is useful there too. Idle terminals never trigger inference (no
+  // output → no flush), and a noisy terminal can be turned off per-tab.
+  _isStickyEligible(toolName) {
+    return this._isAiAgent(toolName) || toolName === 'terminal';
+  }
+
   // Lazily download the model + spawn the worker on first need (deduped).
   _ensureStickyNoteEngine() {
     if (!this.stickyNoteEngine._enabled || this._stickyInitStarted) return;
@@ -4003,13 +4011,14 @@ class ClaudeCodeWebServer {
     });
   }
 
-  // Begin summarising an AI-agent session if the feature is enabled for it.
+  // Begin summarising a session if the feature is enabled for it (AI-agent tabs
+  // and plain terminals — see _isStickyEligible).
   _maybeStartStickyNotes(sessionId, toolName, cols, rows) {
     const session = this.claudeSessions.get(sessionId);
     if (!session) return;
     if (!this.stickyNoteEngine._enabled) return;
     if (session.stickyNotesEnabled === false) return;
-    if (!this._isAiAgent(toolName)) return;
+    if (!this._isStickyEligible(toolName)) return;
     // Start buffering output now — this is cheap (a pure-JS headless terminal),
     // never inference. The engine model is already being pulled at startup; this
     // ensures it (idempotent) in case startup init failed transiently. The
@@ -4066,7 +4075,7 @@ class ClaudeCodeWebServer {
     session.stickyNotesEnabled = enabled;
     this.sessionStore.markDirty();
     if (enabled) {
-      if (session.active && this._isAiAgent(session.agent)) {
+      if (session.active && this._isStickyEligible(session.agent)) {
         this._maybeStartStickyNotes(sessionId, session.agent, session.cols, session.rows);
       }
     } else {

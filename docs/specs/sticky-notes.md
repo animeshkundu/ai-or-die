@@ -28,8 +28,9 @@ PTY bytes → server onOutput → summarizer.feed(sessionId, chunk)   [hot path:
 ## Update triggers (deterministic)
 
 An update = one inference, attempted only when ALL gates hold: feature enabled
-for the session · AI-agent tab · model `ready` · breaker closed · new committed
-output since last summary · `minInterval` satisfied · not already running.
+for the session · eligible tab (AI-agent OR terminal — `_isStickyEligible`) ·
+model `ready` · breaker closed · new committed output since last summary ·
+`minInterval` satisfied · not already running.
 
 Triggers: **quiet** (~4s idle), **volume** (~80 committed lines / ~6 KB),
 **max-staleness** (~90s pending), **session-exit** (final flush, bypasses

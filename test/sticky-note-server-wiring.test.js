@@ -31,6 +31,7 @@ function makeStub(overrides = {}) {
     _ensureStickyNoteEngine: () => {},
     _maybeStartStickyNotes: ClaudeCodeWebServer.prototype._maybeStartStickyNotes,
     _isAiAgent: ClaudeCodeWebServer.prototype._isAiAgent,
+    _isStickyEligible: ClaudeCodeWebServer.prototype._isStickyEligible,
   };
   Object.assign(self, overrides);
   self._broadcasts = broadcasts;
@@ -46,6 +47,16 @@ describe('sticky-note server wiring', function () {
     assert.strictEqual(f('copilot'), true);
     assert.strictEqual(f('gemini'), true);
     assert.strictEqual(f('terminal'), false);
+    assert.strictEqual(f(null), false);
+  });
+
+  it('_isStickyEligible includes terminal tabs as well as AI tools', function () {
+    const self = makeStub();
+    const f = (t) => ClaudeCodeWebServer.prototype._isStickyEligible.call(self, t);
+    assert.strictEqual(f('claude'), true);
+    assert.strictEqual(f('codex'), true);
+    assert.strictEqual(f('terminal'), true, 'terminal tabs are summarisable');
+    assert.strictEqual(f('shell'), false);
     assert.strictEqual(f(null), false);
   });
 
@@ -138,20 +149,24 @@ describe('sticky-note server wiring', function () {
     assert.strictEqual(self._summarizerCalls.pop()[0], 'enable');
   });
 
-  it('_maybeStartStickyNotes skips terminal tabs and disabled sessions', function () {
+  it('_maybeStartStickyNotes summarises terminal tabs too, but skips disabled sessions', function () {
     const self = makeStub();
-    self.claudeSessions.set('term', { stickyNotesEnabled: true });
+    // Terminal tab is now eligible (users run AI CLIs inside a shell).
+    self.claudeSessions.set('term', { stickyNotesEnabled: true, stickyNote: null });
     ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'term', 'terminal', 80, 24);
-    assert.strictEqual(self._summarizerCalls.length, 0, 'terminal tab not summarised');
+    assert.strictEqual(self._summarizerCalls.length, 1, 'terminal tab IS summarised');
+    assert.strictEqual(self._summarizerCalls[0][0], 'enable');
 
+    // Explicitly opted-out session is skipped regardless of kind.
     self.claudeSessions.set('off', { stickyNotesEnabled: false });
-    ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'off', 'claude', 80, 24);
-    assert.strictEqual(self._summarizerCalls.length, 0, 'opted-out session not summarised');
+    ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'off', 'terminal', 80, 24);
+    assert.strictEqual(self._summarizerCalls.length, 1, 'opted-out terminal not summarised');
 
+    // AI-agent tab still summarised.
     self.claudeSessions.set('on', { stickyNotesEnabled: true, stickyNote: null });
     ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'on', 'claude', 80, 24);
-    assert.strictEqual(self._summarizerCalls.length, 1);
-    assert.strictEqual(self._summarizerCalls[0][0], 'enable');
+    assert.strictEqual(self._summarizerCalls.length, 2);
+    assert.strictEqual(self._summarizerCalls[1][0], 'enable');
   });
 });
 

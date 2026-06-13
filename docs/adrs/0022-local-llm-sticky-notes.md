@@ -46,9 +46,13 @@ download and graceful degradation. We reuse that shape.
   single-flight + dirty-bit coalescing, a circuit breaker, foreground-first fair
   dispatch over one shared worker, and a CPU thread cap — so it cannot livelock
   or starve sessions.
-- **On by default, with mandatory mitigations.** Enabled for AI-agent tabs by
-  default (`--no-sticky-notes` disables; server-authoritative per-session
-  `stickyNotesEnabled` persists). Terminal output may contain secrets, so the
+- **On by default, with mandatory mitigations.** Enabled by default for both
+  AI-agent tabs (claude/codex/gemini/copilot) AND plain terminal tabs — users
+  frequently launch an AI CLI inside a shell, so `_isStickyEligible` includes
+  `terminal` (an idle terminal never triggers inference; a noisy one can be
+  turned off per-tab). Disable globally with `--no-sticky-notes`; the
+  server-authoritative per-session `stickyNotesEnabled` persists. Terminal output
+  may contain secrets, so the
   text is **redacted on BOTH ends** (`src/utils/secret-redact.js`) — the input
   before the model sees it AND the model's output before it is persisted/
   broadcast/rendered (a small model routinely echoes a secret into the note).
