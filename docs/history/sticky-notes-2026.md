@@ -48,8 +48,11 @@ We standardised on Gemma 4 E2B, then validated empirically before committing:
   after b8390.
 - llama.cpp **master** *does* have `gemma4` + `gemma4-assistant`, so a future
   node-llama-cpp release will support it.
-- Verdict: v1 runs **Gemma 3 1B (Q4_K_M)**; the model is configurable so Gemma 4
-  E2B is a one-line `--sticky-notes-model` swap when the binding catches up.
+- Verdict: v1 shipped **Gemma 3 1B (Q4_K_M)**; a later bake-off (ADR-0023)
+  switched the default to **Liquid LFM2-2.6B (Q4_K_M)** for much better
+  Goal/Done/Remaining quality. The model stays configurable via
+  `--sticky-notes-model`, so any ungated GGUF (incl. Gemma 4 E2B once the
+  binding registers `gemma4`) remains a one-line swap.
 
 How to re-check: install node-llama-cpp, `getLlama().llamaCppRelease.release`
 gives the bundled tag; `curl raw.githubusercontent.com/ggml-org/llama.cpp/<tag>/src/llama-arch.cpp | grep -i gemma`.

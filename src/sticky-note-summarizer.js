@@ -273,7 +273,7 @@ class StickyNoteSummarizer {
     const consumed = s.jsonlMode ? s.pendingText : null;
     try {
       const text = s.jsonlMode ? consumed : await s.transcript.snapshot();
-      const prompt = buildPrompt(s.note, this._redact(text));
+      const prompt = buildPrompt(s.note, this._redact(text), s.aiTitle);
       const raw = await this._inferWithTimeout(prompt);
       produced = parseNote(raw);
       // Redact the model OUTPUT too: a small model routinely echoes a token/

@@ -119,7 +119,7 @@ powershell scripts/validate.ps1
 - **sticky-note-card.js**: Per-tab local-LLM session summary card (see ADR-0022, `docs/specs/sticky-notes.md`)
 
 **Sticky Notes (local-LLM session summaries)**
-- Server: `src/sticky-note-{engine,worker,summarizer,transcript,prompt}.js`, `src/utils/{secret-redact,gguf-model-manager}.js`. A worker-thread `node-llama-cpp` (Gemma 3 1B) summarises each AI tab's rendered output into a per-tab note + auto tab title. ON by default; `--no-sticky-notes` disables. Degrades to `unavailable` if the model/binding is missing. See ADR-0022 and `docs/specs/sticky-notes.md`.
+- Server: `src/sticky-note-{engine,worker,summarizer,transcript,prompt}.js`, `src/utils/{secret-redact,gguf-model-manager}.js`. A worker-thread `node-llama-cpp` (Liquid LFM2-2.6B) summarises each AI tab's claude JSONL transcript into a per-tab note + auto tab title. ON by default; `--no-sticky-notes` disables. Degrades to `unavailable` if the model/binding is missing. See ADR-0022, ADR-0023 (model bake-off) and `docs/specs/sticky-notes.md`.
 
 ### WebSocket Protocol
 

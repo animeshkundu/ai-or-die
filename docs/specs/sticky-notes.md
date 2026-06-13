@@ -80,17 +80,20 @@ Client → server:
 |------------|--------|
 | `--no-sticky-notes` / `STICKY_NOTES_DISABLED=1` | Disable globally. |
 | `--sticky-notes-model-dir <path>` / `STICKY_NOTES_MODEL_DIR` | Model cache dir. |
-| `--sticky-notes-model <url>` / `STICKY_NOTES_MODEL` | Override the GGUF URL (e.g. Gemma 4 E2B once supported). |
+| `--sticky-notes-model <url>` / `STICKY_NOTES_MODEL` | Override the GGUF URL (e.g. the lighter `LFM2-1.2B-Q4_K_M.gguf`). |
 | `--sticky-notes-threads <n>` / `STICKY_NOTES_THREADS` | Inference CPU threads. |
 | Settings → Display → "Session sticky notes & auto-titles" | Per-client on/off (sent to server). |
 
 ## Model
 
-Default: `ggml-org/gemma-3-1b-it-GGUF` → `gemma-3-1b-it-Q4_K_M.gguf` (~806 MB,
+Default: `LiquidAI/LFM2-2.6B-GGUF` → `LFM2-2.6B-Q4_K_M.gguf` (~1.56 GB,
 **SHA-256-pinned** — refuses a swapped same-size file), `contextSize` 8192. The
 cache (`~/.ai-or-die/models/`) is excluded from the disk-quota breaker. Same
-file on Windows + macOS. Gemma 4 E2B is the intended upgrade once
-`node-llama-cpp` ships a build whose llama.cpp registers `gemma4` (see ADR-0022).
+file on Windows + macOS. Chosen by a bake-off over real claude JSONL transcripts
+(see ADR-0023): it produces concrete, forward-looking Goal/Done/Remaining with
+zero empty updates, where Gemma 3 1B gave snake_case/frozen bullets and ~35%
+empty updates. `LFM2-1.2B` is the lighter ungated alternative (~731 MB, ~half the
+latency) via `--sticky-notes-model`.
 
 ## Degradation
 

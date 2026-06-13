@@ -50,9 +50,10 @@ describe('gguf model manager', function () {
     assert.ok(last && last.percent === 100 && last.file === 'test.gguf');
   });
 
-  it('default model points at the ungated ggml-org Gemma 3 1B Q4_K_M', function () {
-    assert.strictEqual(GgufModelManager.DEFAULT_MODEL.expectedSize, 806058240);
-    assert.ok(GgufModelManager.DEFAULT_MODEL.url.includes('ggml-org/gemma-3-1b-it-GGUF'));
+  it('default model points at the ungated LiquidAI LFM2-2.6B Q4_K_M', function () {
+    assert.strictEqual(GgufModelManager.DEFAULT_MODEL.expectedSize, 1563668704);
+    assert.ok(GgufModelManager.DEFAULT_MODEL.url.includes('LiquidAI/LFM2-2.6B-GGUF'));
     assert.ok(GgufModelManager.DEFAULT_MODEL.file.endsWith('.gguf'));
+    assert.match(GgufModelManager.DEFAULT_MODEL.sha256, /^[0-9a-f]{64}$/);
   });
 });

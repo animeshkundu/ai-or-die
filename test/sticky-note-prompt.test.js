@@ -59,10 +59,10 @@ describe('sticky-note prompt + parse (v2: goal/done/remaining/update)', function
     });
 
     it('recovers JSON embedded in prose', function () {
-      const n = parseNote('Sure! {"goal":"g","done":[],"remaining":[],"update":"u"} hope that helps');
+      const n = parseNote('Sure! {"goal":"g","done":[],"remaining":[],"update":"ran the tests"} hope that helps');
       assert.ok(n);
       assert.strictEqual(n.goal, 'g');
-      assert.strictEqual(n.update, 'u');
+      assert.strictEqual(n.update, 'ran the tests');
     });
 
     it('returns null for unparseable / empty output', function () {
@@ -89,6 +89,22 @@ describe('sticky-note prompt + parse (v2: goal/done/remaining/update)', function
     it('drops empty bullets', function () {
       const n = parseNote(JSON.stringify({ goal: 'g', done: ['real', '', '   '], remaining: [], update: '' }));
       assert.deepStrictEqual(n.done, ['real']);
+    });
+
+    it('drops stub updates (bare symbol / single token / "None") but keeps real sentences', function () {
+      const stub = (u) => parseNote(JSON.stringify({ goal: 'g', done: [], remaining: [], update: u })).update;
+      assert.strictEqual(stub('None'), '');
+      assert.strictEqual(stub('{'), '');
+      assert.strictEqual(stub('...'), '');
+      assert.strictEqual(stub('42'), ''); // no letters
+      assert.strictEqual(stub('Done'), ''); // single short token
+      assert.strictEqual(stub('Implemented the middleware'), 'Implemented the middleware');
+    });
+
+    it('cleanUpdate is i18n-safe and allows a long single phrase', function () {
+      const upd = (u) => parseNote(JSON.stringify({ goal: 'g', done: [], remaining: [], update: u })).update;
+      assert.strictEqual(upd('auto-compaction-implemented-and-verified'), 'auto-compaction-implemented-and-verified'); // long single token
+      assert.strictEqual(upd('完成了基准测试并记录了结果'), '完成了基准测试并记录了结果'); // CJK letters, long
     });
   });
 
@@ -118,6 +134,14 @@ describe('sticky-note prompt + parse (v2: goal/done/remaining/update)', function
       const p = buildPrompt(null, '');
       assert.ok(p.includes('(none yet)'));
       assert.ok(p.includes('(no content captured)'));
+    });
+
+    it('includes the session title and normalises newlines in it', function () {
+      const p = buildPrompt(null, 'text', 'Add rate limiting');
+      assert.ok(p.includes('Session title: Add rate limiting'));
+      const p2 = buildPrompt(null, 'text', 'evil\ntitle');
+      const titleLine = p2.split('\n')[0];
+      assert.strictEqual(titleLine, 'Session title: evil title');
     });
   });
 

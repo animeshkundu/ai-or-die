@@ -22,8 +22,22 @@ const os = require('os');
 // claude). AIORDIE_CLAUDE_PROJECTS_DIR overrides the location (tests / custom setups).
 const DEFAULT_PROJECTS_DIR =
   process.env.AIORDIE_CLAUDE_PROJECTS_DIR || path.join(os.homedir(), '.claude', 'projects');
-const PER_TURN_MAX = 1500; // cap one turn's text so a huge reply can't blow the context
+const PER_TURN_MAX = 700; // cap one turn's text — short + clean reads best for a 1B model
 const READ_MAX_BYTES = 512 * 1024; // never read more than this in one call
+
+/** Strip code blocks + markdown formatting to plain prose (easier for a small model). */
+function cleanProse(s) {
+  if (typeof s !== 'string') return '';
+  return s
+    .replace(/```[\s\S]*?```/g, ' [code] ')   // fenced code → marker
+    .replace(/`[^`]*`/g, (m) => m.slice(1, -1)) // inline code → its text
+    .replace(/^#{1,6}\s+/gm, '')               // heading markers
+    .replace(/^\s*[-*+]\s+/gm, '')             // bullet markers
+    .replace(/^\s*\d+\.\s+/gm, '')             // numbered-list markers
+    .replace(/\*\*([^*]+)\*\*/g, '$1')          // bold
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 /** Claude's project-dir slug for a cwd: all path separators → '-'. */
 function slugForCwd(cwd) {
@@ -66,13 +80,13 @@ function clip(s) {
 
 /** Pull plain text from a message.content (string or array of typed blocks). */
 function extractText(content) {
-  if (typeof content === 'string') return content;
+  if (typeof content === 'string') return cleanProse(content);
   if (!Array.isArray(content)) return '';
   const parts = [];
   for (const b of content) {
     if (b && b.type === 'text' && typeof b.text === 'string') parts.push(b.text);
   }
-  return parts.join(' ');
+  return cleanProse(parts.join(' '));
 }
 
 /** Names of tools the assistant invoked in this message. */

@@ -24,7 +24,9 @@ download and graceful degradation. We reuse that shape.
   `node-llama-cpp` is loaded via dynamic `import()`. If the module or model is
   missing the feature is simply `unavailable` — the app is unaffected.
 - **Model: Gemma 3 1B (Q4_K_M GGUF)** from the ungated `ggml-org` mirror
-  (~806 MB). We *wanted* Gemma 4 E2B, but empirically the current
+  (~806 MB). **(Superseded by ADR-0023 — the default is now Liquid LFM2-2.6B
+  after a bake-off; the rationale below records the original v1 choice.)** We
+  *wanted* Gemma 4 E2B, but empirically the current
   `node-llama-cpp` prebuilt (llama.cpp **b8390**, 2026-03-17) does **not**
   register the `gemma4` architecture (it predates Gemma 4). `gemma4` is already
   in llama.cpp master, so the model spec is configurable

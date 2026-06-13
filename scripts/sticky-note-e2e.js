@@ -1,8 +1,8 @@
 'use strict';
 
-// Real-model end-to-end check (NOT part of `npm test` — downloads ~806MB and
+// Real-model end-to-end check (NOT part of `npm test` — downloads ~1.56GB and
 // runs live inference). Validates that node-llama-cpp's prebuilt actually loads
-// Gemma 3 1B and that the worker + grammar produce a parseable note.
+// LFM2-2.6B and that the worker + grammar produce a parseable note.
 
 const StickyNoteEngine = require('../src/sticky-note-engine');
 const { buildPrompt, parseNote } = require('../src/sticky-note-prompt');

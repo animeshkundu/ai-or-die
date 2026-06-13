@@ -9,20 +9,22 @@ const crypto = require('crypto');
 // Single-file GGUF model manager for the local sticky-note summariser.
 //
 // Mirrors src/utils/model-manager.js (the STT one) but for ONE configurable
-// GGUF file. Default is Gemma 3 1B (Q4_K_M) from the ungated ggml-org mirror —
-// chosen because Google's QAT q4_0 repo is gated (no anonymous download) and
-// because the current node-llama-cpp prebuilt (llama.cpp b8390) does not yet
-// register the `gemma4` arch. Swap `model` to Gemma 4 E2B once a gemma4-capable
-// node-llama-cpp ships.
+// GGUF file. Default is Liquid LFM2-2.6B (Q4_K_M) from the ungated LiquidAI
+// repo. It was chosen over Gemma 3 1B/4B and Qwen3-4B by a bake-off across real
+// claude JSONL transcripts (see ADR-0023): the 1B produced snake_case/frozen
+// done-remaining and ~35% empty updates, while LFM2-2.6B yields concrete,
+// forward-looking notes with zero empty updates at ~half the latency of the 4B
+// models. Swap `model` (or pass `--sticky-notes-model <url>`) to use a different
+// GGUF; LFM2-1.2B is the lighter ungated alternative.
 
 const DEFAULT_MODEL = {
-  id: 'gemma-3-1b-it-Q4_K_M',
-  file: 'gemma-3-1b-it-Q4_K_M.gguf',
+  id: 'LFM2-2.6B-Q4_K_M',
+  file: 'LFM2-2.6B-Q4_K_M.gguf',
   // Pinned to an immutable commit revision (not the mutable `main` ref) AND
   // SHA-256-verified before load — a tampered/replaced file is refused.
-  url: 'https://huggingface.co/ggml-org/gemma-3-1b-it-GGUF/resolve/f9c28bcd85737ffc5aef028638d3341d49869c27/gemma-3-1b-it-Q4_K_M.gguf',
-  expectedSize: 806058240,
-  sha256: '8ccc5cd1f1b3602548715ae25a66ed73fd5dc68a210412eea643eb20eb75a135', // verified before load; refuses a swapped same-size file
+  url: 'https://huggingface.co/LiquidAI/LFM2-2.6B-GGUF/resolve/a759abdc5955d4ca97763e5cb7ff3940589ba898/LFM2-2.6B-Q4_K_M.gguf',
+  expectedSize: 1563668704,
+  sha256: '384bc877b6c37064982f96885bef69e4475919f5969218ed4e3b9399ae0340df', // verified before load; refuses a swapped same-size file
 };
 
 class GgufModelManager {
