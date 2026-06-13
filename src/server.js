@@ -4921,6 +4921,10 @@ class ClaudeCodeWebServer {
     if (this.diskCompactInterval) {
       clearInterval(this.diskCompactInterval);
     }
+    if (this._stickyJsonlPoll) {
+      clearInterval(this._stickyJsonlPoll);
+      this._stickyJsonlPoll = null;
+    }
     if (this.diskUsageSampleInterval) {
       clearInterval(this.diskUsageSampleInterval);
     }
