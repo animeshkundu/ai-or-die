@@ -9,7 +9,7 @@
 // unit-tested with a fake clock + fake engine (no model, no real timers).
 
 const TranscriptBuffer = require('./sticky-note-transcript');
-const { buildPrompt, parseNote, NOTE_SCHEMA } = require('./sticky-note-prompt');
+const { buildPrompt, parseNote, deriveTitle, NOTE_SCHEMA } = require('./sticky-note-prompt');
 
 const DEFAULTS = {
   quietMs: 4000, // (1) quiet trigger: idle after a burst
@@ -17,6 +17,7 @@ const DEFAULTS = {
   maxStaleMs: 90000, // (3) max-staleness backstop while output pends
   minIntervalMs: 20000, // floor between inferences for one session
   intervalFactor: 3, // adaptive: minInterval = max(floor, factor * lastDurationMs)
+  turnDebounceMs: 1500, // (JSONL mode) coalesce a burst of appended turn lines
   inferTimeoutMs: 75000, // backstop ABOVE the engine's own 60s timeout, so the
   // engine times out first (one timeout owner); this only fires if the engine
   // promise hangs entirely. Worker-side serialisation prevents concurrent runs.
@@ -77,6 +78,13 @@ class StickyNoteSummarizer {
       failures: 0,
       breakerOpenUntil: 0,
       cancelled: false,
+      // JSONL input mode: when the server binds a claude transcript to this tab,
+      // it pushes extracted turns via feedTurns() instead of raw PTY via feed().
+      // In that mode _run summarises pendingText (the clean conversation) rather
+      // than the rendered terminal snapshot.
+      jsonlMode: false,
+      pendingText: '',
+      aiTitle: null,
     });
   }
 
@@ -95,7 +103,7 @@ class StickyNoteSummarizer {
   /** Feed raw PTY output. Hot path: buffer + arm timers only, never inference. */
   feed(sessionId, chunk) {
     const s = this._states.get(sessionId);
-    if (!s || s.cancelled) return;
+    if (!s || s.cancelled || s.jsonlMode) return; // JSONL mode ignores raw output
     s.transcript.write(chunk);
     s.feedSeq++;
     s.needsSummary = true;
@@ -124,6 +132,41 @@ class StickyNoteSummarizer {
   resize(sessionId, cols, rows) {
     const s = this._states.get(sessionId);
     if (s) s.transcript.resize(cols, rows);
+  }
+
+  /**
+   * Feed extracted, clean conversation turns from a claude JSONL transcript.
+   * Switches the session into JSONL mode: _run summarises this accumulated text
+   * (the real input/output) instead of the rendered terminal snapshot. The
+   * server is responsible for watching the file + extracting turns.
+   * @param {string} sessionId
+   * @param {string} text - recent turns as clean text
+   * @param {string|null} [aiTitle] - claude's own ai-title for the tab, if present
+   */
+  feedTurns(sessionId, text, aiTitle) {
+    const s = this._states.get(sessionId);
+    if (!s || s.cancelled) return;
+    if (aiTitle) s.aiTitle = aiTitle; // capture the title for the next summary
+    if (!text) return; // title-only update: stored above, no mode switch / no inference
+    s.jsonlMode = true;
+    s.pendingText += (s.pendingText ? '\n' : '') + text;
+    s.feedSeq++;
+    s.needsSummary = true;
+
+    // Debounce: coalesce a burst of appended lines into one summary per turn.
+    if (s.debounceTimer) this._timers.clear(s.debounceTimer);
+    s.debounceTimer = this._timers.set(() => {
+      s.debounceTimer = null;
+      this._attempt(sessionId, 'turn');
+    }, this._cfg.turnDebounceMs);
+
+    // Max-staleness backstop.
+    if (!s.staleTimer) {
+      s.staleTimer = this._timers.set(() => {
+        s.staleTimer = null;
+        this._attempt(sessionId, 'stale');
+      }, this._cfg.maxStaleMs);
+    }
   }
 
   /** (6) Focus/peek trigger — refresh if the tab has new output. */
@@ -164,10 +207,10 @@ class StickyNoteSummarizer {
   _redactNote(note) {
     const r = this._redact;
     return {
-      title: r(note.title || ''),
       goal: r(note.goal || ''),
-      progress: (note.progress || []).map((b) => r(b)),
-      waitingOn: (note.waitingOn || []).map((b) => r(b)),
+      done: (note.done || []).map((b) => r(b)),
+      remaining: (note.remaining || []).map((b) => r(b)),
+      update: r(note.update || ''),
     };
   }
 
@@ -224,13 +267,17 @@ class StickyNoteSummarizer {
 
     const start = this._now();
     let produced = null;
+    // In JSONL mode summarise the accumulated clean turns; otherwise the rendered
+    // terminal snapshot (fallback for plain shells). Capture the consumed text so
+    // we can drop only it after a successful run (new turns may arrive mid-run).
+    const consumed = s.jsonlMode ? s.pendingText : null;
     try {
-      const text = await s.transcript.snapshot();
+      const text = s.jsonlMode ? consumed : await s.transcript.snapshot();
       const prompt = buildPrompt(s.note, this._redact(text));
       const raw = await this._inferWithTimeout(prompt);
       produced = parseNote(raw);
       // Redact the model OUTPUT too: a small model routinely echoes a token/
-      // path/secret from the transcript into the note, which is then persisted
+      // path/secret from the content into the note, which is then persisted
       // + broadcast + rendered. Input-redaction alone is not enough.
       if (produced) produced = this._redactNote(produced);
     } catch (err) {
@@ -247,11 +294,18 @@ class StickyNoteSummarizer {
         s.rev += 1;
         s.lastUpdatedAt = this._now();
         s.failures = 0;
+        // Drop the consumed JSONL text (keep anything appended during the run).
+        if (s.jsonlMode && consumed) {
+          s.pendingText = s.pendingText.startsWith(consumed)
+            ? s.pendingText.slice(consumed.length).replace(/^\n+/, '')
+            : '';
+        }
         // Clear the flag ONLY if no new output arrived during this run; else
         // the new output still needs summarising.
         if (s.feedSeq === seqAtStart) s.needsSummary = false;
         try {
-          this._onResult(sessionId, { note: produced, autoTitle: produced.title, rev: s.rev });
+          const autoTitle = s.aiTitle || deriveTitle(produced.goal);
+          this._onResult(sessionId, { note: produced, autoTitle, rev: s.rev });
         } catch {
           /* never let a consumer error break the loop */
         }

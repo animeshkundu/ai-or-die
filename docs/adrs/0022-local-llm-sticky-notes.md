@@ -34,18 +34,25 @@ download and graceful degradation. We reuse that shape.
   ungated `Q4_K_M` mirror. GGUF quantisation is platform-independent — one file
   for Windows + macOS; the per-OS difference is node-llama-cpp's backend binary
   (Metal / CUDA / Vulkan / CPU).
-- **Input is a rendered transcript, not raw bytes.** Raw PTY output is terminal
-  *rendering instructions* (CR redraws, spinners, alt-screen). We replay bytes
-  through a per-session **`@xterm/headless`** terminal and summarise the
-  rendered recent lines — this avoids duplicated/garbage input and transparently
-  handles split multi-byte UTF-8.
+- **Input (v2): the claude JSONL transcript, with the rendered-terminal scrape as
+  fallback.** v1 scraped a per-session `@xterm/headless` terminal, but an Ink TUI
+  (`claude`) repaints in place, so the scrape captured the input box, not the
+  conversation. v2 reads claude's own session log
+  (`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`; `src/sticky-note-jsonl.js`),
+  bound per-tab by a 2s poll on `liveCwd||workingDir` — clean, complete
+  user/assistant turns (the `@xterm/headless` scrape remains for plain non-claude
+  shells; it transparently handles split multi-byte UTF-8 there).
+- **Note (v2) is incremental + append-only.** `{goal, done[], remaining[],
+  updates[{text,at}]}` (was `{title, goal, progress[], waitingOn[]}`). Each turn
+  refines goal/done/remaining and **prepends** one `update` (newest-first, cap 25).
+  `ai-title` lines from the JSONL drive the tab title for free.
 - **Inference never runs on the PTY hot path.** The tap only buffers + arms
   timers. A per-session scheduler (`src/sticky-note-summarizer.js`) runs
-  inference on **deterministic triggers** (quiet ~4s, volume ~80 lines, max-
-  staleness ~90s, session-exit, initial, focus) with an adaptive `minInterval`,
-  single-flight + dirty-bit coalescing, a circuit breaker, foreground-first fair
-  dispatch over one shared worker, and a CPU thread cap — so it cannot livelock
-  or starve sessions.
+  inference on **deterministic triggers** (JSONL mode: per completed turn,
+  debounced; scrape mode: quiet ~4s, volume, max-staleness; + session-exit) with
+  an adaptive `minInterval`, single-flight + dirty-bit coalescing, a circuit
+  breaker, foreground-first fair dispatch over one shared worker, and a CPU thread
+  cap — so it cannot livelock or starve sessions.
 - **On by default, with mandatory mitigations.** Enabled by default for both
   AI-agent tabs (claude/codex/gemini/copilot) AND plain terminal tabs — users
   frequently launch an AI CLI inside a shell, so `_isStickyEligible` includes

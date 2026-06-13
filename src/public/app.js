@@ -225,6 +225,7 @@ class ClaudeCodeWebInterface {
         try {
             if (typeof StickyNoteCard !== 'undefined') {
                 this._stickyNoteCard = new StickyNoteCard(this);
+                this._setupStickyNoteToggle();
             }
         } catch (e) {
             console.warn('[sticky-notes] card init failed:', e && e.message);
@@ -1282,6 +1283,48 @@ class ClaudeCodeWebInterface {
         });
     }
 
+    /** Wire the toolbar sticky-note toggle button to the card. */
+    _setupStickyNoteToggle() {
+        const btn = document.getElementById('stickyNoteBtn');
+        if (!btn || !this._stickyNoteCard) return;
+        btn.addEventListener('click', () => {
+            if (this._stickyNoteCard) this._stickyNoteCard.toggleCollapse();
+        });
+        // The card reports state changes (collapsed/hasNote/summarizing) so the
+        // button can show aria-pressed + a status dot for the ACTIVE tab.
+        this._stickyNoteCard.onStateChange = (s) => this._updateStickyNoteBtn(s);
+        // Visible only when the feature is enabled.
+        btn.style.display = this.stickyNotesEnabled !== false ? '' : 'none';
+        // Keyboard: Ctrl/Cmd+Shift+N toggles the status note.
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
+                const b = document.getElementById('stickyNoteBtn');
+                if (b && b.style.display !== 'none') {
+                    e.preventDefault();
+                    b.click();
+                }
+            }
+        });
+        this._updateStickyNoteBtn({ collapsed: this._stickyNoteCard.isCollapsed(), hasNote: false, summarizing: false });
+    }
+
+    /** Reflect the active tab's note state on the toolbar button (dot + aria). */
+    _updateStickyNoteBtn(state) {
+        const btn = document.getElementById('stickyNoteBtn');
+        if (!btn) return;
+        const s = state || {};
+        btn.setAttribute('aria-pressed', String(!s.collapsed));
+        btn.classList.toggle('summarizing', !!s.summarizing);
+        const badge = btn.querySelector('.sticky-note-badge');
+        if (badge) badge.hidden = !(s.hasNote || s.summarizing);
+        let label = 'Show status note';
+        if (!s.collapsed) label = 'Hide status note';
+        else if (s.summarizing) label = 'Status note: summarizing…';
+        else if (s.hasNote) label = 'Show status note (has updates)';
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
+    }
+
     setupVoiceInput() {
         const voiceCfg = this.voiceInputConfig;
         if (!voiceCfg) return;
@@ -2130,6 +2173,8 @@ class ClaudeCodeWebInterface {
             if (!enabled) this._stickyNoteCard.hide();
             else this._stickyNoteCard.notifyActiveSessionChanged(this.currentClaudeSessionId);
         }
+        const sbtn = document.getElementById('stickyNoteBtn');
+        if (sbtn) sbtn.style.display = enabled ? '' : 'none';
     }
 
     // Flush accumulated input buffer to server as a single batched message

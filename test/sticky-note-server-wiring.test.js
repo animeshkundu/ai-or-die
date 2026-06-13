@@ -32,6 +32,8 @@ function makeStub(overrides = {}) {
     _maybeStartStickyNotes: ClaudeCodeWebServer.prototype._maybeStartStickyNotes,
     _isAiAgent: ClaudeCodeWebServer.prototype._isAiAgent,
     _isStickyEligible: ClaudeCodeWebServer.prototype._isStickyEligible,
+    _startStickyJsonlPoll: () => {},
+    _stickyJsonl: new Map(),
   };
   Object.assign(self, overrides);
   self._broadcasts = broadcasts;
@@ -60,28 +62,63 @@ describe('sticky-note server wiring', function () {
     assert.strictEqual(f(null), false);
   });
 
-  it('_onStickyNoteResult persists the note and broadcasts with rev', function () {
+  it('_onStickyNoteResult merges state + prepends an update, and broadcasts with rev', function () {
     const self = makeStub();
     self.claudeSessions.set('s1', { nameIsUserSet: false });
     ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
-      note: { title: 'Fix auth', goal: 'g', progress: ['a'], waitingOn: [] },
+      note: { goal: 'g', done: ['a'], remaining: ['b'], update: 'started work' },
       autoTitle: 'Fix auth',
       rev: 3,
     });
     const session = self.claudeSessions.get('s1');
     assert.strictEqual(session.stickyNote.title, 'Fix auth');
+    assert.strictEqual(session.stickyNote.goal, 'g');
+    assert.deepStrictEqual(session.stickyNote.done, ['a']);
+    assert.deepStrictEqual(session.stickyNote.remaining, ['b']);
+    assert.strictEqual(session.stickyNote.updates.length, 1);
+    assert.strictEqual(session.stickyNote.updates[0].text, 'started work');
     assert.strictEqual(session.stickyNote.rev, 3);
     assert.strictEqual(session.autoTitle, 'Fix auth');
     assert.strictEqual(self._broadcasts.length, 1);
     assert.strictEqual(self._broadcasts[0].data.type, 'sticky_note_update');
-    assert.strictEqual(self._broadcasts[0].data.autoTitle, 'Fix auth');
+  });
+
+  it('_onStickyNoteResult appends updates newest-first and caps the log', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { nameIsUserSet: false });
+    for (let i = 1; i <= 30; i++) {
+      ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
+        note: { goal: 'g', done: [], remaining: [], update: 'u' + i },
+        autoTitle: 'T',
+        rev: i,
+      });
+    }
+    const updates = self.claudeSessions.get('s1').stickyNote.updates;
+    assert.strictEqual(updates.length, 25, 'capped at 25');
+    assert.strictEqual(updates[0].text, 'u30', 'newest first');
+    assert.strictEqual(updates[24].text, 'u6', 'oldest kept');
+  });
+
+  it('_onStickyNoteResult keeps prior goal/done when a weak gen returns empty', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { nameIsUserSet: false });
+    ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
+      note: { goal: 'real goal', done: ['x'], remaining: [], update: 'first' }, autoTitle: 'T', rev: 1,
+    });
+    ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
+      note: { goal: '', done: [], remaining: [], update: 'second' }, autoTitle: 'T', rev: 2,
+    });
+    const note = self.claudeSessions.get('s1').stickyNote;
+    assert.strictEqual(note.goal, 'real goal', 'empty goal keeps prior');
+    assert.deepStrictEqual(note.done, ['x'], 'empty done keeps prior');
+    assert.strictEqual(note.updates[0].text, 'second');
   });
 
   it('_onStickyNoteResult does not override a user-renamed tab title', function () {
     const self = makeStub();
     self.claudeSessions.set('s1', { nameIsUserSet: true, name: 'My Tab' });
     ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
-      note: { title: 'Auto', goal: 'g', progress: [], waitingOn: [] },
+      note: { goal: 'g', done: [], remaining: [], update: 'u' },
       autoTitle: 'Auto',
       rev: 1,
     });
@@ -124,14 +161,14 @@ describe('sticky-note server wiring', function () {
     const self = makeStub();
     self.claudeSessions.set('s1', { nameIsUserSet: false, stickyNotesEnabled: true, stickyNote: { title: 'Cur', rev: 5 } });
     ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
-      note: { title: 'Old', goal: '', progress: [], waitingOn: [] }, autoTitle: 'Old', rev: 4,
+      note: { goal: '', done: [], remaining: [], update: 'old' }, autoTitle: 'Old', rev: 4,
     });
     assert.strictEqual(self.claudeSessions.get('s1').stickyNote.title, 'Cur', 'stale rev dropped');
     assert.strictEqual(self._broadcasts.length, 0);
 
     self.claudeSessions.set('s2', { nameIsUserSet: false, stickyNotesEnabled: false, stickyNote: null });
     ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's2', {
-      note: { title: 'X', goal: '', progress: [], waitingOn: [] }, autoTitle: 'X', rev: 1,
+      note: { goal: '', done: [], remaining: [], update: 'x' }, autoTitle: 'X', rev: 1,
     });
     assert.strictEqual(self.claudeSessions.get('s2').stickyNote, null, 'opted-out result dropped');
   });
@@ -185,7 +222,7 @@ describe('sticky-note persistence (session-store round-trip)', function () {
     sessions.set('s1', {
       name: 'T',
       workingDir: '/tmp',
-      stickyNote: { title: 'X', goal: 'g', progress: ['a'], waitingOn: [], rev: 2, updatedAt: 'now', status: 'idle', error: null },
+      stickyNote: { title: 'X', goal: 'g', done: ['a'], remaining: ['b'], updates: [{ text: 'u1', at: 'now' }], rev: 2, updatedAt: 'now', status: 'idle', error: null },
       autoTitle: 'X',
       nameIsUserSet: true,
       stickyNotesEnabled: false,
@@ -197,6 +234,9 @@ describe('sticky-note persistence (session-store round-trip)', function () {
     const s = loaded.get('s1');
     assert.ok(s, 'session restored');
     assert.strictEqual(s.stickyNote.title, 'X');
+    assert.deepStrictEqual(s.stickyNote.done, ['a']);
+    assert.deepStrictEqual(s.stickyNote.remaining, ['b']);
+    assert.strictEqual(s.stickyNote.updates[0].text, 'u1');
     assert.strictEqual(s.stickyNote.rev, 2);
     assert.strictEqual(s.autoTitle, 'X');
     assert.strictEqual(s.nameIsUserSet, true);
@@ -215,7 +255,21 @@ describe('sticky-note persistence (session-store round-trip)', function () {
     const loaded = await store.loadSessions();
     const s = loaded.get('old');
     assert.ok(s, 'legacy session loads without error');
-    assert.strictEqual(s.stickyNote, undefined);
+    assert.ok(!s.stickyNote, 'no sticky note for a legacy session (null/undefined)');
     assert.notStrictEqual(s.stickyNotesEnabled, false); // undefined -> treated as enabled
+  });
+
+  it('migrates a legacy progress/waitingOn note to done/remaining/updates', function () {
+    const m = SessionStore.migrateStickyNote({
+      title: 'T', goal: 'g', progress: ['did a', 'did b'], waitingOn: ['need c'], rev: 7, updatedAt: 'then',
+    });
+    assert.deepStrictEqual(m.done, ['did a', 'did b']);
+    assert.deepStrictEqual(m.remaining, ['need c']);
+    assert.deepStrictEqual(m.updates, []);
+    assert.strictEqual(m.title, 'T');
+    assert.strictEqual(m.rev, 7);
+    // A v2 note passes through, but always gains an updates[] array.
+    const v2 = SessionStore.migrateStickyNote({ goal: 'g', done: [], remaining: [] });
+    assert.ok(Array.isArray(v2.updates));
   });
 });

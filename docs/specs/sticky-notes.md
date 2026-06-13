@@ -42,14 +42,25 @@ Guards: `minInterval = max(20s, 3 × lastInferenceMs)`; single-flight + dirty-bi
 failures; foreground-first fair dispatch over one shared worker; thread cap
 `min(4, cores-2)`.
 
-## Data shapes
+## Data shapes (v2)
 
 ```js
-session.stickyNote = { title, goal, progress[/*≤4*/], waitingOn[/*≤3*/], updatedAt, rev, status, error }
-session.autoTitle = string|null        // last model title (suppressed once user renames)
+session.stickyNote = {
+  title,                       // ai-title (claude) or derived from goal
+  goal,                        // refined each turn
+  done[/*≤5*/], remaining[/*≤5*/],   // refined each turn (was progress/waitingOn)
+  updates: [ { text, at } ],   // APPEND-ONLY, newest-first, cap 25
+  updatedAt, rev, status, error
+}
+session.autoTitle = string|null        // last title (suppressed once user renames)
 session.nameIsUserSet = boolean         // manual rename pins the tab name
 session.stickyNotesEnabled = boolean    // server-authoritative; persisted
 ```
+
+Input source: claude's session JSONL (`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`,
+read via `src/sticky-note-jsonl.js`, bound per-tab by a 2s poll in `server.js`) — clean
+user/assistant turns, not the Ink-TUI scrape. Plain shells fall back to the rendered-output
+scrape (`@xterm/headless`). Legacy notes migrate on load (`progress→done`, `waitingOn→remaining`).
 
 ## WebSocket protocol
 

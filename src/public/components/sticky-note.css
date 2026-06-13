@@ -98,48 +98,6 @@
   gap: 8px;
 }
 
-/* Collapsed: shrink the whole card to a single compact "+" chip — hide the
-   label, dot, freshness stamp and body so only the toggle button shows. */
-.sticky-note-card.collapsed {
-  width: auto;
-  max-height: none;
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  backdrop-filter: none;
-  overflow: visible;
-}
-.sticky-note-card.collapsed .sticky-note-header {
-  padding: 0;
-  gap: 0;
-  border-bottom: none;
-  background: transparent;
-}
-.sticky-note-card.collapsed .sticky-note-titlebar,
-.sticky-note-card.collapsed .sticky-note-fresh {
-  display: none;
-}
-.sticky-note-card.collapsed .sticky-note-body { display: none; }
-.sticky-note-card.collapsed .sticky-note-collapse {
-  width: 28px;
-  height: 28px;
-  font-size: 18px;
-  opacity: 0.85;
-  background: var(--bg-elevated, rgba(28, 28, 34, 0.92));
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
-  border-radius: var(--radius-md, 8px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  backdrop-filter: blur(6px);
-}
-.sticky-note-card.collapsed .sticky-note-collapse:hover {
-  opacity: 1;
-  background: var(--bg-elevated, rgba(40, 40, 48, 0.95));
-}
-/* Keep signalling work while minimized: pulse the "+" during summarization. */
-.sticky-note-card.collapsed.summarizing .sticky-note-collapse {
-  animation: sticky-note-pulse 1.1s ease-in-out infinite;
-}
-
 .sn-sec-label {
   font-size: 10px;
   text-transform: uppercase;
@@ -149,6 +107,20 @@
 }
 
 .sn-goal-text { font-weight: 500; }
+
+/* Append-only Updates log: newest on top, each with a relative timestamp. */
+.sn-updates .sn-list { list-style: none; padding-left: 0; }
+.sn-updates .sn-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+}
+.sn-updates .sn-list li:last-child { border-bottom: none; }
+.sn-update-text { word-break: break-word; }
+.sn-update-at { flex: 0 0 auto; font-size: 10px; opacity: 0.45; white-space: nowrap; }
+
 
 .sn-list {
   margin: 0;

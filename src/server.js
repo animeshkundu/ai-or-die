@@ -25,6 +25,7 @@ const InstallAdvisor = require('./install-advisor');
 const SttEngine = require('./stt-engine');
 const StickyNoteEngine = require('./sticky-note-engine');
 const StickyNoteSummarizer = require('./sticky-note-summarizer');
+const StickyNoteJsonl = require('./sticky-note-jsonl');
 const { redactSecrets } = require('./utils/secret-redact');
 const { isBun } = require('./utils/runtime');
 const CircularBuffer = require('./utils/circular-buffer');
@@ -166,6 +167,11 @@ class ClaudeCodeWebServer {
     this._foregroundSessionId = null;
     this._stickyInitStarted = false;
     this._stickyInitTimer = null;
+    // Per-tab binding to a claude JSONL transcript: sessionId -> { file, offset }.
+    // A poll discovers/tails the active session file and feeds clean turns to the
+    // summariser (JSONL mode). Tabs not running claude keep the scrape fallback.
+    this._stickyJsonl = new Map();
+    this._stickyJsonlPoll = null;
     this.stickyNoteEngine = new StickyNoteEngine({
       enabled: this._stickyNotesEnabledGlobally,
       modelsDir: options.stickyNotesModelDir,
@@ -429,6 +435,8 @@ class ClaudeCodeWebServer {
     // Tear down the local-LLM summariser + worker so the model/worker thread
     // don't keep the process alive (and don't hold a GGUF file lock on Windows).
     if (this._stickyInitTimer) { clearTimeout(this._stickyInitTimer); this._stickyInitTimer = null; }
+    if (this._stickyJsonlPoll) { clearInterval(this._stickyJsonlPoll); this._stickyJsonlPoll = null; }
+    this._stickyJsonl.clear();
     try { this.stickyNoteSummarizer.shutdown(); } catch (_) { /* ignore */ }
     try { await this.stickyNoteEngine.shutdown(); } catch (_) { /* ignore */ }
     await this.close();
@@ -1286,6 +1294,7 @@ class ClaudeCodeWebServer {
 
       // Stop + tear down the summariser so an in-flight inference is discarded.
       this.stickyNoteSummarizer.cancel(sessionId);
+      this._stickyJsonl.delete(sessionId);
       if (this._foregroundSessionId === sessionId) this._foregroundSessionId = null;
 
       this.claudeSessions.delete(sessionId);
@@ -4030,9 +4039,95 @@ class ClaudeCodeWebServer {
       rev: (session.stickyNote && session.stickyNote.rev) || 0,
     });
     this._ensureStickyNoteEngine();
+    this._startStickyJsonlPoll();
+  }
+
+  // Poll each summarising tab for a claude JSONL transcript at its cwd; when found,
+  // tail it and feed clean conversation turns to the summariser (JSONL mode). Tabs
+  // without a JSONL (plain shells) keep using the rendered-output scrape fallback.
+  _startStickyJsonlPoll() {
+    if (this._stickyJsonlPoll) return;
+    this._stickyJsonlPoll = setInterval(() => {
+      this._pollStickyJsonl().catch((e) => {
+        if (this.dev) console.error('[sticky-notes] jsonl poll error:', e && e.message);
+      });
+    }, 2000);
+    if (this._stickyJsonlPoll.unref) this._stickyJsonlPoll.unref();
+  }
+
+  async _pollStickyJsonl() {
+    if (!this._stickyNotesEnabledGlobally || !this.stickyNoteEngine._enabled) return;
+    // Lock so a slow sweep (many old session files) can't overlap the next tick
+    // and double-feed the same turns into pendingText.
+    if (this._pollingStickyJsonl) return;
+    this._pollingStickyJsonl = true;
+    try {
+      for (const [sessionId, session] of this.claudeSessions) {
+        if (!session.active || session.stickyNotesEnabled === false) continue;
+        if (!this._isStickyEligible(session.agent)) continue;
+        if (!this.stickyNoteSummarizer.isEnabled(sessionId)) continue;
+        const cwd = session.liveCwd || session.workingDir;
+        if (!cwd) continue;
+        try {
+          await this._pumpStickyJsonl(sessionId, cwd);
+        } catch (e) {
+          if (this.dev) console.error('[sticky-notes] jsonl pump error:', e && e.message);
+        }
+      }
+    } finally {
+      this._pollingStickyJsonl = false;
+    }
+  }
+
+  async _pumpStickyJsonl(sessionId, cwd) {
+    let binding = this._stickyJsonl.get(sessionId);
+    // Re-scan the project dir only periodically (or when unbound / the bound file
+    // vanished) to pick up a newer session; otherwise just stat the bound file —
+    // avoids a readdir + N stats every 2s for users with many old sessions.
+    let activeFile = binding && binding.file;
+    let size = -1;
+    binding && (binding._ticks = (binding._ticks || 0) + 1);
+    if (!binding || binding._ticks % 5 === 0) {
+      const active = await StickyNoteJsonl.findActiveSession(cwd);
+      if (active) { activeFile = active.file; size = active.size; }
+      else if (!binding) return; // no transcript yet → scrape fallback handles it
+    }
+    if (binding && activeFile !== binding.file) binding = null; // newer session → rebind below
+    if (!binding) {
+      // Bind near the end so the first summary uses recent context, not the whole
+      // (possibly huge) history.
+      const st = size >= 0 ? { size } : await this._statQuiet(activeFile);
+      if (!st) return;
+      const INITIAL_WINDOW = 24 * 1024;
+      binding = { file: activeFile, offset: Math.max(0, st.size - INITIAL_WINDOW), _ticks: 0 };
+      this._stickyJsonl.set(sessionId, binding);
+    }
+    if (size < 0) {
+      const st = await this._statQuiet(binding.file);
+      if (!st) { this._stickyJsonl.delete(sessionId); return; } // file gone → unbind
+      size = st.size;
+    }
+    if (size <= binding.offset) return; // no new bytes
+    const { turns, offset, aiTitle } = await StickyNoteJsonl.readNewTurns(binding.file, binding.offset);
+    binding.offset = offset;
+    const text = StickyNoteJsonl.formatTurns(turns);
+    // Feed even with no new turns if a standalone ai-title line arrived (claude
+    // writes it asynchronously), so the tab title isn't permanently missed.
+    if (!text && !aiTitle) return;
+    this.stickyNoteSummarizer.feedTurns(sessionId, text, aiTitle);
+  }
+
+  async _statQuiet(file) {
+    try {
+      return await fs.promises.stat(file);
+    } catch {
+      return null;
+    }
   }
 
   // Persist + broadcast a freshly generated note (called by the summariser).
+  // The note is INCREMENTAL: goal/done/remaining are refined each turn, and the
+  // single `update` is prepended to an append-only Updates log (newest first).
   _onStickyNoteResult(sessionId, payload) {
     const session = this.claudeSessions.get(sessionId);
     if (!session) return;
@@ -4040,14 +4135,29 @@ class ClaudeCodeWebServer {
     // Defensive: never let an older/stale result clobber a newer note.
     const incomingRev = payload.rev || 0;
     if (session.stickyNote && incomingRev <= (session.stickyNote.rev || 0)) return;
-    const note = payload.note;
+    const delta = payload.note; // { goal, done[], remaining[], update }
+    const prev = session.stickyNote || {};
+    const now = new Date().toISOString();
+
+    // Append-only Updates log: prepend the new line (skip empty / duplicate of
+    // the last), capped to the most recent 25.
+    const updates = Array.isArray(prev.updates) ? prev.updates.slice() : [];
+    const upd = (delta.update || '').trim();
+    if (upd && !(updates[0] && updates[0].text === upd)) {
+      updates.unshift({ text: upd, at: now });
+      if (updates.length > 25) updates.length = 25;
+    }
+
     session.stickyNote = {
-      title: note.title,
-      goal: note.goal,
-      progress: note.progress,
-      waitingOn: note.waitingOn,
+      title: payload.autoTitle || prev.title || '',
+      // Keep the prior value when the small model returns an empty field, so a
+      // weak generation never wipes the evolving state.
+      goal: delta.goal || prev.goal || '',
+      done: (delta.done && delta.done.length) ? delta.done : (prev.done || []),
+      remaining: (delta.remaining && delta.remaining.length) ? delta.remaining : (prev.remaining || []),
+      updates,
       rev: payload.rev,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
       status: 'idle',
       error: null,
     };
@@ -4080,6 +4190,7 @@ class ClaudeCodeWebServer {
       }
     } else {
       this.stickyNoteSummarizer.disable(sessionId);
+      this._stickyJsonl.delete(sessionId);
     }
   }
 
@@ -4312,6 +4423,7 @@ class ClaudeCodeWebServer {
         try { this._cleanupFsWatchSession(top.id, 'session_evicted'); } catch (_) { /* ignore */ }
         try { this._voiceUploadCounts.delete(top.id); } catch (_) { /* ignore */ }
         try { this.stickyNoteSummarizer.cancel(top.id); } catch (_) { /* ignore */ }
+        try { this._stickyJsonl.delete(top.id); } catch (_) { /* ignore */ }
         if (this._foregroundSessionId === top.id) this._foregroundSessionId = null;
         this.claudeSessions.delete(top.id);
         this.activityBroadcastTimestamps.delete(top.id);

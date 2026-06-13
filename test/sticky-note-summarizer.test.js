@@ -89,7 +89,7 @@ function makeEngine() {
   const e = {
     _ready: true,
     _mode: 'auto', // 'auto' | 'hang'
-    _auto: JSON.stringify({ title: 'T', goal: 'g', progress: ['p'], waitingOn: [] }),
+    _auto: JSON.stringify({ goal: 'g', done: ['p'], remaining: [], update: 'did p' }),
     calls,
     isReady() {
       return e._ready;
@@ -149,9 +149,11 @@ describe('sticky-note summarizer scheduler', function () {
     await clock.advance(100);
     assert.strictEqual(engine.calls.length, 1, 'one inference after quiet');
     assert.strictEqual(results.length, 1);
-    assert.strictEqual(results[0].note.title, 'T');
+    assert.strictEqual(results[0].note.goal, 'g');
+    assert.deepStrictEqual(results[0].note.done, ['p']);
+    assert.strictEqual(results[0].note.update, 'did p');
     assert.strictEqual(results[0].rev, 1);
-    assert.strictEqual(results[0].autoTitle, 'T');
+    assert.strictEqual(results[0].autoTitle, 'g'); // derived from goal (no ai-title in scrape mode)
   });
 
   it('does nothing when there is no new output', async function () {
@@ -367,10 +369,10 @@ describe('sticky-note summarizer scheduler', function () {
       redact: (s) => String(s).split('AKIASECRET').join('[R]'),
     });
     engine._auto = JSON.stringify({
-      title: 'tok AKIASECRET',
       goal: 'leaked AKIASECRET here',
-      progress: ['did AKIASECRET'],
-      waitingOn: [],
+      done: ['did AKIASECRET'],
+      remaining: [],
+      update: 'ran AKIASECRET task',
     });
     sum.enable('s1');
     sum.feed('s1', 'normal output\r\n');
@@ -378,6 +380,33 @@ describe('sticky-note summarizer scheduler', function () {
     assert.strictEqual(results.length, 1);
     const note = results[0].note;
     assert.ok(!JSON.stringify(note).includes('AKIASECRET'), 'model output must be redacted');
-    assert.ok(note.title.includes('[R]') && note.goal.includes('[R]'));
+    assert.ok(note.goal.includes('[R]') && note.update.includes('[R]'));
+  });
+
+  it('JSONL mode: feedTurns summarises clean turns and uses the ai-title', async function () {
+    const cfg = Object.assign({}, FAST, { turnDebounceMs: 100 });
+    const { sum, engine, clock, results } = makeSummarizer(cfg);
+    sum.enable('s1');
+    sum.feedTurns('s1', 'User: fix auth redirect\nAssistant: patched it [ran: Edit]', 'Auth Fix Session');
+    assert.strictEqual(engine.calls.length, 0, 'debounced, no immediate inference');
+    await clock.advance(100); // turn debounce
+    assert.strictEqual(engine.calls.length, 1);
+    assert.ok(engine.calls[0].prompt.includes('fix auth redirect'), 'summarises the turn text');
+    assert.strictEqual(results.length, 1);
+    assert.strictEqual(results[0].autoTitle, 'Auth Fix Session', 'uses claude ai-title, not derived');
+  });
+
+  it('JSONL mode: raw feed() is ignored once turns are fed', async function () {
+    const cfg = Object.assign({}, FAST, { turnDebounceMs: 100 });
+    const { sum, engine, clock } = makeSummarizer(cfg);
+    sum.enable('s1');
+    sum.feedTurns('s1', 'User: hello there', 'T');
+    sum.feed('s1', 'RAWPTYNOISE\r\n'); // ignored in JSONL mode
+    await clock.advance(100);
+    assert.strictEqual(engine.calls.length, 1);
+    assert.ok(
+      engine.calls[0].prompt.includes('hello there') && !engine.calls[0].prompt.includes('RAWPTYNOISE'),
+      'JSONL turns drive the summary; raw PTY is ignored'
+    );
   });
 });

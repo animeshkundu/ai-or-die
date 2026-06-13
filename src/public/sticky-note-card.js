@@ -1,31 +1,42 @@
 'use strict';
 
 // Floating per-tab "sticky note" card: a small overlay in the top-right of the
-// terminal showing the local-LLM summary (Goal / Done / Waiting on) for the
-// ACTIVE session. All model-derived text is rendered via textContent only —
-// the model output is untrusted, so we never use innerHTML.
+// terminal showing the local-LLM summary for the ACTIVE session — an evolving
+// Goal / Done / Remaining plus an append-only Updates log (newest first). All
+// model-derived text is rendered via textContent only (untrusted output).
+//
+// Minimize affordance lives in the TOOLBAR (#stickyNoteBtn), not a floating chip:
+// the card is hidden when collapsed (default) and the toolbar button toggles it.
+// The card reports its state via onStateChange so the button can show a status dot.
 
 class StickyNoteCard {
   constructor(app) {
     this.app = app;
     this._sessionId = null;
     this._note = null;
+    this._summarizing = false;
+    this._updatedAt = 0;
     this._freshnessTimer = null;
     this._collapsed = this._loadCollapsed();
+    this.onStateChange = null; // (state) => void — set by the app to drive the toolbar button
     this._build();
   }
 
   _loadCollapsed() {
     try {
-      return localStorage.getItem('cc-sticky-note-collapsed') === '1';
+      const v = localStorage.getItem('cc-sticky-note-collapsed');
+      return v === null ? true : v === '1'; // default MINIMIZED
     } catch {
-      return false;
+      return true;
     }
   }
 
   _build() {
     const el = document.createElement('div');
     el.className = 'sticky-note-card';
+    el.id = 'stickyNoteCard';
+    el.setAttribute('role', 'region');
+    el.setAttribute('aria-labelledby', 'stickyNoteLabel');
     el.hidden = true;
 
     const header = document.createElement('div');
@@ -37,6 +48,7 @@ class StickyNoteCard {
     dot.className = 'sticky-note-dot';
     const label = document.createElement('span');
     label.className = 'sticky-note-label';
+    label.id = 'stickyNoteLabel';
     label.textContent = 'Status';
     title.appendChild(dot);
     title.appendChild(label);
@@ -44,65 +56,67 @@ class StickyNoteCard {
     const fresh = document.createElement('span');
     fresh.className = 'sticky-note-fresh';
 
-    const collapseBtn = document.createElement('button');
-    collapseBtn.className = 'sticky-note-collapse';
-    collapseBtn.type = 'button';
-    collapseBtn.setAttribute('aria-label', 'Collapse status note');
-    collapseBtn.textContent = this._collapsed ? '+' : '–';
-    collapseBtn.addEventListener('click', () => this.toggleCollapse());
+    const minimizeBtn = document.createElement('button');
+    minimizeBtn.className = 'sticky-note-collapse';
+    minimizeBtn.type = 'button';
+    minimizeBtn.textContent = '–';
+    minimizeBtn.setAttribute('aria-label', 'Minimize status note');
+    minimizeBtn.title = 'Minimize';
+    minimizeBtn.addEventListener('click', () => this.collapse());
 
     header.appendChild(title);
     header.appendChild(fresh);
-    header.appendChild(collapseBtn);
+    header.appendChild(minimizeBtn);
 
     const body = document.createElement('div');
     body.className = 'sticky-note-body';
 
-    const goalSec = document.createElement('div');
-    goalSec.className = 'sn-section sn-goal';
-    const goalLabel = document.createElement('div');
-    goalLabel.className = 'sn-sec-label';
-    goalLabel.textContent = 'Goal';
-    const goalText = document.createElement('div');
-    goalText.className = 'sn-goal-text';
-    goalSec.appendChild(goalLabel);
-    goalSec.appendChild(goalText);
-
-    const progSec = document.createElement('div');
-    progSec.className = 'sn-section sn-progress';
-    const progLabel = document.createElement('div');
-    progLabel.className = 'sn-sec-label';
-    progLabel.textContent = 'Done';
-    const progList = document.createElement('ul');
-    progList.className = 'sn-list sn-progress-list';
-    progSec.appendChild(progLabel);
-    progSec.appendChild(progList);
-
-    const waitSec = document.createElement('div');
-    waitSec.className = 'sn-section sn-waiting';
-    const waitLabel = document.createElement('div');
-    waitLabel.className = 'sn-sec-label';
-    waitLabel.textContent = 'Waiting on';
-    const waitList = document.createElement('ul');
-    waitList.className = 'sn-list sn-waiting-list';
-    waitSec.appendChild(waitLabel);
-    waitSec.appendChild(waitList);
-
     const placeholder = document.createElement('div');
     placeholder.className = 'sn-placeholder';
-    placeholder.textContent = 'Gathering context…';
+    placeholder.textContent = 'No status yet — a summary appears as the session works.';
+
+    const mk = (cls, labelText, listTag) => {
+      const sec = document.createElement('div');
+      sec.className = 'sn-section ' + cls;
+      const lab = document.createElement('div');
+      lab.className = 'sn-sec-label';
+      lab.textContent = labelText;
+      sec.appendChild(lab);
+      let content;
+      if (listTag) {
+        content = document.createElement('ul');
+        content.className = 'sn-list';
+      } else {
+        content = document.createElement('div');
+        content.className = 'sn-goal-text';
+      }
+      sec.appendChild(content);
+      return { sec, content };
+    };
+
+    const goal = mk('sn-goal', 'Goal', false);
+    const done = mk('sn-done', 'Done', true);
+    const remaining = mk('sn-remaining', 'Remaining', true);
+    const updates = mk('sn-updates', 'Updates', true);
 
     body.appendChild(placeholder);
-    body.appendChild(goalSec);
-    body.appendChild(progSec);
-    body.appendChild(waitSec);
+    body.appendChild(goal.sec);
+    body.appendChild(done.sec);
+    body.appendChild(remaining.sec);
+    body.appendChild(updates.sec);
 
     el.appendChild(header);
     el.appendChild(body);
 
     this.el = el;
-    this._refs = { dot, fresh, body, goalSec, goalText, progSec, progList, waitSec, waitList, placeholder, collapseBtn };
-    this._applyCollapsed();
+    this._refs = {
+      dot, fresh, body, placeholder, minimizeBtn,
+      goalSec: goal.sec, goalText: goal.content,
+      doneSec: done.sec, doneList: done.content,
+      remSec: remaining.sec, remList: remaining.content,
+      updSec: updates.sec, updList: updates.content,
+    };
+    this._syncVisibility();
 
     const wrapper = document.querySelector('.terminal-wrapper') || document.getElementById('terminalContainer');
     if (wrapper) wrapper.appendChild(el);
@@ -112,28 +126,56 @@ class StickyNoteCard {
     return !this.app || this.app.stickyNotesEnabled !== false;
   }
 
+  // --- public API (used by the toolbar button) -----------------------------
+
+  isCollapsed() {
+    return this._collapsed;
+  }
+  expand() {
+    if (this._collapsed) this._setCollapsed(false);
+  }
+  collapse() {
+    if (!this._collapsed) this._setCollapsed(true);
+  }
   toggleCollapse() {
-    this._collapsed = !this._collapsed;
+    this._setCollapsed(!this._collapsed);
+  }
+
+  _setCollapsed(v) {
+    this._collapsed = v;
     try {
-      localStorage.setItem('cc-sticky-note-collapsed', this._collapsed ? '1' : '0');
+      localStorage.setItem('cc-sticky-note-collapsed', v ? '1' : '0');
     } catch {
       /* ignore */
     }
-    this._applyCollapsed();
-  }
-
-  _applyCollapsed() {
-    if (!this._refs) return;
-    this.el.classList.toggle('collapsed', this._collapsed);
-    const btn = this._refs.collapseBtn;
-    btn.textContent = this._collapsed ? '+' : '–';
-    btn.setAttribute('aria-label', this._collapsed ? 'Expand status note' : 'Collapse status note');
-    btn.title = this._collapsed ? 'Expand status' : 'Collapse status';
+    this._syncVisibility();
+    if (v) {
+      // Minimizing: return focus to the toolbar toggle.
+      const btn = typeof document !== 'undefined' && document.getElementById('stickyNoteBtn');
+      if (btn && typeof btn.focus === 'function') btn.focus();
+    }
+    this._emitState();
   }
 
   setStatus(status) {
-    if (!this._refs) return;
-    this.el.classList.toggle('summarizing', status === 'summarizing');
+    this._summarizing = status === 'summarizing';
+    if (this.el) this.el.classList.toggle('summarizing', this._summarizing);
+    this._emitState();
+  }
+
+  _emitState() {
+    if (typeof this.onStateChange === 'function') {
+      try {
+        this.onStateChange({
+          collapsed: this._collapsed,
+          hasNote: !!this._note,
+          summarizing: this._summarizing,
+          updatedAt: this._updatedAt || null,
+        });
+      } catch {
+        /* never let the consumer break the card */
+      }
+    }
   }
 
   /** Re-render from the active session's stored note (called on tab switch). */
@@ -150,36 +192,50 @@ class StickyNoteCard {
   }
 
   render(note) {
-    if (!this._enabled()) {
-      this.hide();
-      return;
-    }
-    this._note = note;
+    this._note = note || null;
     const r = this._refs;
+    if (r && this._note) {
+      const goal = (this._note.goal || '').trim();
+      r.goalText.textContent = goal;
+      r.goalSec.hidden = !goal;
 
-    if (!note) {
-      // No note yet (model still downloading/loading in the background, or none
-      // generated): keep the card HIDDEN so it never implies work is blocked.
-      // It appears only once the local model is working and produces a summary.
-      this.hide();
+      this._fillList(r.doneList, this._note.done);
+      r.doneSec.hidden = !(this._note.done && this._note.done.length);
+
+      this._fillList(r.remList, this._note.remaining);
+      r.remSec.hidden = !(this._note.remaining && this._note.remaining.length);
+
+      this._fillUpdates(r.updList, this._note.updates);
+      r.updSec.hidden = !(this._note.updates && this._note.updates.length);
+
+      this._updatedAt = this._note.updatedAt ? Date.parse(this._note.updatedAt) : Date.now();
+    }
+    this._syncVisibility();
+    this._emitState();
+  }
+
+  _syncVisibility() {
+    if (!this._refs) return;
+    const hidden = this._collapsed || !this._enabled();
+    this.el.hidden = hidden;
+    if (hidden) {
+      this._stopFreshness();
       return;
     }
-
-    r.placeholder.hidden = true;
-
-    const goal = (note.goal || '').trim();
-    r.goalSec.hidden = !goal;
-    r.goalText.textContent = goal;
-
-    this._fillList(r.progList, note.progress);
-    r.progSec.hidden = !(note.progress && note.progress.length);
-
-    this._fillList(r.waitList, note.waitingOn);
-    r.waitSec.hidden = !(note.waitingOn && note.waitingOn.length);
-
-    this._updatedAt = note.updatedAt ? Date.parse(note.updatedAt) : Date.now();
-    this._renderFreshness();
-    this.show();
+    // Shown: real note → content; otherwise the "No status yet" placeholder.
+    const hasNote = !!this._note;
+    this._refs.placeholder.hidden = hasNote;
+    if (hasNote) {
+      this._renderFreshness();
+      this._startFreshness();
+    } else {
+      this._refs.goalSec.hidden = true;
+      this._refs.doneSec.hidden = true;
+      this._refs.remSec.hidden = true;
+      this._refs.updSec.hidden = true;
+      this._refs.fresh.textContent = '';
+      this._stopFreshness();
+    }
   }
 
   _fillList(ul, items) {
@@ -188,6 +244,26 @@ class StickyNoteCard {
     for (const item of items) {
       const li = document.createElement('li');
       li.textContent = String(item);
+      ul.appendChild(li);
+    }
+  }
+
+  _fillUpdates(ul, updates) {
+    while (ul.firstChild) ul.removeChild(ul.firstChild);
+    if (!Array.isArray(updates)) return;
+    for (const u of updates) {
+      const li = document.createElement('li');
+      const text = document.createElement('span');
+      text.className = 'sn-update-text';
+      text.textContent = String((u && u.text) || '');
+      li.appendChild(text);
+      if (u && u.at) {
+        const at = document.createElement('span');
+        at.className = 'sn-update-at';
+        const ms = Date.parse(u.at);
+        at.textContent = Number.isFinite(ms) ? this._shortAge(Date.now() - ms) : '';
+        li.appendChild(at);
+      }
       ul.appendChild(li);
     }
   }
@@ -206,19 +282,31 @@ class StickyNoteCard {
     return `updated ${h}h ago`;
   }
 
-  show() {
-    this.el.hidden = false;
+  _shortAge(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return `${s}s`;
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m`;
+    return `${Math.round(m / 60)}h`;
+  }
+
+  _startFreshness() {
     if (!this._freshnessTimer) {
       this._freshnessTimer = setInterval(() => this._renderFreshness(), 15000);
     }
   }
-
-  hide() {
-    this.el.hidden = true;
+  _stopFreshness() {
     if (this._freshnessTimer) {
       clearInterval(this._freshnessTimer);
       this._freshnessTimer = null;
     }
+  }
+
+  /** Hard hide (e.g. feature disabled). Keeps collapsed state untouched. */
+  hide() {
+    this.el.hidden = true;
+    this._stopFreshness();
+    this._emitState();
   }
 }
 

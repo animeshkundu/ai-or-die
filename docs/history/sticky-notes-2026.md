@@ -3,6 +3,41 @@
 Implementation of the per-tab local-LLM "sticky note" + auto tab title feature
 (ADR-0022, spec `docs/specs/sticky-notes.md`). Gotchas worth remembering:
 
+## v2: summarize from the claude JSONL transcript, not the terminal
+
+The v1 input (scrape the rendered terminal) produced garbage for `github-router claude`:
+`claude` is an **Ink (React-for-CLI) TUI** that repaints in place, so the line-feed/quiet
+triggers rarely fire and a snapshot catches the input box, not the conversation
+(symptom: "Goal: Update"). The real input/output is on disk — `github-router claude` runs
+the normal claude CLI with `CLAUDE_CONFIG_DIR=$HOME/.claude`, so each session writes
+`~/.claude/projects/<cwd-slug>/<sessionId>.jsonl`, a **complete structured** transcript
+(the `--resume` source). v2 summarises THAT.
+
+- `src/sticky-note-jsonl.js`: `findActiveSession(cwd)` (newest `.jsonl` for the cwd's
+  project slug), `readNewTurns(file, offset)` (tails from a byte offset; keeps user/assistant
+  `text` + `tool_use` names; skips `thinking`/`tool_result`/metadata/`isSidechain`; strips
+  injected `<task-notification>`/`<system-reminder>` blocks; never advances past an incomplete
+  trailing line), `ai-title` lines give the tab title for free. `AIORDIE_CLAUDE_PROJECTS_DIR`
+  overrides the dir for tests.
+- Correlation: a 2s poll (`server.js _pollStickyJsonl`) maps each summarising tab's
+  `liveCwd||workingDir` → its active JSONL and feeds turns via `summarizer.feedTurns()`
+  (JSONL mode; raw `feed()` is then ignored). Plain shells with no JSONL keep the scrape
+  fallback. Bindings cleaned up on disable/exit/shutdown.
+- Note model is now incremental + append-only: `{goal, done[], remaining[], updates[{text,at}]}`
+  (`progress`→`done`, `waitingOn`→`remaining`). Each turn refines goal/done/remaining and
+  **prepends** one `update` (newest-first, capped 25). `_onStickyNoteResult` merges (keeps the
+  prior value when a weak gen returns an empty field). Legacy notes migrate on load
+  (`session-store.migrateStickyNote`).
+
+## v2 UI: minimized by default, toggle from the toolbar
+
+The minimized card was a floating "+" chip in the terminal corner. v2: the card is **hidden
+when collapsed** (default minimized) and a toolbar button (`#stickyNoteBtn` in `.tab-actions`,
+by the mic) toggles it + shows a per-tab status dot (`onStateChange` → `_updateStickyNoteBtn`).
+The expanded floating card is unchanged. The card renders Goal / Done / Remaining + a
+scrollable Updates log (newest on top). Per-tab badge must not leak across tabs (updated in
+`notifyActiveSessionChanged`). `Ctrl/Cmd+Shift+N` toggles.
+
 ## Gemma 4 is NOT loadable on the current node-llama-cpp prebuilt
 
 We standardised on Gemma 4 E2B, then validated empirically before committing:

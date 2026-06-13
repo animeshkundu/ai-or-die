@@ -443,6 +443,27 @@
     color: var(--text-primary);
 }
 
+/* Sticky-note toggle (status note) — toolbar button + status dot. */
+.tab-sticky-note { position: relative; }
+.tab-sticky-note[aria-pressed="true"] {
+    color: var(--accent);
+    background: var(--accent-soft, rgba(255, 107, 0, 0.12));
+}
+.tab-sticky-note .sticky-note-badge {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent, #5ac8fa);
+    box-shadow: 0 0 0 1.5px var(--bg-primary, #1c1c22);
+    pointer-events: none;
+}
+.tab-sticky-note.summarizing .sticky-note-badge {
+    animation: sticky-note-pulse 1.1s ease-in-out infinite;
+}
+
 /* Tab Overflow Dropdown for Mobile */
 .tab-overflow-wrapper {
     position: relative;

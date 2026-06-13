@@ -12,7 +12,7 @@ try {
 
 const CARD_SRC = path.join(__dirname, '..', 'src', 'public', 'sticky-note-card.js');
 
-describe('sticky-note card (DOM)', function () {
+describe('sticky-note card (DOM, v2: goal/done/remaining/updates + toolbar minimize)', function () {
   if (!JSDOM) {
     it('skipped — jsdom not installed', function () {
       this.skip();
@@ -24,9 +24,10 @@ describe('sticky-note card (DOM)', function () {
   let app;
 
   beforeEach(function () {
-    const dom = new JSDOM('<!DOCTYPE html><body><div class="terminal-wrapper"></div></body>', {
-      url: 'http://localhost',
-    });
+    const dom = new JSDOM(
+      '<!DOCTYPE html><body><div class="terminal-wrapper"></div><button id="stickyNoteBtn"></button></body>',
+      { url: 'http://localhost' }
+    );
     global.window = dom.window;
     global.document = dom.window.document;
     global.localStorage = dom.window.localStorage;
@@ -41,83 +42,115 @@ describe('sticky-note card (DOM)', function () {
     delete global.localStorage;
   });
 
-  it('mounts inside .terminal-wrapper, hidden initially', function () {
+  const note = (over = {}) => Object.assign({
+    title: 'T', goal: 'ship it', done: ['did a'], remaining: ['need b'],
+    updates: [{ text: 'older', at: new Date(Date.now() - 60000).toISOString() }, { text: 'newer', at: new Date().toISOString() }],
+    updatedAt: new Date().toISOString(),
+  }, over);
+
+  it('mounts inside .terminal-wrapper and is MINIMIZED by default (hidden, no chip)', function () {
     const card = new StickyNoteCard(app);
-    assert.ok(document.querySelector('.terminal-wrapper .sticky-note-card'), 'card mounted');
+    assert.ok(document.querySelector('.terminal-wrapper #stickyNoteCard'), 'card mounted');
+    assert.strictEqual(card.isCollapsed(), true, 'minimized by default');
     assert.strictEqual(card.el.hidden, true);
+    assert.strictEqual(card.el.classList.contains('collapsed'), false, 'no floating chip class');
   });
 
-  it('renders model text via textContent — markup is inert (no XSS)', function () {
+  it('expand() shows the card and renders Goal/Done/Remaining/Updates via textContent (XSS-inert)', function () {
     const card = new StickyNoteCard(app);
-    card.render({
-      title: 'x',
-      goal: '<img src=x onerror=alert(1)>',
-      progress: ['<script>evil()</script>', '<b>bold</b>'],
-      waitingOn: [],
-      updatedAt: new Date().toISOString(),
-    });
-    // No element nodes were created from the model output.
+    card.render(note({ goal: '<img src=x onerror=alert(1)>', done: ['<script>evil()</script>'] }));
+    card.expand();
+    assert.strictEqual(card.el.hidden, false, 'visible once expanded with a note');
     assert.strictEqual(card.el.querySelector('img'), null);
     assert.strictEqual(card.el.querySelector('script'), null);
-    assert.strictEqual(card.el.querySelector('b'), null);
-    // The literal string is present as text.
     assert.strictEqual(card._refs.goalText.textContent, '<img src=x onerror=alert(1)>');
-    const items = Array.from(card._refs.progList.querySelectorAll('li')).map((li) => li.textContent);
-    assert.deepStrictEqual(items, ['<script>evil()</script>', '<b>bold</b>']);
-    card.hide();
+    const done = Array.from(card._refs.doneList.querySelectorAll('li')).map((li) => li.textContent);
+    assert.deepStrictEqual(done, ['<script>evil()</script>']);
   });
 
-  it('stays hidden when enabled but no note yet (no "gathering" placeholder)', function () {
+  it('renders the Updates log newest-first with timestamps', function () {
     const card = new StickyNoteCard(app);
+    card.expand();
+    card.render(note());
+    const texts = Array.from(card._refs.updList.querySelectorAll('.sn-update-text')).map((s) => s.textContent);
+    assert.deepStrictEqual(texts, ['older', 'newer'], 'renders updates in given (newest-first) order');
+    assert.ok(card._refs.updList.querySelector('.sn-update-at'), 'shows a relative timestamp');
+  });
+
+  it('stays hidden when collapsed even with a note', function () {
+    const card = new StickyNoteCard(app);
+    card.render(note());
+    assert.strictEqual(card.isCollapsed(), true);
+    assert.strictEqual(card.el.hidden, true, 'collapsed hides the card');
+  });
+
+  it('expanded but no note shows the "No status yet" placeholder', function () {
+    const card = new StickyNoteCard(app);
+    card.expand();
     card.render(null);
-    assert.strictEqual(card.el.hidden, true, 'card hidden until a real note arrives');
-  });
-
-  it('hides empty sections and shows populated ones', function () {
-    const card = new StickyNoteCard(app);
-    card.render({ title: 'T', goal: 'fix it', progress: ['did a'], waitingOn: [], updatedAt: new Date().toISOString() });
-    assert.strictEqual(card._refs.goalSec.hidden, false);
-    assert.strictEqual(card._refs.progSec.hidden, false);
-    assert.strictEqual(card._refs.waitSec.hidden, true, 'empty waiting section hidden');
-    assert.ok(card._refs.fresh.textContent.startsWith('updated '));
-    card.hide();
+    assert.strictEqual(card.el.hidden, false);
+    assert.strictEqual(card._refs.placeholder.hidden, false);
+    assert.strictEqual(card._refs.goalSec.hidden, true);
   });
 
   it('stays hidden when the feature is disabled', function () {
     app.stickyNotesEnabled = false;
     const card = new StickyNoteCard(app);
-    card.render({ title: 'T', goal: 'g', progress: [], waitingOn: [], updatedAt: new Date().toISOString() });
+    card.expand();
+    card.render(note());
     assert.strictEqual(card.el.hidden, true);
   });
 
-  it('notifyActiveSessionChanged renders from the active session store', function () {
+  it('toggleCollapse persists and never adds a floating-chip class', function () {
     const card = new StickyNoteCard(app);
-    app.sessionTabManager.activeSessions.set('s1', {
-      stickyNote: { title: 'T', goal: 'ship it', progress: [], waitingOn: [], updatedAt: new Date().toISOString() },
-    });
-    card.notifyActiveSessionChanged('s1');
+    card.render(note());
+    assert.strictEqual(card._refs.minimizeBtn.textContent, '–', 'in-card button is minimize');
+    card.expand(); // collapsed=false
+    assert.strictEqual(card._collapsed, false);
+    assert.strictEqual(localStorage.getItem('cc-sticky-note-collapsed'), '0');
     assert.strictEqual(card.el.hidden, false);
-    assert.strictEqual(card._refs.goalText.textContent, 'ship it');
-    card.hide();
+    card.collapse(); // back to minimized
+    assert.strictEqual(card._collapsed, true);
+    assert.strictEqual(localStorage.getItem('cc-sticky-note-collapsed'), '1');
+    assert.strictEqual(card.el.hidden, true);
+    assert.strictEqual(card.el.classList.contains('collapsed'), false);
+  });
+
+  it('persists the expand choice across reloads (default minimized only when unset)', function () {
+    localStorage.setItem('cc-sticky-note-collapsed', '0'); // user previously expanded
+    const card = new StickyNoteCard(app);
+    assert.strictEqual(card.isCollapsed(), false, 'stored expanded preference respected');
+  });
+
+  it('onStateChange reports collapsed/hasNote/summarizing for the toolbar button', function () {
+    const card = new StickyNoteCard(app);
+    const states = [];
+    card.onStateChange = (s) => states.push(s);
+    card.render(note());
+    const last = states[states.length - 1];
+    assert.strictEqual(last.hasNote, true);
+    assert.strictEqual(last.collapsed, true);
+    card.setStatus('summarizing');
+    assert.strictEqual(states[states.length - 1].summarizing, true);
+    card.render(null);
+    assert.strictEqual(states[states.length - 1].hasNote, false);
+  });
+
+  it('notifyActiveSessionChanged renders the active tab note (per-tab, no leak)', function () {
+    const card = new StickyNoteCard(app);
+    card.expand();
+    app.sessionTabManager.activeSessions.set('s1', { stickyNote: note({ goal: 'tab one' }) });
+    app.sessionTabManager.activeSessions.set('s2', { stickyNote: null });
+    card.notifyActiveSessionChanged('s1');
+    assert.strictEqual(card._refs.goalText.textContent, 'tab one');
+    card.notifyActiveSessionChanged('s2'); // switching to a tab with no note
+    assert.strictEqual(card._refs.placeholder.hidden, false, 'no leak from the previous tab');
   });
 
   it('formats relative freshness', function () {
     const card = new StickyNoteCard(app);
     assert.strictEqual(card._formatAge(5000), 'updated 5s ago');
     assert.strictEqual(card._formatAge(120000), 'updated 2m ago');
-    assert.strictEqual(card._formatAge(7200000), 'updated 2h ago');
-  });
-
-  it('collapse toggle persists and hides the body', function () {
-    const card = new StickyNoteCard(app);
-    assert.strictEqual(card._collapsed, false);
-    assert.strictEqual(card._refs.collapseBtn.textContent, '–', 'expanded shows minimize glyph');
-    card.toggleCollapse();
-    assert.strictEqual(card._collapsed, true);
-    assert.ok(card.el.classList.contains('collapsed'));
-    assert.strictEqual(localStorage.getItem('cc-sticky-note-collapsed'), '1');
-    // Collapsed: the card shrinks to a single "+" chip.
-    assert.strictEqual(card._refs.collapseBtn.textContent, '+', 'collapsed shows a plus sign');
-    assert.strictEqual(card._refs.collapseBtn.getAttribute('aria-label'), 'Expand status note');
+    assert.strictEqual(card._shortAge(120000), '2m');
   });
 });
