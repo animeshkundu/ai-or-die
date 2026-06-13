@@ -111,9 +111,13 @@ describe('sticky-note card (DOM)', function () {
   it('collapse toggle persists and hides the body', function () {
     const card = new StickyNoteCard(app);
     assert.strictEqual(card._collapsed, false);
+    assert.strictEqual(card._refs.collapseBtn.textContent, '–', 'expanded shows minimize glyph');
     card.toggleCollapse();
     assert.strictEqual(card._collapsed, true);
     assert.ok(card.el.classList.contains('collapsed'));
     assert.strictEqual(localStorage.getItem('cc-sticky-note-collapsed'), '1');
+    // Collapsed: the card shrinks to a single "+" chip.
+    assert.strictEqual(card._refs.collapseBtn.textContent, '+', 'collapsed shows a plus sign');
+    assert.strictEqual(card._refs.collapseBtn.getAttribute('aria-label'), 'Expand status note');
   });
 });

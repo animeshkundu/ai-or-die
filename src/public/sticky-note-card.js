@@ -125,7 +125,10 @@ class StickyNoteCard {
   _applyCollapsed() {
     if (!this._refs) return;
     this.el.classList.toggle('collapsed', this._collapsed);
-    this._refs.collapseBtn.textContent = this._collapsed ? '+' : '–';
+    const btn = this._refs.collapseBtn;
+    btn.textContent = this._collapsed ? '+' : '–';
+    btn.setAttribute('aria-label', this._collapsed ? 'Expand status note' : 'Collapse status note');
+    btn.title = this._collapsed ? 'Expand status' : 'Collapse status';
   }
 
   setStatus(status) {
