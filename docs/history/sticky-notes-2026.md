@@ -66,6 +66,83 @@ now **excludes `models/`** from the quota (a one-time intentional download is
 not the runaway session-data growth the breaker guards). STT had this latent
 bug too, masked only by being off-by-default.
 
+## Bun is not a supported runtime (terminal hangs + node-llama-cpp crashes)
+
+Symptom reported: on the `feat/sticky-notes` branch, `bun bin/ai-or-die.js …`
+boots, a terminal "starts successfully", but **no shell prompt ever appears** —
+the terminal hangs. `node bin/ai-or-die.js …` works fully. It *looked* like a
+feature regression. Two empirical investigations (bare-spawn probe + worktree
+bisection) proved otherwise:
+
+1. **node-pty can't read the PTY master under Bun.** A bare 5-line
+   `@lydell/node-pty@1.2.0-beta.10` `pty.spawn('/bin/zsh')` — zero feature code —
+   gets a *permanent* `read EAGAIN` (errno -35) under **Bun 1.3.14** and **no
+   `onData` ever fires**; the same code yields output immediately under **Node
+   v24.16**. This is the open Bun bug **oven-sh/bun#25822**. It hangs on `main`
+   too — the "main works under Bun" belief was a **confounder**: with a large
+   `~/.ai-or-die/models` cache present, `main` trips the 1GB disk-quota breaker
+   (140%) and fails *before* the terminal spawns, while this branch excludes
+   `models/` from the quota and so reaches the terminal and then hits the same
+   Bun EAGAIN. Neutralise the breaker (`AIORDIE_DISK_QUOTA_MB=…`) and `main`
+   hangs identically (4/4 runs).
+2. **node-llama-cpp crashes Bun.** Running the sticky-note inference under Bun
+   aborts the process: `panic: NAPI FATAL ERROR: Error::New napi_create_error` /
+   "Bun has crashed. This indicates a bug in Bun, not your code." (exit 133). A
+   Bun N-API bug. So the sticky-note model can **never** run under Bun.
+3. **STT (sherpa-onnx) DOES work under Bun** — loads, transcribes, exits clean
+   (10ms main-thread lag). So the incompatibility is specific to node-llama-cpp
+   + node-pty, not all native addons.
+
+Decision (matches user directive "keep Node, drop Bun" — implemented as
+warn-and-continue, not a hard exit): **Node ≥22 is the recommended runtime; Bun
+runs with limited support (sticky-notes disabled, STT works, terminal may hang).**
+- `StickyNoteEngine._doInitialize` self-gates under Bun (status `unavailable`,
+  `_lastSpawnError='BUN_UNSUPPORTED'`) so node-llama-cpp is **never loaded** there
+  — defence-in-depth even if a caller enables the engine.
+- `server.js` forces `_stickyNotesEnabledGlobally=false` under Bun (`!isBun()`).
+- `bin/ai-or-die.js` prints a startup notice under Bun (continuing with
+  sticky-notes disabled) + the equivalent `node …` command for a working terminal.
+- `base-bridge.js` `shouldSwallowTransientEagain` **bounds** the EAGAIN swallow
+  (added earlier to hide a transient Node startup blip): a persistent EAGAIN with
+  no life-sign now surfaces after a ~3s grace window instead of being swallowed
+  forever — so Bun's read failure is a fast visible error, not a silent 30s hang.
+  The unbounded swallow was masking the symptom (it is **not** the cause; both
+  agents confirmed reverting it doesn't restore output).
+
+`isBun()` lives in `src/utils/runtime.js` (reads `process.versions.bun` at
+call-time so tests can stub it). Tests: `test/base-bridge-eagain.test.js` (bounded
+suppression) + the Bun-gate case in `test/sticky-note-engine.test.js`.
+
+## Models are pulled on STARTUP, in worker threads (the "lazy" detour, reverted)
+
+A mid-development commit (`da869c0`) made STT init lazy and deferred the sticky
+engine ~12s, on the theory that eager model load "starved the event loop / CPU
+and hung the terminal." **That theory was wrong** — the hang was the Bun/node-pty
+bug (oven-sh/bun#25822, see above), reproducible with zero model code. A lag
+probe confirmed model download+load costs only **2–10ms of main-thread lag**
+(both engines run in `worker_threads` with their own event loops — STT in
+`stt-worker.js`, Gemma in `sticky-note-worker.js`), so eager startup load never
+blocked the terminal.
+
+Worse, the lazy STT path was **broken**: it relied on a `voice_init` trigger that
+the client never sent, so the local model never loaded → `localStatus` never went
+`ready` → the mic silently fell back to the (flaky) browser cloud path. Symptom:
+"STT not working; the mic timer resets to zero and increments."
+
+Reverted to **pull-on-startup** (server `start()` calls `_ensureSttModel()` +
+`_ensureStickyNoteEngine()`), each non-blocking in its worker thread, with the
+**feature disabled until the model is `ready`**:
+- STT: `_ensureSttModel()` is idempotent (no-ops if ready/downloading/loading),
+  broadcasts `voice_model_progress` + a final `voice_status` so clients enable the
+  mic the moment the model is ready. `voiceInput.localEnabled` (new field) tells
+  the client "a local model is being pulled" vs "STT is off" — the mic stays
+  DISABLED (with a downloading/loading hint) while pulling, ENABLED on ready, and
+  uses cloud only when local isn't the configured backend. Decision logic is the
+  pure, unit-tested `VoiceHandler.computeMicButtonState()`.
+- Sticky (Gemma): `_ensureStickyNoteEngine()` runs at startup (Node-only;
+  self-gates off under Bun/test/`--no-sticky-notes`). The per-session summariser
+  only runs inference once the engine `isReady()`.
+
 ## Cross-lab review caught what self-review missed
 
 The adversarial panel found: input-only redaction (model output reached

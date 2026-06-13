@@ -145,6 +145,31 @@ describe('sticky-note engine', function () {
     assert.strictEqual(engine.isReady(), false);
   });
 
+  it('refuses to spawn under Bun (node-llama-cpp crashes Bun) without loading the worker', async function () {
+    const hadBun = Object.prototype.hasOwnProperty.call(process.versions, 'bun');
+    const prevBun = process.versions.bun;
+    Object.defineProperty(process.versions, 'bun', { value: '1.3.14', configurable: true, enumerable: true, writable: true });
+    try {
+      let spawned = 0;
+      const engine = new StickyNoteEngine({
+        enabled: true,
+        modelManager: readyMM,
+        createWorker: () => { spawned++; return new FakeWorker(); },
+      });
+      await engine.initialize();
+      assert.strictEqual(spawned, 0, 'no worker spawned under Bun');
+      assert.strictEqual(engine.getStatus(), 'unavailable');
+      assert.strictEqual(engine.isReady(), false);
+      assert.strictEqual(engine._lastSpawnError, 'BUN_UNSUPPORTED');
+    } finally {
+      if (hadBun) {
+        Object.defineProperty(process.versions, 'bun', { value: prevBun, configurable: true, enumerable: true, writable: true });
+      } else {
+        delete process.versions.bun;
+      }
+    }
+  });
+
   it('shuts the worker down gracefully (dispose before terminate)', async function () {
     const { engine, fake } = makeEngine();
     const initP = engine.initialize();

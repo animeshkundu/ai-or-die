@@ -1298,18 +1298,25 @@ class ClaudeCodeWebInterface {
             return;
         }
 
-        // Determine mode: prefer local if ready, fall back to cloud
+        // The mic is local-first and the model is pulled on startup. Create the
+        // controller whenever a backend is possible (local enabled/ready, or
+        // cloud) — even while the local model is still downloading — so a later
+        // "ready" status has a controller to enable. _applyVoiceAvailability()
+        // then enables the button only once the model is ready (disabled, with a
+        // "downloading" hint, while it pulls).
         const localReady = voiceCfg.localStatus === 'ready';
+        const localEnabled = !!voiceCfg.localEnabled;
         const cloudAvailable = typeof window !== 'undefined' &&
             !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 
-        if (!localReady && !cloudAvailable) {
-            // Neither backend available — keep button hidden
+        if (!localReady && !localEnabled && !cloudAvailable) {
+            // No backend possible — keep button hidden
             return;
         }
 
-        this.voiceMode = localReady ? 'local' : 'cloud';
-        btn.style.display = '';
+        // Initial mode: local whenever local is the intended backend; cloud only
+        // when local isn't available at all.
+        this.voiceMode = (localReady || localEnabled) ? 'local' : 'cloud';
 
         const self = this;
         const timerEl = btn.querySelector('.voice-timer');
@@ -1459,6 +1466,64 @@ class ClaudeCodeWebInterface {
                 }
             });
         }
+
+        // Reflect current readiness now (and on every voice_status update):
+        // enabled when the local model is ready (or cloud fallback), disabled
+        // while the model is still downloading/loading.
+        this._applyVoiceAvailability();
+    }
+
+    /**
+     * Show/enable/disable the mic button based on the current STT backend status.
+     * Local-first: the button is ENABLED only when the local model is `ready`
+     * (local mode), DISABLED with a "downloading" hint while the model is being
+     * pulled (localEnabled but not ready), and falls back to cloud mode only when
+     * local STT is not the intended backend at all. Hidden when no backend exists.
+     * Idempotent — safe to call on setup and on each voice_status message.
+     */
+    _applyVoiceAvailability() {
+        var btn = document.getElementById('voiceInputBtn');
+        if (!btn) return;
+
+        var cfg = this.voiceInputConfig || {};
+        var methodEl = typeof document !== 'undefined' && document.getElementById('voiceMethod');
+        var VH = (typeof window !== 'undefined' && window.VoiceHandler) || null;
+        if (!VH || typeof VH.computeMicButtonState !== 'function') {
+            // Fail closed: without the decision helper we can't know readiness, so
+            // never leave the mic enabled. Hide it (the voice feature can't work
+            // without VoiceHandler anyway).
+            btn.style.display = 'none';
+            btn.disabled = true;
+            return;
+        }
+
+        var state = VH.computeMicButtonState({
+            secureContext: !(typeof window !== 'undefined' && !window.isSecureContext),
+            localStatus: cfg.localStatus,
+            localEnabled: !!cfg.localEnabled,
+            cloudAvailable: typeof window !== 'undefined' &&
+                !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+            voiceMethod: (methodEl && methodEl.value) || 'auto',
+        });
+
+        if (!state.visible) {
+            btn.style.display = 'none';
+            return;
+        }
+        btn.style.display = '';
+        btn.disabled = !state.enabled;
+        if (state.enabled) {
+            btn.removeAttribute('aria-disabled');
+        } else {
+            btn.setAttribute('aria-disabled', 'true');
+        }
+        btn.title = state.title;
+        if (state.mode && this.voiceMode !== state.mode) {
+            this.voiceMode = state.mode;
+            if (this.voiceController && typeof this.voiceController.setMode === 'function') {
+                this.voiceController.setMode(state.mode);
+            }
+        }
     }
 
     _showMemoryWarning(message) {
@@ -1589,13 +1654,12 @@ class ClaudeCodeWebInterface {
 
                 if (banner) {
                     if (percent >= 100) {
+                        // Download finished — hide the banner. The model may still
+                        // be loading; the mic is enabled (and switched to local
+                        // mode) only when a `voice_status: ready` arrives, handled
+                        // centrally by _applyVoiceAvailability().
                         banner.classList.remove('visible');
                         banner.style.display = 'none';
-                        // Switch to local mode now that model is ready
-                        if (this.voiceController) {
-                            this.voiceMode = 'local';
-                            this.voiceController.setMode('local');
-                        }
                     } else {
                         banner.style.display = '';
                         banner.classList.add('visible');
@@ -1606,34 +1670,27 @@ class ClaudeCodeWebInterface {
                 break;
             }
             case 'voice_status': {
-                // Update voice input config status and show/hide mic button
+                // Update cached voice config from the message, then re-evaluate the
+                // mic button (enabled only once the local model is `ready`).
                 if (message.voiceInput) {
                     this.voiceInputConfig = message.voiceInput;
+                } else if (message.status) {
+                    this.voiceInputConfig = Object.assign({}, this.voiceInputConfig, { localStatus: message.status });
                 }
-                // On insecure context, keep button disabled regardless of backend status
-                if (typeof window !== 'undefined' && !window.isSecureContext) {
-                    if (btn) {
-                        btn.style.display = '';
-                        btn.disabled = true;
-                        btn.title = 'Microphone unavailable \u2014 this page must be served over HTTPS';
+                // Surface a model init/download failure (e.g. load failed after the
+                // download reached 100%) — otherwise the user only sees a disabled
+                // tooltip. Also clear any stuck download banner.
+                if (message.error) {
+                    var failBanner = document.getElementById('voiceDownloadBanner');
+                    if (failBanner) {
+                        failBanner.classList.remove('visible');
+                        failBanner.style.display = 'none';
                     }
-                    break;
-                }
-                var localReady = this.voiceInputConfig && this.voiceInputConfig.localStatus === 'ready';
-                var cloudAvailable = typeof window !== 'undefined' &&
-                    !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-                if (btn) {
-                    if (localReady || cloudAvailable) {
-                        btn.style.display = '';
-                        // Update mode if local just became ready
-                        if (localReady && this.voiceMode !== 'local' && this.voiceController) {
-                            this.voiceMode = 'local';
-                            this.voiceController.setMode('local');
-                        }
-                    } else {
-                        btn.style.display = 'none';
+                    if (window.feedback && typeof window.feedback.error === 'function') {
+                        window.feedback.error('Voice model failed: ' + message.error);
                     }
                 }
+                this._applyVoiceAvailability();
                 break;
             }
         }
@@ -4189,19 +4246,9 @@ class ClaudeCodeWebInterface {
             if (settings.voiceRecordingMode) {
                 this.voiceController._forcedMode = settings.voiceRecordingMode;
             }
-            // Apply voice method preference
-            if (settings.voiceMethod && settings.voiceMethod !== 'auto') {
-                const localReady = this.voiceInputConfig && this.voiceInputConfig.localStatus === 'ready';
-                const cloudAvailable = typeof window !== 'undefined' &&
-                    !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-                if (settings.voiceMethod === 'local' && localReady) {
-                    this.voiceMode = 'local';
-                    this.voiceController.setMode('local');
-                } else if (settings.voiceMethod === 'cloud' && cloudAvailable) {
-                    this.voiceMode = 'cloud';
-                    this.voiceController.setMode('cloud');
-                }
-            }
+            // Re-evaluate the mic backend/button: _applyVoiceAvailability honors
+            // the saved voiceMethod (auto/local/cloud) and current readiness.
+            this._applyVoiceAvailability();
         }
 
         this.syncTerminalTheme();

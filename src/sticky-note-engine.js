@@ -11,6 +11,7 @@ const { Worker } = require('worker_threads');
 const path = require('path');
 const os = require('os');
 const GgufModelManager = require('./utils/gguf-model-manager');
+const { isBun } = require('./utils/runtime');
 
 const MAX_QUEUE_SIZE = 3;
 const DEFAULT_INFER_TIMEOUT_MS = 60000;
@@ -68,6 +69,15 @@ class StickyNoteEngine {
   async _doInitialize(onProgress) {
     if (!this._enabled) {
       this._status = 'unavailable';
+      return;
+    }
+    // node-llama-cpp's native N-API addon crashes Bun (NAPI FATAL ERROR,
+    // exit 133 — a Bun bug, not ours). Loading it in the worker would take the
+    // whole server down. Refuse to spawn under Bun; the feature is Node-only.
+    // (STT/sherpa is unaffected and still runs under Bun.)
+    if (isBun()) {
+      this._status = 'unavailable';
+      this._lastSpawnError = 'BUN_UNSUPPORTED';
       return;
     }
     if (!(await this._modelManager.isModelReady())) {

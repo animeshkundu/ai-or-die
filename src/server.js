@@ -26,6 +26,7 @@ const SttEngine = require('./stt-engine');
 const StickyNoteEngine = require('./sticky-note-engine');
 const StickyNoteSummarizer = require('./sticky-note-summarizer');
 const { redactSecrets } = require('./utils/secret-redact');
+const { isBun } = require('./utils/runtime');
 const CircularBuffer = require('./utils/circular-buffer');
 const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
@@ -153,8 +154,15 @@ class ClaudeCodeWebServer {
     // (sticky-notes only — does NOT affect STT). The engine lazily downloads its
     // model + spawns its worker on the FIRST AI session start, and degrades to
     // "unavailable" if node-llama-cpp / the model is missing.
+    //
+    // Bun: node-llama-cpp's native N-API addon crashes Bun (NAPI FATAL ERROR,
+    // exit 133 — a Bun bug, not ours), which would take down the whole server.
+    // Force the feature off under Bun so its worker never spawns. The engine
+    // also self-gates (see StickyNoteEngine._doInitialize) as defence-in-depth.
+    // STT (sherpa) is unaffected and still runs under Bun.
     this._stickyNotesEnabledGlobally =
-      options.stickyNotes !== false && !underTest && process.env.AIORDIE_DISABLE_STICKY_NOTES !== '1';
+      options.stickyNotes !== false && !underTest && !isBun() &&
+      process.env.AIORDIE_DISABLE_STICKY_NOTES !== '1';
     this._foregroundSessionId = null;
     this._stickyInitStarted = false;
     this._stickyInitTimer = null;
@@ -1342,6 +1350,7 @@ class ClaudeCodeWebServer {
         },
         voiceInput: {
           localStatus: this.sttEngine.getStatus(),
+          localEnabled: !!(this.sttEngine._enabled && !this.sttEngine._sttEndpoint),
           cloudAvailable: true,
         },
         ...(prerequisites ? { prerequisites } : {}),
@@ -3087,16 +3096,18 @@ class ClaudeCodeWebServer {
     // the file-browser feature treats search as load-bearing.
     search.requireBackendAtStartup();
 
-    // STT init is LAZY — do NOT download/load the ~670MB model at startup.
-    // Eager loading here starved the event loop / CPU during boot and hung the
-    // terminal (no prompt until the model finished). An external endpoint has
-    // no local model, so it can init cheaply; the local model is pulled on first
-    // mic use (handled by the voice_init message), which keeps startup instant.
-    if (this.sttEngine._sttEndpoint) {
-      this.sttEngine.initialize().catch(err => {
-        if (this.dev) console.error('[STT] Init failed:', err.message);
-      });
-    }
+    // STT model is pulled on startup (in the worker thread, off the event loop —
+    // the earlier "eager load hung the terminal" theory was disproven; the hang
+    // was a Bun/node-pty bug, not STT CPU load). The mic feature stays disabled
+    // on the client until the model is `ready`. Self-gates: a disabled/under-test
+    // engine no-ops without downloading. An external endpoint inits cheaply.
+    this._ensureSttModel();
+
+    // Sticky-note (Gemma) model is also pulled on startup so it is `ready` by the
+    // time an AI tab opens. Self-gates: disabled / under-test / Bun → no-op (the
+    // engine never loads node-llama-cpp under Bun, which would crash it). Loads in
+    // its own worker thread, so the ~806MB pull never blocks the event loop.
+    this._ensureStickyNoteEngine();
 
     let server;
 
@@ -3448,6 +3459,11 @@ class ClaudeCodeWebServer {
         this.sendToWebSocket(wsInfo.ws, {
           type: 'voice_status',
           status: this.sttEngine.getStatus(),
+          voiceInput: {
+            localStatus: this.sttEngine.getStatus(),
+            localEnabled: !!(this.sttEngine._enabled && !this.sttEngine._sttEndpoint),
+            cloudAvailable: true,
+          },
           progress: this.sttEngine.getDownloadProgress(),
         });
         break;
@@ -3995,23 +4011,16 @@ class ClaudeCodeWebServer {
     if (session.stickyNotesEnabled === false) return;
     if (!this._isAiAgent(toolName)) return;
     // Start buffering output now — this is cheap (a pure-JS headless terminal),
-    // never inference. The HEAVY engine init (model download + worker + model
-    // load) is DEFERRED so the agent + terminal start up first; sticky notes
-    // must never block real work. The summariser buffers in the meantime and
-    // produces its first note once the model is ready.
+    // never inference. The engine model is already being pulled at startup; this
+    // ensures it (idempotent) in case startup init failed transiently. The
+    // summariser buffers in the meantime and produces its first note once ready.
     this.stickyNoteSummarizer.enable(sessionId, {
       cols: cols || 80,
       rows: rows || 24,
       note: session.stickyNote || null,
       rev: (session.stickyNote && session.stickyNote.rev) || 0,
     });
-    if (!this._stickyInitStarted && !this._stickyInitTimer) {
-      this._stickyInitTimer = setTimeout(() => {
-        this._stickyInitTimer = null;
-        this._ensureStickyNoteEngine();
-      }, 12000);
-      if (this._stickyInitTimer.unref) this._stickyInitTimer.unref();
-    }
+    this._ensureStickyNoteEngine();
   }
 
   // Persist + broadcast a freshly generated note (called by the summariser).
@@ -5178,54 +5187,70 @@ class ClaudeCodeWebServer {
     }
   }
 
+  /**
+   * Idempotent, non-blocking init of the LOCAL STT model. Downloads + loads in
+   * the worker thread (off the event loop), broadcasting progress + the final
+   * status so every client can enable the mic the moment the model is `ready`.
+   * Called on startup (pull-on-boot) and by the explicit voice_download_model
+   * retry. Self-gates: a disabled / under-test engine no-ops (initialize returns
+   * `unavailable` without downloading). An external endpoint inits cheaply.
+   */
+  _ensureSttModel() {
+    const status = this.sttEngine.getStatus();
+    if (status === 'ready' || status === 'downloading' || status === 'loading') return;
+    this.sttEngine
+      .initialize((progress) => {
+        // Guard the percent math: a malformed/early progress event (fileCount 0,
+        // missing fileIndex) must not emit NaN/Infinity (serialized as null),
+        // which would break the client's 100%-based banner transitions.
+        const fileCount = progress.fileCount > 0 ? progress.fileCount : 1;
+        const fileIndex = Number.isFinite(progress.fileIndex) ? progress.fileIndex : 0;
+        const fileProgress = progress.total > 0 ? progress.downloaded / progress.total : 0;
+        let percent = Math.round(((fileIndex + fileProgress) / fileCount) * 100);
+        if (!Number.isFinite(percent)) percent = 0;
+        percent = Math.max(0, Math.min(100, percent));
+        this.broadcastAll({ type: 'voice_model_progress', ...progress, percent });
+      })
+      .then(() => this._broadcastVoiceStatus())
+      .catch((err) => {
+        if (this.dev) console.error('[STT] Init failed:', err.message);
+        this._broadcastVoiceStatus(err.message);
+      });
+  }
+
+  /** Broadcast the current STT status so clients can enable/disable the mic. */
+  _broadcastVoiceStatus(error) {
+    const localStatus = this.sttEngine.getStatus();
+    this.broadcastAll({
+      type: 'voice_status',
+      status: localStatus,
+      voiceInput: {
+        localStatus,
+        localEnabled: !!(this.sttEngine._enabled && !this.sttEngine._sttEndpoint),
+        cloudAvailable: true,
+      },
+      progress: this.sttEngine.getDownloadProgress(),
+      ...(error ? { error } : {}),
+    });
+  }
+
   async handleVoiceDownloadModel(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
 
-    const currentStatus = this.sttEngine.getStatus();
+    // Kick off (or no-op if already in flight / ready) the shared background init.
+    this._ensureSttModel();
 
-    if (currentStatus === 'ready') {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'voice_status',
-        status: 'ready',
-        progress: null,
-      });
-      return;
-    }
-
-    // Already downloading or loading — return current status instead of re-initializing
-    if (currentStatus === 'downloading' || currentStatus === 'loading') {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'voice_status',
-        status: currentStatus,
-        progress: this.sttEngine.getDownloadProgress(),
-      });
-      return;
-    }
-
-    // Trigger model download/init and broadcast progress with computed percent
-    this.sttEngine.initialize((progress) => {
-      const fileProgress = progress.total > 0 ? progress.downloaded / progress.total : 0;
-      const overallPercent = Math.round(((progress.fileIndex + fileProgress) / progress.fileCount) * 100);
-      this.broadcastAll({ type: 'voice_model_progress', ...progress, percent: overallPercent });
-    }).then(() => {
-      this.broadcastAll({
-        type: 'voice_status',
-        status: this.sttEngine.getStatus(),
-        progress: null,
-      });
-    }).catch(err => {
-      if (this.dev) console.error('[STT] Download failed:', err.message);
-      this.broadcastAll({
-        type: 'voice_status',
-        status: 'unavailable',
-        error: err.message,
-      });
-    });
-
+    // Immediate per-socket ack with the current status + progress.
+    const localStatus = this.sttEngine.getStatus();
     this.sendToWebSocket(wsInfo.ws, {
       type: 'voice_status',
-      status: this.sttEngine.getStatus(),
+      status: localStatus,
+      voiceInput: {
+        localStatus,
+        localEnabled: !!(this.sttEngine._enabled && !this.sttEngine._sttEndpoint),
+        cloudAvailable: true,
+      },
       progress: this.sttEngine.getDownloadProgress(),
     });
   }

@@ -320,6 +320,10 @@ describe('voice-integration: WebSocket voice protocol', function () {
     assert(typeof status.status === 'string', 'Expected status string');
     // Without --stt flag, status should be 'unavailable'
     assert.strictEqual(status.status, 'unavailable');
+    // The reply carries the voiceInput gate fields the client needs.
+    assert(status.voiceInput, 'Expected voiceInput in voice_status reply');
+    assert.strictEqual(typeof status.voiceInput.localEnabled, 'boolean');
+    assert.strictEqual(status.voiceInput.localStatus, 'unavailable');
 
     await closeWs(ws);
   });
@@ -422,5 +426,9 @@ describe('voice-integration: config endpoint voice fields', function () {
     assert(typeof res.body.voiceInput.localStatus === 'string');
     assert.strictEqual(typeof res.body.voiceInput.cloudAvailable, 'boolean');
     assert.strictEqual(res.body.voiceInput.cloudAvailable, true);
+    // localEnabled tells the client whether the server is pulling/serving a
+    // local model (mic stays disabled until ready) vs. STT being off entirely
+    // (cloud fallback). Must always be present so the client can gate the mic.
+    assert.strictEqual(typeof res.body.voiceInput.localEnabled, 'boolean');
   });
 });

@@ -71,6 +71,28 @@ download and graceful degradation. We reuse that shape.
 - **Pluggable backend seam.** The summariser depends on an `infer(prompt)`
   interface, leaving room for a future Ollama / external-endpoint backend
   (mirroring STT's `--stt-endpoint`) without touching the scheduler or UI.
+- **Runtime: Node.js for full features; Bun runs with limited support.** The
+  recommended runtime is Node ≥22. Under Bun the app **continues to run** but with
+  two independent, externally-confirmed incompatibilities, so sticky-notes
+  **self-gate off** (`StickyNoteEngine._doInitialize` returns `unavailable` /
+  `BUN_UNSUPPORTED` before spawning its worker; the server also forces the feature
+  off via `!isBun()`):
+  1. **node-llama-cpp crashes Bun.** Loading its native N-API addon under Bun
+     1.3.14 aborts the process with `NAPI FATAL ERROR` (exit 133) — a Bun N-API
+     bug, not ours — so the sticky-note worker is never spawned under Bun.
+  2. **node-pty cannot read the PTY master under Bun** (oven-sh/bun#25822): a
+     bare `pty.spawn()` gets a permanent read `EAGAIN` and no data ever arrives,
+     so the terminal can hang regardless of this feature (confirmed on `main` too,
+     once the disk-quota breaker is neutralised — see below). Outside the feature's
+     control; the fix is "run with Node".
+  `bin/ai-or-die.js` prints a one-time startup notice under Bun (continuing with
+  sticky-notes disabled) pointing to the equivalent `node …` command for a
+  guaranteed-working terminal. The **bounded EAGAIN suppression** in
+  `src/base-bridge.js` (`shouldSwallowTransientEagain`) swallows Node's transient
+  startup EAGAIN but lets a *sustained* EAGAIN flood with no life-sign surface
+  after a ~3s grace window, so Bun's read failure produces a visible error instead
+  of a silent 30s hang. **STT (sherpa-onnx) is unaffected and still runs under
+  Bun** (it is pulled on startup like on Node).
 
 ## Consequences
 

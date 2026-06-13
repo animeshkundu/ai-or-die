@@ -12,6 +12,7 @@ try {
   open = openModule.default || openModule;
 } catch { open = null; }
 const { ClaudeCodeWebServer } = require('../src/server');
+const { isBun } = require('../src/utils/runtime');
 
 const program = new Command();
 
@@ -66,6 +67,22 @@ async function main() {
     if (isNaN(port) || port < 1 || port > 65535) {
       console.error('Error: Port must be a number between 1 and 65535');
       process.exit(1);
+    }
+
+    // Bun: limited support. The app continues to run, but two native
+    // incompatibilities apply (both externally confirmed, neither fixable here):
+    //   • node-llama-cpp's N-API addon crashes Bun (NAPI FATAL ERROR, exit 133),
+    //     so the sticky-note model is force-disabled (server + engine self-gate).
+    //   • node-pty cannot read the PTY master under Bun (oven-sh/bun#25822) — the
+    //     terminal may "start" but never show a prompt (it hangs).
+    // STT still works under Bun. For a guaranteed-working terminal, use Node.js.
+    if (isBun()) {
+      const bunVer = (process.versions && process.versions.bun) || 'unknown';
+      console.log(`\n\x1b[33m⚠  Running under Bun ${bunVer} — limited support. Continuing with sticky-notes disabled.\x1b[0m`);
+      console.log('   • Sticky-note summaries are disabled under Bun (node-llama-cpp crashes Bun’s N-API).');
+      console.log('   • Heads-up: terminal output can hang under Bun (node-pty/#25822).');
+      console.log('     If the prompt never appears, run with Node.js instead:');
+      console.log(`       \x1b[1mnode ${path.relative(process.cwd(), __filename) || 'bin/ai-or-die.js'} ${process.argv.slice(2).join(' ')}\x1b[0m\n`);
     }
 
     // Handle authentication logic

@@ -88,6 +88,16 @@ path is unaffected. Inference errors/timeouts never propagate into the PTY path;
 a failed summary is retried after backoff (never stranded) and repeated failures
 open a per-session circuit breaker.
 
+**Runtime: Node.js only.** The feature is force-disabled under Bun
+(`server.js` `!isBun()` + `StickyNoteEngine._doInitialize` self-gate →
+`unavailable` / `_lastSpawnError='BUN_UNSUPPORTED'`), because node-llama-cpp's
+native N-API addon crashes Bun (exit 133). Bun runs with **limited support** for
+the app overall — it continues to run, but node-pty can't read the PTY master
+under Bun (oven-sh/bun#25822) so the terminal may hang; `bin/ai-or-die.js` prints
+a startup notice (continuing with sticky-notes disabled) recommending `node` for
+a working terminal. STT still runs under Bun. See ADR-0022 +
+`docs/history/sticky-notes-2026.md`.
+
 Known limitation: cancelling a session (tab close / eviction) while an inference
 is in flight does not abort the native call — the worker finishes that one
 inference and the summariser discards the result (the session state is gone).
