@@ -12,7 +12,7 @@ const { SYSTEM_PROMPT, NOTE_SCHEMA } = require('./sticky-note-prompt');
 
 const modelPath = workerData.modelPath;
 const contextSize = workerData.contextSize || 8192;
-const numThreads = workerData.numThreads || Math.max(1, Math.min(4, os.cpus().length - 2));
+const numThreads = workerData.numThreads || Math.max(1, Math.min(2, os.cpus().length - 2));
 const maxTokens = workerData.maxTokens || 320;
 
 let llama;

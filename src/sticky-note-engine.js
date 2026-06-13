@@ -20,7 +20,9 @@ const MAX_RESTART_ATTEMPTS = 5;
 class StickyNoteEngine {
   constructor(options = {}) {
     this._enabled = !!options.enabled;
-    this._numThreads = options.numThreads || Math.max(1, Math.min(4, os.cpus().length - 2));
+    // Low thread cap keeps inference gentle so the model can't saturate CPU and
+    // starve the terminal / AI agent. Summaries are infrequent + throttled.
+    this._numThreads = options.numThreads || Math.max(1, Math.min(2, os.cpus().length - 2));
     this._contextSize = options.contextSize || 8192;
     this._inferTimeoutMs = options.inferTimeoutMs || DEFAULT_INFER_TIMEOUT_MS;
     this._maxQueue = options.maxQueue || MAX_QUEUE_SIZE;

@@ -67,13 +67,10 @@ describe('sticky-note card (DOM)', function () {
     card.hide();
   });
 
-  it('shows the placeholder when enabled but no note yet', function () {
+  it('stays hidden when enabled but no note yet (no "gathering" placeholder)', function () {
     const card = new StickyNoteCard(app);
     card.render(null);
-    assert.strictEqual(card.el.hidden, false);
-    assert.strictEqual(card._refs.placeholder.hidden, false);
-    assert.strictEqual(card._refs.goalSec.hidden, true);
-    card.hide();
+    assert.strictEqual(card.el.hidden, true, 'card hidden until a real note arrives');
   });
 
   it('hides empty sections and shows populated ones', function () {

@@ -157,6 +157,7 @@ class ClaudeCodeWebServer {
       options.stickyNotes !== false && !underTest && process.env.AIORDIE_DISABLE_STICKY_NOTES !== '1';
     this._foregroundSessionId = null;
     this._stickyInitStarted = false;
+    this._stickyInitTimer = null;
     this.stickyNoteEngine = new StickyNoteEngine({
       enabled: this._stickyNotesEnabledGlobally,
       modelsDir: options.stickyNotesModelDir,
@@ -419,6 +420,7 @@ class ClaudeCodeWebServer {
     console.log(`\nGracefully shutting down (exit code: ${exitCode})...`);
     // Tear down the local-LLM summariser + worker so the model/worker thread
     // don't keep the process alive (and don't hold a GGUF file lock on Windows).
+    if (this._stickyInitTimer) { clearTimeout(this._stickyInitTimer); this._stickyInitTimer = null; }
     try { this.stickyNoteSummarizer.shutdown(); } catch (_) { /* ignore */ }
     try { await this.stickyNoteEngine.shutdown(); } catch (_) { /* ignore */ }
     await this.close();
@@ -3085,8 +3087,12 @@ class ClaudeCodeWebServer {
     // the file-browser feature treats search as load-bearing.
     search.requireBackendAtStartup();
 
-    // Non-blocking STT init — downloads model if needed
-    if (this.sttEngine._enabled || this.sttEngine._sttEndpoint) {
+    // STT init is LAZY — do NOT download/load the ~670MB model at startup.
+    // Eager loading here starved the event loop / CPU during boot and hung the
+    // terminal (no prompt until the model finished). An external endpoint has
+    // no local model, so it can init cheaply; the local model is pulled on first
+    // mic use (handled by the voice_init message), which keeps startup instant.
+    if (this.sttEngine._sttEndpoint) {
       this.sttEngine.initialize().catch(err => {
         if (this.dev) console.error('[STT] Init failed:', err.message);
       });
@@ -3988,13 +3994,24 @@ class ClaudeCodeWebServer {
     if (!this.stickyNoteEngine._enabled) return;
     if (session.stickyNotesEnabled === false) return;
     if (!this._isAiAgent(toolName)) return;
-    this._ensureStickyNoteEngine();
+    // Start buffering output now — this is cheap (a pure-JS headless terminal),
+    // never inference. The HEAVY engine init (model download + worker + model
+    // load) is DEFERRED so the agent + terminal start up first; sticky notes
+    // must never block real work. The summariser buffers in the meantime and
+    // produces its first note once the model is ready.
     this.stickyNoteSummarizer.enable(sessionId, {
       cols: cols || 80,
       rows: rows || 24,
       note: session.stickyNote || null,
       rev: (session.stickyNote && session.stickyNote.rev) || 0,
     });
+    if (!this._stickyInitStarted && !this._stickyInitTimer) {
+      this._stickyInitTimer = setTimeout(() => {
+        this._stickyInitTimer = null;
+        this._ensureStickyNoteEngine();
+      }, 12000);
+      if (this._stickyInitTimer.unref) this._stickyInitTimer.unref();
+    }
   }
 
   // Persist + broadcast a freshly generated note (called by the summariser).

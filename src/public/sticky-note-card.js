@@ -155,13 +155,10 @@ class StickyNoteCard {
     const r = this._refs;
 
     if (!note) {
-      // Enabled but no note yet -> show the gathering placeholder.
-      r.placeholder.hidden = false;
-      r.goalSec.hidden = true;
-      r.progSec.hidden = true;
-      r.waitSec.hidden = true;
-      r.fresh.textContent = '';
-      this.show();
+      // No note yet (model still downloading/loading in the background, or none
+      // generated): keep the card HIDDEN so it never implies work is blocked.
+      // It appears only once the local model is working and produces a summary.
+      this.hide();
       return;
     }
 
