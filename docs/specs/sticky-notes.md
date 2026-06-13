@@ -62,6 +62,29 @@ read via `src/sticky-note-jsonl.js`, bound per-tab by a 2s poll in `server.js`) 
 user/assistant turns, not the Ink-TUI scrape. Plain shells fall back to the rendered-output
 scrape (`@xterm/headless`). Legacy notes migrate on load (`progress→done`, `waitingOn→remaining`).
 
+### Binding & resume (`_pumpStickyJsonl`, ADR-0024)
+
+A tab binds to the claude session transcript for its `cwd`, keyed by **claude
+sessionId** (the JSONL basename / `--resume` key), so notes are durable and resume:
+
+- **Skips `agent-*.jsonl`** subagent logs (`findActiveSessions`).
+- **Per-tab ownership:** a tab never binds a session already owned by another tab,
+  so two claude tabs in one project keep separate notes.
+- **No theft:** a tab stays on its session while it is being written; it only
+  follows an in-session `/resume` to a newer session after its own has been quiet
+  for `_stickyResumeIdleTicks` (default 8) — incomplete trailing lines count as
+  quiet so a killed session can still yield.
+- **Durable notes** live in `_claudeNotes` (claudeSessionId → note, capped 300),
+  mirrored on every result and rebuilt from persisted `session.stickyClaudeSessionId`
+  on restart. Binding a session with a stored note resumes it (seeded into the
+  summariser + card) and continues from the cached read offset (`_claudeOffsets`).
+- **Mid-inference rebind safety:** the summariser tags each result with the
+  sessionId captured at inference start; a result that arrives after a rebind is
+  persisted to the OUTGOING session's note, never the new one.
+
+The toolbar toggle (`#stickyNoteBtn`) is shown only once the engine reports
+`ready` (not merely when enabled), so it never appears when the model can't run.
+
 ## WebSocket protocol
 
 Server → client:

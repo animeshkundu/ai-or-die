@@ -167,11 +167,31 @@ class ClaudeCodeWebServer {
     this._foregroundSessionId = null;
     this._stickyInitStarted = false;
     this._stickyInitTimer = null;
-    // Per-tab binding to a claude JSONL transcript: sessionId -> { file, offset }.
-    // A poll discovers/tails the active session file and feeds clean turns to the
+    // Per-tab binding to a claude JSONL transcript: aiOrDieSessionId -> { file,
+    // offset, claudeSessionId }. A poll discovers/tails the active session file
+    // (ownership-aware, skipping agent-*.jsonl) and feeds clean turns to the
     // summariser (JSONL mode). Tabs not running claude keep the scrape fallback.
     this._stickyJsonl = new Map();
     this._stickyJsonlPoll = null;
+    // Durable notes keyed by CLAUDE sessionId (the JSONL basename / --resume key),
+    // so a note survives the tab closing and resumes when the same claude session
+    // is reopened (claude --resume, /resume, or a server restart). Rebuilt from
+    // persisted sessions on load; capped to bound growth.
+    this._claudeNotes = new Map();
+    this._claudeNotesCap = 300;
+    // In-memory resume offsets (claudeSessionId -> last consumed byte offset) so a
+    // tab reopening / following a /resume continues from where it left off instead
+    // of re-reading (and re-summarising) the last window. Not persisted; a restart
+    // falls back to the recent-window default.
+    this._claudeOffsets = new Map();
+    // A bound tab follows an in-session /resume to a newer session only after its
+    // own transcript has been quiet for this many poll ticks (~2s each), so a
+    // third unrelated session can't steal a tab that is still actively working.
+    this._stickyResumeIdleTicks = 8;
+    // Override the claude projects dir (tests point this at a temp fixture so
+    // they never read the operator's real ~/.claude transcripts). undefined →
+    // StickyNoteJsonl uses its default (~/.claude/projects or the env override).
+    this._stickyProjectsDir = undefined;
     this.stickyNoteEngine = new StickyNoteEngine({
       enabled: this._stickyNotesEnabledGlobally,
       modelsDir: options.stickyNotesModelDir,
@@ -232,8 +252,14 @@ class ClaudeCodeWebServer {
         if (!this.claudeSessions.has(id)) {
           this.claudeSessions.set(id, session);
           this._pushEvictionEntry(id); // PROC-04
+          // Rebuild the durable per-claude-session note store so a note resumes
+          // after a server restart when the same claude session reopens.
+          if (session.stickyNote && session.stickyClaudeSessionId) {
+            this._claudeNotes.set(session.stickyClaudeSessionId, session.stickyNote);
+          }
         }
       }
+      this._capClaudeNotes();
       if (sessions.size > 0) {
         console.log(`Loaded ${sessions.size} persisted sessions`);
       }
@@ -4081,40 +4107,142 @@ class ClaudeCodeWebServer {
 
   async _pumpStickyJsonl(sessionId, cwd) {
     let binding = this._stickyJsonl.get(sessionId);
-    // Re-scan the project dir only periodically (or when unbound / the bound file
-    // vanished) to pick up a newer session; otherwise just stat the bound file —
-    // avoids a readdir + N stats every 2s for users with many old sessions.
-    let activeFile = binding && binding.file;
-    let size = -1;
     binding && (binding._ticks = (binding._ticks || 0) + 1);
+
+    // Periodically (or while unbound) reconcile the binding. A tab STAYS on its
+    // bound session while that file is alive and not owned by another tab; it
+    // only moves to a newer unowned session once its own has gone quiet (an
+    // in-session /resume) — so a third, unrelated session can't steal an active
+    // tab. agent-*.jsonl is excluded by findActiveSessions.
     if (!binding || binding._ticks % 5 === 0) {
-      const active = await StickyNoteJsonl.findActiveSession(cwd);
-      if (active) { activeFile = active.file; size = active.size; }
-      else if (!binding) return; // no transcript yet → scrape fallback handles it
+      const candidates = await StickyNoteJsonl.findActiveSessions(cwd, { projectsDir: this._stickyProjectsDir });
+      const ownedByOthers = this._ownedClaudeSessions(sessionId);
+      const currentValid =
+        binding &&
+        candidates.some((c) => c.file === binding.file) &&
+        !ownedByOthers.has(binding.claudeSessionId);
+      if (!currentValid) {
+        // Unbound, or the bound file vanished / is a subagent log / is now owned
+        // by another tab → (re)bind to the newest unowned session.
+        const pick = candidates.find((c) => !ownedByOthers.has(c.sessionId)) || null;
+        if (pick) {
+          this._bindStickyJsonl(sessionId, pick);
+          binding = this._stickyJsonl.get(sessionId);
+        } else {
+          if (binding) this._stickyJsonl.delete(sessionId);
+          return; // no transcript yet → scrape fallback handles it
+        }
+      } else if ((binding.idleTicks || 0) >= this._stickyResumeIdleTicks) {
+        // Bound file has been quiet — follow an in-session /resume to a newer
+        // active unowned session if one appeared.
+        const newer = candidates.find(
+          (c) =>
+            c.file !== binding.file &&
+            !ownedByOthers.has(c.sessionId) &&
+            c.mtimeMs > (binding.boundMtimeMs || 0)
+        );
+        if (newer) {
+          this._bindStickyJsonl(sessionId, newer);
+          binding = this._stickyJsonl.get(sessionId);
+        }
+      }
     }
-    if (binding && activeFile !== binding.file) binding = null; // newer session → rebind below
-    if (!binding) {
-      // Bind near the end so the first summary uses recent context, not the whole
-      // (possibly huge) history.
-      const st = size >= 0 ? { size } : await this._statQuiet(activeFile);
-      if (!st) return;
-      const INITIAL_WINDOW = 24 * 1024;
-      binding = { file: activeFile, offset: Math.max(0, st.size - INITIAL_WINDOW), _ticks: 0 };
-      this._stickyJsonl.set(sessionId, binding);
+    if (!binding) return;
+
+    const st = await this._statQuiet(binding.file);
+    if (!st) { this._stickyJsonl.delete(sessionId); return; } // file gone → unbind (note kept)
+    if (st.size <= binding.offset) {
+      binding.idleTicks = (binding.idleTicks || 0) + 1; // quiet → eligible to follow /resume
+      return;
     }
-    if (size < 0) {
-      const st = await this._statQuiet(binding.file);
-      if (!st) { this._stickyJsonl.delete(sessionId); return; } // file gone → unbind
-      size = st.size;
-    }
-    if (size <= binding.offset) return; // no new bytes
     const { turns, offset, aiTitle } = await StickyNoteJsonl.readNewTurns(binding.file, binding.offset);
+    if (offset <= binding.offset) {
+      // New bytes but no COMPLETE line yet (claude mid-write or killed). Count as
+      // quiet so a dead session can still yield to a /resume; do NOT reset
+      // idleTicks (that would lock the tab on this file forever).
+      binding.idleTicks = (binding.idleTicks || 0) + 1;
+      return;
+    }
+    binding.idleTicks = 0;
+    binding.boundMtimeMs = st.mtimeMs;
     binding.offset = offset;
+    this._claudeOffsets.set(binding.claudeSessionId, offset); // resume continues from here
     const text = StickyNoteJsonl.formatTurns(turns);
     // Feed even with no new turns if a standalone ai-title line arrived (claude
     // writes it asynchronously), so the tab title isn't permanently missed.
     if (!text && !aiTitle) return;
     this.stickyNoteSummarizer.feedTurns(sessionId, text, aiTitle);
+  }
+
+  /** Claude sessionIds currently bound by OTHER tabs (ownership set). */
+  _ownedClaudeSessions(exceptSessionId) {
+    const owned = new Set();
+    for (const [sid, b] of this._stickyJsonl) {
+      if (sid !== exceptSessionId && b && b.claudeSessionId) owned.add(b.claudeSessionId);
+    }
+    return owned;
+  }
+
+  /**
+   * Bind a tab to a claude transcript and resume its durable note. Binds near the
+   * end of the file so the first summary uses recent context, not the whole
+   * (possibly huge) history; the accumulated state comes from `_claudeNotes`.
+   */
+  _bindStickyJsonl(sessionId, chosen) {
+    const claudeSessionId = chosen.sessionId;
+    const INITIAL_WINDOW = 24 * 1024;
+    // Resume from the last consumed offset if we've seen this session before
+    // (avoids re-summarising the recent window); else start near the end.
+    const cached = this._claudeOffsets.get(claudeSessionId);
+    const offset =
+      typeof cached === 'number' && cached <= (chosen.size || 0)
+        ? cached
+        : Math.max(0, (chosen.size || 0) - INITIAL_WINDOW);
+    this._stickyJsonl.set(sessionId, {
+      file: chosen.file,
+      offset,
+      claudeSessionId,
+      boundMtimeMs: chosen.mtimeMs || 0,
+      idleTicks: 0,
+      _ticks: 0,
+    });
+    const prior = this._claudeNotes.get(claudeSessionId) || null;
+    // Seed the summariser with the resumed note + rev, record the bound session,
+    // and drop any turns accumulated for the PREVIOUS session.
+    this.stickyNoteSummarizer.onRebind(sessionId, {
+      claudeSessionId,
+      note: prior,
+      rev: prior ? prior.rev : undefined,
+    });
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    session.stickyClaudeSessionId = claudeSessionId; // persisted → cross-restart resume
+    session.stickyNote = prior ? { ...prior } : null;
+    this.sessionStore.markDirty();
+    // Reflect the resumed (or cleared) note on the card immediately.
+    this.broadcastToSession(sessionId, {
+      type: 'sticky_note_update',
+      sessionId,
+      stickyNote: session.stickyNote,
+      autoTitle: session.nameIsUserSet ? null : (prior && prior.title) || session.autoTitle || null,
+    });
+  }
+
+  /** Keep only the most-recently-updated notes so the durable store stays bounded. */
+  _capClaudeNotes() {
+    if (this._claudeNotes.size > this._claudeNotesCap) {
+      const entries = [...this._claudeNotes.entries()].sort(
+        (a, b) => new Date(b[1].updatedAt || 0) - new Date(a[1].updatedAt || 0)
+      );
+      this._claudeNotes = new Map(entries.slice(0, this._claudeNotesCap));
+    }
+    // Bound the resume-offset cache too: keep offsets only for sessions we still
+    // track a note for, or are currently bound to.
+    if (this._claudeOffsets && this._claudeOffsets.size > this._claudeNotesCap) {
+      const keep = new Set(this._claudeNotes.keys());
+      for (const b of this._stickyJsonl.values()) if (b && b.claudeSessionId) keep.add(b.claudeSessionId);
+      for (const k of [...this._claudeOffsets.keys()]) if (!keep.has(k)) this._claudeOffsets.delete(k);
+    }
   }
 
   async _statQuiet(file) {
@@ -4125,6 +4253,32 @@ class ClaudeCodeWebServer {
     }
   }
 
+  // Merge a model delta ({goal,done,remaining,update}) onto a previous note,
+  // refining goal/done/remaining (keeping prior values when the small model
+  // returns an empty field) and prepending the one `update` to the append-only
+  // log (skip empty / exact-duplicate-of-last, cap 25).
+  _mergeStickyNote(prev, delta, autoTitle, rev) {
+    prev = prev || {};
+    const now = new Date().toISOString();
+    const updates = Array.isArray(prev.updates) ? prev.updates.slice() : [];
+    const upd = (delta.update || '').trim();
+    if (upd && !(updates[0] && updates[0].text === upd)) {
+      updates.unshift({ text: upd, at: now });
+      if (updates.length > 25) updates.length = 25;
+    }
+    return {
+      title: autoTitle || prev.title || '',
+      goal: delta.goal || prev.goal || '',
+      done: (delta.done && delta.done.length) ? delta.done : (prev.done || []),
+      remaining: (delta.remaining && delta.remaining.length) ? delta.remaining : (prev.remaining || []),
+      updates,
+      rev: typeof rev === 'number' ? rev : (prev.rev || 0) + 1,
+      updatedAt: now,
+      status: 'idle',
+      error: null,
+    };
+  }
+
   // Persist + broadcast a freshly generated note (called by the summariser).
   // The note is INCREMENTAL: goal/done/remaining are refined each turn, and the
   // single `update` is prepended to an append-only Updates log (newest first).
@@ -4132,37 +4286,34 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(sessionId);
     if (!session) return;
     if (session.stickyNotesEnabled === false) return; // opted out mid-flight
+    const delta = payload.note; // { goal, done[], remaining[], update }
+    const curBinding = this._stickyJsonl.get(sessionId);
+    // Stale-binding result: the tab rebound to (or closed off) a DIFFERENT claude
+    // session while this inference ran, so the result describes the OUTGOING
+    // session. Don't touch the current session's UI, but still persist it under
+    // the outgoing session's id so that session's note resumes losslessly later.
+    if (
+      payload.claudeSessionId &&
+      (!curBinding || curBinding.claudeSessionId !== payload.claudeSessionId)
+    ) {
+      const old = this._claudeNotes.get(payload.claudeSessionId) || null;
+      this._claudeNotes.set(payload.claudeSessionId, this._mergeStickyNote(old, delta, payload.autoTitle));
+      this._capClaudeNotes();
+      return;
+    }
     // Defensive: never let an older/stale result clobber a newer note.
     const incomingRev = payload.rev || 0;
     if (session.stickyNote && incomingRev <= (session.stickyNote.rev || 0)) return;
-    const delta = payload.note; // { goal, done[], remaining[], update }
-    const prev = session.stickyNote || {};
-    const now = new Date().toISOString();
 
-    // Append-only Updates log: prepend the new line (skip empty / duplicate of
-    // the last), capped to the most recent 25.
-    const updates = Array.isArray(prev.updates) ? prev.updates.slice() : [];
-    const upd = (delta.update || '').trim();
-    if (upd && !(updates[0] && updates[0].text === upd)) {
-      updates.unshift({ text: upd, at: now });
-      if (updates.length > 25) updates.length = 25;
-    }
-
-    session.stickyNote = {
-      title: payload.autoTitle || prev.title || '',
-      // Keep the prior value when the small model returns an empty field, so a
-      // weak generation never wipes the evolving state.
-      goal: delta.goal || prev.goal || '',
-      done: (delta.done && delta.done.length) ? delta.done : (prev.done || []),
-      remaining: (delta.remaining && delta.remaining.length) ? delta.remaining : (prev.remaining || []),
-      updates,
-      rev: payload.rev,
-      updatedAt: now,
-      status: 'idle',
-      error: null,
-    };
+    session.stickyNote = this._mergeStickyNote(session.stickyNote, delta, payload.autoTitle, payload.rev);
     if (!session.nameIsUserSet && payload.autoTitle) {
       session.autoTitle = payload.autoTitle;
+    }
+    // Mirror into the durable per-claude-session store so the note resumes when
+    // the tab closes/reopens or the session is resumed elsewhere.
+    if (curBinding && curBinding.claudeSessionId) {
+      this._claudeNotes.set(curBinding.claudeSessionId, session.stickyNote);
+      this._capClaudeNotes();
     }
     this.sessionStore.markDirty();
     this.broadcastToSession(sessionId, {

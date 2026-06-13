@@ -3,9 +3,11 @@
 const assert = require('assert');
 const os = require('os');
 const path = require('path');
+const fs = require('fs');
 const fsp = require('fs').promises;
 const { ClaudeCodeWebServer } = require('../src/server');
 const SessionStore = require('../src/utils/session-store');
+const StickyNoteJsonl = require('../src/sticky-note-jsonl');
 
 // Exercise the sticky-note server wiring at the method level (no port binding):
 // we invoke the handler methods against a lightweight stub `this`, plus a real
@@ -34,6 +36,11 @@ function makeStub(overrides = {}) {
     _isStickyEligible: ClaudeCodeWebServer.prototype._isStickyEligible,
     _startStickyJsonlPoll: () => {},
     _stickyJsonl: new Map(),
+    _claudeNotes: new Map(),
+    _claudeOffsets: new Map(),
+    _claudeNotesCap: 300,
+    _mergeStickyNote: ClaudeCodeWebServer.prototype._mergeStickyNote,
+    _capClaudeNotes: ClaudeCodeWebServer.prototype._capClaudeNotes,
   };
   Object.assign(self, overrides);
   self._broadcasts = broadcasts;
@@ -205,6 +212,186 @@ describe('sticky-note server wiring', function () {
     assert.strictEqual(self._summarizerCalls.length, 2);
     assert.strictEqual(self._summarizerCalls[1][0], 'enable');
   });
+
+  it('_onStickyNoteResult mirrors the note into _claudeNotes by claude sessionId', function () {
+    const self = makeStub();
+    self._claudeNotes = new Map();
+    self._claudeNotesCap = 300;
+    self._capClaudeNotes = ClaudeCodeWebServer.prototype._capClaudeNotes;
+    self.claudeSessions.set('s1', { nameIsUserSet: false });
+    self._stickyJsonl.set('s1', { file: '/p/CID.jsonl', offset: 0, claudeSessionId: 'CID' });
+    ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
+      note: { goal: 'g', done: ['a'], remaining: [], update: 'did work' }, autoTitle: 'T', rev: 1, claudeSessionId: 'CID',
+    });
+    assert.ok(self._claudeNotes.has('CID'), 'note stored under the claude sessionId');
+    assert.strictEqual(self._claudeNotes.get('CID').goal, 'g');
+  });
+
+  it('_onStickyNoteResult routes a rebound result to the OUTGOING session (durable), not the current one', function () {
+    const self = makeStub();
+    self._claudeNotes = new Map([['OLD', { title: 'Old', goal: 'old goal', done: [], remaining: [], updates: [], rev: 3, updatedAt: 'then' }]]);
+    self._claudeOffsets = new Map();
+    self._claudeNotesCap = 300;
+    self._mergeStickyNote = ClaudeCodeWebServer.prototype._mergeStickyNote;
+    self._capClaudeNotes = ClaudeCodeWebServer.prototype._capClaudeNotes;
+    self.claudeSessions.set('s1', { nameIsUserSet: false, stickyNote: { goal: 'current session', rev: 2 } });
+    self._stickyJsonl.set('s1', { file: '/p/NEW.jsonl', offset: 0, claudeSessionId: 'NEW' });
+    // Result carries the OLD session id (tab rebound while the inference ran).
+    ClaudeCodeWebServer.prototype._onStickyNoteResult.call(self, 's1', {
+      note: { goal: 'old refined goal', done: ['finished old work'], remaining: [], update: 'old final update' }, autoTitle: null, rev: null, claudeSessionId: 'OLD',
+    });
+    assert.strictEqual(self.claudeSessions.get('s1').stickyNote.goal, 'current session', 'current session UI untouched');
+    assert.strictEqual(self._broadcasts.length, 0, 'no broadcast for the rebound session');
+    assert.ok(self._claudeNotes.has('OLD'), 'outgoing session note preserved');
+    assert.strictEqual(self._claudeNotes.get('OLD').goal, 'old refined goal', 'outgoing note refined + saved');
+    assert.strictEqual(self._claudeNotes.get('OLD').updates[0].text, 'old final update');
+  });
+});
+
+describe('sticky-note JSONL binding (ownership + resume)', function () {
+  let dir, projects;
+  function slug(cwd) { return StickyNoteJsonl.slugForCwd(cwd); }
+  function writeSession(cwd, name, body, ageSec) {
+    const d = path.join(projects, slug(cwd));
+    fs.mkdirSync(d, { recursive: true });
+    const f = path.join(d, name);
+    fs.writeFileSync(f, body || (JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }) + '\n'));
+    if (ageSec) { const t = Date.now() / 1000 - ageSec; fs.utimesSync(f, t, t); }
+    return f;
+  }
+  function makeBindStub() {
+    const feeds = [];
+    const seeds = [];
+    const broadcasts = [];
+    const self = {
+      _stickyJsonl: new Map(),
+      _claudeNotes: new Map(),
+      _claudeOffsets: new Map(),
+      _claudeNotesCap: 300,
+      _stickyResumeIdleTicks: 8,
+      _stickyProjectsDir: projects,
+      claudeSessions: new Map(),
+      sessionStore: { markDirty() {} },
+      stickyNoteSummarizer: {
+        isEnabled: () => true,
+        setNote: (id, note, rev) => seeds.push({ id, note, rev }),
+        onRebind: (id, opts) => seeds.push(Object.assign({ id }, opts)),
+        feedTurns: (id, text, title) => feeds.push({ id, text, title }),
+      },
+      broadcastToSession: (id, data) => broadcasts.push({ id, data }),
+      _ownedClaudeSessions: ClaudeCodeWebServer.prototype._ownedClaudeSessions,
+      _bindStickyJsonl: ClaudeCodeWebServer.prototype._bindStickyJsonl,
+      _capClaudeNotes: ClaudeCodeWebServer.prototype._capClaudeNotes,
+      _statQuiet: ClaudeCodeWebServer.prototype._statQuiet,
+      _pumpStickyJsonl: ClaudeCodeWebServer.prototype._pumpStickyJsonl,
+    };
+    self._feeds = feeds; self._seeds = seeds; self._broadcasts = broadcasts;
+    return self;
+  }
+
+  beforeEach(function () {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'snbind-'));
+    projects = path.join(dir, 'projects');
+    fs.mkdirSync(projects, { recursive: true });
+  });
+  afterEach(function () {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+  });
+
+  it('binds a tab to its claude session and skips agent-*.jsonl', async function () {
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'real-session.jsonl', null, 100);   // older
+    writeSession(cwd, 'agent-deadbeef.jsonl', null, 0);   // newest, but a subagent log
+    const self = makeBindStub();
+    self.claudeSessions.set('tab1', { nameIsUserSet: false });
+    await self._pumpStickyJsonl('tab1', cwd);
+    const b = self._stickyJsonl.get('tab1');
+    assert.ok(b, 'tab bound');
+    assert.strictEqual(b.claudeSessionId, 'real-session', 'agent-*.jsonl skipped; real session bound');
+  });
+
+  it('two tabs in the same project bind to distinct sessions (ownership)', async function () {
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'sessA.jsonl', null, 50);
+    writeSession(cwd, 'sessB.jsonl', null, 10); // newer
+    const self = makeBindStub();
+    self.claudeSessions.set('tab1', { nameIsUserSet: false });
+    self.claudeSessions.set('tab2', { nameIsUserSet: false });
+    await self._pumpStickyJsonl('tab1', cwd); // tab1 takes newest (sessB)
+    await self._pumpStickyJsonl('tab2', cwd); // tab2 must NOT also take sessB
+    const b1 = self._stickyJsonl.get('tab1');
+    const b2 = self._stickyJsonl.get('tab2');
+    assert.strictEqual(b1.claudeSessionId, 'sessB');
+    assert.strictEqual(b2.claudeSessionId, 'sessA', 'second tab gets the other (unowned) session');
+    assert.notStrictEqual(b1.file, b2.file);
+  });
+
+  it('resumes the durable note when binding a claude session that has one', async function () {
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'resumed.jsonl', null, 0);
+    const self = makeBindStub();
+    const priorNote = { title: 'Prev', goal: 'old goal', done: ['x'], remaining: [], updates: [{ text: 'u', at: 'now' }], rev: 4, updatedAt: 'now' };
+    self._claudeNotes.set('resumed', priorNote);
+    self.claudeSessions.set('tab1', { nameIsUserSet: false });
+    await self._pumpStickyJsonl('tab1', cwd);
+    const session = self.claudeSessions.get('tab1');
+    assert.strictEqual(session.stickyClaudeSessionId, 'resumed', 'binding recorded for persistence');
+    assert.strictEqual(session.stickyNote.goal, 'old goal', 'resumed note shown on the card');
+    const seed = self._seeds.find((s) => s.id === 'tab1');
+    assert.ok(seed && seed.note && seed.note.rev === 4, 'summariser seeded with prior note + rev');
+    assert.ok(self._broadcasts.some((b) => b.data.type === 'sticky_note_update' && b.data.stickyNote && b.data.stickyNote.goal === 'old goal'));
+  });
+
+  it('starts fresh (null note) when binding a brand-new claude session', async function () {
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'fresh.jsonl', null, 0);
+    const self = makeBindStub();
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, stickyNote: { goal: 'stale from other session', rev: 9 } });
+    await self._pumpStickyJsonl('tab1', cwd);
+    const session = self.claudeSessions.get('tab1');
+    assert.strictEqual(session.stickyNote, null, 'no prior note → card cleared for the new session');
+    assert.strictEqual(session.stickyClaudeSessionId, 'fresh');
+  });
+
+  it('_capClaudeNotes keeps only the most-recent notes', function () {
+    const self = makeBindStub();
+    self._claudeNotesCap = 2;
+    self._claudeNotes.set('a', { updatedAt: '2026-06-10T00:00:00Z' });
+    self._claudeNotes.set('b', { updatedAt: '2026-06-12T00:00:00Z' });
+    self._claudeNotes.set('c', { updatedAt: '2026-06-11T00:00:00Z' });
+    ClaudeCodeWebServer.prototype._capClaudeNotes.call(self);
+    assert.strictEqual(self._claudeNotes.size, 2);
+    assert.ok(self._claudeNotes.has('b') && self._claudeNotes.has('c'), 'oldest (a) evicted');
+    assert.ok(!self._claudeNotes.has('a'));
+  });
+
+  it('an active tab is NOT stolen by a newer unrelated unowned session', async function () {
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'sessA.jsonl', null, 50);
+    const self = makeBindStub();
+    self.claudeSessions.set('tab1', { nameIsUserSet: false });
+    await self._pumpStickyJsonl('tab1', cwd); // binds sessA
+    const b = self._stickyJsonl.get('tab1');
+    assert.strictEqual(b.claudeSessionId, 'sessA');
+    // A newer, unowned session appears (e.g. a foreign claude in the same project).
+    writeSession(cwd, 'sessC.jsonl', null, 0);
+    b._ticks = 4; b.idleTicks = 0; // force a rescan next pump; tab is still ACTIVE
+    await self._pumpStickyJsonl('tab1', cwd);
+    assert.strictEqual(self._stickyJsonl.get('tab1').claudeSessionId, 'sessA', 'active tab stays put');
+  });
+
+  it('an idle tab follows an in-session /resume to a newer unowned session', async function () {
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'sessA.jsonl', null, 50);
+    const self = makeBindStub();
+    self.claudeSessions.set('tab1', { nameIsUserSet: false });
+    await self._pumpStickyJsonl('tab1', cwd); // binds sessA
+    writeSession(cwd, 'sessC.jsonl', null, 0); // newer session (the resumed one)
+    const b = self._stickyJsonl.get('tab1');
+    b._ticks = 4; b.idleTicks = 10; // sessA has gone quiet past the threshold
+    await self._pumpStickyJsonl('tab1', cwd);
+    assert.strictEqual(self._stickyJsonl.get('tab1').claudeSessionId, 'sessC', 'idle tab follows the resume');
+  });
 });
 
 describe('sticky-note persistence (session-store round-trip)', function () {
@@ -241,6 +428,20 @@ describe('sticky-note persistence (session-store round-trip)', function () {
     assert.strictEqual(s.autoTitle, 'X');
     assert.strictEqual(s.nameIsUserSet, true);
     assert.strictEqual(s.stickyNotesEnabled, false);
+  });
+
+  it('persists and restores stickyClaudeSessionId (cross-restart resume key)', async function () {
+    const store = new SessionStore({ storageDir: dir });
+    const sessions = new Map();
+    sessions.set('s1', {
+      name: 'T', workingDir: '/tmp',
+      stickyNote: { goal: 'g', done: [], remaining: [], updates: [], rev: 1, updatedAt: 'now' },
+      stickyClaudeSessionId: '4c71fe78-3191',
+    });
+    store.markDirty();
+    await store.saveSessions(sessions);
+    const loaded = await store.loadSessions();
+    assert.strictEqual(loaded.get('s1').stickyClaudeSessionId, '4c71fe78-3191');
   });
 
   it('restores old sessions without the new fields (clean migration)', async function () {

@@ -85,6 +85,10 @@ class StickyNoteSummarizer {
       jsonlMode: false,
       pendingText: '',
       aiTitle: null,
+      // The claude sessionId this tab is currently bound to (set on rebind).
+      // Captured at inference start and echoed in the result so a rebind that
+      // happens mid-inference can't attribute the result to the wrong session.
+      claudeSessionId: null,
     });
   }
 
@@ -94,6 +98,20 @@ class StickyNoteSummarizer {
     if (!s) return;
     s.note = note || null;
     if (typeof rev === 'number') s.rev = rev;
+  }
+
+  /**
+   * The server bound this tab to a (different) claude session: seed the resumed
+   * note + rev, record the sessionId, and DROP any accumulated turns from the
+   * previous session so they don't bleed into the new session's summary.
+   */
+  onRebind(sessionId, { claudeSessionId = null, note = null, rev } = {}) {
+    const s = this._states.get(sessionId);
+    if (!s) return;
+    s.claudeSessionId = claudeSessionId;
+    s.note = note || null;
+    if (typeof rev === 'number') s.rev = rev;
+    s.pendingText = '';
   }
 
   isEnabled(sessionId) {
@@ -266,6 +284,9 @@ class StickyNoteSummarizer {
     this._clearScheduling(s);
 
     const start = this._now();
+    // Capture which claude session these turns belong to; if a rebind changes it
+    // while the inference runs, the result is stale and must be discarded.
+    const cidAtStart = s.claudeSessionId;
     let produced = null;
     // In JSONL mode summarise the accumulated clean turns; otherwise the rendered
     // terminal snapshot (fallback for plain shells). Capture the consumed text so
@@ -289,7 +310,10 @@ class StickyNoteSummarizer {
     // Session may have been cancelled while inference ran — discard.
     const live = this._states.get(sessionId);
     if (live === s && !s.cancelled) {
-      if (produced) {
+      // A rebind during inference means these turns belong to the PREVIOUS claude
+      // session — discard so the result can't clobber the new session's note.
+      const stale = s.claudeSessionId !== cidAtStart;
+      if (produced && !stale) {
         s.note = produced;
         s.rev += 1;
         s.lastUpdatedAt = this._now();
@@ -305,7 +329,17 @@ class StickyNoteSummarizer {
         if (s.feedSeq === seqAtStart) s.needsSummary = false;
         try {
           const autoTitle = s.aiTitle || deriveTitle(produced.goal);
-          this._onResult(sessionId, { note: produced, autoTitle, rev: s.rev });
+          this._onResult(sessionId, { note: produced, autoTitle, rev: s.rev, claudeSessionId: cidAtStart });
+        } catch {
+          /* never let a consumer error break the loop */
+        }
+      } else if (produced && stale) {
+        // Rebound mid-inference: these turns belong to the PREVIOUS claude session.
+        // Emit so the server can persist the OUTGOING session's note (durable
+        // resume), but don't touch this session's state (note/rev/pendingText now
+        // belong to the new session). Not a failure → don't trip the breaker.
+        try {
+          this._onResult(sessionId, { note: produced, autoTitle: null, rev: null, claudeSessionId: cidAtStart });
         } catch {
           /* never let a consumer error break the loop */
         }

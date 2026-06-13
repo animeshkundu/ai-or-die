@@ -38,7 +38,39 @@ describe('sticky-note JSONL reader', function () {
     fs.utimesSync(a, t - 100, t - 100); // make a older
     const r = await J.findActiveSession('/Users/x/proj', { projectsDir: projects });
     assert.strictEqual(r.file, b, 'newest by mtime');
+    assert.strictEqual(r.sessionId, 'b', 'sessionId is the basename');
     assert.strictEqual(await J.findActiveSession('/no/such/cwd', { projectsDir: projects }), null);
+  });
+
+  it('skips agent-*.jsonl subagent transcripts even when they are newest', async function () {
+    const sess = path.join(projDir, 'real-session.jsonl');
+    const agent = path.join(projDir, 'agent-abc123.jsonl');
+    fs.writeFileSync(sess, line({ type: 'user' }));
+    fs.writeFileSync(agent, line({ type: 'user' }));
+    const t = Date.now() / 1000;
+    fs.utimesSync(sess, t - 100, t - 100); // session is OLDER than the agent file
+    const r = await J.findActiveSession('/Users/x/proj', { projectsDir: projects });
+    assert.strictEqual(r.file, sess, 'agent-*.jsonl is excluded; the real session wins');
+    const all = await J.findActiveSessions('/Users/x/proj', { projectsDir: projects });
+    assert.deepStrictEqual(all.map((c) => c.sessionId), ['real-session']);
+  });
+
+  it('findActiveSessions returns all sessions newest-first with sessionIds', async function () {
+    const a = path.join(projDir, 'sa.jsonl');
+    const b = path.join(projDir, 'sb.jsonl');
+    fs.writeFileSync(a, line({ type: 'user' }));
+    fs.writeFileSync(b, line({ type: 'user' }));
+    const t = Date.now() / 1000;
+    fs.utimesSync(a, t - 50, t - 50); // a older than b
+    const all = await J.findActiveSessions('/Users/x/proj', { projectsDir: projects });
+    assert.deepStrictEqual(all.map((c) => c.sessionId), ['sb', 'sa'], 'newest (sb) first');
+  });
+
+  it('sessionIdForFile returns the basename without .jsonl', function () {
+    assert.strictEqual(J.sessionIdForFile('/a/b/4c71fe78-3191.jsonl'), '4c71fe78-3191');
+    assert.strictEqual(J.isSessionFileName('x.jsonl'), true);
+    assert.strictEqual(J.isSessionFileName('agent-x.jsonl'), false);
+    assert.strictEqual(J.isSessionFileName('x.txt'), false);
   });
 
   it('extracts user/assistant text + tool names; skips thinking/tool_result/sidechain/metadata; strips injected blocks; captures ai-title', async function () {

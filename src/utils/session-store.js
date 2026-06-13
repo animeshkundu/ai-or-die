@@ -228,6 +228,10 @@ class SessionStore {
                 // content + the resolved enable preference + manual-rename flag;
                 // never persist the runtime summariser/terminal state.
                 stickyNote: session.stickyNote || null,
+                // The claude sessionId (JSONL basename) this note belongs to, so
+                // the durable per-claude-session note store can be rebuilt after a
+                // restart and resume when that session reopens.
+                stickyClaudeSessionId: session.stickyClaudeSessionId || null,
                 autoTitle: session.autoTitle || null,
                 nameIsUserSet: session.nameIsUserSet || false,
                 stickyNotesEnabled: session.stickyNotesEnabled !== false

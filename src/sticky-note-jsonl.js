@@ -44,33 +44,58 @@ function slugForCwd(cwd) {
   return String(cwd || '').replace(/[\\/]/g, '-');
 }
 
+/** The claude session id is the JSONL basename (the --resume key). */
+function sessionIdForFile(file) {
+  return path.basename(String(file || ''), '.jsonl');
+}
+
 /**
- * Find the most-recently-modified .jsonl session file for a cwd's project dir.
- * @returns {Promise<{file:string, mtimeMs:number, size:number}|null>}
+ * Is this a real claude SESSION transcript (not a subagent sidechain log)?
+ * Main sessions are `<sessionId>.jsonl`; subagent runs write `agent-*.jsonl`
+ * into the same project dir — those must never bind to a tab.
  */
-async function findActiveSession(cwd, opts = {}) {
+function isSessionFileName(name) {
+  return name.endsWith('.jsonl') && !name.startsWith('agent-');
+}
+
+/**
+ * All claude session transcripts for a cwd's project dir, newest-mtime first.
+ * Skips `agent-*.jsonl` subagent logs. Used by the binder for ownership-aware
+ * selection (so two tabs in one project don't fight over the same file).
+ * @returns {Promise<Array<{file:string, mtimeMs:number, size:number, sessionId:string}>>}
+ */
+async function findActiveSessions(cwd, opts = {}) {
   const projectsDir = opts.projectsDir || DEFAULT_PROJECTS_DIR;
   const dir = path.join(projectsDir, slugForCwd(cwd));
   let entries;
   try {
     entries = await fsp.readdir(dir);
   } catch {
-    return null; // no project dir → tab isn't running claude here
+    return []; // no project dir → tab isn't running claude here
   }
-  let best = null;
+  const out = [];
   for (const name of entries) {
-    if (!name.endsWith('.jsonl')) continue;
+    if (!isSessionFileName(name)) continue;
     const full = path.join(dir, name);
     try {
       const st = await fsp.stat(full);
-      if (!best || st.mtimeMs > best.mtimeMs) {
-        best = { file: full, mtimeMs: st.mtimeMs, size: st.size };
-      }
+      out.push({ file: full, mtimeMs: st.mtimeMs, size: st.size, sessionId: sessionIdForFile(full) });
     } catch {
       /* ignore unreadable */
     }
   }
-  return best;
+  out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return out;
+}
+
+/**
+ * The most-recently-modified claude session transcript for a cwd (newest first,
+ * `agent-*.jsonl` excluded).
+ * @returns {Promise<{file:string, mtimeMs:number, size:number, sessionId:string}|null>}
+ */
+async function findActiveSession(cwd, opts = {}) {
+  const all = await findActiveSessions(cwd, opts);
+  return all.length ? all[0] : null;
 }
 
 function clip(s) {
@@ -202,7 +227,10 @@ function formatTurns(turns) {
 
 module.exports = {
   slugForCwd,
+  sessionIdForFile,
+  isSessionFileName,
   findActiveSession,
+  findActiveSessions,
   readNewTurns,
   formatTurns,
   endsOnAssistant,
