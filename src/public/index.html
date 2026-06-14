@@ -82,6 +82,7 @@
     <link rel="stylesheet" href="components/voice-input.css" media="print" onload="this.media='all'">
     <noscript><link rel="stylesheet" href="components/voice-input.css"></noscript>
     <link rel="stylesheet" href="components/input-overlay.css">
+    <link rel="stylesheet" href="components/sticky-note.css">
     <link rel="stylesheet" href="components/bottom-nav.css">
     <link rel="stylesheet" href="components/extra-keys.css">
     <link rel="stylesheet" href="mobile.css">
@@ -207,6 +208,14 @@
                     </svg>
                     <span class="voice-timer" style="display: none;">0:00</span>
                 </button>
+                <button class="tab-action-btn tab-sticky-note" id="stickyNoteBtn" title="Status note" aria-label="Show status note" aria-pressed="false" aria-controls="stickyNoteCard" style="display: none;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M4 3h11l5 5v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/>
+                        <path d="M15 3v5h5"/>
+                        <path d="M7 13h8M7 16.5h5"/>
+                    </svg>
+                    <span class="sticky-note-badge" hidden></span>
+                </button>
                 <div class="status-indicators" id="statusIndicators" aria-label="Status indicators"></div>
                 <button class="tab-settings" id="settingsBtn" title="Settings" aria-label="Settings">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -226,6 +235,13 @@
             <div class="voice-download-progress"><div class="voice-download-fill" id="voiceDownloadFill"></div></div>
             <span class="voice-download-percent" id="voiceDownloadPercent">0%</span>
             <button class="voice-download-dismiss" id="voiceDownloadDismiss">&times;</button>
+        </div>
+
+        <div class="voice-download-banner" id="stickyNotesDownloadBanner" style="display: none;">
+            <span class="voice-download-icon">&#11015;</span>
+            <span class="voice-download-text">Downloading session-summary model (~800 MB)...</span>
+            <div class="voice-download-progress"><div class="voice-download-fill" id="stickyNotesDownloadFill"></div></div>
+            <span class="voice-download-percent" id="stickyNotesDownloadPercent">0%</span>
         </div>
 
         <div class="mobile-menu" id="mobileMenu">
@@ -469,6 +485,11 @@
                                 <label for="showTokenStats">Token Stats:</label>
                                 <input type="checkbox" id="showTokenStats" checked>
                             </div>
+                            <div class="setting-group">
+                                <label for="enableSessionStickyNotes">Session sticky notes &amp; auto-titles:</label>
+                                <input type="checkbox" id="enableSessionStickyNotes" checked>
+                            </div>
+                            <div class="setting-hint">Summarises each AI tab with a small local model; nothing leaves your machine.</div>
                         </div>
                     </div>
 
@@ -762,6 +783,7 @@
     <!-- marked.min.js and purify.min.js lazy-loaded on first plan viewer open -->
     <script src="plan-detector.js"></script>
     <script src="session-manager.js"></script>
+    <script src="sticky-note-card.js"></script>
     <script src="heartbeat-watchdog.js"></script>
     <script src="splits.js"></script>
     <script src="icons.js"></script>

@@ -23,7 +23,8 @@
     .tab-actions .tab-app-tunnel,
     .tab-actions .tab-vscode-tunnel,
     .tab-actions .tab-attach-image,
-    .tab-actions .tab-voice-input {
+    .tab-actions .tab-voice-input,
+    .tab-actions .tab-sticky-note {
         display: none !important;
     }
 }

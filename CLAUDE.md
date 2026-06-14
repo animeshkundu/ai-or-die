@@ -116,6 +116,10 @@ powershell scripts/validate.ps1
 - **plan-detector.js**: Detects Claude plan mode and provides approval UI
 - **auth.js**: Client-side authentication handling
 - **service-worker.js**: PWA support for offline capabilities
+- **sticky-note-card.js**: Per-tab local-LLM session summary card (see ADR-0022, `docs/specs/sticky-notes.md`)
+
+**Sticky Notes (local-LLM session summaries)**
+- Server: `src/sticky-note-{engine,worker,summarizer,transcript,prompt}.js`, `src/utils/{secret-redact,gguf-model-manager}.js`. A worker-thread `node-llama-cpp` (Liquid LFM2-2.6B) summarises each AI tab's claude JSONL transcript into a per-tab note + auto tab title. Notes are keyed by claude sessionId (durable + resume; per-tab ownership; skips `agent-*.jsonl`). Note inference is expand-gated (runs only while a viewer has the card expanded); the tab title tails claude's own `ai-title` with no model. ON by default; `--no-sticky-notes` disables. Degrades to `unavailable` if the model/binding is missing. See ADR-0022, ADR-0023 (model bake-off), ADR-0024 (binding/resume), ADR-0025 (expand-gating) and `docs/specs/sticky-notes.md`.
 
 ### WebSocket Protocol
 

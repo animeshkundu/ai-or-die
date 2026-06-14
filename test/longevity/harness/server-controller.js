@@ -60,6 +60,14 @@ async function startServer(options = {}) {
       port,
       noAuth: true,
       dev: false,
+      // The soak measures CORE-SERVER longevity (fd / memory / event-loop), not
+      // the local-model subsystem. Eager startup model load (sherpa STT +
+      // node-llama-cpp Gemma) adds a fixed ~11 fds + ~2 GB RSS on boot that the
+      // leak gates flag as growth (fd_count step, RSS over the warn threshold),
+      // and on a fresh CI runner it also downloads ~1.5 GB. Disable both by
+      // default; a model-specific workload can re-enable them via serverOpts.
+      stt: false,
+      stickyNotes: false,
       sessionStoreOptions: { storageDir: resolvedStorage },
       ...serverOpts,
     });

@@ -12,6 +12,7 @@ try {
   open = openModule.default || openModule;
 } catch { open = null; }
 const { ClaudeCodeWebServer } = require('../src/server');
+const { isBun } = require('../src/utils/runtime');
 
 const program = new Command();
 
@@ -35,10 +36,14 @@ program
   .option('--terminal-alias <name>', 'display alias for Terminal (default: env TERMINAL_ALIAS or "Terminal")')
   .option('--tunnel', 'enable dev tunnel (requires devtunnel CLI installed)')
   .option('--tunnel-allow-anonymous', 'allow anonymous access to dev tunnel')
-  .option('--stt', 'enable local speech-to-text (downloads ~670MB Parakeet V3 model on first use)')
+  .option('--no-stt', 'disable local speech-to-text (on by default; downloads ~670MB Parakeet V3 model on first use)')
   .option('--stt-endpoint <url>', 'use external STT endpoint (OpenAI-compatible)')
   .option('--stt-model-dir <path>', 'custom directory for STT model files')
-  .option('--stt-threads <number>', 'CPU threads for STT inference (default: auto, max 4)');
+  .option('--stt-threads <number>', 'CPU threads for STT inference (default: auto, max 4)')
+  .option('--no-sticky-notes', 'disable per-tab AI session summaries + auto tab titles (on by default)')
+  .option('--sticky-notes-model-dir <path>', 'custom directory for the sticky-note model file')
+  .option('--sticky-notes-model <url>', 'override the sticky-note model GGUF download URL')
+  .option('--sticky-notes-threads <number>', 'CPU threads for sticky-note inference (default: auto, max 4)');
 
 // Auto-open is OFF by default and opt-in via --open. Legacy callers may still pass
 // --no-open (the old opt-out flag); filter it out so it parses harmlessly as a no-op.
@@ -62,6 +67,22 @@ async function main() {
     if (isNaN(port) || port < 1 || port > 65535) {
       console.error('Error: Port must be a number between 1 and 65535');
       process.exit(1);
+    }
+
+    // Bun: limited support. The app continues to run, but two native
+    // incompatibilities apply (both externally confirmed, neither fixable here):
+    //   • node-llama-cpp's N-API addon crashes Bun (NAPI FATAL ERROR, exit 133),
+    //     so the sticky-note model is force-disabled (server + engine self-gate).
+    //   • node-pty cannot read the PTY master under Bun (oven-sh/bun#25822) — the
+    //     terminal may "start" but never show a prompt (it hangs).
+    // STT still works under Bun. For a guaranteed-working terminal, use Node.js.
+    if (isBun()) {
+      const bunVer = (process.versions && process.versions.bun) || 'unknown';
+      console.log(`\n\x1b[33m⚠  Running under Bun ${bunVer} — limited support. Continuing with sticky-notes disabled.\x1b[0m`);
+      console.log('   • Sticky-note summaries are disabled under Bun (node-llama-cpp crashes Bun’s N-API).');
+      console.log('   • Heads-up: terminal output can hang under Bun (node-pty/#25822).');
+      console.log('     If the prompt never appears, run with Node.js instead:');
+      console.log(`       \x1b[1mnode ${path.relative(process.cwd(), __filename) || 'bin/ai-or-die.js'} ${process.argv.slice(2).join(' ')}\x1b[0m\n`);
     }
 
     // Handle authentication logic
@@ -93,10 +114,15 @@ async function main() {
       geminiAlias: options.geminiAlias || process.env.GEMINI_ALIAS || 'Gemini',
       terminalAlias: options.terminalAlias || process.env.TERMINAL_ALIAS || 'Terminal',
       folderMode: true, // Always use folder mode
-      stt: options.stt || !!process.env.STT_ENABLED,
+      stt: options.stt !== false && process.env.STT_DISABLED !== '1',
       sttEndpoint: options.sttEndpoint || process.env.STT_ENDPOINT,
       sttModelDir: options.sttModelDir || process.env.AI_OR_DIE_MODELS_DIR,
       sttThreads: options.sttThreads || process.env.STT_THREADS,
+      // Per-tab AI session summaries (on by default; --no-sticky-notes disables).
+      stickyNotes: options.stickyNotes !== false && process.env.STICKY_NOTES_DISABLED !== '1',
+      stickyNotesModelDir: options.stickyNotesModelDir || process.env.STICKY_NOTES_MODEL_DIR,
+      stickyNotesModel: options.stickyNotesModel || process.env.STICKY_NOTES_MODEL,
+      stickyNotesThreads: options.stickyNotesThreads || process.env.STICKY_NOTES_THREADS,
     };
 
     console.log('Starting ai-or-die...');

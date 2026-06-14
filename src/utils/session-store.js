@@ -5,6 +5,34 @@ const CircularBuffer = require('./circular-buffer');
 
 const MAX_BUFFER_BYTES_PER_SESSION = 512 * 1024; // 512KB per-session byte cap
 
+/**
+ * Migrate a persisted sticky note to the v2 shape:
+ *   { title, goal, done[], remaining[], updates:[{text,at}], rev, ... }
+ * Legacy notes used { progress[], waitingOn[] } and had no updates log.
+ * @param {object|null} note
+ * @returns {object|null}
+ */
+function migrateStickyNote(note) {
+    if (!note || typeof note !== 'object') return note || null;
+    // Already v2 (has any of the new fields) — pass through, ensuring updates[].
+    if ('updates' in note || 'done' in note || 'remaining' in note) {
+        if (!Array.isArray(note.updates)) note.updates = [];
+        return note;
+    }
+    // Legacy { title, goal, progress[], waitingOn[] } → v2.
+    return {
+        title: note.title || '',
+        goal: note.goal || '',
+        done: Array.isArray(note.progress) ? note.progress : [],
+        remaining: Array.isArray(note.waitingOn) ? note.waitingOn : [],
+        updates: [],
+        rev: note.rev || 0,
+        updatedAt: note.updatedAt || null,
+        status: note.status || 'idle',
+        error: note.error || null,
+    };
+}
+
 class SessionStore {
     constructor(options) {
         options = options || {};
@@ -195,7 +223,18 @@ class SessionStore {
                     totalCost: 0,
                     models: {}
                 },
-                tempImages: Array.isArray(session.tempImages) ? session.tempImages : []
+                tempImages: Array.isArray(session.tempImages) ? session.tempImages : [],
+                // Sticky-note (local-LLM summary) state. Persist the generated
+                // content + the resolved enable preference + manual-rename flag;
+                // never persist the runtime summariser/terminal state.
+                stickyNote: session.stickyNote || null,
+                // The claude sessionId (JSONL basename) this note belongs to, so
+                // the durable per-claude-session note store can be rebuilt after a
+                // restart and resume when that session reopens.
+                stickyClaudeSessionId: session.stickyClaudeSessionId || null,
+                autoTitle: session.autoTitle || null,
+                nameIsUserSet: session.nameIsUserSet || false,
+                stickyNotesEnabled: session.stickyNotesEnabled !== false
             }));
 
             const data = {
@@ -345,6 +384,7 @@ class SessionStore {
                 // Restore session with default values for runtime properties
                 sessions.set(session.id, {
                     ...session,
+                    stickyNote: migrateStickyNote(session.stickyNote),
                     created: session.created ? new Date(session.created) : new Date(),
                     lastActivity: session.lastActivity ? new Date(session.lastActivity) : new Date(),
                     active: false,
@@ -404,3 +444,4 @@ class SessionStore {
 }
 
 module.exports = SessionStore;
+module.exports.migrateStickyNote = migrateStickyNote;
