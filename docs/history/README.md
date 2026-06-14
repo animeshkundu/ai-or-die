@@ -24,3 +24,4 @@ Cortex is a universal AI coding terminal providing browser-based access to multi
 - Dynamic UI card generation from server-reported tool availability
 - Token-based auth enabled by default (auto-generated on startup)
 - Express + WebSocket on a single port (default 7777)
+- Per-tab local-LLM session summaries ("sticky notes") + auto tab titles via a bundled `node-llama-cpp` worker. See [ADR-0022](../adrs/0022-local-llm-sticky-notes.md) and [sticky-notes build notes](sticky-notes-2026.md).

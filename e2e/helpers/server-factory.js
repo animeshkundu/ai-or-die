@@ -25,6 +25,14 @@ async function createServer(opts) {
     port: 0,
     sessionStoreOptions: { storageDir: tempDir },
   };
+  // Disable the sticky-note model DOWNLOAD by default for test servers — no
+  // createServer-based spec exercises the real sticky LFM2-2.6B (~1.56GB); pulling
+  // it per browser job spent minutes and pushed the slow Windows e2e jobs over the
+  // 12-min timeout. STT stays opt-out only (voice specs rely on the mic UI; they
+  // mock STT inference). The visual spec passes stt:false to avoid its download
+  // banner; opt sticky back in with createServer({ stickyNotes: true }).
+  if (opts.stt === false) constructorOpts.stt = false;
+  if (opts.stickyNotes !== true) constructorOpts.stickyNotes = false;
   if (opts.auth) {
     constructorOpts.auth = opts.auth;
     constructorOpts.noAuth = false;

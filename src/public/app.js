@@ -220,6 +220,21 @@ class ClaudeCodeWebInterface {
         this.sessionTabManager = new SessionTabManager(this);
         await this.sessionTabManager.init();
 
+        // Per-tab sticky-note card (local-LLM session summary overlay).
+        this.stickyNotesEnabled = this.loadSettings().enableSessionStickyNotes !== false;
+        // The toolbar toggle only appears once the server reports the engine is
+        // 'ready' (model loaded) — not merely when the setting is on. Keeps the
+        // control out of the UI when the feature can't run (no model, Bun, CI).
+        this._stickyNotesAvailable = false;
+        try {
+            if (typeof StickyNoteCard !== 'undefined') {
+                this._stickyNoteCard = new StickyNoteCard(this);
+                this._setupStickyNoteToggle();
+            }
+        } catch (e) {
+            console.warn('[sticky-notes] card init failed:', e && e.message);
+        }
+
         // Listen for service worker notification clicks (Windows Notification Center)
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.addEventListener('message', (event) => {
@@ -1272,6 +1287,64 @@ class ClaudeCodeWebInterface {
         });
     }
 
+    /** Wire the toolbar sticky-note toggle button to the card. */
+    _setupStickyNoteToggle() {
+        const btn = document.getElementById('stickyNoteBtn');
+        if (!btn || !this._stickyNoteCard) return;
+        btn.addEventListener('click', () => {
+            if (this._stickyNoteCard) this._stickyNoteCard.toggleCollapse();
+        });
+        // The card reports state changes (collapsed/hasNote/summarizing) so the
+        // button can show aria-pressed + a status dot for the ACTIVE tab.
+        this._stickyNoteCard.onStateChange = (s) => this._updateStickyNoteBtn(s);
+        // Hidden until the feature is both enabled AND ready (see _refreshStickyNoteBtnVisibility).
+        this._refreshStickyNoteBtnVisibility();
+        // Keyboard: Ctrl/Cmd+Shift+N toggles the status note.
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
+                const b = document.getElementById('stickyNoteBtn');
+                if (b && b.style.display !== 'none') {
+                    e.preventDefault();
+                    b.click();
+                }
+            }
+        });
+        this._updateStickyNoteBtn({ collapsed: this._stickyNoteCard.isCollapsed(), hasNote: false, summarizing: false });
+    }
+
+    /** Show the toolbar toggle only when the feature is enabled AND ready. */
+    _refreshStickyNoteBtnVisibility() {
+        const btn = document.getElementById('stickyNoteBtn');
+        if (!btn) return;
+        const show = this.stickyNotesEnabled !== false && this._stickyNotesAvailable === true;
+        btn.style.display = show ? '' : 'none';
+    }
+
+    /** Tell the server this browser has (or no longer has) a tab's card expanded. */
+    _reportStickyActive(sessionId, active) {
+        if (!sessionId) return;
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.send({ type: 'set_sticky_active', sessionId, active: !!active });
+        }
+    }
+
+    /** Reflect the active tab's note state on the toolbar button (dot + aria). */
+    _updateStickyNoteBtn(state) {
+        const btn = document.getElementById('stickyNoteBtn');
+        if (!btn) return;
+        const s = state || {};
+        btn.setAttribute('aria-pressed', String(!s.collapsed));
+        btn.classList.toggle('summarizing', !!s.summarizing);
+        const badge = btn.querySelector('.sticky-note-badge');
+        if (badge) badge.hidden = !(s.hasNote || s.summarizing);
+        let label = 'Show status note';
+        if (!s.collapsed) label = 'Hide status note';
+        else if (s.summarizing) label = 'Status note: summarizing…';
+        else if (s.hasNote) label = 'Show status note (has updates)';
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
+    }
+
     setupVoiceInput() {
         const voiceCfg = this.voiceInputConfig;
         if (!voiceCfg) return;
@@ -1288,18 +1361,25 @@ class ClaudeCodeWebInterface {
             return;
         }
 
-        // Determine mode: prefer local if ready, fall back to cloud
+        // The mic is local-first and the model is pulled on startup. Create the
+        // controller whenever a backend is possible (local enabled/ready, or
+        // cloud) — even while the local model is still downloading — so a later
+        // "ready" status has a controller to enable. _applyVoiceAvailability()
+        // then enables the button only once the model is ready (disabled, with a
+        // "downloading" hint, while it pulls).
         const localReady = voiceCfg.localStatus === 'ready';
+        const localEnabled = !!voiceCfg.localEnabled;
         const cloudAvailable = typeof window !== 'undefined' &&
             !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 
-        if (!localReady && !cloudAvailable) {
-            // Neither backend available — keep button hidden
+        if (!localReady && !localEnabled && !cloudAvailable) {
+            // No backend possible — keep button hidden
             return;
         }
 
-        this.voiceMode = localReady ? 'local' : 'cloud';
-        btn.style.display = '';
+        // Initial mode: local whenever local is the intended backend; cloud only
+        // when local isn't available at all.
+        this.voiceMode = (localReady || localEnabled) ? 'local' : 'cloud';
 
         const self = this;
         const timerEl = btn.querySelector('.voice-timer');
@@ -1449,6 +1529,64 @@ class ClaudeCodeWebInterface {
                 }
             });
         }
+
+        // Reflect current readiness now (and on every voice_status update):
+        // enabled when the local model is ready (or cloud fallback), disabled
+        // while the model is still downloading/loading.
+        this._applyVoiceAvailability();
+    }
+
+    /**
+     * Show/enable/disable the mic button based on the current STT backend status.
+     * Local-first: the button is ENABLED only when the local model is `ready`
+     * (local mode), DISABLED with a "downloading" hint while the model is being
+     * pulled (localEnabled but not ready), and falls back to cloud mode only when
+     * local STT is not the intended backend at all. Hidden when no backend exists.
+     * Idempotent — safe to call on setup and on each voice_status message.
+     */
+    _applyVoiceAvailability() {
+        var btn = document.getElementById('voiceInputBtn');
+        if (!btn) return;
+
+        var cfg = this.voiceInputConfig || {};
+        var methodEl = typeof document !== 'undefined' && document.getElementById('voiceMethod');
+        var VH = (typeof window !== 'undefined' && window.VoiceHandler) || null;
+        if (!VH || typeof VH.computeMicButtonState !== 'function') {
+            // Fail closed: without the decision helper we can't know readiness, so
+            // never leave the mic enabled. Hide it (the voice feature can't work
+            // without VoiceHandler anyway).
+            btn.style.display = 'none';
+            btn.disabled = true;
+            return;
+        }
+
+        var state = VH.computeMicButtonState({
+            secureContext: !(typeof window !== 'undefined' && !window.isSecureContext),
+            localStatus: cfg.localStatus,
+            localEnabled: !!cfg.localEnabled,
+            cloudAvailable: typeof window !== 'undefined' &&
+                !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+            voiceMethod: (methodEl && methodEl.value) || 'auto',
+        });
+
+        if (!state.visible) {
+            btn.style.display = 'none';
+            return;
+        }
+        btn.style.display = '';
+        btn.disabled = !state.enabled;
+        if (state.enabled) {
+            btn.removeAttribute('aria-disabled');
+        } else {
+            btn.setAttribute('aria-disabled', 'true');
+        }
+        btn.title = state.title;
+        if (state.mode && this.voiceMode !== state.mode) {
+            this.voiceMode = state.mode;
+            if (this.voiceController && typeof this.voiceController.setMode === 'function') {
+                this.voiceController.setMode(state.mode);
+            }
+        }
     }
 
     _showMemoryWarning(message) {
@@ -1579,13 +1717,12 @@ class ClaudeCodeWebInterface {
 
                 if (banner) {
                     if (percent >= 100) {
+                        // Download finished — hide the banner. The model may still
+                        // be loading; the mic is enabled (and switched to local
+                        // mode) only when a `voice_status: ready` arrives, handled
+                        // centrally by _applyVoiceAvailability().
                         banner.classList.remove('visible');
                         banner.style.display = 'none';
-                        // Switch to local mode now that model is ready
-                        if (this.voiceController) {
-                            this.voiceMode = 'local';
-                            this.voiceController.setMode('local');
-                        }
                     } else {
                         banner.style.display = '';
                         banner.classList.add('visible');
@@ -1596,34 +1733,27 @@ class ClaudeCodeWebInterface {
                 break;
             }
             case 'voice_status': {
-                // Update voice input config status and show/hide mic button
+                // Update cached voice config from the message, then re-evaluate the
+                // mic button (enabled only once the local model is `ready`).
                 if (message.voiceInput) {
                     this.voiceInputConfig = message.voiceInput;
+                } else if (message.status) {
+                    this.voiceInputConfig = Object.assign({}, this.voiceInputConfig, { localStatus: message.status });
                 }
-                // On insecure context, keep button disabled regardless of backend status
-                if (typeof window !== 'undefined' && !window.isSecureContext) {
-                    if (btn) {
-                        btn.style.display = '';
-                        btn.disabled = true;
-                        btn.title = 'Microphone unavailable \u2014 this page must be served over HTTPS';
+                // Surface a model init/download failure (e.g. load failed after the
+                // download reached 100%) — otherwise the user only sees a disabled
+                // tooltip. Also clear any stuck download banner.
+                if (message.error) {
+                    var failBanner = document.getElementById('voiceDownloadBanner');
+                    if (failBanner) {
+                        failBanner.classList.remove('visible');
+                        failBanner.style.display = 'none';
                     }
-                    break;
-                }
-                var localReady = this.voiceInputConfig && this.voiceInputConfig.localStatus === 'ready';
-                var cloudAvailable = typeof window !== 'undefined' &&
-                    !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-                if (btn) {
-                    if (localReady || cloudAvailable) {
-                        btn.style.display = '';
-                        // Update mode if local just became ready
-                        if (localReady && this.voiceMode !== 'local' && this.voiceController) {
-                            this.voiceMode = 'local';
-                            this.voiceController.setMode('local');
-                        }
-                    } else {
-                        btn.style.display = 'none';
+                    if (window.feedback && typeof window.feedback.error === 'function') {
+                        window.feedback.error('Voice model failed: ' + message.error);
                     }
                 }
+                this._applyVoiceAvailability();
                 break;
             }
         }
@@ -1853,6 +1983,18 @@ class ClaudeCodeWebInterface {
                     
                     // Load available sessions
                     this.loadSessions();
+
+                    // Ask for the current sticky-note engine status so the toolbar
+                    // toggle can appear if the model is already ready (broadcasts
+                    // only fire on init; a reload/late-join needs to request it).
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.send({ type: 'sticky_notes_status' });
+                    }
+                    // Re-assert the card's expanded/active state — the server drops
+                    // a socket's "expanded viewer" leases on disconnect.
+                    if (this._stickyNoteCard && typeof this._stickyNoteCard.reportActiveState === 'function') {
+                        this._stickyNoteCard.reportActiveState();
+                    }
                     
                     // Only show start prompt if sessionTabManager is initialized and has no sessions
                     // During early init(), sessionTabManager is null — let init() handle the overlay
@@ -2032,6 +2174,41 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    _handleStickyNoteUpdate(message) {
+        if (!message || !message.sessionId) return;
+        const sm = this.sessionTabManager;
+        if (sm && sm.activeSessions.has(message.sessionId)) {
+            const s = sm.activeSessions.get(message.sessionId);
+            // Drop stale / out-of-order updates by monotonic rev.
+            const incomingRev = (message.stickyNote && message.stickyNote.rev) || 0;
+            const currentRev = (s.stickyNote && s.stickyNote.rev) || 0;
+            if (s.stickyNote && incomingRev <= currentRev) return;
+            s.stickyNote = message.stickyNote || null;
+            // Auto tab title — only when the user hasn't manually renamed the tab.
+            if (message.autoTitle && !s.nameIsUserSet && typeof sm.applyAutoTitle === 'function') {
+                sm.applyAutoTitle(message.sessionId, message.autoTitle);
+            }
+        }
+        if (this._stickyNoteCard && message.sessionId === this.currentClaudeSessionId) {
+            this._stickyNoteCard.render(message.stickyNote || null);
+        }
+    }
+
+    // Apply the sticky-notes on/off preference: tell the server (authoritative)
+    // for the current session and reflect it in the card.
+    _applyStickyNotesSetting(enabled) {
+        this.stickyNotesEnabled = enabled;
+        if (this.currentClaudeSessionId) {
+            this.send({ type: 'set_sticky_notes', sessionId: this.currentClaudeSessionId, enabled });
+        }
+        if (this._stickyNoteCard) {
+            if (!enabled) this._stickyNoteCard.hide();
+            else this._stickyNoteCard.notifyActiveSessionChanged(this.currentClaudeSessionId);
+        }
+        const sbtn = document.getElementById('stickyNoteBtn');
+        if (sbtn) this._refreshStickyNoteBtnVisibility();
+    }
+
     // Flush accumulated input buffer to server as a single batched message
     _flushInput() {
         this._inputFlushScheduled = false;
@@ -2174,6 +2351,13 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
                 this.updateWorkingDir(message.workingDir);
+                // Learn the sticky-note engine status on join so the toolbar
+                // toggle reliably shows once the model is ready (robust against a
+                // missed broadcast / reconnect / stale cache).
+                if (typeof message.stickyNotesStatus === 'string') {
+                    this._stickyNotesAvailable = message.stickyNotesStatus === 'ready';
+                    this._refreshStickyNoteBtnVisibility();
+                }
                 // Cache the per-session workingDir SYNCHRONOUSLY — see the
                 // matching comment in session_created above. Page-reload-
                 // then-immediately-click is the canonical race we close
@@ -2191,6 +2375,29 @@ class ClaudeCodeWebInterface {
                 if (this._fileBrowserPanel &&
                     typeof this._fileBrowserPanel.notifyActiveSessionChanged === 'function') {
                     this._fileBrowserPanel.notifyActiveSessionChanged(message.sessionId);
+                }
+
+                // Hydrate the sticky-note card for the (re)joined session and tell
+                // the server this client's enable preference (server-authoritative).
+                if (this.sessionTabManager && this.sessionTabManager.activeSessions.has(message.sessionId)) {
+                    const sdata = this.sessionTabManager.activeSessions.get(message.sessionId);
+                    if (Object.prototype.hasOwnProperty.call(message, 'stickyNote')) {
+                        sdata.stickyNote = message.stickyNote || null;
+                    }
+                    if (message.autoTitle && !sdata.nameIsUserSet &&
+                        typeof this.sessionTabManager.applyAutoTitle === 'function') {
+                        this.sessionTabManager.applyAutoTitle(message.sessionId, message.autoTitle);
+                    }
+                }
+                // Tell the server only if THIS client wants the session OFF.
+                // Never push an "enable" on join — that would let a default-on
+                // browser re-enable a session another browser deliberately
+                // disabled (server state is authoritative + persisted).
+                if (this.stickyNotesEnabled === false) {
+                    this.send({ type: 'set_sticky_notes', sessionId: message.sessionId, enabled: false });
+                }
+                if (this._stickyNoteCard) {
+                    this._stickyNoteCard.notifyActiveSessionChanged(message.sessionId);
                 }
                 
                 // Update tab status
@@ -2411,6 +2618,41 @@ class ClaudeCodeWebInterface {
             case 'pong':
                 if (this._heartbeat) this._heartbeat.onPong();
                 break;
+
+            case 'sticky_note_update':
+                this._handleStickyNoteUpdate(message);
+                break;
+
+            case 'sticky_notes_model_progress': {
+                const banner = document.getElementById('stickyNotesDownloadBanner');
+                const fill = document.getElementById('stickyNotesDownloadFill');
+                const pct = document.getElementById('stickyNotesDownloadPercent');
+                const percent = message.percent || 0;
+                if (banner) {
+                    if (percent >= 100) {
+                        banner.classList.remove('visible');
+                        banner.style.display = 'none';
+                    } else {
+                        banner.style.display = '';
+                        banner.classList.add('visible');
+                    }
+                }
+                if (fill) fill.style.width = Math.min(percent, 100) + '%';
+                if (pct) pct.textContent = Math.round(percent) + '%';
+                break;
+            }
+
+            case 'sticky_notes_status': {
+                const banner = document.getElementById('stickyNotesDownloadBanner');
+                if (banner && message.status !== 'downloading') {
+                    banner.classList.remove('visible');
+                    banner.style.display = 'none';
+                }
+                // The toolbar toggle appears only once the engine is ready.
+                this._stickyNotesAvailable = message.status === 'ready';
+                this._refreshStickyNoteBtnVisibility();
+                break;
+            }
 
             case 'cwd_changed': {
                 // OSC 7 in-band CWD update from a Terminal-bridge session
@@ -3681,6 +3923,9 @@ class ClaudeCodeWebInterface {
         const notifDesktop = document.getElementById('notifDesktop');
         if (notifDesktop) notifDesktop.checked = settings.notifDesktop ?? true;
 
+        const enableSessionStickyNotes = document.getElementById('enableSessionStickyNotes');
+        if (enableSessionStickyNotes) enableSessionStickyNotes.checked = settings.enableSessionStickyNotes ?? true;
+
         // Update install section
         this._updateInstallSection();
     }
@@ -3985,7 +4230,8 @@ class ClaudeCodeWebInterface {
             micSounds: true,
             notifSound: true,
             notifVolume: 30,
-            notifDesktop: true
+            notifDesktop: true,
+            enableSessionStickyNotes: true
         };
     }
 
@@ -4026,12 +4272,14 @@ class ClaudeCodeWebInterface {
             micSounds: document.getElementById('micSounds')?.checked ?? true,
             notifSound: document.getElementById('notifSound')?.checked ?? true,
             notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
-            notifDesktop: document.getElementById('notifDesktop')?.checked ?? true
+            notifDesktop: document.getElementById('notifDesktop')?.checked ?? true,
+            enableSessionStickyNotes: document.getElementById('enableSessionStickyNotes')?.checked ?? true
         };
 
         try {
             localStorage.setItem('cc-web-settings', JSON.stringify(settings));
             this.applySettings(settings);
+            this._applyStickyNotesSetting(settings.enableSessionStickyNotes !== false);
 
             // Flash save button green briefly
             const saveBtn = document.getElementById('saveSettingsBtn');
@@ -4085,19 +4333,9 @@ class ClaudeCodeWebInterface {
             if (settings.voiceRecordingMode) {
                 this.voiceController._forcedMode = settings.voiceRecordingMode;
             }
-            // Apply voice method preference
-            if (settings.voiceMethod && settings.voiceMethod !== 'auto') {
-                const localReady = this.voiceInputConfig && this.voiceInputConfig.localStatus === 'ready';
-                const cloudAvailable = typeof window !== 'undefined' &&
-                    !!(window.SpeechRecognition || window.webkitSpeechRecognition);
-                if (settings.voiceMethod === 'local' && localReady) {
-                    this.voiceMode = 'local';
-                    this.voiceController.setMode('local');
-                } else if (settings.voiceMethod === 'cloud' && cloudAvailable) {
-                    this.voiceMode = 'cloud';
-                    this.voiceController.setMode('cloud');
-                }
-            }
+            // Re-evaluate the mic backend/button: _applyVoiceAvailability honors
+            // the saved voiceMethod (auto/local/cloud) and current readiness.
+            this._applyVoiceAvailability();
         }
 
         this.syncTerminalTheme();

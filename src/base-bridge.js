@@ -8,6 +8,22 @@ const os = require('os');
 const PTY_WRITE_CHUNK_SIZE = 4096;
 /** Inter-chunk delay in ms — allows ConPTY buffer to drain */
 const PTY_WRITE_CHUNK_DELAY_MS = 10;
+/**
+ * Grace window (ms) during which a read EAGAIN with no life-sign yet is treated
+ * as a benign transient startup blip and swallowed. After this, a *sustained*
+ * EAGAIN flood with no output is treated as a real failure and surfaced (rather
+ * than hanging silently until the 30s spawn watchdog). Node delivers its first
+ * PTY output well within this window; Bun's permanent read EAGAIN does not.
+ */
+const PTY_EAGAIN_GRACE_MS = 3000;
+/**
+ * Minimum number of pre-life-sign EAGAIN errors before a session is treated as a
+ * sustained-failure (the Bun + node-pty read loop fires EAGAIN continuously,
+ * forever). Set well above any plausible Node startup count (node-pty emits
+ * "EAGAIN twice at first"), so a stray late EAGAIN on a slow Node session can
+ * never trip a false teardown — worst case it falls through to the 30s watchdog.
+ */
+const PTY_EAGAIN_FAIL_THRESHOLD = 50;
 
 class BaseBridge {
   constructor(toolName, options = {}) {
@@ -26,6 +42,40 @@ class BaseBridge {
     // Start with default; resolved asynchronously via initCommand()
     this.command = this.defaultCommand;
     this._commandReady = this.initCommand();
+  }
+
+  /**
+   * True when a PTY 'error' is a read EAGAIN ("resource temporarily unavailable").
+   * @param {Error & {code?: string}} error
+   * @returns {boolean}
+   */
+  static isEagainError(error) {
+    return !!(error && (error.code === 'EAGAIN' || (error.message && error.message.includes('EAGAIN'))));
+  }
+
+  /**
+   * Decide whether a PTY 'error' is a benign, swallowable transient read EAGAIN.
+   *
+   * Swallow when the error is EAGAIN AND any of: a life-sign already arrived
+   * (post-startup blip); we are still inside the startup grace window; or the
+   * EAGAIN count has not yet reached the sustained-failure threshold. Only a
+   * *sustained* EAGAIN flood with no life-sign past the grace window (the Bun +
+   * node-pty read failure, oven-sh/bun#25822, where the master never delivers
+   * data) is surfaced — so the session tears down + the client gets feedback
+   * instead of an infinite hang, while a stray late EAGAIN on a slow Node
+   * session is never enough to false-fail it.
+   *
+   * @param {Error & {code?: string}} error
+   * @param {boolean} receivedLifeSign - true once any onData/onExit fired
+   * @param {number} elapsedMs - ms since the PTY was spawned
+   * @param {number} eagainCount - count of EAGAIN errors seen so far (incl. this one)
+   * @returns {boolean} true → swallow (return early); false → handle the error
+   */
+  static shouldSwallowTransientEagain(error, receivedLifeSign, elapsedMs, eagainCount) {
+    if (!BaseBridge.isEagainError(error)) return false;
+    if (receivedLifeSign) return true;
+    if (elapsedMs < PTY_EAGAIN_GRACE_MS) return true;
+    return eagainCount < PTY_EAGAIN_FAIL_THRESHOLD;
   }
 
   /**
@@ -264,9 +314,16 @@ class BaseBridge {
 
       // Spawn watchdog: if no data, exit, or error arrives within 30s, treat as failure
       let receivedLifeSign = false;
+      const ptyStartedAt = Date.now();
+      let eagainCount = 0;
+      // One-shot guard so the watchdog + error paths can each tear the session
+      // down + call onError at most once (a sustained EAGAIN flood fires the
+      // error handler repeatedly).
+      let terminalFailureHandled = false;
       const SPAWN_TIMEOUT_MS = 30000;
       const spawnWatchdog = setTimeout(() => {
-        if (!receivedLifeSign && session.active) {
+        if (!receivedLifeSign && session.active && !terminalFailureHandled) {
+          terminalFailureHandled = true;
           console.error(`${this.toolName} session ${sessionId}: no response within ${SPAWN_TIMEOUT_MS}ms, treating as spawn failure`);
           session.active = false;
           this.sessions.delete(sessionId);
@@ -340,6 +397,26 @@ class BaseBridge {
       this._addPtyDisposable(session, onExitDisposable);
 
       const errorHandler = (error) => {
+        // read EAGAIN ("resource temporarily unavailable") is a known transient
+        // PTY-startup condition under Node — node-pty's own socket 'error'
+        // handler ignores it ("fs.ReadStream gets EAGAIN twice at first") and
+        // keeps the master fd alive. We attach a *second* 'error' listener on the
+        // same socket, so we swallow the same transient blips: any EAGAIN after a
+        // life-sign (output/exit already arrived), within a short startup grace
+        // window, or below the sustained-failure threshold. That stops a benign
+        // EAGAIN from tearing the session down and surfacing a fatal "Connection
+        // Error" that makes the client retry + double-spawn.
+        //
+        // But a *sustained* EAGAIN flood with no life-sign is NOT transient — it
+        // is the Bun + node-pty read failure (oven-sh/bun#25822), where the PTY
+        // master never delivers data. Swallowing it forever turns a dead session
+        // into a silent hang until the 30s watchdog. Once the grace window passes
+        // AND the EAGAIN count crosses the threshold (with no life-sign), fall
+        // through so the error surfaces (client gets feedback / can reconnect).
+        if (BaseBridge.isEagainError(error)) eagainCount++;
+        if (BaseBridge.shouldSwallowTransientEagain(error, receivedLifeSign, Date.now() - ptyStartedAt, eagainCount)) {
+          return;
+        }
         if (!receivedLifeSign) {
           receivedLifeSign = true;
           clearTimeout(spawnWatchdog);
@@ -349,12 +426,22 @@ class BaseBridge {
         if (error.message && error.message.includes('read EIO')) {
           return;
         }
+        // One-shot: a sustained EAGAIN flood (or the watchdog) must not tear the
+        // session down or call onError more than once.
+        if (terminalFailureHandled) {
+          return;
+        }
+        terminalFailureHandled = true;
         console.error(`${this.toolName} session ${sessionId} error:`, error);
         if (session.killTimeout) {
           clearTimeout(session.killTimeout);
           session.killTimeout = null;
         }
         this._disposePtyDisposables(session, sessionId);
+        // Kill the PTY child so a failed session (e.g. a Bun EAGAIN flood, where
+        // the shell is alive but unreadable) doesn't leak as a zombie process /
+        // FD — mirrors the spawn-watchdog teardown. Harmless if already dead.
+        try { ptyProcess.kill(); } catch (e) { /* ignore — may already be dead */ }
         if (this.sessions.has(sessionId)) {
           session.active = false;
           this.sessions.delete(sessionId);

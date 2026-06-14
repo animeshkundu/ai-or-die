@@ -27,7 +27,9 @@ test.describe('Visual regression', () => {
   let server, port, url;
 
   test.beforeAll(async () => {
-    const result = await createServer();
+    // Disable STT + sticky-note local models so their one-time download progress
+    // banners never bleed into the pixel-comparison screenshots.
+    const result = await createServer({ stt: false, stickyNotes: false });
     server = result.server;
     port = result.port;
     url = result.url;

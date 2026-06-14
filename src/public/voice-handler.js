@@ -32,6 +32,68 @@ function isSecureContext() {
   if (typeof window === 'undefined') return false;
   return !!window.isSecureContext;
 }
+
+// ---------------------------------------------------------------------------
+// Mic button availability (pure decision — no DOM)
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide how the mic button should present, given the STT backend status.
+ * Local-first: enabled only when the local model is `ready`; DISABLED with a
+ * status hint while the model is being pulled (localEnabled but not ready);
+ * cloud is used only when local STT is not the configured backend (or the user
+ * explicitly forced cloud). The feature is "disabled unless ready".
+ *
+ * @param {object} opts
+ * @param {boolean} [opts.secureContext=true] - false → mic APIs unavailable
+ * @param {string}  [opts.localStatus] - 'ready'|'downloading'|'loading'|'unavailable'|...
+ * @param {boolean} [opts.localEnabled] - server is pulling/serving a local model
+ * @param {boolean} [opts.cloudAvailable] - browser SpeechRecognition exists
+ * @param {string}  [opts.voiceMethod='auto'] - user override: 'auto'|'local'|'cloud'
+ * @returns {{visible:boolean, enabled:boolean, mode:('local'|'cloud'|null), title:string}}
+ */
+function computeMicButtonState(opts) {
+  opts = opts || {};
+  var secureContext = opts.secureContext !== false; // default true
+  var localStatus = opts.localStatus;
+  var localEnabled = !!opts.localEnabled;
+  var cloudAvailable = !!opts.cloudAvailable;
+  var voiceMethod = opts.voiceMethod || 'auto';
+  var READY_TITLE = 'Voice Input (Ctrl+Shift+M)';
+
+  if (!secureContext) {
+    return { visible: true, enabled: false, mode: null, title: 'Microphone unavailable — this page must be served over HTTPS' };
+  }
+
+  // Explicit cloud preference wins whenever the browser speech API exists.
+  if (voiceMethod === 'cloud' && cloudAvailable) {
+    return { visible: true, enabled: true, mode: 'cloud', title: READY_TITLE };
+  }
+
+  // Local-first (auto / explicit local): enabled only when the model is ready.
+  if (localStatus === 'ready') {
+    return { visible: true, enabled: true, mode: 'local', title: READY_TITLE };
+  }
+
+  if (localEnabled) {
+    // Configured local backend, not ready → disabled with a status hint. No
+    // silent cloud fallback — local is the intended backend.
+    var title;
+    if (localStatus === 'downloading') title = 'Voice model downloading… mic enables when ready';
+    else if (localStatus === 'loading') title = 'Voice model loading… mic enables when ready';
+    else title = 'Voice model unavailable — see server logs';
+    return { visible: true, enabled: false, mode: null, title: title };
+  }
+
+  // Local STT is not the configured backend. Fall back to cloud unless the user
+  // explicitly forced local-only.
+  if (cloudAvailable && voiceMethod !== 'local') {
+    return { visible: true, enabled: true, mode: 'cloud', title: READY_TITLE };
+  }
+
+  return { visible: false, enabled: false, mode: null, title: READY_TITLE };
+}
+
 // ---------------------------------------------------------------------------
 // Utility: Float32 → Int16 conversion
 // ---------------------------------------------------------------------------
@@ -869,6 +931,7 @@ var voiceHandlerExports = {
   float32ToInt16: float32ToInt16,
   resample: resample,
   isSecureContext: isSecureContext,
+  computeMicButtonState: computeMicButtonState,
 
   // Recorders
   SpeechRecognitionRecorder: SpeechRecognitionRecorder,

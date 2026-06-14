@@ -23,6 +23,11 @@ const UsageAnalytics = require('./usage-analytics');
 const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
 const SttEngine = require('./stt-engine');
+const StickyNoteEngine = require('./sticky-note-engine');
+const StickyNoteSummarizer = require('./sticky-note-summarizer');
+const StickyNoteJsonl = require('./sticky-note-jsonl');
+const { redactSecrets } = require('./utils/secret-redact');
+const { isBun } = require('./utils/runtime');
 const CircularBuffer = require('./utils/circular-buffer');
 const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
@@ -129,13 +134,83 @@ class ClaudeCodeWebServer {
     });
     this.tunnelManager = null; // Set via setTunnelManager() from CLI entry point
     this.installAdvisor = new InstallAdvisor();
+    // Pure test-runner detection — keeps heavy native/local-model subsystems
+    // (STT, sticky-notes) inert in the suite so it never downloads models or
+    // spawns native workers. Production (npm start / running bin) is unaffected.
+    const underTest =
+      /^test/.test(process.env.npm_lifecycle_event || '') ||
+      typeof global.it === 'function';
     this.sttEngine = new SttEngine({
-      enabled: options.stt || !!options.sttEndpoint,
+      // STT is ON by default (disable with --no-stt / STT_DISABLED=1, handled in
+      // bin); an external endpoint always enables it.
+      enabled: (options.stt !== false && !underTest) || !!options.sttEndpoint,
       sttEndpoint: options.sttEndpoint,
       modelsDir: options.sttModelDir,
       numThreads: options.sttThreads ? parseInt(options.sttThreads, 10) : undefined,
     });
     this._voiceUploadCounts = new Map();
+
+    // Per-tab local-LLM "sticky note" summariser. ON by default for AI-agent
+    // tabs; disable globally with --no-sticky-notes / AIORDIE_DISABLE_STICKY_NOTES=1
+    // (sticky-notes only — does NOT affect STT). The engine lazily downloads its
+    // model + spawns its worker on the FIRST AI session start, and degrades to
+    // "unavailable" if node-llama-cpp / the model is missing.
+    //
+    // Bun: node-llama-cpp's native N-API addon crashes Bun (NAPI FATAL ERROR,
+    // exit 133 — a Bun bug, not ours), which would take down the whole server.
+    // Force the feature off under Bun so its worker never spawns. The engine
+    // also self-gates (see StickyNoteEngine._doInitialize) as defence-in-depth.
+    // STT (sherpa) is unaffected and still runs under Bun.
+    this._stickyNotesEnabledGlobally =
+      options.stickyNotes !== false && !underTest && !isBun() &&
+      process.env.AIORDIE_DISABLE_STICKY_NOTES !== '1';
+    this._foregroundSessionId = null;
+    this._stickyInitStarted = false;
+    this._stickyInitTimer = null;
+    // Per-tab binding to a claude JSONL transcript: aiOrDieSessionId -> { file,
+    // offset, claudeSessionId }. A poll discovers/tails the active session file
+    // (ownership-aware, skipping agent-*.jsonl) and feeds clean turns to the
+    // summariser (JSONL mode). Tabs not running claude keep the scrape fallback.
+    this._stickyJsonl = new Map();
+    this._stickyJsonlPoll = null;
+    // Durable notes keyed by CLAUDE sessionId (the JSONL basename / --resume key),
+    // so a note survives the tab closing and resumes when the same claude session
+    // is reopened (claude --resume, /resume, or a server restart). Rebuilt from
+    // persisted sessions on load; capped to bound growth.
+    this._claudeNotes = new Map();
+    this._claudeNotesCap = 300;
+    // In-memory resume offsets (claudeSessionId -> last consumed byte offset) so a
+    // tab reopening / following a /resume continues from where it left off instead
+    // of re-reading (and re-summarising) the last window. Not persisted; a restart
+    // falls back to the recent-window default.
+    this._claudeOffsets = new Map();
+    // Reference-count of which connected clients have a tab's card EXPANDED
+    // (aiOrDieSessionId -> Set<wsId>). Note summarisation runs only while a
+    // session has ≥1 expanded viewer; tied to connection presence so a dropped
+    // browser can't leak a forever-running inference loop. The cheap ai-title
+    // tail runs regardless, so collapsed tabs still get a fresh title.
+    this._stickyActive = new Map();
+    // A bound tab follows an in-session /resume to a newer session only after its
+    // own transcript has been quiet for this many poll ticks (~2s each), so a
+    // third unrelated session can't steal a tab that is still actively working.
+    this._stickyResumeIdleTicks = 8;
+    // Override the claude projects dir (tests point this at a temp fixture so
+    // they never read the operator's real ~/.claude transcripts). undefined →
+    // StickyNoteJsonl uses its default (~/.claude/projects or the env override).
+    this._stickyProjectsDir = undefined;
+    this.stickyNoteEngine = new StickyNoteEngine({
+      enabled: this._stickyNotesEnabledGlobally,
+      modelsDir: options.stickyNotesModelDir,
+      model: options.stickyNotesModel ? { url: options.stickyNotesModel } : undefined,
+      numThreads: options.stickyNotesThreads ? parseInt(options.stickyNotesThreads, 10) : undefined,
+    });
+    this.stickyNoteSummarizer = new StickyNoteSummarizer({
+      engine: this.stickyNoteEngine,
+      redact: redactSecrets,
+      getForeground: () => this._foregroundSessionId,
+      onResult: (sessionId, payload) => this._onStickyNoteResult(sessionId, payload),
+    });
+
     this.sessionStore = new SessionStore(options.sessionStoreOptions);
     this.usageReader = new UsageReader(this.sessionDurationHours);
     this.usageAnalytics = new UsageAnalytics({
@@ -183,8 +258,14 @@ class ClaudeCodeWebServer {
         if (!this.claudeSessions.has(id)) {
           this.claudeSessions.set(id, session);
           this._pushEvictionEntry(id); // PROC-04
+          // Rebuild the durable per-claude-session note store so a note resumes
+          // after a server restart when the same claude session reopens.
+          if (session.stickyNote && session.stickyClaudeSessionId) {
+            this._claudeNotes.set(session.stickyClaudeSessionId, session.stickyNote);
+          }
         }
       }
+      this._capClaudeNotes();
       if (sessions.size > 0) {
         console.log(`Loaded ${sessions.size} persisted sessions`);
       }
@@ -383,6 +464,13 @@ class ClaudeCodeWebServer {
     forceExitTimer.unref();
 
     console.log(`\nGracefully shutting down (exit code: ${exitCode})...`);
+    // Tear down the local-LLM summariser + worker so the model/worker thread
+    // don't keep the process alive (and don't hold a GGUF file lock on Windows).
+    if (this._stickyInitTimer) { clearTimeout(this._stickyInitTimer); this._stickyInitTimer = null; }
+    if (this._stickyJsonlPoll) { clearInterval(this._stickyJsonlPoll); this._stickyJsonlPoll = null; }
+    this._stickyJsonl.clear();
+    try { this.stickyNoteSummarizer.shutdown(); } catch (_) { /* ignore */ }
+    try { await this.stickyNoteEngine.shutdown(); } catch (_) { /* ignore */ }
     await this.close();
     clearTimeout(forceExitTimer);
     process.exit(exitCode);
@@ -1236,6 +1324,11 @@ class ClaudeCodeWebServer {
       // servers (smaller cousin of the _fsWatchSessions leak).
       this._voiceUploadCounts.delete(sessionId);
 
+      // Stop + tear down the summariser so an in-flight inference is discarded.
+      this.stickyNoteSummarizer.cancel(sessionId);
+      this._stickyJsonl.delete(sessionId);
+      if (this._foregroundSessionId === sessionId) this._foregroundSessionId = null;
+
       this.claudeSessions.delete(sessionId);
       this.activityBroadcastTimestamps.delete(sessionId);
       this.sessionStore.markDirty();
@@ -1298,6 +1391,7 @@ class ClaudeCodeWebServer {
         },
         voiceInput: {
           localStatus: this.sttEngine.getStatus(),
+          localEnabled: !!(this.sttEngine._enabled && !this.sttEngine._sttEndpoint),
           cloudAvailable: true,
         },
         ...(prerequisites ? { prerequisites } : {}),
@@ -3043,12 +3137,18 @@ class ClaudeCodeWebServer {
     // the file-browser feature treats search as load-bearing.
     search.requireBackendAtStartup();
 
-    // Non-blocking STT init — downloads model if needed
-    if (this.sttEngine._enabled || this.sttEngine._sttEndpoint) {
-      this.sttEngine.initialize().catch(err => {
-        if (this.dev) console.error('[STT] Init failed:', err.message);
-      });
-    }
+    // STT model is pulled on startup (in the worker thread, off the event loop —
+    // the earlier "eager load hung the terminal" theory was disproven; the hang
+    // was a Bun/node-pty bug, not STT CPU load). The mic feature stays disabled
+    // on the client until the model is `ready`. Self-gates: a disabled/under-test
+    // engine no-ops without downloading. An external endpoint inits cheaply.
+    this._ensureSttModel();
+
+    // Sticky-note (Gemma) model is also pulled on startup so it is `ready` by the
+    // time an AI tab opens. Self-gates: disabled / under-test / Bun → no-op (the
+    // engine never loads node-llama-cpp under Bun, which would crash it). Loads in
+    // its own worker thread, so the ~806MB pull never blocks the event loop.
+    this._ensureStickyNoteEngine();
 
     let server;
 
@@ -3290,6 +3390,11 @@ class ClaudeCodeWebServer {
             if (prioSession) {
               const wasBg = prioSession.priority === 'background';
               prioSession.priority = entry.priority;
+              if (entry.priority === 'foreground') {
+                this._foregroundSessionId = entry.sessionId;
+                // Background -> foreground: refresh the note so a peek is current.
+                if (wasBg) this.stickyNoteSummarizer.focus(entry.sessionId);
+              }
               // Flush pending output immediately on background → foreground transition
               if (wasBg && entry.priority === 'foreground' &&
                   prioSession._pendingChunks && prioSession._pendingChunks.length > 0) {
@@ -3325,6 +3430,10 @@ class ClaudeCodeWebServer {
           // Verify the session exists and the WebSocket is part of it
           const session = this.claudeSessions.get(wsInfo.claudeSessionId);
           if (session && session.connections.has(wsId)) {
+            // Keep the summariser's headless terminal width in sync.
+            if (this.stickyNoteSummarizer.isEnabled(wsInfo.claudeSessionId)) {
+              this.stickyNoteSummarizer.resize(wsInfo.claudeSessionId, data.cols, data.rows);
+            }
             // Only resize if an agent is actually running
             if (session.active && session.agent) {
               try {
@@ -3391,7 +3500,32 @@ class ClaudeCodeWebServer {
         this.sendToWebSocket(wsInfo.ws, {
           type: 'voice_status',
           status: this.sttEngine.getStatus(),
+          voiceInput: {
+            localStatus: this.sttEngine.getStatus(),
+            localEnabled: !!(this.sttEngine._enabled && !this.sttEngine._sttEndpoint),
+            cloudAvailable: true,
+          },
           progress: this.sttEngine.getDownloadProgress(),
+        });
+        break;
+
+      case 'set_sticky_notes':
+        this._handleSetStickyNotes(wsId, data);
+        break;
+
+      case 'set_sticky_active':
+        this._handleSetStickyActive(wsId, data);
+        break;
+
+      case 'set_tab_name':
+        this._handleSetTabName(wsId, data);
+        break;
+
+      case 'sticky_notes_status':
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'sticky_notes_status',
+          status: this.stickyNoteEngine.getStatus(),
+          progress: this.stickyNoteEngine.getDownloadProgress(),
         });
         break;
 
@@ -3501,7 +3635,14 @@ class ClaudeCodeWebServer {
         totalCost: 0,
         models: {}
       },
-      maxBufferSize: 1000
+      maxBufferSize: 1000,
+      // Sticky-note (local-LLM summary) state. Enabled by default for AI tabs;
+      // a client can opt out via set_sticky_notes. autoTitle/nameIsUserSet drive
+      // auto tab titling without clobbering a manual rename.
+      stickyNote: null,
+      autoTitle: null,
+      nameIsUserSet: false,
+      stickyNotesEnabled: this._stickyNotesEnabledGlobally
     };
     
     this.claudeSessions.set(sessionId, session);
@@ -3560,7 +3701,14 @@ class ClaudeCodeWebServer {
       active: session.active,
       wasActive: session.wasActive || false,
       agent: session.agent || null,
-      outputBuffer: session.outputBuffer.slice(-200) // Send last 200 lines
+      outputBuffer: session.outputBuffer.slice(-200), // Send last 200 lines
+      stickyNote: session.stickyNote || null,
+      autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
+      stickyNotesEnabled: session.stickyNotesEnabled !== false,
+      // Deliver the engine status on every join so the toolbar toggle reliably
+      // appears once the model is ready (the broadcast-on-init can race a late
+      // joiner; this never misses).
+      stickyNotesStatus: this.stickyNoteEngine.getStatus()
     });
 
     if (this.dev) {
@@ -3713,6 +3861,17 @@ class ClaudeCodeWebServer {
           currentSession.outputBuffer.push(data);
           this.sessionStore.markDirty();
           this._throttledOutputBroadcast(sessionId, data);
+          // Tap for the local-LLM summariser (off the hot path: this only
+          // buffers into a headless terminal + arms timers, never inference).
+          // Isolated so a summariser/parser fault can never break the terminal
+          // output pipeline.
+          if (this.stickyNoteSummarizer.isEnabled(sessionId)) {
+            try {
+              this.stickyNoteSummarizer.feed(sessionId, data);
+            } catch (e) {
+              if (this.dev) console.error('[sticky-notes] feed error:', e && e.message);
+            }
+          }
           // Notify non-joined connections about activity (throttled to 1/sec)
           const now = Date.now();
           const lastBroadcast = this.activityBroadcastTimestamps.get(sessionId) || 0;
@@ -3729,6 +3888,8 @@ class ClaudeCodeWebServer {
             currentSession.agent = null;
             this.sessionStore.markDirty();
           }
+          // Final sticky-note flush to capture the "done" state, then stop.
+          this.stickyNoteSummarizer.flushExit(sessionId);
           this.broadcastToSession(sessionId, { type: 'exit', code, signal });
           this.activityBroadcastTimestamps.delete(sessionId);
           this.broadcastSessionActivity(sessionId, 'session_exit', { code, signal });
@@ -3769,6 +3930,12 @@ class ClaudeCodeWebServer {
         workingDir: session.workingDir,
       });
       this.broadcastSessionActivity(sessionId, 'session_started', { agent: toolName });
+
+      // Spin up the per-tab summariser for AI-agent AND terminal sessions
+      // (no-op when the tab is opted out, or when node-llama-cpp is unavailable).
+      session.cols = cols;
+      session.rows = rows;
+      this._maybeStartStickyNotes(sessionId, toolName, cols, rows);
 
     } catch (error) {
       // Roll back the early active flag set before spawn
@@ -3844,6 +4011,461 @@ class ClaudeCodeWebServer {
       if (wsInfo.ws.readyState === WebSocket.OPEN) {
         this.sendToWebSocket(wsInfo.ws, data);
       }
+    }
+  }
+
+  // --- sticky-note (local-LLM session summary) wiring ----------------------
+
+  _isAiAgent(toolName) {
+    return toolName === 'claude' || toolName === 'codex' || toolName === 'copilot' || toolName === 'gemini';
+  }
+
+  // Which session kinds get a sticky note. AI-agent tabs AND plain terminals —
+  // users frequently launch an AI CLI (claude/codex/…) inside a terminal tab, so
+  // the summary is useful there too. Idle terminals never trigger inference (no
+  // output → no flush), and a noisy terminal can be turned off per-tab.
+  _isStickyEligible(toolName) {
+    return this._isAiAgent(toolName) || toolName === 'terminal';
+  }
+
+  // Lazily download the model + spawn the worker on first need (deduped).
+  _ensureStickyNoteEngine() {
+    if (!this.stickyNoteEngine._enabled || this._stickyInitStarted) return;
+    this._stickyInitStarted = true;
+    this.stickyNoteEngine
+      .initialize((progress) => {
+        this.broadcastToAll({
+          type: 'sticky_notes_model_progress',
+          file: progress.file,
+          downloaded: progress.downloaded,
+          total: progress.total,
+          percent: progress.percent,
+        });
+      })
+      .then(() => this._broadcastStickyStatus())
+      .catch((err) => {
+        // Allow a later AI-session start to retry after a transient failure
+        // (download blip). A permanent failure (no binding) just fails fast.
+        this._stickyInitStarted = false;
+        if (this.dev) console.error('[sticky-notes] init failed:', err.message);
+        this._broadcastStickyStatus();
+      });
+  }
+
+  _broadcastStickyStatus() {
+    this.broadcastToAll({
+      type: 'sticky_notes_status',
+      status: this.stickyNoteEngine.getStatus(),
+      progress: this.stickyNoteEngine.getDownloadProgress(),
+    });
+  }
+
+  // Begin summarising a session if the feature is enabled for it (AI-agent tabs
+  // and plain terminals — see _isStickyEligible).
+  _maybeStartStickyNotes(sessionId, toolName, cols, rows) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    if (!this.stickyNoteEngine._enabled) return;
+    if (session.stickyNotesEnabled === false) return;
+    if (!this._isStickyEligible(toolName)) return;
+    // Start buffering output now — this is cheap (a pure-JS headless terminal),
+    // never inference. The engine model is already being pulled at startup; this
+    // ensures it (idempotent) in case startup init failed transiently. The
+    // summariser buffers in the meantime and produces its first note once ready.
+    this.stickyNoteSummarizer.enable(sessionId, {
+      cols: cols || 80,
+      rows: rows || 24,
+      note: session.stickyNote || null,
+      rev: (session.stickyNote && session.stickyNote.rev) || 0,
+    });
+    this._ensureStickyNoteEngine();
+    this._startStickyJsonlPoll();
+  }
+
+  // Poll each summarising tab for a claude JSONL transcript at its cwd; when found,
+  // tail it and feed clean conversation turns to the summariser (JSONL mode). Tabs
+  // without a JSONL (plain shells) keep using the rendered-output scrape fallback.
+  _startStickyJsonlPoll() {
+    if (this._stickyJsonlPoll) return;
+    this._stickyJsonlPoll = setInterval(() => {
+      this._pollStickyJsonl().catch((e) => {
+        if (this.dev) console.error('[sticky-notes] jsonl poll error:', e && e.message);
+      });
+    }, 2000);
+    if (this._stickyJsonlPoll.unref) this._stickyJsonlPoll.unref();
+  }
+
+  async _pollStickyJsonl() {
+    if (!this._stickyNotesEnabledGlobally || !this.stickyNoteEngine._enabled) return;
+    // Lock so a slow sweep (many old session files) can't overlap the next tick
+    // and double-feed the same turns into pendingText.
+    if (this._pollingStickyJsonl) return;
+    this._pollingStickyJsonl = true;
+    try {
+      for (const [sessionId, session] of this.claudeSessions) {
+        if (!session.active || session.stickyNotesEnabled === false) continue;
+        if (!this._isStickyEligible(session.agent)) continue;
+        if (!this.stickyNoteSummarizer.isEnabled(sessionId)) continue;
+        const cwd = session.liveCwd || session.workingDir;
+        if (!cwd) continue;
+        try {
+          await this._pumpStickyJsonl(sessionId, cwd);
+        } catch (e) {
+          if (this.dev) console.error('[sticky-notes] jsonl pump error:', e && e.message);
+        }
+      }
+    } finally {
+      this._pollingStickyJsonl = false;
+    }
+  }
+
+  async _pumpStickyJsonl(sessionId, cwd) {
+    let binding = this._stickyJsonl.get(sessionId);
+    binding && (binding._ticks = (binding._ticks || 0) + 1);
+
+    // Periodically (or while unbound) reconcile the binding. A tab STAYS on its
+    // bound session while that file is alive and not owned by another tab; it
+    // only moves to a newer unowned session once its own has gone quiet (an
+    // in-session /resume) — so a third, unrelated session can't steal an active
+    // tab. agent-*.jsonl is excluded by findActiveSessions.
+    if (!binding || binding._ticks % 5 === 0) {
+      const candidates = await StickyNoteJsonl.findActiveSessions(cwd, { projectsDir: this._stickyProjectsDir });
+      const ownedByOthers = this._ownedClaudeSessions(sessionId);
+      // Only (re)bind to a session being ACTIVELY written (recent mtime). A fresh
+      // tab must NOT adopt a stale pre-existing session in the same project — that
+      // would surface the old session's title/note on a tab that never ran it. An
+      // already-bound session stays bound even when idle (currentValid below).
+      const STICKY_BIND_RECENCY_MS = 60 * 1000;
+      const freshlyActive = (c) => c.mtimeMs >= Date.now() - STICKY_BIND_RECENCY_MS;
+      // The tab's own previously-bound claude session (persisted) is exempt from
+      // the recency gate, so a restart / lost binding can re-resume an idle-but-
+      // live session. A FRESH tab has no own-session, so it still won't adopt a
+      // stale stranger session in the project.
+      const session = this.claudeSessions.get(sessionId);
+      const ownClaudeSession = session && session.stickyClaudeSessionId;
+      const eligible = (c) => !ownedByOthers.has(c.sessionId) && (freshlyActive(c) || c.sessionId === ownClaudeSession);
+      const currentValid =
+        binding &&
+        candidates.some((c) => c.file === binding.file) &&
+        !ownedByOthers.has(binding.claudeSessionId);
+      if (!currentValid) {
+        // Unbound, or the bound file vanished / is a subagent log / is now owned
+        // by another tab → (re)bind to the newest eligible session.
+        const pick = candidates.find(eligible) || null;
+        if (pick) {
+          this._bindStickyJsonl(sessionId, pick);
+          binding = this._stickyJsonl.get(sessionId);
+        } else {
+          if (binding) this._stickyJsonl.delete(sessionId);
+          return; // no actively-written transcript → scrape fallback / nothing to show
+        }
+      } else if ((binding.idleTicks || 0) >= this._stickyResumeIdleTicks) {
+        // Bound file has been quiet — follow an in-session /resume to a newer
+        // actively-written unowned session if one appeared.
+        const newer = candidates.find(
+          (c) =>
+            c.file !== binding.file &&
+            !ownedByOthers.has(c.sessionId) &&
+            freshlyActive(c) &&
+            c.mtimeMs > (binding.boundMtimeMs || 0)
+        );
+        if (newer) {
+          this._bindStickyJsonl(sessionId, newer);
+          binding = this._stickyJsonl.get(sessionId);
+        }
+      }
+    }
+    if (!binding) return;
+
+    const st = await this._statQuiet(binding.file);
+    if (!st) { this._stickyJsonl.delete(sessionId); return; } // file gone → unbind (note kept)
+    // File shrank (truncated / rotated / recreated under the same name) → our
+    // offsets point past the end. Drop the binding so the next poll re-resolves
+    // and re-binds from scratch rather than freezing forever.
+    if (st.size < (binding.offset || 0) || st.size < (binding.titleOffset || 0)) {
+      this._stickyJsonl.delete(sessionId);
+      return;
+    }
+
+    // --- TITLE TAIL — ALWAYS (cheap, no model). Keeps the tab title fresh from
+    // claude's own ai-title even when note summarisation is paused (collapsed).
+    // Also drives idleTicks/boundMtimeMs so the binder tracks file activity
+    // regardless of whether we're summarising. ---
+    if (st.size > (binding.titleOffset || 0)) {
+      const tr = await StickyNoteJsonl.readNewAiTitle(binding.file, binding.titleOffset || 0);
+      if (tr.offset > (binding.titleOffset || 0)) {
+        binding.titleOffset = tr.offset;
+        binding.idleTicks = 0;
+        binding.boundMtimeMs = st.mtimeMs;
+        if (tr.aiTitle && tr.aiTitle !== binding.lastTitle) {
+          binding.lastTitle = tr.aiTitle;
+          this._applyAiTitle(sessionId, tr.aiTitle);
+        }
+      } else {
+        binding.idleTicks = (binding.idleTicks || 0) + 1; // new bytes, no complete line yet
+      }
+    } else {
+      binding.idleTicks = (binding.idleTicks || 0) + 1; // quiet → eligible to follow /resume
+    }
+
+    // --- NOTE INFERENCE — ONLY while a viewer has the card EXPANDED. Collapsed
+    // tabs freeze the note at their horizon (binding.offset); on re-expand the
+    // next poll resumes from there in a single bounded catch-up read. ---
+    if (!this._isStickyExpandedActive(sessionId)) return;
+    if (st.size <= binding.offset) return;
+    const { turns, offset } = await StickyNoteJsonl.readNewTurns(binding.file, binding.offset);
+    if (offset <= binding.offset) return; // no complete new line for the note yet
+    binding.offset = offset;
+    this._claudeOffsets.set(binding.claudeSessionId, offset); // resume continues from here
+    const text = StickyNoteJsonl.formatTurns(turns);
+    if (!text) return;
+    this.stickyNoteSummarizer.feedTurns(sessionId, text, binding.lastTitle);
+  }
+
+  /** True when ≥1 connected client has this tab's card expanded. */
+  _isStickyExpandedActive(sessionId) {
+    const set = this._stickyActive.get(sessionId);
+    return !!(set && set.size > 0);
+  }
+
+  /** Apply claude's ai-title to the tab (no inference) and broadcast it. */
+  _applyAiTitle(sessionId, aiTitle) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session || session.nameIsUserSet) return; // a manual rename pins the name
+    const title = String(aiTitle || '').trim().slice(0, 80);
+    if (!title || title === session.autoTitle) return;
+    session.autoTitle = title;
+    this.sessionStore.markDirty();
+    this.broadcastToSession(sessionId, {
+      type: 'sticky_note_update',
+      sessionId,
+      stickyNote: session.stickyNote || null,
+      autoTitle: title,
+    });
+  }
+
+  /** Claude sessionIds currently bound by OTHER tabs (ownership set). */
+  _ownedClaudeSessions(exceptSessionId) {
+    const owned = new Set();
+    for (const [sid, b] of this._stickyJsonl) {
+      if (sid !== exceptSessionId && b && b.claudeSessionId) owned.add(b.claudeSessionId);
+    }
+    return owned;
+  }
+
+  /**
+   * Bind a tab to a claude transcript and resume its durable note. Binds near the
+   * end of the file so the first summary uses recent context, not the whole
+   * (possibly huge) history; the accumulated state comes from `_claudeNotes`.
+   */
+  _bindStickyJsonl(sessionId, chosen) {
+    const claudeSessionId = chosen.sessionId;
+    const INITIAL_WINDOW = 24 * 1024;
+    // Resume from the last consumed offset if we've seen this session before
+    // (avoids re-summarising the recent window); else start near the end.
+    const cached = this._claudeOffsets.get(claudeSessionId);
+    const offset =
+      typeof cached === 'number' && cached <= (chosen.size || 0)
+        ? cached
+        : Math.max(0, (chosen.size || 0) - INITIAL_WINDOW);
+    this._stickyJsonl.set(sessionId, {
+      file: chosen.file,
+      offset,
+      titleOffset: 0, // ai-title tail walks the whole file from the start
+      lastTitle: null,
+      claudeSessionId,
+      boundMtimeMs: chosen.mtimeMs || 0,
+      idleTicks: 0,
+      _ticks: 0,
+    });
+    const prior = this._claudeNotes.get(claudeSessionId) || null;
+    // Seed the summariser with the resumed note + rev, record the bound session,
+    // and drop any turns accumulated for the PREVIOUS session.
+    this.stickyNoteSummarizer.onRebind(sessionId, {
+      claudeSessionId,
+      note: prior,
+      rev: prior ? prior.rev : undefined,
+    });
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    session.stickyClaudeSessionId = claudeSessionId; // persisted → cross-restart resume
+    session.stickyNote = prior ? { ...prior } : null;
+    this.sessionStore.markDirty();
+    // Reflect the resumed (or cleared) note on the card immediately.
+    this.broadcastToSession(sessionId, {
+      type: 'sticky_note_update',
+      sessionId,
+      stickyNote: session.stickyNote,
+      autoTitle: session.nameIsUserSet ? null : (prior && prior.title) || session.autoTitle || null,
+    });
+  }
+
+  /** Keep only the most-recently-updated notes so the durable store stays bounded. */
+  _capClaudeNotes() {
+    if (this._claudeNotes.size > this._claudeNotesCap) {
+      const entries = [...this._claudeNotes.entries()].sort(
+        (a, b) => new Date(b[1].updatedAt || 0) - new Date(a[1].updatedAt || 0)
+      );
+      this._claudeNotes = new Map(entries.slice(0, this._claudeNotesCap));
+    }
+    // Bound the resume-offset cache too: keep offsets only for sessions we still
+    // track a note for, or are currently bound to.
+    if (this._claudeOffsets && this._claudeOffsets.size > this._claudeNotesCap) {
+      const keep = new Set(this._claudeNotes.keys());
+      for (const b of this._stickyJsonl.values()) if (b && b.claudeSessionId) keep.add(b.claudeSessionId);
+      for (const k of [...this._claudeOffsets.keys()]) if (!keep.has(k)) this._claudeOffsets.delete(k);
+    }
+  }
+
+  async _statQuiet(file) {
+    try {
+      return await fs.promises.stat(file);
+    } catch {
+      return null;
+    }
+  }
+
+  // Merge a model delta ({goal,done,remaining,update}) onto a previous note,
+  // refining goal/done/remaining (keeping prior values when the small model
+  // returns an empty field) and prepending the one `update` to the append-only
+  // log (skip empty / exact-duplicate-of-last, cap 25).
+  _mergeStickyNote(prev, delta, autoTitle, rev) {
+    prev = prev || {};
+    const now = new Date().toISOString();
+    const updates = Array.isArray(prev.updates) ? prev.updates.slice() : [];
+    const upd = (delta.update || '').trim();
+    if (upd && !(updates[0] && updates[0].text === upd)) {
+      updates.unshift({ text: upd, at: now });
+      if (updates.length > 25) updates.length = 25;
+    }
+    return {
+      title: autoTitle || prev.title || '',
+      goal: delta.goal || prev.goal || '',
+      done: (delta.done && delta.done.length) ? delta.done : (prev.done || []),
+      remaining: (delta.remaining && delta.remaining.length) ? delta.remaining : (prev.remaining || []),
+      updates,
+      rev: typeof rev === 'number' ? rev : (prev.rev || 0) + 1,
+      updatedAt: now,
+      status: 'idle',
+      error: null,
+    };
+  }
+
+  // Persist + broadcast a freshly generated note (called by the summariser).
+  // The note is INCREMENTAL: goal/done/remaining are refined each turn, and the
+  // single `update` is prepended to an append-only Updates log (newest first).
+  _onStickyNoteResult(sessionId, payload) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    if (session.stickyNotesEnabled === false) return; // opted out mid-flight
+    const delta = payload.note; // { goal, done[], remaining[], update }
+    const curBinding = this._stickyJsonl.get(sessionId);
+    // Stale-binding result: the tab rebound to (or closed off) a DIFFERENT claude
+    // session while this inference ran, so the result describes the OUTGOING
+    // session. Don't touch the current session's UI, but still persist it under
+    // the outgoing session's id so that session's note resumes losslessly later.
+    if (
+      payload.claudeSessionId &&
+      (!curBinding || curBinding.claudeSessionId !== payload.claudeSessionId)
+    ) {
+      const old = this._claudeNotes.get(payload.claudeSessionId) || null;
+      this._claudeNotes.set(payload.claudeSessionId, this._mergeStickyNote(old, delta, payload.autoTitle));
+      this._capClaudeNotes();
+      return;
+    }
+    // Defensive: never let an older/stale result clobber a newer note.
+    const incomingRev = payload.rev || 0;
+    if (session.stickyNote && incomingRev <= (session.stickyNote.rev || 0)) return;
+
+    session.stickyNote = this._mergeStickyNote(session.stickyNote, delta, payload.autoTitle, payload.rev);
+    if (!session.nameIsUserSet && payload.autoTitle) {
+      session.autoTitle = payload.autoTitle;
+    }
+    // Mirror into the durable per-claude-session store so the note resumes when
+    // the tab closes/reopens or the session is resumed elsewhere.
+    if (curBinding && curBinding.claudeSessionId) {
+      this._claudeNotes.set(curBinding.claudeSessionId, session.stickyNote);
+      this._capClaudeNotes();
+    }
+    this.sessionStore.markDirty();
+    this.broadcastToSession(sessionId, {
+      type: 'sticky_note_update',
+      sessionId,
+      stickyNote: session.stickyNote,
+      autoTitle: session.nameIsUserSet ? null : session.autoTitle,
+    });
+  }
+
+  _handleSetStickyNotes(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+    const sessionId = data.sessionId || wsInfo.claudeSessionId;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    // Only a socket that belongs to the session may change it (mirrors resize).
+    if (!session.connections.has(wsId)) return;
+    const enabled = data.enabled !== false;
+    session.stickyNotesEnabled = enabled;
+    this.sessionStore.markDirty();
+    if (enabled) {
+      if (session.active && this._isStickyEligible(session.agent)) {
+        this._maybeStartStickyNotes(sessionId, session.agent, session.cols, session.rows);
+      }
+    } else {
+      this.stickyNoteSummarizer.disable(sessionId);
+      this._stickyJsonl.delete(sessionId);
+    }
+  }
+
+  /**
+   * A client reports whether it currently has a tab's sticky-note card EXPANDED.
+   * Expanded viewers are reference-counted per session; note summarisation runs
+   * only while the count is > 0 (the cheap ai-title tail runs regardless).
+   */
+  _handleSetStickyActive(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+    const sessionId = data && data.sessionId;
+    if (!sessionId) return;
+    const active = data.active === true;
+    const set = this._stickyActive.get(sessionId);
+    if (active) {
+      const session = this.claudeSessions.get(sessionId);
+      if (!session) return;
+      // The socket must belong to the session — accept membership via either the
+      // connection set OR the socket's currently-joined session, so a reconnect
+      // (where the new wsId may not be in `connections` yet) isn't dropped.
+      const belongs =
+        wsInfo.claudeSessionId === sessionId ||
+        (session.connections && session.connections.has(wsId));
+      if (!belongs) return;
+      if (set) set.add(wsId);
+      else this._stickyActive.set(sessionId, new Set([wsId]));
+    } else if (set) {
+      set.delete(wsId);
+      if (!set.size) this._stickyActive.delete(sessionId);
+    }
+  }
+
+  /** Drop a disconnected socket from every expanded-viewer set (no leaked leases). */
+  _clearStickyActiveForWs(wsId) {
+    for (const [sessionId, set] of this._stickyActive) {
+      if (set.delete(wsId) && !set.size) this._stickyActive.delete(sessionId);
+    }
+  }
+
+  _handleSetTabName(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+    const sessionId = data.sessionId || wsInfo.claudeSessionId;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    if (!session.connections.has(wsId)) return;
+    // Only pin the name (blocking auto-titles) when a real name is provided.
+    if (typeof data.name === 'string' && data.name.trim()) {
+      session.name = data.name.trim();
+      session.nameIsUserSet = true;
+      this.sessionStore.markDirty();
     }
   }
 
@@ -4060,6 +4682,9 @@ class ClaudeCodeWebServer {
         // chokidar watcher leaks (PR #99 regression).
         try { this._cleanupFsWatchSession(top.id, 'session_evicted'); } catch (_) { /* ignore */ }
         try { this._voiceUploadCounts.delete(top.id); } catch (_) { /* ignore */ }
+        try { this.stickyNoteSummarizer.cancel(top.id); } catch (_) { /* ignore */ }
+        try { this._stickyJsonl.delete(top.id); } catch (_) { /* ignore */ }
+        if (this._foregroundSessionId === top.id) this._foregroundSessionId = null;
         this.claudeSessions.delete(top.id);
         this.activityBroadcastTimestamps.delete(top.id);
         try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
@@ -4322,7 +4947,12 @@ class ClaudeCodeWebServer {
     try {
       const sessionsDir = this.sessionStore && this.sessionStore.storageDir;
       if (sessionsDir) {
-        const r = await this._dirSizeWithBudget(sessionsDir, deadline);
+        // Exclude the local-model cache (~/.ai-or-die/models): a one-time
+        // intentional download (STT ~670MB, sticky-notes ~800MB) is NOT the
+        // runaway session-data growth this quota is meant to bound. Counting
+        // it would trip the disk-full breaker and block session creation.
+        const modelsPath = require('path').join(sessionsDir, 'models');
+        const r = await this._dirSizeWithBudget(sessionsDir, deadline, new Set([modelsPath]));
         sample.ai_or_die_dir_bytes = r.bytes;
         sample.ai_or_die_dir_files = r.files;
         sample.ai_or_die_dir_stale = r.timedOut || false;
@@ -4364,7 +4994,7 @@ class ClaudeCodeWebServer {
    * { bytes, files, timedOut } and never throws. On deadline, returns
    * partial counts and timedOut: true.
    */
-  async _dirSizeWithBudget(dir, deadline) {
+  async _dirSizeWithBudget(dir, deadline, excludePaths) {
     const fsP = require('fs').promises;
     let bytes = 0;
     let files = 0;
@@ -4384,7 +5014,7 @@ class ClaudeCodeWebServer {
         }
         const p = require('path').join(cur, ent.name);
         if (ent.isDirectory()) {
-          queue.push(p);
+          if (!(excludePaths && excludePaths.has(p))) queue.push(p);
         } else if (ent.isFile()) {
           try {
             const st = await fsP.stat(p);
@@ -4440,6 +5070,10 @@ class ClaudeCodeWebServer {
   cleanupWebSocketConnection(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
+
+    // Release any sticky-note "expanded viewer" leases this socket held, so a
+    // dropped browser can't keep a session's note inference running forever.
+    this._clearStickyActiveForWs(wsId);
 
     // Remove from Claude session if joined
     if (wsInfo.claudeSessionId) {
@@ -4550,6 +5184,10 @@ class ClaudeCodeWebServer {
     }
     if (this.diskCompactInterval) {
       clearInterval(this.diskCompactInterval);
+    }
+    if (this._stickyJsonlPoll) {
+      clearInterval(this._stickyJsonlPoll);
+      this._stickyJsonlPoll = null;
     }
     if (this.diskUsageSampleInterval) {
       clearInterval(this.diskUsageSampleInterval);
@@ -4938,54 +5576,70 @@ class ClaudeCodeWebServer {
     }
   }
 
+  /**
+   * Idempotent, non-blocking init of the LOCAL STT model. Downloads + loads in
+   * the worker thread (off the event loop), broadcasting progress + the final
+   * status so every client can enable the mic the moment the model is `ready`.
+   * Called on startup (pull-on-boot) and by the explicit voice_download_model
+   * retry. Self-gates: a disabled / under-test engine no-ops (initialize returns
+   * `unavailable` without downloading). An external endpoint inits cheaply.
+   */
+  _ensureSttModel() {
+    const status = this.sttEngine.getStatus();
+    if (status === 'ready' || status === 'downloading' || status === 'loading') return;
+    this.sttEngine
+      .initialize((progress) => {
+        // Guard the percent math: a malformed/early progress event (fileCount 0,
+        // missing fileIndex) must not emit NaN/Infinity (serialized as null),
+        // which would break the client's 100%-based banner transitions.
+        const fileCount = progress.fileCount > 0 ? progress.fileCount : 1;
+        const fileIndex = Number.isFinite(progress.fileIndex) ? progress.fileIndex : 0;
+        const fileProgress = progress.total > 0 ? progress.downloaded / progress.total : 0;
+        let percent = Math.round(((fileIndex + fileProgress) / fileCount) * 100);
+        if (!Number.isFinite(percent)) percent = 0;
+        percent = Math.max(0, Math.min(100, percent));
+        this.broadcastAll({ type: 'voice_model_progress', ...progress, percent });
+      })
+      .then(() => this._broadcastVoiceStatus())
+      .catch((err) => {
+        if (this.dev) console.error('[STT] Init failed:', err.message);
+        this._broadcastVoiceStatus(err.message);
+      });
+  }
+
+  /** Broadcast the current STT status so clients can enable/disable the mic. */
+  _broadcastVoiceStatus(error) {
+    const localStatus = this.sttEngine.getStatus();
+    this.broadcastAll({
+      type: 'voice_status',
+      status: localStatus,
+      voiceInput: {
+        localStatus,
+        localEnabled: !!(this.sttEngine._enabled && !this.sttEngine._sttEndpoint),
+        cloudAvailable: true,
+      },
+      progress: this.sttEngine.getDownloadProgress(),
+      ...(error ? { error } : {}),
+    });
+  }
+
   async handleVoiceDownloadModel(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
 
-    const currentStatus = this.sttEngine.getStatus();
+    // Kick off (or no-op if already in flight / ready) the shared background init.
+    this._ensureSttModel();
 
-    if (currentStatus === 'ready') {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'voice_status',
-        status: 'ready',
-        progress: null,
-      });
-      return;
-    }
-
-    // Already downloading or loading — return current status instead of re-initializing
-    if (currentStatus === 'downloading' || currentStatus === 'loading') {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'voice_status',
-        status: currentStatus,
-        progress: this.sttEngine.getDownloadProgress(),
-      });
-      return;
-    }
-
-    // Trigger model download/init and broadcast progress with computed percent
-    this.sttEngine.initialize((progress) => {
-      const fileProgress = progress.total > 0 ? progress.downloaded / progress.total : 0;
-      const overallPercent = Math.round(((progress.fileIndex + fileProgress) / progress.fileCount) * 100);
-      this.broadcastAll({ type: 'voice_model_progress', ...progress, percent: overallPercent });
-    }).then(() => {
-      this.broadcastAll({
-        type: 'voice_status',
-        status: this.sttEngine.getStatus(),
-        progress: null,
-      });
-    }).catch(err => {
-      if (this.dev) console.error('[STT] Download failed:', err.message);
-      this.broadcastAll({
-        type: 'voice_status',
-        status: 'unavailable',
-        error: err.message,
-      });
-    });
-
+    // Immediate per-socket ack with the current status + progress.
+    const localStatus = this.sttEngine.getStatus();
     this.sendToWebSocket(wsInfo.ws, {
       type: 'voice_status',
-      status: this.sttEngine.getStatus(),
+      status: localStatus,
+      voiceInput: {
+        localStatus,
+        localEnabled: !!(this.sttEngine._enabled && !this.sttEngine._sttEndpoint),
+        cloudAvailable: true,
+      },
       progress: this.sttEngine.getDownloadProgress(),
     });
   }
