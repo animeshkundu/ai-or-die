@@ -3704,7 +3704,11 @@ class ClaudeCodeWebServer {
       outputBuffer: session.outputBuffer.slice(-200), // Send last 200 lines
       stickyNote: session.stickyNote || null,
       autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
-      stickyNotesEnabled: session.stickyNotesEnabled !== false
+      stickyNotesEnabled: session.stickyNotesEnabled !== false,
+      // Deliver the engine status on every join so the toolbar toggle reliably
+      // appears once the model is ready (the broadcast-on-init can race a late
+      // joiner; this never misses).
+      stickyNotesStatus: this.stickyNoteEngine.getStatus()
     });
 
     if (this.dev) {
@@ -4127,28 +4131,42 @@ class ClaudeCodeWebServer {
     if (!binding || binding._ticks % 5 === 0) {
       const candidates = await StickyNoteJsonl.findActiveSessions(cwd, { projectsDir: this._stickyProjectsDir });
       const ownedByOthers = this._ownedClaudeSessions(sessionId);
+      // Only (re)bind to a session being ACTIVELY written (recent mtime). A fresh
+      // tab must NOT adopt a stale pre-existing session in the same project — that
+      // would surface the old session's title/note on a tab that never ran it. An
+      // already-bound session stays bound even when idle (currentValid below).
+      const STICKY_BIND_RECENCY_MS = 60 * 1000;
+      const freshlyActive = (c) => c.mtimeMs >= Date.now() - STICKY_BIND_RECENCY_MS;
+      // The tab's own previously-bound claude session (persisted) is exempt from
+      // the recency gate, so a restart / lost binding can re-resume an idle-but-
+      // live session. A FRESH tab has no own-session, so it still won't adopt a
+      // stale stranger session in the project.
+      const session = this.claudeSessions.get(sessionId);
+      const ownClaudeSession = session && session.stickyClaudeSessionId;
+      const eligible = (c) => !ownedByOthers.has(c.sessionId) && (freshlyActive(c) || c.sessionId === ownClaudeSession);
       const currentValid =
         binding &&
         candidates.some((c) => c.file === binding.file) &&
         !ownedByOthers.has(binding.claudeSessionId);
       if (!currentValid) {
         // Unbound, or the bound file vanished / is a subagent log / is now owned
-        // by another tab → (re)bind to the newest unowned session.
-        const pick = candidates.find((c) => !ownedByOthers.has(c.sessionId)) || null;
+        // by another tab → (re)bind to the newest eligible session.
+        const pick = candidates.find(eligible) || null;
         if (pick) {
           this._bindStickyJsonl(sessionId, pick);
           binding = this._stickyJsonl.get(sessionId);
         } else {
           if (binding) this._stickyJsonl.delete(sessionId);
-          return; // no transcript yet → scrape fallback handles it
+          return; // no actively-written transcript → scrape fallback / nothing to show
         }
       } else if ((binding.idleTicks || 0) >= this._stickyResumeIdleTicks) {
         // Bound file has been quiet — follow an in-session /resume to a newer
-        // active unowned session if one appeared.
+        // actively-written unowned session if one appeared.
         const newer = candidates.find(
           (c) =>
             c.file !== binding.file &&
             !ownedByOthers.has(c.sessionId) &&
+            freshlyActive(c) &&
             c.mtimeMs > (binding.boundMtimeMs || 0)
         );
         if (newer) {

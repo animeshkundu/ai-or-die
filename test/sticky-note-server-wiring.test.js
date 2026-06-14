@@ -306,7 +306,7 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
 
   it('binds a tab to its claude session and skips agent-*.jsonl', async function () {
     const cwd = '/Users/x/proj';
-    writeSession(cwd, 'real-session.jsonl', null, 100);   // older
+    writeSession(cwd, 'real-session.jsonl', null, 5);    // active, non-agent
     writeSession(cwd, 'agent-deadbeef.jsonl', null, 0);   // newest, but a subagent log
     const self = makeBindStub();
     self.claudeSessions.set('tab1', { nameIsUserSet: false });
@@ -429,6 +429,38 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
     assert.strictEqual(self._stickyJsonl.get('t1').claudeSessionId, t1Sess, 't1 binding never drifted to the active session');
     const t1Fed = self._feeds.filter((f) => f.id === 't1').map((f) => f.text).join(' \n ');
     assert.ok(!/migration constraint detail/.test(t1Fed), 't1 was NEVER fed the other tab\'s session content');
+  });
+
+  it('does NOT bind a fresh tab to a STALE pre-existing session (no stale title/note)', async function () {
+    // A terminal tab opens in a project that already has an OLD claude session.
+    // The tab never ran claude — it must not adopt that session's title/note.
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'old-session.jsonl', null, 600); // 10 min old → stale
+    const self = makeBindStub();
+    self.claudeSessions.set('term', { nameIsUserSet: false });
+    self._expand('term');
+    await self._pumpStickyJsonl('term', cwd);
+    assert.ok(!self._stickyJsonl.get('term'), 'fresh tab does not bind a stale session');
+    assert.strictEqual(self.claudeSessions.get('term').autoTitle, undefined, 'no stale title applied');
+    // Now the user actually runs claude → a freshly-written session appears.
+    writeSession(cwd, 'new-session.jsonl', null, 0);
+    await self._pumpStickyJsonl('term', cwd);
+    assert.ok(self._stickyJsonl.get('term'), 'binds once a session is actively written');
+    assert.strictEqual(self._stickyJsonl.get('term').claudeSessionId, 'new-session');
+  });
+
+  it('DOES re-bind a restored tab to its OWN idle session (resume), despite recency', async function () {
+    // A restored tab knows its prior claude session (stickyClaudeSessionId). Even
+    // if that session is idle (>60s), it must re-bind to resume — the recency gate
+    // is only for adopting STRANGER sessions.
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'my-session.jsonl', null, 600); // 10 min old, but it's THIS tab's
+    const self = makeBindStub();
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, stickyClaudeSessionId: 'my-session' });
+    self._expand('tab1');
+    await self._pumpStickyJsonl('tab1', cwd);
+    assert.ok(self._stickyJsonl.get('tab1'), 'restored tab re-binds to its own idle session');
+    assert.strictEqual(self._stickyJsonl.get('tab1').claudeSessionId, 'my-session');
   });
 
   it('does NOT summarise a collapsed tab, but DOES tail its ai-title; expanding starts summarising', async function () {

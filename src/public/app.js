@@ -2351,6 +2351,13 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
                 this.updateWorkingDir(message.workingDir);
+                // Learn the sticky-note engine status on join so the toolbar
+                // toggle reliably shows once the model is ready (robust against a
+                // missed broadcast / reconnect / stale cache).
+                if (typeof message.stickyNotesStatus === 'string') {
+                    this._stickyNotesAvailable = message.stickyNotesStatus === 'ready';
+                    this._refreshStickyNoteBtnVisibility();
+                }
                 // Cache the per-session workingDir SYNCHRONOUSLY — see the
                 // matching comment in session_created above. Page-reload-
                 // then-immediately-click is the canonical race we close
