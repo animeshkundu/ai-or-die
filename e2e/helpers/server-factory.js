@@ -25,6 +25,11 @@ async function createServer(opts) {
     port: 0,
     sessionStoreOptions: { storageDir: tempDir },
   };
+  // Let a spec disable the local-model features (STT / sticky-notes) so their
+  // one-time download progress banners can't bleed into visual-regression
+  // screenshots. Defaults stay on for behavioural specs.
+  if (opts.stt === false) constructorOpts.stt = false;
+  if (opts.stickyNotes === false) constructorOpts.stickyNotes = false;
   if (opts.auth) {
     constructorOpts.auth = opts.auth;
     constructorOpts.noAuth = false;
