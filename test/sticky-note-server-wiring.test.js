@@ -267,6 +267,7 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
       _stickyJsonl: new Map(),
       _claudeNotes: new Map(),
       _claudeOffsets: new Map(),
+      _stickyActive: new Map(),
       _claudeNotesCap: 300,
       _stickyResumeIdleTicks: 8,
       _stickyProjectsDir: projects,
@@ -279,13 +280,18 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
         feedTurns: (id, text, title) => feeds.push({ id, text, title }),
       },
       broadcastToSession: (id, data) => broadcasts.push({ id, data }),
+      sessionStore: { markDirty() {} },
       _ownedClaudeSessions: ClaudeCodeWebServer.prototype._ownedClaudeSessions,
       _bindStickyJsonl: ClaudeCodeWebServer.prototype._bindStickyJsonl,
       _capClaudeNotes: ClaudeCodeWebServer.prototype._capClaudeNotes,
       _statQuiet: ClaudeCodeWebServer.prototype._statQuiet,
+      _isStickyExpandedActive: ClaudeCodeWebServer.prototype._isStickyExpandedActive,
+      _applyAiTitle: ClaudeCodeWebServer.prototype._applyAiTitle,
       _pumpStickyJsonl: ClaudeCodeWebServer.prototype._pumpStickyJsonl,
     };
     self._feeds = feeds; self._seeds = seeds; self._broadcasts = broadcasts;
+    // helper: mark a tab's card as "expanded" so note inference runs in the test
+    self._expand = (tab) => self._stickyActive.set(tab, new Set(['ws']));
     return self;
   }
 
@@ -391,6 +397,78 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
     b._ticks = 4; b.idleTicks = 10; // sessA has gone quiet past the threshold
     await self._pumpStickyJsonl('tab1', cwd);
     assert.strictEqual(self._stickyJsonl.get('tab1').claudeSessionId, 'sessC', 'idle tab follows the resume');
+  });
+
+  it('a QUIET tab stays isolated when another tab\'s session is the ONLY one being appended', async function () {
+    // The user's exact worry: two claude sessions in one project. Tab1 goes quiet
+    // while Tab2's session is the only one growing — Tab1 must never read Tab2's.
+    const cwd = '/Users/x/proj';
+    const uA = JSON.stringify({ type: 'user', message: { role: 'user', content: 'build the login page' } }) + '\n';
+    const uB = JSON.stringify({ type: 'user', message: { role: 'user', content: 'fix the db migration' } }) + '\n';
+    writeSession(cwd, 'sA-login.jsonl', uA, 50);     // older
+    writeSession(cwd, 'sB-migration.jsonl', uB, 10); // newer
+    const self = makeBindStub();
+    self.claudeSessions.set('t1', { nameIsUserSet: false });
+    self.claudeSessions.set('t2', { nameIsUserSet: false });
+    self._expand('t1'); self._expand('t2'); // both cards EXPANDED → both summarise
+    await self._pumpStickyJsonl('t1', cwd); // t1 binds newest unowned = sB-migration
+    await self._pumpStickyJsonl('t2', cwd); // t2 binds the other = sA-login
+    const t1Sess = self._stickyJsonl.get('t1').claudeSessionId;
+    const t2File = self._stickyJsonl.get('t2').file;
+    assert.notStrictEqual(t1Sess, self._stickyJsonl.get('t2').claudeSessionId, 'distinct sessions');
+
+    // t2's session is now the ONLY one being appended; t1's stays quiet + idle.
+    const asst = (x) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: x }] } }) + '\n';
+    for (let i = 0; i < 12; i++) {
+      fs.appendFileSync(t2File, asst('migration constraint detail ' + i));
+      const b1 = self._stickyJsonl.get('t1');
+      b1._ticks = 4; b1.idleTicks = 99; // t1 quiet + forcibly eligible to "follow" — it must still NOT steal t2's owned session
+      await self._pumpStickyJsonl('t1', cwd);
+      await self._pumpStickyJsonl('t2', cwd);
+    }
+    assert.strictEqual(self._stickyJsonl.get('t1').claudeSessionId, t1Sess, 't1 binding never drifted to the active session');
+    const t1Fed = self._feeds.filter((f) => f.id === 't1').map((f) => f.text).join(' \n ');
+    assert.ok(!/migration constraint detail/.test(t1Fed), 't1 was NEVER fed the other tab\'s session content');
+  });
+
+  it('does NOT summarise a collapsed tab, but DOES tail its ai-title; expanding starts summarising', async function () {
+    const cwd = '/Users/x/proj';
+    const body =
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'do the thing' } }) + '\n' +
+      JSON.stringify({ type: 'ai-title', aiTitle: 'My Session Title' }) + '\n' +
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'working on it now' }] } }) + '\n';
+    writeSession(cwd, 'sess.jsonl', body, 0);
+    const self = makeBindStub();
+    self.claudeSessions.set('tab1', { nameIsUserSet: false });
+    // Collapsed (NOT expanded): no summarisation, but the title is tailed.
+    await self._pumpStickyJsonl('tab1', cwd);
+    assert.strictEqual(self._feeds.length, 0, 'collapsed tab does not feed the summariser');
+    assert.strictEqual(self.claudeSessions.get('tab1').autoTitle, 'My Session Title', 'ai-title tailed while collapsed (no model)');
+    // Expand → note summarisation resumes from the frozen horizon.
+    self._expand('tab1');
+    await self._pumpStickyJsonl('tab1', cwd);
+    assert.ok(self._feeds.some((f) => f.id === 'tab1'), 'expanded tab feeds the summariser');
+  });
+  it('_handleSetStickyActive ref-counts expanded viewers; disconnect purges without leaking', function () {
+    const self = makeStub();
+    self._stickyActive = new Map();
+    self._isStickyExpandedActive = ClaudeCodeWebServer.prototype._isStickyExpandedActive;
+    self._handleSetStickyActive = ClaudeCodeWebServer.prototype._handleSetStickyActive;
+    self._clearStickyActiveForWs = ClaudeCodeWebServer.prototype._clearStickyActiveForWs;
+    self.webSocketConnections = new Map([['wsA', {}], ['wsB', {}]]);
+    self.claudeSessions.set('s1', { connections: new Set(['wsA', 'wsB']) });
+
+    self._handleSetStickyActive('wsA', { sessionId: 's1', active: true });
+    assert.ok(self._isStickyExpandedActive('s1'), 'active once a viewer expands');
+    self._handleSetStickyActive('wsB', { sessionId: 's1', active: true });
+    self._handleSetStickyActive('wsA', { sessionId: 's1', active: false });
+    assert.ok(self._isStickyExpandedActive('s1'), 'still active while another viewer is expanded');
+    self._clearStickyActiveForWs('wsB'); // wsB disconnects
+    assert.ok(!self._isStickyExpandedActive('s1'), 'inactive once the last viewer is gone — no leak');
+
+    // A socket not belonging to the session cannot activate it.
+    self._handleSetStickyActive('wsZ', { sessionId: 's1', active: true });
+    assert.ok(!self._isStickyExpandedActive('s1'), 'foreign socket cannot mark active');
   });
 });
 

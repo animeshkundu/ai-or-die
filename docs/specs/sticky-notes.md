@@ -85,6 +85,25 @@ sessionId** (the JSONL basename / `--resume` key), so notes are durable and resu
 The toolbar toggle (`#stickyNoteBtn`) is shown only once the engine reports
 `ready` (not merely when enabled), so it never appears when the model can't run.
 
+### Expand-gating & ai-title (ADR-0025)
+
+The card starts **collapsed** (expanding is a deliberate "activate"). Processing
+splits in two:
+
+- **Note summarisation (the LLM inference) runs only while ≥1 connected client
+  has the card EXPANDED.** Clients report this with `set_sticky_active
+  {sessionId, active}`; the server reference-counts expanded viewers per session
+  (`_stickyActive: Map<sessionId, Set<wsId>>`), tied to connection presence
+  (`_clearStickyActiveForWs` on disconnect) so a closed browser can't leak a
+  forever-running inference. `_isStickyExpandedActive` gates the note path. A
+  collapsed tab freezes its note at `binding.offset`; on re-expand the next poll
+  resumes from there in one bounded catch-up read.
+- **The tab title is claude's own `ai-title`, tailed cheaply with no model**
+  (`readNewAiTitle`, a separate always-advancing `binding.titleOffset`) and
+  applied via `_applyAiTitle`. It runs every poll regardless of collapse, so even
+  a collapsed/never-expanded tab keeps a fresh, self-describing title. Non-claude
+  tabs (no `ai-title`) fall back to the note-derived title (expanded only).
+
 ## WebSocket protocol
 
 Server → client:

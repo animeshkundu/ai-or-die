@@ -203,6 +203,42 @@ async function readNewTurns(file, byteOffset = 0, opts = {}) {
   return { turns, offset: newOffset, aiTitle };
 }
 
+/**
+ * CHEAP scan for the latest `ai-title` since `byteOffset` — no turn extraction,
+ * no model. Used to keep a tab title fresh even when note summarisation is paused
+ * (collapsed). Reads a FORWARD chunk (never skips ahead), so over successive
+ * polls it walks the whole file and catches an ai-title written anywhere.
+ * @returns {Promise<{aiTitle:string|null, offset:number}>}
+ */
+async function readNewAiTitle(file, byteOffset = 0, opts = {}) {
+  const maxBytes = opts.maxBytes || READ_MAX_BYTES;
+  let st;
+  try {
+    st = await fsp.stat(file);
+  } catch {
+    return { aiTitle: null, offset: byteOffset };
+  }
+  const start = Math.max(0, byteOffset);
+  if (st.size <= start) return { aiTitle: null, offset: start };
+  const end = Math.min(st.size, start + maxBytes); // forward chunk, never skip
+  const buf = await readRange(file, start, end);
+  const lastNl = buf.lastIndexOf(0x0a);
+  if (lastNl === -1) return { aiTitle: null, offset: byteOffset }; // no complete line yet
+  const complete = buf.slice(0, lastNl + 1);
+  const newOffset = start + complete.length;
+  let aiTitle = null;
+  for (const line of complete.toString('utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const o = JSON.parse(line);
+      if (o.type === 'ai-title' && typeof o.aiTitle === 'string') aiTitle = o.aiTitle;
+    } catch {
+      /* partial / non-JSON noise */
+    }
+  }
+  return { aiTitle, offset: newOffset };
+}
+
 /** Whether the most recent turn completes an assistant reply (a clean summary boundary). */
 function endsOnAssistant(turns) {
   for (let i = turns.length - 1; i >= 0; i--) {
@@ -232,6 +268,7 @@ module.exports = {
   findActiveSession,
   findActiveSessions,
   readNewTurns,
+  readNewAiTitle,
   formatTurns,
   endsOnAssistant,
   extractText,

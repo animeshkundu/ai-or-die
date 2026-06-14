@@ -1320,6 +1320,14 @@ class ClaudeCodeWebInterface {
         btn.style.display = show ? '' : 'none';
     }
 
+    /** Tell the server this browser has (or no longer has) a tab's card expanded. */
+    _reportStickyActive(sessionId, active) {
+        if (!sessionId) return;
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.send({ type: 'set_sticky_active', sessionId, active: !!active });
+        }
+    }
+
     /** Reflect the active tab's note state on the toolbar button (dot + aria). */
     _updateStickyNoteBtn(state) {
         const btn = document.getElementById('stickyNoteBtn');
@@ -1981,6 +1989,11 @@ class ClaudeCodeWebInterface {
                     // only fire on init; a reload/late-join needs to request it).
                     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                         this.send({ type: 'sticky_notes_status' });
+                    }
+                    // Re-assert the card's expanded/active state — the server drops
+                    // a socket's "expanded viewer" leases on disconnect.
+                    if (this._stickyNoteCard && typeof this._stickyNoteCard.reportActiveState === 'function') {
+                        this._stickyNoteCard.reportActiveState();
                     }
                     
                     // Only show start prompt if sessionTabManager is initialized and has no sessions

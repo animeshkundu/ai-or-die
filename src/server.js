@@ -184,6 +184,12 @@ class ClaudeCodeWebServer {
     // of re-reading (and re-summarising) the last window. Not persisted; a restart
     // falls back to the recent-window default.
     this._claudeOffsets = new Map();
+    // Reference-count of which connected clients have a tab's card EXPANDED
+    // (aiOrDieSessionId -> Set<wsId>). Note summarisation runs only while a
+    // session has ≥1 expanded viewer; tied to connection presence so a dropped
+    // browser can't leak a forever-running inference loop. The cheap ai-title
+    // tail runs regardless, so collapsed tabs still get a fresh title.
+    this._stickyActive = new Map();
     // A bound tab follows an in-session /resume to a newer session only after its
     // own transcript has been quiet for this many poll ticks (~2s each), so a
     // third unrelated session can't steal a tab that is still actively working.
@@ -3507,6 +3513,10 @@ class ClaudeCodeWebServer {
         this._handleSetStickyNotes(wsId, data);
         break;
 
+      case 'set_sticky_active':
+        this._handleSetStickyActive(wsId, data);
+        break;
+
       case 'set_tab_name':
         this._handleSetTabName(wsId, data);
         break;
@@ -4151,27 +4161,69 @@ class ClaudeCodeWebServer {
 
     const st = await this._statQuiet(binding.file);
     if (!st) { this._stickyJsonl.delete(sessionId); return; } // file gone → unbind (note kept)
-    if (st.size <= binding.offset) {
+    // File shrank (truncated / rotated / recreated under the same name) → our
+    // offsets point past the end. Drop the binding so the next poll re-resolves
+    // and re-binds from scratch rather than freezing forever.
+    if (st.size < (binding.offset || 0) || st.size < (binding.titleOffset || 0)) {
+      this._stickyJsonl.delete(sessionId);
+      return;
+    }
+
+    // --- TITLE TAIL — ALWAYS (cheap, no model). Keeps the tab title fresh from
+    // claude's own ai-title even when note summarisation is paused (collapsed).
+    // Also drives idleTicks/boundMtimeMs so the binder tracks file activity
+    // regardless of whether we're summarising. ---
+    if (st.size > (binding.titleOffset || 0)) {
+      const tr = await StickyNoteJsonl.readNewAiTitle(binding.file, binding.titleOffset || 0);
+      if (tr.offset > (binding.titleOffset || 0)) {
+        binding.titleOffset = tr.offset;
+        binding.idleTicks = 0;
+        binding.boundMtimeMs = st.mtimeMs;
+        if (tr.aiTitle && tr.aiTitle !== binding.lastTitle) {
+          binding.lastTitle = tr.aiTitle;
+          this._applyAiTitle(sessionId, tr.aiTitle);
+        }
+      } else {
+        binding.idleTicks = (binding.idleTicks || 0) + 1; // new bytes, no complete line yet
+      }
+    } else {
       binding.idleTicks = (binding.idleTicks || 0) + 1; // quiet → eligible to follow /resume
-      return;
     }
-    const { turns, offset, aiTitle } = await StickyNoteJsonl.readNewTurns(binding.file, binding.offset);
-    if (offset <= binding.offset) {
-      // New bytes but no COMPLETE line yet (claude mid-write or killed). Count as
-      // quiet so a dead session can still yield to a /resume; do NOT reset
-      // idleTicks (that would lock the tab on this file forever).
-      binding.idleTicks = (binding.idleTicks || 0) + 1;
-      return;
-    }
-    binding.idleTicks = 0;
-    binding.boundMtimeMs = st.mtimeMs;
+
+    // --- NOTE INFERENCE — ONLY while a viewer has the card EXPANDED. Collapsed
+    // tabs freeze the note at their horizon (binding.offset); on re-expand the
+    // next poll resumes from there in a single bounded catch-up read. ---
+    if (!this._isStickyExpandedActive(sessionId)) return;
+    if (st.size <= binding.offset) return;
+    const { turns, offset } = await StickyNoteJsonl.readNewTurns(binding.file, binding.offset);
+    if (offset <= binding.offset) return; // no complete new line for the note yet
     binding.offset = offset;
     this._claudeOffsets.set(binding.claudeSessionId, offset); // resume continues from here
     const text = StickyNoteJsonl.formatTurns(turns);
-    // Feed even with no new turns if a standalone ai-title line arrived (claude
-    // writes it asynchronously), so the tab title isn't permanently missed.
-    if (!text && !aiTitle) return;
-    this.stickyNoteSummarizer.feedTurns(sessionId, text, aiTitle);
+    if (!text) return;
+    this.stickyNoteSummarizer.feedTurns(sessionId, text, binding.lastTitle);
+  }
+
+  /** True when ≥1 connected client has this tab's card expanded. */
+  _isStickyExpandedActive(sessionId) {
+    const set = this._stickyActive.get(sessionId);
+    return !!(set && set.size > 0);
+  }
+
+  /** Apply claude's ai-title to the tab (no inference) and broadcast it. */
+  _applyAiTitle(sessionId, aiTitle) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session || session.nameIsUserSet) return; // a manual rename pins the name
+    const title = String(aiTitle || '').trim().slice(0, 80);
+    if (!title || title === session.autoTitle) return;
+    session.autoTitle = title;
+    this.sessionStore.markDirty();
+    this.broadcastToSession(sessionId, {
+      type: 'sticky_note_update',
+      sessionId,
+      stickyNote: session.stickyNote || null,
+      autoTitle: title,
+    });
   }
 
   /** Claude sessionIds currently bound by OTHER tabs (ownership set). */
@@ -4201,6 +4253,8 @@ class ClaudeCodeWebServer {
     this._stickyJsonl.set(sessionId, {
       file: chosen.file,
       offset,
+      titleOffset: 0, // ai-title tail walks the whole file from the start
+      lastTitle: null,
       claudeSessionId,
       boundMtimeMs: chosen.mtimeMs || 0,
       idleTicks: 0,
@@ -4342,6 +4396,43 @@ class ClaudeCodeWebServer {
     } else {
       this.stickyNoteSummarizer.disable(sessionId);
       this._stickyJsonl.delete(sessionId);
+    }
+  }
+
+  /**
+   * A client reports whether it currently has a tab's sticky-note card EXPANDED.
+   * Expanded viewers are reference-counted per session; note summarisation runs
+   * only while the count is > 0 (the cheap ai-title tail runs regardless).
+   */
+  _handleSetStickyActive(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+    const sessionId = data && data.sessionId;
+    if (!sessionId) return;
+    const active = data.active === true;
+    const set = this._stickyActive.get(sessionId);
+    if (active) {
+      const session = this.claudeSessions.get(sessionId);
+      if (!session) return;
+      // The socket must belong to the session — accept membership via either the
+      // connection set OR the socket's currently-joined session, so a reconnect
+      // (where the new wsId may not be in `connections` yet) isn't dropped.
+      const belongs =
+        wsInfo.claudeSessionId === sessionId ||
+        (session.connections && session.connections.has(wsId));
+      if (!belongs) return;
+      if (set) set.add(wsId);
+      else this._stickyActive.set(sessionId, new Set([wsId]));
+    } else if (set) {
+      set.delete(wsId);
+      if (!set.size) this._stickyActive.delete(sessionId);
+    }
+  }
+
+  /** Drop a disconnected socket from every expanded-viewer set (no leaked leases). */
+  _clearStickyActiveForWs(wsId) {
+    for (const [sessionId, set] of this._stickyActive) {
+      if (set.delete(wsId) && !set.size) this._stickyActive.delete(sessionId);
     }
   }
 
@@ -4961,6 +5052,10 @@ class ClaudeCodeWebServer {
   cleanupWebSocketConnection(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
+
+    // Release any sticky-note "expanded viewer" leases this socket held, so a
+    // dropped browser can't keep a session's note inference running forever.
+    this._clearStickyActiveForWs(wsId);
 
     // Remove from Claude session if joined
     if (wsInfo.claudeSessionId) {

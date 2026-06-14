@@ -24,6 +24,12 @@
   pointer-events: auto;
 }
 
+/* The `hidden` attribute must win over `display:flex` above — without this the
+   card can never collapse (a class selector outranks the UA [hidden] rule). */
+.sticky-note-card[hidden] {
+  display: none !important;
+}
+
 /* Respect iOS PWA safe areas (Dynamic Island / notch) on the right edge. */
 @supports (padding: env(safe-area-inset-right)) {
   html.pwa-standalone .sticky-note-card {

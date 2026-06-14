@@ -116,10 +116,10 @@ describe('sticky-note card (DOM, v2: goal/done/remaining/updates + toolbar minim
     assert.strictEqual(card.el.classList.contains('collapsed'), false);
   });
 
-  it('persists the expand choice across reloads (default minimized only when unset)', function () {
+  it('always starts collapsed, even if a previous session was expanded (expand = activate)', function () {
     localStorage.setItem('cc-sticky-note-collapsed', '0'); // user previously expanded
     const card = new StickyNoteCard(app);
-    assert.strictEqual(card.isCollapsed(), false, 'stored expanded preference respected');
+    assert.strictEqual(card.isCollapsed(), true, 'starts collapsed regardless of stored preference');
   });
 
   it('onStateChange reports collapsed/hasNote/summarizing for the toolbar button', function () {

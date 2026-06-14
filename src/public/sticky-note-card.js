@@ -23,12 +23,9 @@ class StickyNoteCard {
   }
 
   _loadCollapsed() {
-    try {
-      const v = localStorage.getItem('cc-sticky-note-collapsed');
-      return v === null ? true : v === '1'; // default MINIMIZED
-    } catch {
-      return true;
-    }
+    // Always start collapsed: expanding is a deliberate "activate" that starts
+    // server-side summarisation. Within a session the toggle still works.
+    return true;
   }
 
   _build() {
@@ -154,7 +151,20 @@ class StickyNoteCard {
       const btn = typeof document !== 'undefined' && document.getElementById('stickyNoteBtn');
       if (btn && typeof btn.focus === 'function') btn.focus();
     }
+    this.reportActiveState(); // expand = activate server processing; collapse = deactivate
     this._emitState();
+  }
+
+  /**
+   * Tell the server whether this browser is actively viewing (expanded) the
+   * current session — the server only runs note summarisation while ≥1 viewer
+   * is expanded. The cheap ai-title tail runs regardless.
+   */
+  reportActiveState() {
+    const active = !this._collapsed && this._enabled() && !!this._sessionId;
+    if (this.app && typeof this.app._reportStickyActive === 'function') {
+      this.app._reportStickyActive(this._sessionId, active);
+    }
   }
 
   setStatus(status) {
@@ -180,6 +190,12 @@ class StickyNoteCard {
 
   /** Re-render from the active session's stored note (called on tab switch). */
   notifyActiveSessionChanged(sessionId) {
+    // Switching tabs while expanded: the OLD session is no longer being viewed.
+    if (this._sessionId && this._sessionId !== sessionId && !this._collapsed) {
+      if (this.app && typeof this.app._reportStickyActive === 'function') {
+        this.app._reportStickyActive(this._sessionId, false);
+      }
+    }
     this._sessionId = sessionId;
     let note = null;
     try {
@@ -189,6 +205,7 @@ class StickyNoteCard {
       note = null;
     }
     this.render(note);
+    this.reportActiveState(); // the NEW active session is active iff the card is expanded
   }
 
   render(note) {
