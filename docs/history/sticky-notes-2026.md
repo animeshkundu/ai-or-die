@@ -191,6 +191,34 @@ by serialising the worker), and an unpinned model hash (now SHA-256-pinned).
 Also: graceful worker dispose before `terminate()` (a bare terminate with the
 model loaded aborts the process / holds a Windows file lock). All fixed pre-merge.
 
+## Windows regression: drive-letter colon broke the transcript binding (2026-06)
+
+Symptom on Windows 11: the sticky-note card stayed empty AND the tab title never
+updated — both at once, even though the model downloaded, loaded, and the engine
+reached `ready`.
+
+Root cause was the cwd→project-dir slug. claude writes transcripts under
+`~/.claude/projects/<slug>/` where the slug replaces **every non-alphanumeric
+char** with `-`, so `C:\Users\me\proj` → `C--Users-me-proj` (the drive-letter `:`
+becomes a dash too). `slugForCwd` (`src/sticky-note-jsonl.js`) only replaced path
+separators (`/[\\/]/g`), leaving `C:-Users-me-proj`. That directory never exists,
+so `findActiveSessions`' `readdir` threw, `candidates` came back empty, and the
+binder (`server.js _pumpStickyJsonl`) returned early without ever creating a
+binding. No binding means the always-on title tail (`readNewAiTitle`) and the
+expand-gated note inference both never run — hence both symptoms from one bug.
+POSIX paths have no colon, so it only bit Windows (the primary target). The model,
+native binding (win-x64 `llama-addon.node`), and `getLlama→loadModel→createContext`
+were all verified healthy on the affected machine — the break was purely the path.
+
+Fix: `slugForCwd` now mirrors claude exactly — `replace(/[^a-zA-Z0-9]/g, '-')`.
+Separator-agnostic, so `\` and `/` cwd forms resolve identically; POSIX slugs are
+unchanged. The same latent bug lived in `src/usage-reader.js`
+(`getMostRecentSessionFile`, project-usage lookup) and was fixed the same way.
+Regression covered by Windows drive-letter cases in
+`test/sticky-note-jsonl.test.js` (slug parity + a `findActiveSession` resolve).
+The rule is lossy by design (two distinct cwds can collide on one slug) — that is
+claude's own folder-naming behavior, and matching it is mandatory.
+
 ## Files
 
 Engine/worker/summarizer/transcript/prompt under `src/sticky-note-*.js`;

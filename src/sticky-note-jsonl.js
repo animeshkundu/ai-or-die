@@ -39,9 +39,16 @@ function cleanProse(s) {
     .trim();
 }
 
-/** Claude's project-dir slug for a cwd: all path separators → '-'. */
+/**
+ * Claude's project-dir slug for a cwd: every non-alphanumeric char → '-'
+ * (drive-letter colon, path separators, spaces, dots, etc.). Matches the folder
+ * claude writes under ~/.claude/projects/. A separator-only replace leaves the
+ * Windows drive-letter colon in place (`C:-Users-...`) and never matches claude's
+ * `C--Users-...`, so the transcript binding — and with it the tab title and the
+ * sticky note — silently fail on Windows.
+ */
 function slugForCwd(cwd) {
-  return String(cwd || '').replace(/[\\/]/g, '-');
+  return String(cwd || '').replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 /** The claude session id is the JSONL basename (the --resume key). */
