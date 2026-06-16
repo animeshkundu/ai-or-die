@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const https = require('https');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -3156,6 +3157,7 @@ class ClaudeCodeWebServer {
     this._ensureStickyNoteEngine();
 
     let server;
+    let wsHost; // the server the WebSocket server attaches to (TLS server in HTTPS mode)
 
     if (this.useHttps) {
       let cert, key;
@@ -3182,13 +3184,90 @@ class ClaudeCodeWebServer {
         console.log('        Browsers will show a security warning on first visit.');
         console.log('        For a trusted, installable origin use \x1b[1m--tunnel\x1b[0m.');
       }
-      server = https.createServer({ cert, key }, this.app);
+
+      // The real TLS app server. The WebSocket server attaches HERE so a wss://
+      // upgrade arrives over an encrypted TLSSocket (req.socket.encrypted stays
+      // true for the secure-context / voice checks).
+      const tlsServer = https.createServer({ cert, key }, this.app);
+
+      // Build the https redirect target from the SAME host:port the client
+      // reached. The Host header is client-controlled, so accept ONLY a bare
+      // hostname[:port] (or [ipv6][:port]) — reject userinfo (`@`), paths, and
+      // control chars to prevent an open redirect to an external origin
+      // (e.g. Host: user:pass@evil.com). Fall back to localhost otherwise.
+      const redirectLocation = (req) => {
+        const raw = String(req.headers.host || '');
+        const validHost = /^[A-Za-z0-9.-]+(?::\d+)?$/.test(raw)
+          || /^\[[0-9a-fA-F:]+\](?::\d+)?$/.test(raw);
+        const hostname = validHost ? raw.replace(/:\d+$/, '') : 'localhost';
+        const port = req.socket.localPort || this.port;
+        // req.url is parser-validated (no CR/LF in a valid request target).
+        return `https://${hostname}:${port}${req.url}`.replace(/[\r\n]/g, '');
+      };
+
+      // Plaintext HTTP on the SAME port -> redirect to https. A user who reaches
+      // http://host:PORT is auto-upgraded instead of getting an opaque
+      // TLS-handshake error. 307 keeps the method and is not cached as permanent
+      // (switching the port back to http mode later isn't poisoned by a stale 301).
+      const httpRedirectServer = http.createServer((req, res) => {
+        const location = redirectLocation(req);
+        res.writeHead(307, { Location: location, 'Content-Type': 'text/plain' });
+        res.end(`Redirecting to ${location}\n`);
+      });
+      // A plaintext ws:// upgrade to the TLS port: answer with the same redirect
+      // (written raw — an upgrade has no res object) instead of an abrupt RST.
+      httpRedirectServer.on('upgrade', (req, socket) => {
+        const location = redirectLocation(req);
+        try {
+          socket.end(
+            'HTTP/1.1 307 Temporary Redirect\r\n' +
+            `Location: ${location}\r\n` +
+            'Connection: close\r\n\r\n'
+          );
+        } catch (_) { try { socket.destroy(); } catch (__) { /* ignore */ } }
+      });
+
+      // Front both with a 1-byte sniffer: a TLS ClientHello starts with 0x16
+      // (handshake record); anything else is plaintext HTTP. One listening port
+      // therefore serves both — http:// and https:// to PORT both work.
+      this._proxySockets = new Set();
+      server = net.createServer((socket) => {
+        this._proxySockets.add(socket);
+        socket.once('close', () => this._proxySockets.delete(socket));
+        // Pre-handoff guards: drop a connection that errors or sends no data
+        // (port scanner / slowloris) before we know which server owns it. Both
+        // are cleared the moment we route, so the target server's own lifecycle
+        // and timeouts take over cleanly.
+        const sniffTimer = setTimeout(() => { try { socket.destroy(); } catch (_) { /* ignore */ } }, 10000);
+        const onSniffError = () => {
+          clearTimeout(sniffTimer);
+          try { socket.destroy(); } catch (_) { /* ignore */ }
+        };
+        socket.on('error', onSniffError);
+        socket.once('readable', () => {
+          clearTimeout(sniffTimer);
+          socket.removeListener('error', onSniffError);
+          const chunk = socket.read(1);
+          if (!chunk) { socket.destroy(); return; }
+          socket.unshift(chunk);
+          const target = chunk[0] === 0x16 ? tlsServer : httpRedirectServer;
+          target.emit('connection', socket);
+        });
+      });
+
+      this._tlsServer = tlsServer;
+      this._httpRedirectServer = httpRedirectServer;
+      wsHost = tlsServer;
+      console.log('        http:// requests on this port auto-upgrade to https.');
     } else {
       server = http.createServer(this.app);
+      this._tlsServer = null;
+      this._httpRedirectServer = null;
+      wsHost = server;
     }
 
     this.wss = new WebSocket.Server({
-      server,
+      server: wsHost,
       maxPayload: 8 * 1024 * 1024,
       // Compression disabled — binary frames already send with compress:false,
       // and JSON control messages are small/infrequent. Saves ~300KB per connection
@@ -5262,6 +5341,23 @@ class ClaudeCodeWebServer {
     }
     if (this.server) {
       this.server.close();
+    }
+    // In HTTPS mode `this.server` is the TLS-sniffing proxy that owns the
+    // listening port; the TLS app server and the http->https redirect server sit
+    // behind it. Sockets are handed to them via emit('connection'), bypassing
+    // their internal connection tracking, so destroy the proxied sockets here
+    // (and close the inner servers) to avoid keep-alive connections lingering.
+    if (this._proxySockets) {
+      for (const s of this._proxySockets) {
+        try { s.destroy(); } catch (_) { /* ignore */ }
+      }
+      this._proxySockets.clear();
+    }
+    if (this._tlsServer) {
+      try { this._tlsServer.close(); } catch (_) { /* ignore */ }
+    }
+    if (this._httpRedirectServer) {
+      try { this._httpRedirectServer.close(); } catch (_) { /* ignore */ }
     }
 
     // Flush pending output and stop all sessions with a 5-second timeout

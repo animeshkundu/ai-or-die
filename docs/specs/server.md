@@ -14,7 +14,7 @@ new ClaudeCodeWebServer(options)
 | `auth` | string | `undefined` | Bearer token for authentication; when set, all HTTP and WebSocket requests must provide it |
 | `noAuth` | boolean | `false` | Disable authentication entirely (`--disable-auth`) |
 | `dev` | boolean | `false` | Enable verbose console logging |
-| `https` | boolean | `false` | Start an HTTPS server instead of HTTP |
+| `https` | boolean | `false` | Start an HTTPS server instead of HTTP. Plaintext `http://` requests to the same port auto-upgrade (307) to `https://` (see below) |
 | `cert` | string | -- | Path to PEM certificate file (required when `https` is true) |
 | `key` | string | -- | Path to PEM private key file (required when `https` is true) |
 | `folderMode` | boolean | `true` | Enable folder-selection UI (defaults to true; always enabled in current CLI) |
@@ -190,6 +190,37 @@ Returns persistence metadata from `SessionStore.getSessionMetadata()`.
 
 #### `GET /`
 Serves `src/public/index.html`.
+
+---
+
+## HTTPS and HTTP→HTTPS auto-upgrade
+
+When `https` is enabled, the single listening port serves both TLS and a
+plaintext-HTTP redirect, so `http://host:PORT` and `https://host:PORT` both work
+(a user who reaches the port over plain HTTP is upgraded instead of getting an
+opaque TLS-handshake error).
+
+- The listening socket is a `net` server that **sniffs the first byte**: a TLS
+  ClientHello starts with `0x16`, so those connections are handed to the real
+  `https` app server; anything else is plaintext HTTP and is handed to a small
+  redirect server.
+- The redirect server answers **`307`** (method-preserving; not cached as
+  permanent, so switching the port back to plain-HTTP mode later isn't poisoned
+  by a stale `301`) with `Location: https://<host>:<port><url>`. A plaintext
+  `ws://` upgrade gets the same `307` written raw instead of an abrupt reset.
+- The redirect host comes from the client `Host` header but is **validated to a
+  bare `hostname[:port]` / `[ipv6][:port]`** (userinfo `@`, paths, and control
+  chars rejected) and falls back to `localhost` — preventing an open redirect to
+  an external origin via a forged `Host`.
+- The WebSocket server attaches to the inner TLS server, so a `wss://` upgrade
+  still arrives over an encrypted `TLSSocket` (`req.socket.encrypted` stays true
+  for the secure-context / voice checks).
+- Self-signed certs (no `cert`/`key` given) are generated/cached at
+  `~/.ai-or-die/certs/`; for a trusted, installable origin use `--tunnel`.
+
+`close()` destroys the proxied sockets and closes both inner servers (they
+receive connections via `emit('connection')`, which bypasses their own
+connection tracking).
 
 ---
 
