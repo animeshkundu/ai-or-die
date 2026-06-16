@@ -1,0 +1,26 @@
+name: Cache local models
+description: >-
+  Restore (or prefetch on cache miss) the STT (Parakeet V3) and/or sticky-note
+  (LFM2-2.6B) models into ~/.ai-or-die/models, so timed test jobs never pay the
+  on-demand model download. Keyed on the model-manager source files, so a model
+  URL/size/hash change invalidates the cache automatically.
+inputs:
+  models:
+    description: 'Which models to ensure on disk: stt | sticky | both'
+    required: false
+    default: stt
+runs:
+  using: composite
+  steps:
+    - name: Restore models cache
+      id: models-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.ai-or-die/models
+        # Key hashes only the manager(s) for the requested model, so an STT-only
+        # cache is not invalidated by a sticky-manager edit (and vice versa).
+        key: aod-models-${{ inputs.models }}-${{ runner.os }}-${{ (inputs.models == 'sticky' && hashFiles('src/utils/gguf-model-manager.js')) || (inputs.models == 'stt' && hashFiles('src/utils/model-manager.js')) || hashFiles('src/utils/model-manager.js', 'src/utils/gguf-model-manager.js') }}
+    - name: Prefetch models (cache miss only)
+      if: steps.models-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: node scripts/download-models.js ${{ inputs.models }}
