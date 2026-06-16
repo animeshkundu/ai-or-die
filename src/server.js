@@ -5304,6 +5304,20 @@ class ClaudeCodeWebServer {
     // Save sessions before closing
     await this.saveSessionsToDisk(true);
 
+    // Tear down the STT (sherpa-onnx) native worker. close() is the cleanup path
+    // shared by the signal handler (handleShutdown -> close) AND direct close()
+    // callers (e.g. the e2e test servers, which construct a ClaudeCodeWebServer
+    // and call server.close()). Without this, a server that has loaded the STT
+    // model leaks its worker thread past close() and keeps the process alive —
+    // this hung the Windows e2e jobs once the model was cached/present. The
+    // shutdown is cooperative (graceful message, no terminate()) so native
+    // teardown can't abort the process, and idempotent (handleShutdown already
+    // ran it on the signal path, so this is then a no-op). The sticky-note engine
+    // is torn down by handleShutdown only: it is disabled in the e2e test
+    // servers, and its teardown must precede close()'s session-output flush to
+    // avoid re-triggering a summary, so it stays out of this shared path.
+    try { await this.sttEngine.shutdown(); } catch (_) { /* ignore */ }
+
     // Clear all intervals
     if (this.autoSaveInterval) {
       clearInterval(this.autoSaveInterval);
