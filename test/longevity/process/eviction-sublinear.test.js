@@ -78,8 +78,9 @@ function injectSessions(server, count, lastActivityMs, opts) {
   before(async function () {
     // Construct an in-process server without binding a port. We never call
     // .start() — eviction is a pure-in-memory algorithm that touches
-    // `claudeSessions`, `_evictionHeap`, `_voiceUploadCounts`,
-    // `activityBroadcastTimestamps`, `_fsWatchSessions`, and `sessionStore`.
+    // `claudeSessions` (which carries per-session voice rate-limit state),
+    // `_evictionHeap`, `activityBroadcastTimestamps`, `_fsWatchSessions`, and
+    // `sessionStore`.
     // Isolated session-store dir so the test doesn't clobber
     // ~/.ai-or-die/sessions.json on the host.
     const raw = fs.mkdtempSync(path.join(os.tmpdir(), 'proc-04-eviction-'));

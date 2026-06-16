@@ -93,6 +93,71 @@ class SttEngine {
     return promise;
   }
 
+  /**
+   * Transcribe raw 16-bit PCM. The int16->float32 conversion is deferred to the
+   * worker thread (see stt-worker.js) so the server event loop never runs the
+   * per-sample loop. Accepts an Int16Array, an ArrayBuffer, or any ArrayBuffer
+   * view (e.g. a Node Buffer) of raw little-endian 16-bit samples.
+   *
+   * @param {Int16Array|ArrayBuffer|ArrayBufferView} int16
+   * @returns {Promise<string>}
+   */
+  transcribePcm16(int16) {
+    const int16arr = this._toInt16Array(int16);
+
+    if (this._sttEndpoint) {
+      // External endpoint has no worker — convert here and reuse the float32 path.
+      const float32 = new Float32Array(int16arr.length);
+      for (let i = 0; i < int16arr.length; i++) {
+        float32[i] = int16arr[i] / 32768.0;
+      }
+      return this._transcribeExternal(float32);
+    }
+
+    if (this._status !== 'ready') {
+      throw new Error(`STT engine not ready (status: ${this._status})`);
+    }
+
+    if (this._queue.length >= MAX_QUEUE_SIZE) {
+      throw new Error('STT busy, try again later');
+    }
+
+    const id = ++this._requestIdCounter;
+
+    const promise = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._removeFromQueue(id);
+        reject(new Error('Transcription timed out'));
+      }, TRANSCRIPTION_TIMEOUT_MS);
+
+      this._queue.push({ id, pcm16: int16arr, resolve, reject, timer });
+    });
+
+    this._processQueue();
+    return promise;
+  }
+
+  // Copy an int16 input into a fresh, offset-0, even-length Int16Array. Always
+  // copies (even an Int16Array input) so the queued buffer is solely owned and
+  // can be safely TRANSFERRED to the worker. A Node Buffer slice can have an odd
+  // byteOffset (a direct `new Int16Array(buf.buffer, off)` would throw); an odd
+  // byteLength is floored to whole 16-bit samples — callers already reject odd
+  // lengths, this is defense-in-depth so the method never throws RangeError.
+  _toInt16Array(int16) {
+    let bytes;
+    if (int16 instanceof Int16Array || ArrayBuffer.isView(int16)) {
+      bytes = new Uint8Array(int16.buffer, int16.byteOffset, int16.byteLength);
+    } else if (int16 instanceof ArrayBuffer) {
+      bytes = new Uint8Array(int16);
+    } else {
+      throw new Error('transcribePcm16 expects an Int16Array, ArrayBuffer, or typed-array view');
+    }
+    const evenLen = bytes.byteLength - (bytes.byteLength % 2);
+    const copy = new Uint8Array(evenLen);
+    copy.set(bytes.subarray(0, evenLen));
+    return new Int16Array(copy.buffer);
+  }
+
   _processQueue() {
     if (this._currentRequest || this._queue.length === 0 || !this._worker) {
       return;
@@ -101,11 +166,23 @@ class SttEngine {
     const request = this._queue[0];
     this._currentRequest = request;
 
-    this._worker.postMessage({
-      type: 'transcribe',
-      id: request.id,
-      samples: request.samples
-    });
+    // pcm16 path: TRANSFER the (solely-owned, freshly-copied by _toInt16Array)
+    // buffer to the worker — avoids a multi-MB structured-clone copy on the event
+    // loop. Safe because each request is posted exactly once (on worker crash the
+    // queue is rejected + cleared, so a posted/detached buffer is never requeued).
+    if (request.pcm16 !== undefined) {
+      this._worker.postMessage({
+        type: 'transcribe',
+        id: request.id,
+        pcm16: request.pcm16
+      }, [request.pcm16.buffer]);
+    } else {
+      this._worker.postMessage({
+        type: 'transcribe',
+        id: request.id,
+        samples: request.samples
+      });
+    }
   }
 
   _onWorkerMessage(msg) {

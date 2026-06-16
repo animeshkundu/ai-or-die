@@ -3,6 +3,7 @@
 const { parentPort, workerData } = require('worker_threads');
 const path = require('path');
 const os = require('os');
+const { pcm16ToFloat32 } = require('./utils/pcm.js');
 
 // Set platform-specific library paths BEFORE requiring sherpa-onnx-node.
 // The native .node addon dynamically loads shared libraries (onnxruntime.dll,
@@ -74,10 +75,22 @@ try {
 parentPort.on('message', (msg) => {
   if (msg.type === 'transcribe') {
     try {
-      // msg.samples is a Float32Array (transferred or copied from main thread)
-      const samples = msg.samples instanceof Float32Array
-        ? msg.samples
-        : new Float32Array(msg.samples);
+      // Two input shapes:
+      //  - msg.pcm16: raw 16-bit PCM (Int16Array). Conversion to Float32 runs
+      //    HERE, in the worker thread, so the server event loop never does the
+      //    per-sample loop (HOL-blocking input/ping for long clips).
+      //  - msg.samples: a Float32Array (legacy / external-endpoint callers).
+      let samples;
+      if (msg.pcm16 !== undefined && msg.pcm16 !== null) {
+        const int16 = msg.pcm16 instanceof Int16Array
+          ? msg.pcm16
+          : new Int16Array(msg.pcm16);
+        samples = pcm16ToFloat32(int16);
+      } else {
+        samples = msg.samples instanceof Float32Array
+          ? msg.samples
+          : new Float32Array(msg.samples);
+      }
 
       const stream = recognizer.createStream();
       stream.acceptWaveform({ samples, sampleRate: 16000 });
