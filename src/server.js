@@ -475,13 +475,31 @@ class ClaudeCodeWebServer {
     forceExitTimer.unref();
 
     console.log(`\nGracefully shutting down (exit code: ${exitCode})...`);
+    // Persist sessions FIRST, before the (bounded but potentially multi-second)
+    // native-engine teardown below. If a pathological native teardown ever blew
+    // the 15s force-exit budget, sessions would already be safe on disk. close()
+    // saves again at the end of a normal shutdown.
+    try { await this.saveSessionsToDisk(true); } catch (_) { /* ignore */ }
     // Tear down the local-LLM summariser + worker so the model/worker thread
     // don't keep the process alive (and don't hold a GGUF file lock on Windows).
     if (this._stickyInitTimer) { clearTimeout(this._stickyInitTimer); this._stickyInitTimer = null; }
     if (this._stickyJsonlPoll) { clearInterval(this._stickyJsonlPoll); this._stickyJsonlPoll = null; }
     this._stickyJsonl.clear();
     try { this.stickyNoteSummarizer.shutdown(); } catch (_) { /* ignore */ }
-    try { await this.stickyNoteEngine.shutdown(); } catch (_) { /* ignore */ }
+    // Tear down both local native worker engines (sticky-note = node-llama-cpp,
+    // STT = sherpa-onnx) concurrently. Each disposes its loaded model/recognizer
+    // on its worker thread before exiting; force-tearing them down via
+    // process.exit() while a model is loaded/loading aborts the process (SIGABRT)
+    // during native cleanup. Running them in parallel keeps total shutdown well
+    // inside the 15s force-exit budget above. STT shutdown was previously missing
+    // entirely. The CLI dev tunnel (only set in --tunnel mode) used to be stopped
+    // by a second SIGINT handler in bin/ai-or-die.js, now removed to avoid a
+    // shutdown race; its stop moves here onto the single graceful path.
+    await Promise.allSettled([
+      Promise.resolve().then(() => this.stickyNoteEngine.shutdown()),
+      Promise.resolve().then(() => this.sttEngine.shutdown()),
+      Promise.resolve().then(() => (this.tunnelManager ? this.tunnelManager.stop() : undefined)),
+    ]);
     await this.close();
     clearTimeout(forceExitTimer);
     process.exit(exitCode);

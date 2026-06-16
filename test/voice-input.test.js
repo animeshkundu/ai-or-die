@@ -195,16 +195,25 @@ describe('voice: SttEngine', function () {
     const engine = new SttEngine({ enabled: true });
     engine._status = 'ready';
 
-    // Mock worker so transcribe() queues but never resolves
-    engine._worker = {
-      postMessage: () => {},
-      terminate: async () => {}
-    };
+    // Mock worker so transcribe() queues but never resolves. Mirrors the real
+    // Worker surface the engine's cooperative shutdown needs: once('exit') +
+    // a graceful {type:'shutdown'} message that makes it "exit".
+    engine._worker = (() => {
+      let onExit = null;
+      return {
+        postMessage: (m) => { if (m && m.type === 'shutdown' && onExit) process.nextTick(() => onExit(0)); },
+        once: (ev, cb) => { if (ev === 'exit') onExit = cb; },
+        terminate: async () => { if (onExit) onExit(0); },
+      };
+    })();
 
     const promises = [];
     for (let i = 0; i < 3; i++) {
       promises.push(engine.transcribe(new Float32Array(100)));
     }
+    // The queued transcribes reject when shutdown() drains the queue; swallow so
+    // they don't surface as unhandled rejections.
+    promises.forEach((p) => p.catch(() => {}));
 
     // 4th should reject immediately
     await assert.rejects(
@@ -243,7 +252,14 @@ describe('voice: SttEngine', function () {
   it('shutdown() rejects all queued requests', async function () {
     const engine = new SttEngine({ enabled: true });
     engine._status = 'ready';
-    engine._worker = { postMessage: () => {}, terminate: async () => {} };
+    engine._worker = (() => {
+      let onExit = null;
+      return {
+        postMessage: (m) => { if (m && m.type === 'shutdown' && onExit) process.nextTick(() => onExit(0)); },
+        once: (ev, cb) => { if (ev === 'exit') onExit = cb; },
+        terminate: async () => { if (onExit) onExit(0); },
+      };
+    })();
 
     const p1 = engine.transcribe(new Float32Array(100));
     await engine.shutdown();

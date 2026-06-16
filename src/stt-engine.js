@@ -17,11 +17,13 @@ class SttEngine {
     this._numThreads = options.numThreads || Math.min(4, os.cpus().length);
     this._status = 'unavailable';
     this._worker = null;
+    this._spawningWorker = null;
     this._queue = [];
     this._currentRequest = null;
     this._requestIdCounter = 0;
     this._restartAttempts = 0;
     this._lastSpawnError = null;
+    this._stopping = false;
     this._initPromise = null;
     this._modelManager = new ModelManager({
       modelsDir: options.modelsDir
@@ -62,6 +64,11 @@ class SttEngine {
     }
 
     this._status = 'loading';
+    // If shutdown began while we were checking/downloading the model, do NOT
+    // spawn a worker we'd immediately have to kill mid-native-load (which aborts
+    // the process). shutdown() awaits this in-flight init, so bailing here lets
+    // it complete cleanly with no worker.
+    if (this._stopping) return;
     await this._spawnWorker();
   }
 
@@ -275,6 +282,11 @@ class SttEngine {
 
   _restartWorker(delay) {
     setTimeout(async () => {
+      // Don't respawn if shutdown started after this restart was scheduled.
+      if (this._stopping) {
+        this._status = 'unavailable';
+        return;
+      }
       try {
         await this._spawnWorker();
       } catch (err) {
@@ -294,11 +306,29 @@ class SttEngine {
           nodeModulesDir: path.resolve(__dirname, '..', 'node_modules')
         }
       });
+      // Track the worker from creation (not just after 'ready') so shutdown() can
+      // stop it cooperatively even while it is still loading the recognizer.
+      this._spawningWorker = worker;
+      const clearPending = () => { if (this._spawningWorker === worker) this._spawningWorker = null; };
+      const detach = () => {
+        worker.off('message', onReady);
+        worker.off('error', onError);
+        worker.off('exit', onBootExit);
+      };
 
       const onReady = (msg) => {
         if (msg.type === 'ready') {
-          worker.off('message', onReady);
-          worker.off('error', onError);
+          detach();
+          clearPending();
+          // If shutdown started while this worker was still loading, do NOT
+          // promote it to the active worker — that would resurrect a torn-down
+          // engine. Ask it to exit and resolve init as cancelled.
+          if (this._stopping) {
+            this._status = 'unavailable';
+            try { worker.postMessage({ type: 'shutdown' }); } catch { /* ignore */ }
+            resolve();
+            return;
+          }
           this._worker = worker;
           this._status = 'ready';
           this._restartAttempts = 0;
@@ -311,15 +341,15 @@ class SttEngine {
           this._processQueue();
           resolve();
         } else if (msg.type === 'error') {
-          worker.off('message', onReady);
-          worker.off('error', onError);
+          detach();
+          clearPending();
           reject(new Error(msg.message));
         }
       };
 
       const onError = (err) => {
-        worker.off('message', onReady);
-        worker.off('error', onError);
+        detach();
+        clearPending();
         // Tag dependency errors so _onWorkerExit can skip futile retries
         if (err.code === 'MODULE_NOT_FOUND' || (err.message && err.message.includes('sherpa-onnx-node'))) {
           this._lastSpawnError = 'MODULE_NOT_FOUND';
@@ -327,8 +357,19 @@ class SttEngine {
         reject(err);
       };
 
+      // If the worker dies before emitting ready/error, neither listener above
+      // fires — without this the init Promise would hang forever (and shutdown
+      // would burn its full bounded wait on it).
+      const onBootExit = (code) => {
+        detach();
+        clearPending();
+        this._status = 'unavailable';
+        reject(new Error(`STT worker exited during init (code ${code})`));
+      };
+
       worker.on('message', onReady);
       worker.on('error', onError);
+      worker.on('exit', onBootExit);
     });
   }
 
@@ -421,6 +462,30 @@ class SttEngine {
     // See docs/audits/proc-child-processes.md gap 1.
     this._stopping = true;
 
+    // Shared time budget for the init-wait + cooperative-exit waits below, so the
+    // whole engine teardown (run concurrently with the sticky-note engine by
+    // handleShutdown) finishes inside handleShutdown's 15s force-exit budget,
+    // leaving room for close(). Realistic teardown is sub-second; this only caps
+    // pathological hangs.
+    const deadline = Date.now() + 10000;
+    const remaining = () => Math.max(0, deadline - Date.now());
+
+    // If the worker is still initialising (model download/load in progress),
+    // wait — bounded — for that to settle so we can tear it down cooperatively.
+    // _doInitialize bails before spawning if _stopping is set, so this resolves
+    // promptly with no worker when shutdown races an early startup; otherwise it
+    // resolves once the recognizer is loaded and trackable in this._worker.
+    // Killing a worker mid-native-load aborts the process (SIGABRT / exit 134).
+    if (this._initPromise) {
+      await Promise.race([
+        Promise.resolve(this._initPromise).catch(() => {}),
+        new Promise((resolve) => {
+          const t = setTimeout(resolve, remaining());
+          if (t.unref) t.unref();
+        }),
+      ]);
+    }
+
     // Reject all queued requests
     for (const req of this._queue) {
       clearTimeout(req.timer);
@@ -429,9 +494,31 @@ class SttEngine {
     this._queue = [];
     this._currentRequest = null;
 
-    if (this._worker) {
-      await this._worker.terminate();
-      this._worker = null;
+    // Cooperatively stop the worker — the live one, or one still booting (tracked
+    // from creation in _spawnWorker). Ask it to exit on its own. We deliberately
+    // do NOT call worker.terminate(): force-killing a thread inside native
+    // sherpa-onnx code (mid-load or mid-transcribe) throws an uncaught Napi error
+    // during worker-env teardown and ggml's set_terminate aborts the whole
+    // process (SIGABRT / exit 134) — the bug this fixes. The wait is bounded
+    // (shared deadline) so handleShutdown can still save sessions + close(); a
+    // worker that never exits is reaped by handleShutdown's 15s force-exit
+    // backstop.
+    const w = this._worker || this._spawningWorker;
+    this._worker = null;
+    this._spawningWorker = null;
+    if (w) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        w.once('exit', finish);
+        try {
+          w.postMessage({ type: 'shutdown' });
+        } catch {
+          finish();
+        }
+        const t = setTimeout(finish, Math.max(1000, remaining()));
+        if (t.unref) t.unref();
+      });
     }
 
     this._status = 'unavailable';

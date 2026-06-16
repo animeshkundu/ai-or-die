@@ -72,8 +72,22 @@ try {
   process.exit(1);
 }
 
+let _shuttingDown = false;
 parentPort.on('message', (msg) => {
+  if (!msg) return;
+  if (msg.type === 'shutdown') {
+    // Graceful teardown. sherpa-onnx-node exposes no dispose API (the recognizer
+    // is GC/finalizer-managed), and transcribe runs synchronously here, so when
+    // this message is processed nothing is in flight. Exit cleanly while idle so
+    // the worker-env teardown doesn't race a pending native op — a bare
+    // terminate() with the recognizer loaded can abort the process during native
+    // cleanup (SIGABRT / exit 134) on Ctrl+C.
+    _shuttingDown = true;
+    process.exit(0);
+    return;
+  }
   if (msg.type === 'transcribe') {
+    if (_shuttingDown) return;
     try {
       // Two input shapes:
       //  - msg.pcm16: raw 16-bit PCM (Int16Array). Conversion to Float32 runs
