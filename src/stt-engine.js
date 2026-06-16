@@ -470,13 +470,14 @@ class SttEngine {
     const deadline = Date.now() + 10000;
     const remaining = () => Math.max(0, deadline - Date.now());
 
-    // If the worker is still initialising (model download/load in progress),
-    // wait — bounded — for that to settle so we can tear it down cooperatively.
-    // _doInitialize bails before spawning if _stopping is set, so this resolves
-    // promptly with no worker when shutdown races an early startup; otherwise it
-    // resolves once the recognizer is loaded and trackable in this._worker.
-    // Killing a worker mid-native-load aborts the process (SIGABRT / exit 134).
-    if (this._initPromise) {
+    // If a worker is mid model-LOAD (status 'loading' = the recognizer is being
+    // constructed in the worker thread), wait — bounded — for it to settle so we
+    // can tear it down cooperatively; a worker killed mid-native-load aborts the
+    // process (SIGABRT / exit 134). We do NOT wait during 'downloading' (no native
+    // worker is loaded yet, and the download can take minutes — _doInitialize
+    // bails before spawning once _stopping is set, so a Ctrl+C during a first-run
+    // download still exits promptly).
+    if (this._initPromise && this._status === 'loading') {
       await Promise.race([
         Promise.resolve(this._initPromise).catch(() => {}),
         new Promise((resolve) => {
