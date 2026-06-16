@@ -625,6 +625,9 @@ function VoiceInputController(options) {
   this._onTranscription = options.onTranscription || null;
   this._onError = options.onError || null;
   this._onCancel = options.onCancel || null;
+  // Optional predicate: if it returns false, a start request is ignored (e.g.
+  // a previous transcription is still pending). Gates both button + keyboard.
+  this._canStart = options.canStart || null;
 
   this._recorder = null;
   this._starting = false;
@@ -670,6 +673,7 @@ VoiceInputController.prototype.startRecording = function () {
   var self = this;
   if (self._starting) return;
   if (self._recorder && self._recorder.isRecording) return;
+  if (self._canStart && !self._canStart()) return;
 
   self._starting = true;
   self._recorder = self._createRecorder();

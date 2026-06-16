@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const https = require('https');
+const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -45,6 +46,18 @@ const RestartManager = require('./restart-manager');
 //
 // See docs/audits/hot-03-ws-frame-size.md.
 const MAX_WS_MESSAGE_BYTES = 1 * 1024 * 1024;
+
+// Inbound binary voice frames (client mic -> server STT) bypass the JSON guard
+// above. Framing + validation (incl. the Buffer[] fragmented-frame normalize)
+// lives in utils/ws-voice-frame so it can be unit-tested without a live socket.
+// A frame is bounded by MAX_VOICE_BINARY_FRAME_BYTES (oversize -> 1009 close,
+// like the text guard); a bad/short header -> 1003 close.
+const {
+  MAX_VOICE_PCM_BYTES,
+  MAX_VOICE_BINARY_FRAME_BYTES,
+  normalizeBinaryMessage,
+  classifyVoiceFrame,
+} = require('./utils/ws-voice-frame');
 
 // Pre-built PWA screenshot SVG buffers (served at /screenshot-wide.png and /screenshot-narrow.png)
 const SCREENSHOT_WIDE_BUF = Buffer.from(`
@@ -148,8 +161,6 @@ class ClaudeCodeWebServer {
       modelsDir: options.sttModelDir,
       numThreads: options.sttThreads ? parseInt(options.sttThreads, 10) : undefined,
     });
-    this._voiceUploadCounts = new Map();
-
     // Per-tab local-LLM "sticky note" summariser. ON by default for AI-agent
     // tabs; disable globally with --no-sticky-notes / AIORDIE_DISABLE_STICKY_NOTES=1
     // (sticky-notes only — does NOT affect STT). The engine lazily downloads its
@@ -1318,11 +1329,6 @@ class ClaudeCodeWebServer {
       // (PR #99 regression) — kernel inotify-watch + FD exhaustion after
       // weeks of uptime. See _cleanupFsWatchSession.
       this._cleanupFsWatchSession(sessionId, 'session_deleted');
-
-      // Drop the voice-upload rate-limit history for this session. Map
-      // grew unbounded across session-create/delete churn on long-lived
-      // servers (smaller cousin of the _fsWatchSessions leak).
-      this._voiceUploadCounts.delete(sessionId);
 
       // Stop + tear down the summariser so an in-flight inference is discarded.
       this.stickyNoteSummarizer.cancel(sessionId);
@@ -3151,6 +3157,7 @@ class ClaudeCodeWebServer {
     this._ensureStickyNoteEngine();
 
     let server;
+    let wsHost; // the server the WebSocket server attaches to (TLS server in HTTPS mode)
 
     if (this.useHttps) {
       let cert, key;
@@ -3177,13 +3184,90 @@ class ClaudeCodeWebServer {
         console.log('        Browsers will show a security warning on first visit.');
         console.log('        For a trusted, installable origin use \x1b[1m--tunnel\x1b[0m.');
       }
-      server = https.createServer({ cert, key }, this.app);
+
+      // The real TLS app server. The WebSocket server attaches HERE so a wss://
+      // upgrade arrives over an encrypted TLSSocket (req.socket.encrypted stays
+      // true for the secure-context / voice checks).
+      const tlsServer = https.createServer({ cert, key }, this.app);
+
+      // Build the https redirect target from the SAME host:port the client
+      // reached. The Host header is client-controlled, so accept ONLY a bare
+      // hostname[:port] (or [ipv6][:port]) — reject userinfo (`@`), paths, and
+      // control chars to prevent an open redirect to an external origin
+      // (e.g. Host: user:pass@evil.com). Fall back to localhost otherwise.
+      const redirectLocation = (req) => {
+        const raw = String(req.headers.host || '');
+        const validHost = /^[A-Za-z0-9.-]+(?::\d+)?$/.test(raw)
+          || /^\[[0-9a-fA-F:]+\](?::\d+)?$/.test(raw);
+        const hostname = validHost ? raw.replace(/:\d+$/, '') : 'localhost';
+        const port = req.socket.localPort || this.port;
+        // req.url is parser-validated (no CR/LF in a valid request target).
+        return `https://${hostname}:${port}${req.url}`.replace(/[\r\n]/g, '');
+      };
+
+      // Plaintext HTTP on the SAME port -> redirect to https. A user who reaches
+      // http://host:PORT is auto-upgraded instead of getting an opaque
+      // TLS-handshake error. 307 keeps the method and is not cached as permanent
+      // (switching the port back to http mode later isn't poisoned by a stale 301).
+      const httpRedirectServer = http.createServer((req, res) => {
+        const location = redirectLocation(req);
+        res.writeHead(307, { Location: location, 'Content-Type': 'text/plain' });
+        res.end(`Redirecting to ${location}\n`);
+      });
+      // A plaintext ws:// upgrade to the TLS port: answer with the same redirect
+      // (written raw — an upgrade has no res object) instead of an abrupt RST.
+      httpRedirectServer.on('upgrade', (req, socket) => {
+        const location = redirectLocation(req);
+        try {
+          socket.end(
+            'HTTP/1.1 307 Temporary Redirect\r\n' +
+            `Location: ${location}\r\n` +
+            'Connection: close\r\n\r\n'
+          );
+        } catch (_) { try { socket.destroy(); } catch (__) { /* ignore */ } }
+      });
+
+      // Front both with a 1-byte sniffer: a TLS ClientHello starts with 0x16
+      // (handshake record); anything else is plaintext HTTP. One listening port
+      // therefore serves both — http:// and https:// to PORT both work.
+      this._proxySockets = new Set();
+      server = net.createServer((socket) => {
+        this._proxySockets.add(socket);
+        socket.once('close', () => this._proxySockets.delete(socket));
+        // Pre-handoff guards: drop a connection that errors or sends no data
+        // (port scanner / slowloris) before we know which server owns it. Both
+        // are cleared the moment we route, so the target server's own lifecycle
+        // and timeouts take over cleanly.
+        const sniffTimer = setTimeout(() => { try { socket.destroy(); } catch (_) { /* ignore */ } }, 10000);
+        const onSniffError = () => {
+          clearTimeout(sniffTimer);
+          try { socket.destroy(); } catch (_) { /* ignore */ }
+        };
+        socket.on('error', onSniffError);
+        socket.once('readable', () => {
+          clearTimeout(sniffTimer);
+          socket.removeListener('error', onSniffError);
+          const chunk = socket.read(1);
+          if (!chunk) { socket.destroy(); return; }
+          socket.unshift(chunk);
+          const target = chunk[0] === 0x16 ? tlsServer : httpRedirectServer;
+          target.emit('connection', socket);
+        });
+      });
+
+      this._tlsServer = tlsServer;
+      this._httpRedirectServer = httpRedirectServer;
+      wsHost = tlsServer;
+      console.log('        http:// requests on this port auto-upgrade to https.');
     } else {
       server = http.createServer(this.app);
+      this._tlsServer = null;
+      this._httpRedirectServer = null;
+      wsHost = server;
     }
 
     this.wss = new WebSocket.Server({
-      server,
+      server: wsHost,
       maxPayload: 8 * 1024 * 1024,
       // Compression disabled — binary frames already send with compress:false,
       // and JSON control messages are small/infrequent. Saves ~300KB per connection
@@ -3237,7 +3321,39 @@ class ClaudeCodeWebServer {
     };
     this.webSocketConnections.set(wsId, wsInfo);
 
-    ws.on('message', (message) => {
+    ws.on('message', (message, isBinary) => {
+      // Inbound BINARY frames are voice audio (client mic). Handle them BEFORE
+      // the JSON guard below: they legitimately exceed 1 MiB (up to 3.84 MB of
+      // 120 s PCM) and must not be killed by the text-frame guard. They are
+      // still bounded (oversize -> 1009; bad/short header -> 1003) so this does
+      // not reopen the event-loop-DoS hole the JSON guard closes.
+      if (isBinary) {
+        // ws delivers a Buffer when un-fragmented and a Buffer[] when the frame
+        // arrived in multiple WS continuation fragments. Normalize first, then
+        // classify on the normalized buffer (never on `message.length`, which is
+        // the fragment COUNT for an array).
+        const buf = normalizeBinaryMessage(message);
+        const verdict = classifyVoiceFrame(buf);
+        if (verdict.action === 'oversize') {
+          try {
+            this.sendToWebSocket(ws, {
+              type: 'error',
+              code: 'message_too_large',
+              message: `Binary voice frame exceeds ${MAX_VOICE_BINARY_FRAME_BYTES} bytes`,
+              received_bytes: buf.length,
+              limit_bytes: MAX_VOICE_BINARY_FRAME_BYTES,
+            });
+          } catch (_) { /* socket may be half-closed */ }
+          try { ws.close(1009, 'message_too_large'); } catch (_) {}
+          return;
+        }
+        if (verdict.action === 'unsupported') {
+          try { ws.close(1003, 'unsupported binary'); } catch (_) {}
+          return;
+        }
+        this.handleVoiceBinary(wsId, verdict.pcm);
+        return;
+      }
       // HOT-08: application-layer size guard, runs BEFORE JSON.parse.
       // Buffer.byteLength handles both string and Buffer message types.
       // On oversize, send a marker error frame and close with WS-standard
@@ -4677,11 +4793,11 @@ class ClaudeCodeWebServer {
         }
 
         // Same per-session cleanup contract as the DELETE handler:
-        // tear down any orphan fs-watch SSE + voice-upload history
-        // BEFORE removing the parent session entry, otherwise the
-        // chokidar watcher leaks (PR #99 regression).
+        // tear down any orphan fs-watch SSE BEFORE removing the parent session
+        // entry, otherwise the chokidar watcher leaks (PR #99 regression). The
+        // voice-upload rate-limit history lives on the session object and is
+        // dropped with it below.
         try { this._cleanupFsWatchSession(top.id, 'session_evicted'); } catch (_) { /* ignore */ }
-        try { this._voiceUploadCounts.delete(top.id); } catch (_) { /* ignore */ }
         try { this.stickyNoteSummarizer.cancel(top.id); } catch (_) { /* ignore */ }
         try { this._stickyJsonl.delete(top.id); } catch (_) { /* ignore */ }
         if (this._foregroundSessionId === top.id) this._foregroundSessionId = null;
@@ -4888,7 +5004,8 @@ class ClaudeCodeWebServer {
         total: this.claudeSessions.size,
         ws_connections: this.webSocketConnections.size,
         fs_watch_sessions: (this._fsWatchSessions && this._fsWatchSessions.size) || 0,
-        voice_upload_counts: (this._voiceUploadCounts && this._voiceUploadCounts.size) || 0,
+        voice_upload_counts: Array.from(this.claudeSessions.values())
+          .filter(s => s._voiceUploadTimestamps && s._voiceUploadTimestamps.length).length,
         activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
       },
       // DISK-02/03: cached disk usage sample (60 s TTL, never blocks the
@@ -5225,6 +5342,23 @@ class ClaudeCodeWebServer {
     if (this.server) {
       this.server.close();
     }
+    // In HTTPS mode `this.server` is the TLS-sniffing proxy that owns the
+    // listening port; the TLS app server and the http->https redirect server sit
+    // behind it. Sockets are handed to them via emit('connection'), bypassing
+    // their internal connection tracking, so destroy the proxied sockets here
+    // (and close the inner servers) to avoid keep-alive connections lingering.
+    if (this._proxySockets) {
+      for (const s of this._proxySockets) {
+        try { s.destroy(); } catch (_) { /* ignore */ }
+      }
+      this._proxySockets.clear();
+    }
+    if (this._tlsServer) {
+      try { this._tlsServer.close(); } catch (_) { /* ignore */ }
+    }
+    if (this._httpRedirectServer) {
+      try { this._httpRedirectServer.close(); } catch (_) { /* ignore */ }
+    }
 
     // Flush pending output and stop all sessions with a 5-second timeout
     const stopPromises = [];
@@ -5456,7 +5590,37 @@ class ClaudeCodeWebServer {
     }
   }
 
+  // Thin shim for the legacy base64-JSON voice_upload path. The 'Missing audio
+  // data' guard must live HERE (the binary path has no data.audio); after the
+  // binary-frame switch no live client emits this, but it is kept for
+  // back-compat and shares the validation/transcribe core below.
   async handleVoiceUpload(wsId, data) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+
+    if (!data.audio || typeof data.audio !== 'string') {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'voice_transcription_error',
+        message: 'Missing audio data'
+      });
+      return;
+    }
+
+    await this._processVoicePcm(wsId, Buffer.from(data.audio, 'base64'));
+  }
+
+  // Binary voice frame path. The ws dispatcher has already validated the 6-byte
+  // header and sliced it off, so `pcmBuffer` is raw 16-bit PCM.
+  async handleVoiceBinary(wsId, pcmBuffer) {
+    await this._processVoicePcm(wsId, pcmBuffer);
+  }
+
+  // Shared voice core for both the base64 shim and the binary path. Check order
+  // is cheapest/most-restrictive first; the rate limit stays BEFORE the isReady
+  // gate (so it is enforced even when STT is unavailable), and the int16->float32
+  // conversion is deferred to the STT worker (transcribePcm16) rather than run on
+  // the event loop here.
+  async _processVoicePcm(wsId, pcmBuffer) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
 
@@ -5494,23 +5658,21 @@ class ClaudeCodeWebServer {
       return;
     }
 
-    // Rate limit: max 10 voice uploads per minute per session (check early to prevent abuse)
-    const sessionId = wsInfo.claudeSessionId;
-    if (!this._voiceUploadCounts.has(sessionId)) {
-      this._voiceUploadCounts.set(sessionId, []);
-    }
-    const timestamps = this._voiceUploadCounts.get(sessionId);
+    // Rate limit: max 10 voice uploads per minute per session. State lives on the
+    // session object (mirrors image uploads at saveImageToTemp) so it shares the
+    // session's lifetime — GC'd on session delete/evict, and correctly survives a
+    // WS reconnect (the budget must NOT reset when the socket drops).
     const now = Date.now();
-    const recent = timestamps.filter(ts => now - ts < 60000);
-    this._voiceUploadCounts.set(sessionId, recent);
-    if (recent.length >= 10) {
+    if (!session._voiceUploadTimestamps) session._voiceUploadTimestamps = [];
+    session._voiceUploadTimestamps = session._voiceUploadTimestamps.filter(ts => now - ts < 60000);
+    if (session._voiceUploadTimestamps.length >= 10) {
       this.sendToWebSocket(wsInfo.ws, {
         type: 'voice_transcription_error',
         message: 'Rate limit exceeded: maximum 10 voice uploads per minute.'
       });
       return;
     }
-    recent.push(now);
+    session._voiceUploadTimestamps.push(now);
 
     if (!this.sttEngine.isReady()) {
       this.sendToWebSocket(wsInfo.ws, {
@@ -5521,19 +5683,8 @@ class ClaudeCodeWebServer {
     }
 
     try {
-      // Validate audio data
-      if (!data.audio || typeof data.audio !== 'string') {
-        this.sendToWebSocket(wsInfo.ws, {
-          type: 'voice_transcription_error',
-          message: 'Missing audio data'
-        });
-        return;
-      }
-
-      const audioBuffer = Buffer.from(data.audio, 'base64');
-
       // Max 120s of 16kHz 16-bit mono PCM = 3,840,000 bytes
-      if (audioBuffer.length > 3840000) {
+      if (pcmBuffer.length > MAX_VOICE_PCM_BYTES) {
         this.sendToWebSocket(wsInfo.ws, {
           type: 'voice_transcription_error',
           message: 'Audio too long (max 120 seconds)'
@@ -5541,7 +5692,7 @@ class ClaudeCodeWebServer {
         return;
       }
 
-      if (audioBuffer.length < 2) {
+      if (pcmBuffer.length < 2) {
         this.sendToWebSocket(wsInfo.ws, {
           type: 'voice_transcription_error',
           message: 'Audio too short'
@@ -5549,7 +5700,7 @@ class ClaudeCodeWebServer {
         return;
       }
 
-      if (audioBuffer.length % 2 !== 0) {
+      if (pcmBuffer.length % 2 !== 0) {
         this.sendToWebSocket(wsInfo.ws, {
           type: 'voice_transcription_error',
           message: 'Invalid audio data: buffer length must be even (16-bit PCM samples)'
@@ -5557,11 +5708,8 @@ class ClaudeCodeWebServer {
         return;
       }
 
-
-      // Convert Int16 PCM buffer to Float32Array for sherpa-onnx
-      const float32 = this._int16ToFloat32(audioBuffer);
-
-      const text = await this.sttEngine.transcribe(float32);
+      // Raw int16 PCM -> the worker converts to Float32 off the event loop.
+      const text = await this.sttEngine.transcribePcm16(pcmBuffer);
 
       this.sendToWebSocket(wsInfo.ws, {
         type: 'voice_transcription',
@@ -5650,17 +5798,6 @@ class ClaudeCodeWebServer {
         this.sendToWebSocket(wsInfo.ws, data);
       }
     }
-  }
-
-  _int16ToFloat32(int16Buffer) {
-    // Copy to ensure 2-byte alignment (Node.js Buffers may have odd byteOffset)
-    const aligned = new Uint8Array(int16Buffer).buffer;
-    const int16 = new Int16Array(aligned);
-    const float32 = new Float32Array(int16.length);
-    for (let i = 0; i < int16.length; i++) {
-      float32[i] = int16[i] / 32768.0;
-    }
-    return float32;
   }
 
   async saveImageToTemp(session, data) {

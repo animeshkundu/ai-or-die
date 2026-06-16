@@ -97,22 +97,50 @@ Downloads, caches, and validates the Parakeet V3 INT8 ONNX model:
 
 | Message | Direction | Payload | Description |
 |---------|-----------|---------|-------------|
-| `voice_upload` | Client -> Server | base64-encoded Int16 PCM (16kHz mono) | Audio data for transcription |
+| binary voice frame | Client -> Server | `VUP1` header + raw Int16 PCM | Primary local-mode audio path (see below) |
+| `voice_upload` | Client -> Server | `{ audio: base64 Int16 PCM }` | Legacy base64 shim, kept for back-compat |
 | `voice_transcription` | Server -> Client | `{ text }` | Transcription result |
-| `voice_transcription_error` | Server -> Client | `{ error }` | Transcription failure |
+| `voice_transcription_error` | Server -> Client | `{ message }` | Transcription failure |
 | `voice_model_progress` | Server -> Client | `{ progress, total, eta }` | Model download progress |
 | `voice_download_model` | Client -> Server | `{}` | Request to start model download |
 | `voice_status` | Server -> Client | `{ localStatus, cloudAvailable }` | STT engine availability |
 
 ### Binary Frame Protocol
 
-Local mode audio uses binary WebSocket frames with a `0x01` prefix byte followed by raw Int16 PCM data.
+Local-mode audio is sent as a single **binary** WebSocket frame (not base64-in-JSON —
+base64's 33% inflation pushed long clips past the 1 MiB JSON frame guard and crashed
+the page; see ADR-0026). Framing (`src/utils/ws-voice-frame.js`):
+
+```
+[ "VUP1" (4 bytes) ][ version=1 (1) ][ type=0x01 PCM (1) ][ raw Int16 PCM, 16 kHz mono ]
+```
+
+- PCM byte order is the browser `Int16Array`'s **native** endianness (little-endian on
+  every supported target).
+- The 6-byte header is even, so the PCM stays 2-byte aligned. The version/type bytes let
+  future inbound-binary features claim their own tag instead of forcing a wire break.
+- The server dispatcher routes inbound binary frames **before** the 1 MiB JSON guard and
+  normalizes ws `Buffer[]` (fragmented) frames before validating.
+- The int16->float32 conversion runs in the STT **worker thread**
+  (`sttEngine.transcribePcm16`), never on the event loop.
+- The legacy `voice_upload` JSON message still works (thin shim that decodes base64 and
+  shares the same validation/transcribe core); no current client emits it.
 
 ### Validation
 
-- **Buffer size limit**: Maximum 3,840,000 bytes (120s at 16kHz, 2 bytes per sample).
-- **Rate limiting**: 10 voice uploads per minute per session.
-- **Timeout**: 60 seconds per transcription request.
+- **Binary frame size**: oversize (> `6 + 3,840,000` bytes) -> `message_too_large` error +
+  WS close **1009**. Bad/short/unknown header -> WS close **1003** (`unsupported binary`).
+- **PCM size**: maximum 3,840,000 bytes (120 s at 16 kHz, 2 bytes/sample); too short (< 2)
+  or odd length -> `voice_transcription_error` (socket stays open).
+- **Rate limiting**: 10 voice uploads per minute per session (state on the session object,
+  GC'd with the session; checked before the readiness gate so it applies even when STT is
+  unavailable).
+- **Timeout**: 60 seconds per transcription request (server); 90 seconds client-side.
+- **Client robustness**: a close mid-transcription clears the mic spinner/timeout; a
+  server-initiated `1009`/`1003` (clean close) shows a specific toast and reconnects
+  instead of dead-ending; the heartbeat pong-timeout is suspended while recording (the
+  busy capture thread can briefly miss a pong); a send on a non-OPEN socket fails fast
+  instead of hanging the spinner.
 
 ---
 
@@ -229,12 +257,16 @@ The 670MB Parakeet V3 model is cached across CI runs via `actions/cache`.
 | File | Role |
 |------|------|
 | `src/utils/model-manager.js` | Download, cache, validate Parakeet V3 model |
-| `src/stt-worker.js` | Worker thread: load model, run inference |
-| `src/stt-engine.js` | Model + worker coordinator, concurrency queue |
+| `src/utils/pcm.js` | Pure int16->float32 conversion (worker + unit tests) |
+| `src/utils/ws-voice-frame.js` | Inbound binary frame normalize/classify (pure, unit-tested) |
+| `src/stt-worker.js` | Worker thread: load model, convert PCM, run inference |
+| `src/stt-engine.js` | Model + worker coordinator, concurrency queue, `transcribePcm16` |
 | `src/public/voice-handler.js` | Browser recording (cloud + local modes) |
 | `src/public/voice-processor.js` | AudioWorklet processor |
+| `src/public/voice-frame.js` | Client frame builder + close-code classifier (pure) |
+| `src/public/heartbeat-watchdog.js` | WS ping/pong liveness; `pause()`/`resume()` during recording |
 | `src/public/components/voice-input.css` | All voice UI states and animations |
-| `src/server.js` | WebSocket handlers, binary frames, STT init |
+| `src/server.js` | WebSocket handlers, binary frame dispatcher, STT init |
 | `src/utils/self-signed-cert.js` | Auto-generate and cache self-signed HTTPS certs |
-| `src/public/app.js` | Voice UI, mode selection, keyboard shortcuts |
+| `src/public/app.js` | Voice UI, `buildVoiceFrame`/`sendBinary`, onclose handling, keyboard shortcuts |
 | `bin/ai-or-die.js` | CLI flags (--stt, --stt-endpoint, etc.) |

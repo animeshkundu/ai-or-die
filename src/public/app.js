@@ -1386,8 +1386,19 @@ class ClaudeCodeWebInterface {
 
         this.voiceController = new window.VoiceHandler.VoiceInputController({
             mode: this.voiceMode,
+            // Refuse a new recording while a previous transcription is still
+            // pending (single timeout slot + no correlation id — overlapping
+            // uploads would clobber each other's spinner/timeout).
+            canStart: function () {
+                return !self._voiceTranscriptionTimeout;
+            },
             onRecordingStart: function () {
                 self._playMicChime('on');
+                // Suspend the heartbeat pong-timeout while capturing: the main
+                // thread can be busy enough (esp. the ScriptProcessor fallback)
+                // to miss a pong, which would otherwise force a spurious reconnect.
+                self._voiceRecordingActive = true;
+                if (self._heartbeat) self._heartbeat.pause();
                 btn.classList.add('recording');
                 btn.classList.remove('processing');
                 btn.setAttribute('aria-pressed', 'true');
@@ -1415,6 +1426,8 @@ class ClaudeCodeWebInterface {
             },
             onRecordingStop: function (result) {
                 self._playMicChime('off');
+                self._voiceRecordingActive = false;
+                if (self._heartbeat) self._heartbeat.resume();
                 btn.classList.remove('recording');
                 btn.setAttribute('aria-pressed', 'false');
                 btn.title = 'Voice Input (Ctrl+Shift+M)';
@@ -1425,21 +1438,33 @@ class ClaudeCodeWebInterface {
                 }
 
                 if (self.voiceMode === 'local' && result && result.samples) {
-                    btn.classList.add('processing');
-                    // Convert Int16 PCM to base64 efficiently (chunked to avoid call stack overflow)
-                    var pcmBytes = new Uint8Array(result.samples.buffer);
-                    var CHUNK_SIZE = 8192;
-                    var parts = [];
-                    for (var i = 0; i < pcmBytes.length; i += CHUNK_SIZE) {
-                        var chunk = pcmBytes.subarray(i, Math.min(i + CHUNK_SIZE, pcmBytes.length));
-                        parts.push(String.fromCharCode.apply(null, chunk));
+                    // Guard against a zero-sample recording (would send a
+                    // header-only frame the server rejects as "too short").
+                    if (!result.samples.byteLength || result.samples.byteLength < 2) {
+                        btn.classList.remove('processing');
+                        if (window.feedback) window.feedback.error('No audio captured');
+                        return;
                     }
-                    var base64Audio = btoa(parts.join(''));
-                    self.send({
-                        type: 'voice_upload',
-                        audio: base64Audio,
-                        durationMs: result.durationMs
-                    });
+
+                    btn.classList.add('processing');
+
+                    // Send raw Int16 PCM as a tagged binary WS frame (no base64 —
+                    // base64's 33% inflation is what pushed long clips past the
+                    // 1 MiB frame guard and crashed the page).
+                    var frame = window.VoiceFrame.buildVoiceFrame(result.samples);
+                    var sent = self.sendBinary(frame);
+
+                    if (!sent) {
+                        // Socket not OPEN (e.g. mid-reconnect): fail fast instead of
+                        // silently dropping the frame and hanging the spinner 90 s.
+                        btn.classList.remove('processing');
+                        var notSentMsg = 'Connection not ready — recording not sent';
+                        if (window.feedback) window.feedback.error(notSentMsg);
+                        if (self.terminal) {
+                            self.terminal.write('\r\n\x1b[31m[Voice error] ' + notSentMsg + '\x1b[0m\r\n');
+                        }
+                        return;
+                    }
 
                     // Client-side timeout for transcription processing (90 seconds)
                     self._voiceTranscriptionTimeout = setTimeout(function () {
@@ -1467,6 +1492,8 @@ class ClaudeCodeWebInterface {
                 self._deliverVoiceTranscription(text);
             },
             onError: function (err) {
+                self._voiceRecordingActive = false;
+                if (self._heartbeat) self._heartbeat.resume();
                 btn.classList.remove('recording', 'processing');
                 btn.setAttribute('aria-pressed', 'false');
                 btn.title = 'Voice Input (Ctrl+Shift+M)';
@@ -1497,6 +1524,8 @@ class ClaudeCodeWebInterface {
                 }
             },
             onCancel: function () {
+                self._voiceRecordingActive = false;
+                if (self._heartbeat) self._heartbeat.resume();
                 btn.classList.remove('recording', 'processing');
                 btn.setAttribute('aria-pressed', 'false');
                 btn.title = 'Voice Input (Ctrl+Shift+M)';
@@ -2043,6 +2072,32 @@ class ClaudeCodeWebInterface {
                 if (this._heartbeat) { this._heartbeat.stop(); this._heartbeat = null; }
                 if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
                 if (this._pongTimer) { clearTimeout(this._pongTimer); this._pongTimer = null; }
+
+                // A close mid-transcription must not leave the mic spinner + its
+                // 90 s timeout hanging.
+                if (this._voiceTranscriptionTimeout) {
+                    clearTimeout(this._voiceTranscriptionTimeout);
+                    this._voiceTranscriptionTimeout = null;
+                }
+                this._voiceRecordingActive = false;
+                const voiceBtn = document.getElementById('voiceInputBtn');
+                if (voiceBtn) voiceBtn.classList.remove('processing');
+
+                // Log the close code so field reports can tell a server frame
+                // rejection (1009/1003, at stop) from a heartbeat pong-timeout
+                // (4000, mid-recording).
+                console.warn('[ws] closed', event.code, event.reason || '');
+
+                // 1009/1003 are server-initiated CLEAN closes (wasClean=true): the
+                // server rejected our frame. Surface a specific message and still
+                // reconnect below, instead of dead-ending on "refresh the page".
+                const voiceClose = (window.VoiceFrame && window.VoiceFrame.classifyVoiceClose)
+                    ? window.VoiceFrame.classifyVoiceClose(event.code)
+                    : { rejected: false, message: null };
+                if (voiceClose.rejected && window.feedback) {
+                    window.feedback.error(voiceClose.message);
+                }
+
                 // During server restart, don't count failures against reconnect budget
                 // but still use backoff to avoid thundering herd
                 if (this._serverRestarting) {
@@ -2056,7 +2111,7 @@ class ClaudeCodeWebInterface {
                         if (restartGen !== this._socketGeneration) return;
                         this.reconnect();
                     }, restartBackoff);
-                } else if (!event.wasClean && this.reconnectAttempts < this.maxReconnectAttempts) {
+                } else if ((!event.wasClean || voiceClose.rejected) && this.reconnectAttempts < this.maxReconnectAttempts) {
                     this.updateStatus('Reconnecting (' + (this.reconnectAttempts + 1) + '/' + this.maxReconnectAttempts + ')...');
                     // First attempt is fast (250ms covers a server-process restart window);
                     // subsequent attempts use exponential backoff with jitter.
@@ -2172,6 +2227,17 @@ class ClaudeCodeWebInterface {
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify(data));
         }
+    }
+
+    // Send a binary WS frame (e.g. a voice PCM frame). Returns true if it was
+    // handed to an OPEN socket, false otherwise so the caller can react to a
+    // closed/closing socket instead of silently dropping the frame.
+    sendBinary(view) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(view);
+            return true;
+        }
+        return false;
     }
 
     _handleStickyNoteUpdate(message) {
@@ -4368,6 +4434,9 @@ class ClaudeCodeWebInterface {
             log: (m) => console.warn('[heartbeat]', m),
         });
         this._heartbeat.start();
+        // If a recording is in progress (e.g. this heartbeat was re-created after
+        // a reconnect mid-recording), keep pong-timeout enforcement suspended.
+        if (this._voiceRecordingActive) this._heartbeat.pause();
         // Keep _heartbeatTimer/_pongTimer references in sync for legacy code
         // (disconnect() still nulls them defensively); the watchdog owns the
         // real timer lifecycle via stop().

@@ -12,7 +12,7 @@
 // Tests:
 //   1. DELETE /api/sessions/:id cleans up the watcher entry.
 //   2. _cleanupFsWatchSession is idempotent.
-//   3. _voiceUploadCounts.delete fires on DELETE.
+//   3. Session voice rate-limit state (session._voiceUploadTimestamps) drops on DELETE.
 //   4. server.close() cleans up all live watchers.
 //   5. Eviction-sweep path cleans up the watcher entry.
 //   6. Race guard: opening a watcher for a non-existent sessionId bails
@@ -272,25 +272,26 @@ function openSseAndWaitForStart(port, sessionId, watchRoot, timeoutMs) {
   });
 
   // ───────────────────────────────────────────────────────────────────
-  // Test 3: _voiceUploadCounts also drops on DELETE
+  // Test 3: voice rate-limit state drops on DELETE
+  //
+  // The history now lives on the session object (session._voiceUploadTimestamps),
+  // so removing the session on delete drops it — no separate Map to leak.
   // ───────────────────────────────────────────────────────────────────
-  it('DELETE /api/sessions/:id clears _voiceUploadCounts (smaller cousin leak)', async function () {
+  it('DELETE /api/sessions/:id drops the session voice rate-limit state (smaller cousin leak)', async function () {
     const created = await request(port, 'POST', '/api/sessions/create', {
       name: 'voice-test', workingDir: tmpDir,
     });
     const sessionId = created.body.sessionId;
 
-    // Populate the voice-upload bucket directly (the rate-limiter helper
-    // is internal; we just need the Map entry).
-    server._voiceUploadCounts.set(sessionId, [Date.now(), Date.now()]);
-    assert.strictEqual(server._voiceUploadCounts.has(sessionId), true,
-      'pre-condition: voice bucket present');
+    const session = server.claudeSessions.get(sessionId);
+    assert.ok(session, 'pre-condition: session exists');
+    session._voiceUploadTimestamps = [Date.now(), Date.now()];
 
     const del = await request(port, 'DELETE', '/api/sessions/' + sessionId);
     assert.strictEqual(del.status, 200);
 
-    assert.strictEqual(server._voiceUploadCounts.has(sessionId), false,
-      '_voiceUploadCounts must be cleared on session delete');
+    assert.strictEqual(server.claudeSessions.has(sessionId), false,
+      'session (and its voice rate-limit state) must be dropped on delete');
   });
 
   // ───────────────────────────────────────────────────────────────────
@@ -353,32 +354,31 @@ function openSseAndWaitForStart(port, sessionId, watchRoot, timeoutMs) {
   //
   // The 7-day eviction timer fires every 5 min — too slow for a test.
   // Inline the same cleanup contract the timer body uses (verifying the
-  // load-bearing call: _cleanupFsWatchSession + _voiceUploadCounts.delete
-  // BEFORE claudeSessions.delete).
+  // load-bearing call: _cleanupFsWatchSession BEFORE claudeSessions.delete;
+  // the voice rate-limit state rides on the session object and is dropped with
+  // it).
   // ───────────────────────────────────────────────────────────────────
-  it('eviction-equivalent cleanup also closes the watcher + clears voice map', async function () {
+  it('eviction-equivalent cleanup also closes the watcher + drops the session', async function () {
     const created = await request(port, 'POST', '/api/sessions/create', {
       name: 'evict-test', workingDir: tmpDir,
     });
     const sessionId = created.body.sessionId;
     const sse = await openSseAndWaitForStart(port, sessionId, tmpDir);
     assert.strictEqual(sse.status, 200);
-    server._voiceUploadCounts.set(sessionId, [Date.now()]);
+    const evSession = server.claudeSessions.get(sessionId);
+    if (evSession) evSession._voiceUploadTimestamps = [Date.now()];
 
     const watcherRef = server._fsWatchSessions.get(sessionId).watcher;
     assert.strictEqual(watcherRef._isClosed, false);
 
     // Simulate the timer body — the same cleanup contract DELETE uses.
     server._cleanupFsWatchSession(sessionId, 'session_evicted');
-    server._voiceUploadCounts.delete(sessionId);
     server.claudeSessions.delete(sessionId);
 
     assert.strictEqual(server._fsWatchSessions.has(sessionId), false,
       'eviction cleanup must drop the fs-watch entry');
-    assert.strictEqual(server._voiceUploadCounts.has(sessionId), false,
-      'eviction cleanup must drop the voice-upload bucket');
     assert.strictEqual(server.claudeSessions.has(sessionId), false,
-      'eviction cleanup must drop the session itself');
+      'eviction cleanup must drop the session itself (and its voice rate-limit state)');
 
     await new Promise((r) => setTimeout(r, 50));
     assert.strictEqual(watcherRef._isClosed, true,

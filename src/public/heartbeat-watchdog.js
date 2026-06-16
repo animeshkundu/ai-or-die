@@ -59,6 +59,10 @@
             this._clearTimeout = t.clearTimeout || ((id) => clearTimeout(id));
             this._heartbeatTimer = null;
             this._pongTimer = null;
+            // When paused (e.g. during mic recording), pings still go out but a
+            // missed pong does NOT force a reconnect — the client main thread can
+            // be busy capturing audio and briefly stop servicing the pong.
+            this._paused = false;
         }
 
         _isStale() {
@@ -75,6 +79,9 @@
             } catch (_) {
                 return;
             }
+            // Paused: keep liveness pings flowing but do NOT arm the pong-timeout
+            // (a missed pong while recording must not force-close the socket).
+            if (this._paused) return;
             if (this._pongTimer) this._clearTimeout(this._pongTimer);
             this._pongTimer = this._setTimeout(() => {
                 if (this._isStale()) return;
@@ -117,6 +124,24 @@
                 this._clearTimeout(this._pongTimer);
                 this._pongTimer = null;
             }
+        }
+
+        /**
+         * Suspend pong-timeout enforcement (pings continue). Use while the client
+         * main thread may be busy enough to miss a pong — e.g. mic recording —
+         * so a transient stall doesn't trigger a spurious reconnect.
+         */
+        pause() {
+            this._paused = true;
+            if (this._pongTimer) {
+                this._clearTimeout(this._pongTimer);
+                this._pongTimer = null;
+            }
+        }
+
+        /** Resume normal pong-timeout enforcement (next ping re-arms it). */
+        resume() {
+            this._paused = false;
         }
     }
 
