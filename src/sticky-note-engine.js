@@ -30,6 +30,7 @@ class StickyNoteEngine {
 
     this._status = 'unavailable';
     this._worker = null;
+    this._spawningWorker = null;
     this._queue = [];
     this._currentRequest = null;
     this._requestIdCounter = 0;
@@ -88,6 +89,11 @@ class StickyNoteEngine {
       });
     }
     this._status = 'loading';
+    // If shutdown began while we were checking/downloading the model, do NOT
+    // spawn a worker we'd immediately have to kill mid-native-load (which aborts
+    // the process). shutdown() awaits this in-flight init, so bailing here lets
+    // it complete cleanly with no worker.
+    if (this._stopping) return;
     await this._spawnWorker();
   }
 
@@ -198,6 +204,11 @@ class StickyNoteEngine {
   _spawnWorker() {
     return new Promise((resolve, reject) => {
       const worker = this._createWorker();
+      // Track the worker from the moment it's created (not just after 'ready')
+      // so shutdown() can stop it cooperatively even while it's still loading the
+      // model. Cleared once it becomes this._worker or fails to boot.
+      this._spawningWorker = worker;
+      const clearPending = () => { if (this._spawningWorker === worker) this._spawningWorker = null; };
 
       const onReady = (msg) => {
         if (!msg) return;
@@ -205,6 +216,16 @@ class StickyNoteEngine {
           worker.off('message', onReady);
           worker.off('error', onError);
           worker.off('exit', onBootExit);
+          clearPending();
+          // If shutdown started while this worker was still loading, do NOT
+          // promote it to the active worker — that would resurrect a torn-down
+          // engine. Ask it to dispose + exit and resolve init as cancelled.
+          if (this._stopping) {
+            this._status = 'unavailable';
+            try { worker.postMessage({ type: 'shutdown' }); } catch { /* ignore */ }
+            resolve();
+            return;
+          }
           this._worker = worker;
           this._status = 'ready';
           this._restartAttempts = 0;
@@ -217,6 +238,7 @@ class StickyNoteEngine {
           worker.off('message', onReady);
           worker.off('error', onError);
           worker.off('exit', onBootExit);
+          clearPending();
           if (msg.code === 'MODULE_NOT_FOUND') this._lastSpawnError = 'MODULE_NOT_FOUND';
           this._status = 'unavailable';
           reject(new Error(msg.message || 'worker error'));
@@ -226,6 +248,7 @@ class StickyNoteEngine {
         worker.off('message', onReady);
         worker.off('error', onError);
         worker.off('exit', onBootExit);
+        clearPending();
         if (err && (err.code === 'MODULE_NOT_FOUND' || (err.message && err.message.includes('node-llama-cpp')))) {
           this._lastSpawnError = 'MODULE_NOT_FOUND';
         }
@@ -238,6 +261,7 @@ class StickyNoteEngine {
         worker.off('message', onReady);
         worker.off('error', onError);
         worker.off('exit', onBootExit);
+        clearPending();
         this._status = 'unavailable';
         reject(new Error(`sticky-note worker exited during init (code ${code})`));
       };
@@ -263,6 +287,32 @@ class StickyNoteEngine {
 
   async shutdown() {
     this._stopping = true;
+
+    // Shared time budget: the init-wait + cooperative-exit waits below together
+    // stay within this window so the whole engine teardown (run concurrently with
+    // the STT engine by handleShutdown) finishes inside handleShutdown's 15s
+    // force-exit budget, leaving room for close(). Realistic teardown is a few
+    // hundred ms; this only caps pathological hangs.
+    const deadline = Date.now() + 10000;
+    const remaining = () => Math.max(0, deadline - Date.now());
+
+    // If a worker is mid model-LOAD (status 'loading' = the native model is being
+    // constructed in the worker thread), wait — bounded — for it to settle so we
+    // can dispose it cooperatively; a worker killed mid-native-load aborts the
+    // process (SIGABRT / exit 134). We do NOT wait during 'downloading' (no native
+    // worker is loaded yet, so process.exit can't abort, and the download can take
+    // minutes — _doInitialize bails before spawning once _stopping is set, so a
+    // Ctrl+C during a first-run download still exits promptly).
+    if (this._initPromise && this._status === 'loading') {
+      await Promise.race([
+        Promise.resolve(this._initPromise).catch(() => {}),
+        new Promise((resolve) => {
+          const t = setTimeout(resolve, remaining());
+          if (t.unref) t.unref();
+        }),
+      ]);
+    }
+
     if (this._restartTimer) {
       clearTimeout(this._restartTimer);
       this._restartTimer = null;
@@ -273,38 +323,31 @@ class StickyNoteEngine {
     }
     this._queue = [];
     this._currentRequest = null;
-    if (this._worker) {
-      const w = this._worker;
-      this._worker = null;
-      try {
-        // Ask the worker to dispose the native model/context cleanly, then
-        // terminate only if it didn't exit on its own. A bare terminate() with
-        // the model loaded can abort the process during native cleanup.
-        let exited = false;
-        await new Promise((resolve) => {
-          let done = false;
-          const finish = () => {
-            if (!done) {
-              done = true;
-              resolve();
-            }
-          };
-          w.once('exit', () => {
-            exited = true;
-            finish();
-          });
-          try {
-            w.postMessage({ type: 'shutdown' });
-          } catch {
-            finish();
-          }
-          const t = setTimeout(finish, 3000);
-          if (t.unref) t.unref();
-        });
-        if (!exited) await w.terminate();
-      } catch {
-        /* ignore */
-      }
+    // Cooperatively stop the worker — the live one, or one still booting (tracked
+    // from creation in _spawnWorker). Ask it to dispose its native model/context
+    // and exit on its own. We deliberately do NOT call worker.terminate():
+    // force-killing a thread that is inside native ggml code (mid model-load or
+    // mid-inference) throws an uncaught Napi error during worker-env teardown and
+    // ggml's set_terminate aborts the whole process (SIGABRT / exit 134) — the
+    // bug this fixes. The wait is bounded (shared deadline) so handleShutdown can
+    // still save sessions + close(); a worker that never exits is reaped by
+    // handleShutdown's 15s force-exit backstop.
+    const w = this._worker || this._spawningWorker;
+    this._worker = null;
+    this._spawningWorker = null;
+    if (w) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        w.once('exit', finish);
+        try {
+          w.postMessage({ type: 'shutdown' });
+        } catch {
+          finish();
+        }
+        const t = setTimeout(finish, Math.max(1000, remaining()));
+        if (t.unref) t.unref();
+      });
     }
     this._status = 'unavailable';
   }

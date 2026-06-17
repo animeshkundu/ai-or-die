@@ -56,7 +56,14 @@ class StubWorker extends EventEmitter {
     this._terminated = false;
     this._messages = [];
   }
-  postMessage(msg) { this._messages.push(msg); }
+  postMessage(msg) {
+    this._messages.push(msg);
+    // Mirror the real worker: a graceful {type:'shutdown'} request makes the
+    // worker dispose + exit on its own (the engine no longer calls terminate()).
+    if (msg && msg.type === 'shutdown') {
+      process.nextTick(() => this.emit('exit', 0));
+    }
+  }
   off(event, fn) { this.removeListener(event, fn); return this; }
   async terminate() {
     this._terminated = true;
@@ -335,6 +342,14 @@ function crashStub(stub, code) {
       'PROC-02 gap 1: no new stub Worker must be allocated post-shutdown');
     assert.strictEqual(engine._status, 'unavailable',
       'post-shutdown status must remain "unavailable"');
+    // Regression (Ctrl+C SIGABRT): shutdown() must stop the worker cooperatively
+    // (graceful {type:'shutdown'} message -> worker exits) and must NOT call
+    // worker.terminate(), which force-kills the native sherpa-onnx worker and
+    // aborts the whole process during native teardown.
+    assert.ok(stubs[0]._messages.some((m) => m && m.type === 'shutdown'),
+      'shutdown() must send a graceful shutdown message to the worker');
+    assert.strictEqual(stubs[0]._terminated, false,
+      'shutdown() must NOT call worker.terminate() (aborts the native worker)');
   });
 
   // -----------------------------------------------------------------------

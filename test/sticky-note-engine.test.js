@@ -180,4 +180,38 @@ describe('sticky-note engine', function () {
     assert.ok(fake.posted.some((m) => m.type === 'shutdown'), 'sent graceful shutdown to worker');
     assert.strictEqual(engine.getStatus(), 'unavailable');
   });
+
+  // Regression: Ctrl+C aborted the process (SIGABRT / exit 134) because the
+  // ggml-based worker was force-killed via worker.terminate() / process.exit()
+  // while its native model was live. shutdown() must stop the worker
+  // COOPERATIVELY (graceful message -> worker disposes + exits) and never call
+  // terminate(), which throws an uncaught Napi error during native teardown.
+  it('shutdown() stops the worker cooperatively and never calls terminate()', async function () {
+    const { engine, fake } = makeEngine();
+    const initP = engine.initialize();
+    await tick();
+    fake.ready();
+    await initP;
+    assert.strictEqual(engine.isReady(), true);
+    await engine.shutdown();
+    assert.ok(fake.posted.some((m) => m && m.type === 'shutdown'), 'sent graceful shutdown message');
+    assert.strictEqual(fake.terminated, false, 'must NOT call worker.terminate() (aborts the native worker)');
+    assert.strictEqual(engine.getStatus(), 'unavailable');
+  });
+
+  // Regression: a worker that finishes loading AFTER shutdown began must not be
+  // adopted as the active worker (resurrecting a torn-down engine); it must be
+  // told to shut down instead.
+  it('shutdown() does not adopt a worker that becomes ready afterwards', async function () {
+    const { engine, fake } = makeEngine();
+    const initP = engine.initialize();
+    await tick(); // worker created + loading; not yet ready (tracked as pending)
+    const sd = engine.shutdown(); // shutdown begins before 'ready'
+    fake.ready(); // worker reports ready AFTER shutdown started
+    await sd;
+    await initP.catch(() => {});
+    assert.strictEqual(engine._worker, null, 'must not adopt a worker that readied post-shutdown');
+    assert.strictEqual(engine.getStatus(), 'unavailable');
+    assert.ok(fake.posted.some((m) => m && m.type === 'shutdown'), 'asked the late-ready worker to shut down');
+  });
 });

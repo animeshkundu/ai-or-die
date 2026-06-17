@@ -97,6 +97,13 @@ module.exports = defineConfig({
       },
       grep: /@voice-real/,
     },
+    // Sticky-note (per-tab local-LLM summary) UI. Deterministic: the server runs
+    // with both native engines off (no model download) and the spec injects the
+    // server->client messages the engine would emit. See 22-sticky-notes.spec.js.
+    {
+      name: 'sticky-notes',
+      testMatch: '22-sticky-notes.spec.js',
+    },
     // Power user flow tests — real CLI tools, real workflows
     {
       name: 'power-user-flows',

@@ -45,8 +45,32 @@ jobs:
       - run: npm audit --audit-level=moderate
         continue-on-error: true
 
+  # Warm the STT model cache ONCE before the browser jobs so none of them pay
+  # the ~640MB on-demand download inside their 12-min budget (a timed-out job
+  # never saves the cache, so per-job-only caching could never self-warm the
+  # slow jobs). Browser jobs `needs: prewarm-models` and then just restore.
+  prewarm-models:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Prewarm STT model cache
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
+
   test-browser-golden:
     runs-on: ${{ matrix.os }}
+    needs: prewarm-models
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -68,6 +92,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run golden path test
         run: npx playwright test --config e2e/playwright.config.js --project golden-path
       - name: Upload Playwright report
@@ -82,6 +110,7 @@ jobs:
 
   test-browser-functional-core:
     runs-on: ${{ matrix.os }}
+    needs: prewarm-models
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -103,6 +132,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run functional core tests
         run: npx playwright test --config e2e/playwright.config.js --project functional-core
       - name: Upload Playwright report
@@ -117,6 +150,7 @@ jobs:
 
   test-browser-functional-extended:
     runs-on: ${{ matrix.os }}
+    needs: prewarm-models
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -138,6 +172,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run functional extended tests
         run: npx playwright test --config e2e/playwright.config.js --project functional-extended
       - name: Upload Playwright report
@@ -152,6 +190,7 @@ jobs:
 
   test-browser-mobile:
     runs-on: ${{ matrix.os }}
+    needs: prewarm-models
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -173,6 +212,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run mobile portrait tests (iPhone 14)
         run: npx playwright test --config e2e/playwright.config.js --project mobile-iphone
       - name: Run mobile portrait tests (Pixel 7)
@@ -189,6 +232,7 @@ jobs:
 
   test-browser-visual:
     runs-on: ${{ matrix.os }}
+    needs: prewarm-models
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -210,6 +254,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run visual regression tests
         run: npx playwright test --config e2e/playwright.config.js --project visual-regression
       - name: Upload Playwright report
@@ -238,6 +286,7 @@ jobs:
 
   test-browser-new-features:
     runs-on: ${{ matrix.os }}
+    needs: prewarm-models
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -259,6 +308,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run new feature tests
         run: npx playwright test --config e2e/playwright.config.js --project new-features
       - name: Upload Playwright report
@@ -273,6 +326,7 @@ jobs:
 
   test-browser-integrations:
     runs-on: ${{ matrix.os }}
+    needs: prewarm-models
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -294,6 +348,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run integration tests
         run: npx playwright test --config e2e/playwright.config.js --project integrations
       - name: Upload Playwright report
@@ -308,7 +366,7 @@ jobs:
 
   test-browser-power-user:
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs: [test, prewarm-models]
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -330,6 +388,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run power user flow tests
         run: npx playwright test --config e2e/playwright.config.js --project power-user-flows
       - name: Upload Playwright report
@@ -344,7 +406,7 @@ jobs:
 
   test-browser-mobile-flows:
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs: [test, prewarm-models]
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -366,6 +428,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run mobile flow tests
         run: npx playwright test --config e2e/playwright.config.js --project mobile-flows
       - name: Upload Playwright report
@@ -380,7 +446,7 @@ jobs:
 
   test-browser-ui-features:
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs: [test, prewarm-models]
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -402,6 +468,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run UI feature tests
         run: npx playwright test --config e2e/playwright.config.js --project ui-features
       - name: Upload Playwright report
@@ -416,7 +486,7 @@ jobs:
 
   test-browser-mobile-sprint1:
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs: [test, prewarm-models]
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -438,6 +508,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run mobile sprint1 tests
         run: npx playwright test --config e2e/playwright.config.js --project mobile-sprint1
       - name: Upload Playwright report
@@ -452,7 +526,7 @@ jobs:
 
   test-browser-mobile-sprint23:
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs: [test, prewarm-models]
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -474,6 +548,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run mobile sprint23 tests
         run: npx playwright test --config e2e/playwright.config.js --project mobile-sprint23
       - name: Upload Playwright report
@@ -488,7 +566,7 @@ jobs:
 
   test-browser-mobile-journeys:
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs: [test, prewarm-models]
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -510,6 +588,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run mobile journey tests
         run: npx playwright test --config e2e/playwright.config.js --project mobile-journeys
       - name: Upload Playwright report
@@ -524,7 +606,7 @@ jobs:
 
   test-browser-ux-features:
     runs-on: ${{ matrix.os }}
-    needs: test
+    needs: [test, prewarm-models]
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -546,6 +628,10 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
       - name: Run UX features tests
         run: npx playwright test --config e2e/playwright.config.js --project ux-features
       - name: Upload Playwright report
@@ -559,6 +645,46 @@ jobs:
           retention-days: 14
 
   test-browser-restart:
+    runs-on: ${{ matrix.os }}
+    needs: [test, prewarm-models]
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
+      - name: Run restart tests
+        run: npx playwright test --config e2e/playwright.config.js --project restart
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-restart-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
+  test-browser-sticky-notes:
     runs-on: ${{ matrix.os }}
     needs: test
     timeout-minutes: 12
@@ -582,13 +708,15 @@ jobs:
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
-      - name: Run restart tests
-        run: npx playwright test --config e2e/playwright.config.js --project restart
+      # No model cache needed: the sticky-note spec runs the server with both
+      # native engines off and injects the server->client messages (no download).
+      - name: Run sticky-note tests
+        run: npx playwright test --config e2e/playwright.config.js --project sticky-notes
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-restart-${{ matrix.os }}
+          name: playwright-sticky-notes-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/

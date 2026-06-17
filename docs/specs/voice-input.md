@@ -79,6 +79,14 @@ Coordinates the model manager and worker thread:
 - **Worker thread** (`src/stt-worker.js`): Loads model via `sherpa-onnx-node`, runs inference. Crash recovery with exponential backoff (1s, 2s, 4s, max 15s).
 - **External endpoint**: Optional override via `--stt-endpoint` for OpenAI-compatible POST endpoints.
 - **Model preloading**: If the model is already cached, it is loaded at server startup in parallel with other initialization to eliminate the 5-15s first-click delay.
+- **Shutdown**: `ClaudeCodeWebServer.handleShutdown` tears the engine down
+  during server shutdown. The engine marks itself stopping, manages the worker
+  from spawn time (`_spawningWorker`), waits on a bounded shared deadline for any
+  in-flight model load, sends `{type:'shutdown'}`, and awaits the worker's clean
+  exit. It never calls `worker.terminate()` because force-tearing down a worker
+  while sherpa-onnx/ggml is loaded can abort the process. `sherpa-onnx-node`
+  exposes no dispose API, so the worker exits cleanly while idle after the
+  shutdown message.
 
 ### Model Management (`src/utils/model-manager.js`)
 

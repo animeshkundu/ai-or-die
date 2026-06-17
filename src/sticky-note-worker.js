@@ -90,8 +90,15 @@ parentPort.on('message', (msg) => {
     _inferChain
       .catch(() => {})
       .then(async () => {
+        // Dispose in dependency order: context + model, then the top-level
+        // llama backend. Disposing the backend (await llama.dispose()) is what
+        // actually drains node-llama-cpp's native async work; without it the
+        // worker-thread env teardown that follows process.exit() can hit a
+        // pending Napi completion and ggml's set_terminate aborts the whole
+        // process (SIGABRT / exit 134) on Ctrl+C.
         try { if (context) await context.dispose(); } catch { /* ignore */ }
         try { if (model) await model.dispose(); } catch { /* ignore */ }
+        try { if (llama) await llama.dispose(); } catch { /* ignore */ }
       })
       .finally(() => process.exit(0));
   }

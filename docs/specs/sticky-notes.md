@@ -16,6 +16,20 @@ Local-LLM session summaries. See ADR-0022 for rationale.
 | `src/public/sticky-note-card.js` | Floating per-tab card; `textContent`-only rendering. |
 | `src/public/components/sticky-note.css` | Card styling. |
 
+### Worker lifecycle
+
+`ClaudeCodeWebServer.handleShutdown` tears down the sticky-note engine during
+server shutdown. The engine marks itself stopping, tracks a worker from spawn
+time (`_spawningWorker`), waits on a bounded shared deadline for any in-flight
+model load, sends `{type:'shutdown'}`, and awaits the worker's own clean exit. It
+never calls `worker.terminate()` because force-tearing down a
+`node-llama-cpp`/ggml worker can abort the process and can leave the GGUF locked
+on Windows. If a worker reports ready after shutdown has begun, the engine
+refuses to adopt it.
+
+On shutdown, `src/sticky-note-worker.js` disposes native objects in order:
+context, model, then the top-level `llama` backend, before exiting.
+
 ## Data flow
 
 ```

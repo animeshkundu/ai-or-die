@@ -321,8 +321,11 @@ class UsageReader {
     try {
       // Get the current working directory to find the right project folder
       const cwd = process.cwd();
-      // Claude uses format: -home-user-Development-project
-      const projectDirName = cwd.replace(/[\\/]/g, '-'); // Handle both Unix / and Windows \ separators
+      // Claude uses format: -home-user-Development-project. It replaces EVERY
+      // non-alphanumeric char with '-', so on Windows the drive-letter colon
+      // becomes a dash too (`C:\Users\me` -> `C--Users-me`). A separator-only
+      // replace leaves the colon and never matches the real folder.
+      const projectDirName = cwd.replace(/[^a-zA-Z0-9]/g, '-');
       let projectPath = path.join(this.claudeProjectsPath, projectDirName);
       
       // Check if the project directory exists

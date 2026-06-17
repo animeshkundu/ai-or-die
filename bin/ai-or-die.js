@@ -142,7 +142,7 @@ async function main() {
     }
 
     const app = new ClaudeCodeWebServer(serverOptions);
-    const httpServer = await app.start();
+    await app.start();
 
     const protocol = options.https ? 'https' : 'http';
     const baseUrl = `${protocol}://localhost:${port}`;
@@ -187,17 +187,15 @@ async function main() {
 
     console.log('\nPress Ctrl+C to stop the server\n');
 
-    const shutdown = async () => {
-      console.log('\nShutting down server...');
-      if (tunnel) await tunnel.stop();
-      httpServer.close(() => {
-        console.log('Server closed');
-        process.exit(0);
-      });
-    };
-
-    process.on('SIGINT', () => { shutdown(); });
-    process.on('SIGTERM', () => { shutdown(); });
+    // Shutdown is owned by the server's single SIGINT/SIGTERM handler
+    // (ClaudeCodeWebServer.handleShutdown), which performs the ordered graceful
+    // teardown: cooperative disposal of the local-LLM (sticky-note) and STT
+    // native worker threads, tunnel stop, session save, then server close.
+    // A second handler here used to race it — its httpServer.close() callback
+    // fires immediately when there are no open connections and called
+    // process.exit(0) before the worker threads could dispose their ggml-based
+    // native models, which aborted the process (SIGABRT / exit 134) on Ctrl+C.
+    // So we deliberately do NOT register a SIGINT/SIGTERM handler here.
 
   } catch (error) {
     console.error('Error starting server:', error.message);

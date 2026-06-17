@@ -1,0 +1,42 @@
+name: Sticky-note Tests
+
+# Label-gated, like test-voice.yml. The real sticky-note model (LFM2-2.6B,
+# ~1.49 GB) is heavy to download and load, so the real-inference smoke is opt-in:
+# apply the `run-sticky` label to a PR to fire it. The deterministic, model-free
+# sticky-note e2e (e2e/tests/22-sticky-notes.spec.js) runs on every PR in ci.yml.
+#
+# Label: run-sticky
+# Apply via: gh pr edit <N> --add-label run-sticky
+# Reapplying the label re-fires the workflow.
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+
+concurrency:
+  group: sticky-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  sticky-real-inference:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-sticky'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      # Cache + prefetch the ~1.49 GB LFM2-2.6B model (download once per platform).
+      - name: Cache sticky-note model
+        uses: ./.github/actions/cache-models
+        with:
+          models: sticky
+      - name: Run sticky-note real inference smoke
+        run: node test/sticky-real-inference.js
