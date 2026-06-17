@@ -29,6 +29,32 @@ describe('sticky-note JSONL reader', function () {
     assert.strictEqual(J.slugForCwd('/Users/x/proj'), '-Users-x-proj');
   });
 
+  it('slugForCwd matches claude on Windows drive-letter paths (colon → dash)', function () {
+    // claude replaces EVERY non-alphanumeric char with '-', so the drive-letter
+    // colon and the separators both become dashes. A separator-only slug would
+    // leave `C:-Users-...` and never find the transcript dir on Windows.
+    assert.strictEqual(
+      J.slugForCwd('C:\\Users\\anikundu\\Software\\ai-or-die'),
+      'C--Users-anikundu-Software-ai-or-die'
+    );
+    assert.strictEqual(
+      J.slugForCwd('C:/Users/anikundu/Software/ai-or-die'),
+      'C--Users-anikundu-Software-ai-or-die'
+    ); // forward-slash form resolves identically
+  });
+
+  it('findActiveSession resolves a Windows-style cwd to its dashed project dir', async function () {
+    const winCwd = 'C:\\Users\\anikundu\\Software\\ai-or-die';
+    const winDir = path.join(projects, J.slugForCwd(winCwd));
+    fs.mkdirSync(winDir, { recursive: true });
+    const f = path.join(winDir, 'sess.jsonl');
+    fs.writeFileSync(f, line({ type: 'user' }));
+    const r = await J.findActiveSession(winCwd, { projectsDir: projects });
+    assert.ok(r, 'binding resolves for a Windows drive-letter cwd');
+    assert.strictEqual(r.file, f);
+    assert.strictEqual(r.sessionId, 'sess');
+  });
+
   it('findActiveSession returns the newest .jsonl; null when no project dir', async function () {
     const a = path.join(projDir, 'a.jsonl');
     const b = path.join(projDir, 'b.jsonl');
