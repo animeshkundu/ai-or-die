@@ -32,6 +32,7 @@ const { isBun } = require('./utils/runtime');
 const CircularBuffer = require('./utils/circular-buffer');
 const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
+const KeepaliveManager = require('./keepalive-manager');
 
 // HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
 // large frame can't block the event loop for tens-to-hundreds of ms.
@@ -220,6 +221,16 @@ class ClaudeCodeWebServer {
       redact: redactSecrets,
       getForeground: () => this._foregroundSessionId,
       onResult: (sessionId, payload) => this._onStickyNoteResult(sessionId, payload),
+    });
+
+    // Keep the host machine awake for as long as the server runs (Windows 11
+    // only; instant no-op on macOS/Linux). Acquired in start() once listening,
+    // released in close() after the session-save flush. Gated on !underTest so
+    // mocha never spawns the PowerShell helper. See docs/specs/keepalive.md.
+    this.keepaliveManager = new KeepaliveManager({
+      enabled: options.keepalive !== false && !underTest &&
+        process.env.AIORDIE_DISABLE_KEEPALIVE !== '1',
+      keepDisplayOn: !!options.keepaliveDisplay,
     });
 
     this.sessionStore = new SessionStore(options.sessionStoreOptions);
@@ -470,6 +481,8 @@ class ClaudeCodeWebServer {
     // Hard timeout: if close() hangs, force exit (protects unsupervised mode)
     const forceExitTimer = setTimeout(() => {
       console.error(`Shutdown timed out after 15s, forcing exit (code ${exitCode})`);
+      // Drop the keep-awake assertion before a hard exit in case close() hung.
+      try { this.keepaliveManager.releaseSync(); } catch (_) { /* ignore */ }
       process.exit(exitCode);
     }, 15000);
     forceExitTimer.unref();
@@ -3311,6 +3324,9 @@ class ClaudeCodeWebServer {
           reject(err);
         } else {
           this.server = server;
+          // Now listening — hold the OS awake for the server's lifetime
+          // (Windows only; no-op elsewhere; never throws).
+          this.keepaliveManager.start();
           resolve(server);
         }
       });
@@ -5301,8 +5317,11 @@ class ClaudeCodeWebServer {
   }
 
   async close() {
-    // Save sessions before closing
-    await this.saveSessionsToDisk(true);
+    // Save sessions before closing. Guarded so a save error can't abort close()
+    // before the teardown below (incl. the keep-awake release at the end) runs;
+    // handleShutdown already persisted sessions on the signal path, and wraps
+    // its own save the same way.
+    try { await this.saveSessionsToDisk(true); } catch (_) { /* ignore */ }
 
     // Tear down the STT (sherpa-onnx) native worker. close() is the cleanup path
     // shared by the signal handler (handleShutdown -> close) AND direct close()
@@ -5414,6 +5433,14 @@ class ClaudeCodeWebServer {
         this._cleanupFsWatchSession(sid, 'server_close');
       }
     }
+
+    // Release the Windows keep-awake assertion LAST. Held through the session
+    // save + native-engine teardown above so an already-idle laptop cannot
+    // sleep mid-flush (the exact data-loss window this feature prevents).
+    // Idempotent and a no-op when keepalive was never started (non-win32 /
+    // disabled / under test). The process.once('exit') hook + the force-exit
+    // timer cover any path that skips close().
+    try { this.keepaliveManager.releaseSync(); } catch (_) { /* ignore */ }
 
     // Clear all data
     this.claudeSessions.clear();
