@@ -50,8 +50,11 @@ cannot leak the assertion past reboot.
 Key properties:
 
 - **Default-on, Windows-only.** Disable with `--no-keepalive` /
-  `AIORDIE_DISABLE_KEEPALIVE=1`. Instant no-op on macOS/Linux. System-awake only
-  (`ES_SYSTEM_REQUIRED`, decimal `2147483649`); `--keepalive-display` /
+  `AIORDIE_DISABLE_KEEPALIVE=1`. Instant no-op on macOS/Linux. Also disabled
+  under `mocha` (`underTest`) and in CI (`CI` / `GITHUB_ACTIONS`): a headless CI
+  session can't hold the assertion, and the startup `powershell.exe` spawn races
+  node-pty's ConPTY setup on Windows (it flaked the binary smoke test). System-awake
+  only (`ES_SYSTEM_REQUIRED`, decimal `2147483649`); `--keepalive-display` /
   `AIORDIE_KEEPALIVE_DISPLAY=1` adds `ES_DISPLAY_REQUIRED` (`2147483651`).
 - **Decimal `[uint32]` flag literals, never hex.** In Windows PowerShell 5.1
   `0x80000001` parses as a negative `Int32` and the `[uint32]` cast throws;

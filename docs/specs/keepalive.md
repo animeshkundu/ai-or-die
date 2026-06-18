@@ -56,7 +56,12 @@ cast throws — the decimal forms are mandatory.
 The disable env var is checked in **both** `bin/ai-or-die.js` (CLI wiring) and
 the `server.js` constructor — deliberate belt-and-suspenders so the feature is
 off regardless of which layer constructs the server. The constructor also gates
-on `underTest`, so `mocha` never spawns the helper.
+on `underTest`, so `mocha` never spawns the helper, **and on `CI`** (GitHub
+Actions / most CIs set `CI=true`), so CI server processes — the binary smoke
+test, browser e2e, longevity soak — never spawn the helper either: a headless CI
+session can't hold the assertion anyway, and the startup spawn races node-pty's
+ConPTY console setup on Windows. The `CI` gate lives in the server, not in
+`KeepaliveManager`, so the unit tests still exercise the win32 logic directly.
 
 ## Lifecycle & release coverage
 

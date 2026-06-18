@@ -154,6 +154,14 @@ class ClaudeCodeWebServer {
     const underTest =
       /^test/.test(process.env.npm_lifecycle_event || '') ||
       typeof global.it === 'function';
+    // CI runners must not be kept awake: the assertion can't hold in a headless
+    // CI session anyway, and spawning powershell.exe at startup races node-pty's
+    // ConPTY setup on Windows (it flaked the binary smoke test's terminal echo).
+    // GitHub Actions and most CIs set CI=true. Keep this OUT of KeepaliveManager
+    // so the unit tests (which construct it directly) still exercise win32 logic.
+    const ci = process.env.CI;
+    const isCI = (typeof ci === 'string' && ci !== '' && ci !== 'false' && ci !== '0') ||
+      !!process.env.GITHUB_ACTIONS;
     this.sttEngine = new SttEngine({
       // STT is ON by default (disable with --no-stt / STT_DISABLED=1, handled in
       // bin); an external endpoint always enables it.
@@ -228,7 +236,7 @@ class ClaudeCodeWebServer {
     // released in close() after the session-save flush. Gated on !underTest so
     // mocha never spawns the PowerShell helper. See docs/specs/keepalive.md.
     this.keepaliveManager = new KeepaliveManager({
-      enabled: options.keepalive !== false && !underTest &&
+      enabled: options.keepalive !== false && !underTest && !isCI &&
         process.env.AIORDIE_DISABLE_KEEPALIVE !== '1',
       keepDisplayOn: !!options.keepaliveDisplay,
     });

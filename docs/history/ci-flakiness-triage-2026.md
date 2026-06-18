@@ -42,6 +42,15 @@ limits, so timing-sensitive tests flake and whole jobs occasionally exceed the
   pre-existing `prewarm-models` job. This fits the real work; it does not mask a
   failing test (the tests pass) and `fail-fast: false` means no sibling-failure
   cancellation was involved.
+- **keep-awake disabled in CI** (`src/server.js`): the Windows `build-binary`
+  smoke test flaked `FAIL: Terminal echoed marker` (6/7) only on the run where
+  keep-awake's `powershell.exe` spawn *failed to hold* the assertion — on the run
+  where it succeeded the terminal echoed 7/7. Spawning `powershell.exe` at server
+  startup races node-pty's ConPTY console setup on Windows, and a headless CI
+  session can't hold the assertion anyway. The server constructor now gates
+  keep-awake on `!isCI` (CI / GITHUB_ACTIONS), so CI server processes (binary
+  smoke, browser e2e, soak) never spawn the helper. The gate is in the server,
+  not `KeepaliveManager`, so the unit tests still exercise win32 logic directly.
 
 ## Still to watch (not papered over)
 
