@@ -2,10 +2,20 @@
 
 // Read clean conversation turns from a Claude Code session JSONL transcript.
 //
-// `github-router claude` runs the normal claude CLI with CLAUDE_CONFIG_DIR=$HOME/.claude,
-// so each session writes ~/.claude/projects/<cwd-slug>/<sessionId>.jsonl — a complete,
-// structured log (the same source claude uses for --resume). We summarise THIS instead
-// of scraping the Ink TUI (which repaints in place and can't be scraped).
+// claude writes ~/.claude/projects/<cwd-slug>/<sessionId>.jsonl — a complete,
+// structured log (the same source claude uses for --resume). We summarise THIS
+// instead of scraping the Ink TUI (which repaints in place and can't be scraped).
+// When launched under github-router, CLAUDE_CONFIG_DIR points at a per-launch
+// mirror whose `projects` subdir is a junction back to the real ~/.claude/projects,
+// so transcripts still land here.
+//
+// Binding a tab to ITS transcript is done two ways (see src/server.js
+// `_pumpStickyJsonl`): (1) PRIMARY — a per-tab sidecar written by github-router's
+// SessionStart/SessionEnd hook names the exact active session id + transcript
+// path (deterministic; survives /resume, /clear, relaunch); (2) FALLBACK — when
+// no sidecar exists (claude launched without github-router), newest-mtime
+// inference over the cwd's project dir. This module only READS a resolved file;
+// `findActiveSessions`/`findActiveSession` serve the fallback path.
 //
 // Signal we keep: user `string`/`text` prompts, assistant `text` replies, and the NAMES
 // of tools the assistant ran. We skip `thinking`, `tool_result`, metadata line types, and

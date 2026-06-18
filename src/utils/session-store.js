@@ -232,6 +232,11 @@ class SessionStore {
                 // the durable per-claude-session note store can be rebuilt after a
                 // restart and resume when that session reopens.
                 stickyClaudeSessionId: session.stickyClaudeSessionId || null,
+                // The claude sessionId pinned via the github-router SessionStart
+                // hook sidecar (terminal tabs). Persisted so the ownership
+                // reservation (_ownedClaudeSessions) survives a restart; the
+                // durable note itself resumes via stickyClaudeSessionId above.
+                claudePinnedSessionId: session.claudePinnedSessionId || null,
                 autoTitle: session.autoTitle || null,
                 nameIsUserSet: session.nameIsUserSet || false,
                 stickyNotesEnabled: session.stickyNotesEnabled !== false

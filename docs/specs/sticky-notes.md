@@ -76,10 +76,26 @@ read via `src/sticky-note-jsonl.js`, bound per-tab by a 2s poll in `server.js`) 
 user/assistant turns, not the Ink-TUI scrape. Plain shells fall back to the rendered-output
 scrape (`@xterm/headless`). Legacy notes migrate on load (`progress→done`, `waitingOn→remaining`).
 
-### Binding & resume (`_pumpStickyJsonl`, ADR-0024)
+### Binding & resume (`_pumpStickyJsonl`, ADR-0024 + ADR-0026)
 
-A tab binds to the claude session transcript for its `cwd`, keyed by **claude
-sessionId** (the JSONL basename / `--resume` key), so notes are durable and resume:
+A tab binds to the claude session transcript, keyed by **claude sessionId** (the JSONL
+basename / `--resume` key), so notes are durable and resume. Binding is resolved two ways:
+
+**PRIMARY — deterministic sidecar (ADR-0026).** When github-router launches claude inside a
+Terminal tab, ai-or-die sets `AIORDIE_CLAUDE_BIND=<dataDir>/claude-bindings/<sessionId>.json`
+in the shell env. github-router's `SessionStart`/`SessionEnd` hook (`internal-session-bind`)
+atomically writes `{schema, claudeSessionId, transcriptPath, cwd, event, source?, reason?,
+at}` there on every startup / `/resume` / `/clear` / `/compact`. When a sidecar exists it is
+AUTHORITATIVE: the tab binds directly to `transcriptPath` by exact path (no cwd, no mtime),
+rebinding when `claudeSessionId` changes. This survives in-session `/resume`, `/clear` and
+exit→relaunch, and works when `liveCwd` is null (`cmd.exe` / no OSC 7). The hook skips
+subagent/teammate payloads (`agent_id`/`agent_type`); github-router strips
+`AIORDIE_CLAUDE_BIND` from claude's env so a nested launch can't hijack the tab. A stale
+sidecar is cleared on each terminal (re)start; orphans are swept on startup and on tab close;
+`claudePinnedSessionId` is persisted and reserved in `_ownedClaudeSessions`.
+
+**FALLBACK — newest-mtime inference (ADR-0024).** When no sidecar exists (claude launched
+without github-router), bind to the active, unowned writer in the tab's project dir:
 
 - **Skips `agent-*.jsonl`** subagent logs (`findActiveSessions`).
 - **Per-tab ownership:** a tab never binds a session already owned by another tab,
