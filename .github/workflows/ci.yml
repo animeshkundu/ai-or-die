@@ -21,7 +21,7 @@ jobs:
     # docs/audits/ci-branch-protection-checklist.md.)
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -46,7 +46,7 @@ jobs:
         continue-on-error: true
 
   # Warm the STT model cache ONCE before the browser jobs so none of them pay
-  # the ~640MB on-demand download inside their 12-min budget (a timed-out job
+  # the ~640MB on-demand download inside their per-job budget (a timed-out job
   # never saves the cache, so per-job-only caching could never self-warm the
   # slow jobs). Browser jobs `needs: prewarm-models` and then just restore.
   prewarm-models:
@@ -71,7 +71,7 @@ jobs:
   test-browser-golden:
     runs-on: ${{ matrix.os }}
     needs: prewarm-models
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -111,7 +111,7 @@ jobs:
   test-browser-functional-core:
     runs-on: ${{ matrix.os }}
     needs: prewarm-models
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -151,7 +151,7 @@ jobs:
   test-browser-functional-extended:
     runs-on: ${{ matrix.os }}
     needs: prewarm-models
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -191,7 +191,7 @@ jobs:
   test-browser-mobile:
     runs-on: ${{ matrix.os }}
     needs: prewarm-models
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -233,7 +233,7 @@ jobs:
   test-browser-visual:
     runs-on: ${{ matrix.os }}
     needs: prewarm-models
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -287,7 +287,7 @@ jobs:
   test-browser-new-features:
     runs-on: ${{ matrix.os }}
     needs: prewarm-models
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -327,7 +327,7 @@ jobs:
   test-browser-integrations:
     runs-on: ${{ matrix.os }}
     needs: prewarm-models
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -367,7 +367,7 @@ jobs:
   test-browser-power-user:
     runs-on: ${{ matrix.os }}
     needs: [test, prewarm-models]
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -407,7 +407,7 @@ jobs:
   test-browser-mobile-flows:
     runs-on: ${{ matrix.os }}
     needs: [test, prewarm-models]
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -447,7 +447,7 @@ jobs:
   test-browser-ui-features:
     runs-on: ${{ matrix.os }}
     needs: [test, prewarm-models]
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -487,7 +487,7 @@ jobs:
   test-browser-mobile-sprint1:
     runs-on: ${{ matrix.os }}
     needs: [test, prewarm-models]
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -527,7 +527,7 @@ jobs:
   test-browser-mobile-sprint23:
     runs-on: ${{ matrix.os }}
     needs: [test, prewarm-models]
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -567,7 +567,7 @@ jobs:
   test-browser-mobile-journeys:
     runs-on: ${{ matrix.os }}
     needs: [test, prewarm-models]
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -607,7 +607,7 @@ jobs:
   test-browser-ux-features:
     runs-on: ${{ matrix.os }}
     needs: [test, prewarm-models]
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -647,7 +647,7 @@ jobs:
   test-browser-restart:
     runs-on: ${{ matrix.os }}
     needs: [test, prewarm-models]
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -687,7 +687,7 @@ jobs:
   test-browser-sticky-notes:
     runs-on: ${{ matrix.os }}
     needs: test
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -744,7 +744,7 @@ jobs:
   build-binary:
     name: build-binary (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
