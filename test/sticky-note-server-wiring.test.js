@@ -282,6 +282,7 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
       broadcastToSession: (id, data) => broadcasts.push({ id, data }),
       sessionStore: { markDirty() {} },
       _ownedClaudeSessions: ClaudeCodeWebServer.prototype._ownedClaudeSessions,
+      _readClaudeBindSidecar: ClaudeCodeWebServer.prototype._readClaudeBindSidecar,
       _bindStickyJsonl: ClaudeCodeWebServer.prototype._bindStickyJsonl,
       _capClaudeNotes: ClaudeCodeWebServer.prototype._capClaudeNotes,
       _statQuiet: ClaudeCodeWebServer.prototype._statQuiet,
@@ -302,6 +303,77 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
   });
   afterEach(function () {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+  });
+
+  // --- Deterministic sidecar binding (github-router SessionStart hook) ---
+  it('SIDECAR: binds to the sidecar transcript, ignoring a newer growing unowned session', async function () {
+    const cwd = '/Users/x/proj';
+    const mine = writeSession(cwd, 'mine-session.jsonl', null, 30);   // the tab's own (older)
+    writeSession(cwd, 'other-session.jsonl', null, 1);                // newer, growing, unowned
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'tab1.json');
+    fs.writeFileSync(sidecar, JSON.stringify({
+      schema: 1, claudeSessionId: 'mine-session', transcriptPath: mine, cwd, event: 'start', source: 'startup', at: Date.now(),
+    }));
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, claudeBindSidecar: sidecar });
+    await self._pumpStickyJsonl('tab1', cwd);
+    const b = self._stickyJsonl.get('tab1');
+    assert.ok(b, 'tab is bound');
+    assert.strictEqual(b.claudeSessionId, 'mine-session', 'binds the sidecar session, not the newest-mtime one');
+    assert.strictEqual(b.file, mine);
+    assert.strictEqual(self.claudeSessions.get('tab1').claudePinnedSessionId, 'mine-session');
+  });
+
+  it('SIDECAR: a changed session id rebinds the tab (in-session /resume)', async function () {
+    const cwd = '/Users/x/proj';
+    const a = writeSession(cwd, 'sess-a.jsonl', null, 30);
+    const bfile = writeSession(cwd, 'sess-b.jsonl', null, 30);
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'tab1.json');
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, claudeBindSidecar: sidecar });
+    fs.writeFileSync(sidecar, JSON.stringify({ schema: 1, claudeSessionId: 'sess-a', transcriptPath: a, cwd, event: 'start', at: Date.now() }));
+    await self._pumpStickyJsonl('tab1', cwd);
+    assert.strictEqual(self._stickyJsonl.get('tab1').claudeSessionId, 'sess-a');
+    // /resume → sidecar now names sess-b. Force a newer mtime so the read-cache re-parses.
+    fs.writeFileSync(sidecar, JSON.stringify({ schema: 1, claudeSessionId: 'sess-b', transcriptPath: bfile, cwd, event: 'start', source: 'resume', at: Date.now() }));
+    const t = Date.now() / 1000 + 5; fs.utimesSync(sidecar, t, t);
+    await self._pumpStickyJsonl('tab1', cwd);
+    assert.strictEqual(self._stickyJsonl.get('tab1').claudeSessionId, 'sess-b', 'follows the resumed session');
+    assert.strictEqual(self._stickyJsonl.get('tab1').file, bfile);
+  });
+
+  it('SIDECAR: waits (no inference) when the transcript file does not exist yet', async function () {
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'stranger.jsonl', null, 1); // a stranger session that inference would grab
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'tab1.json');
+    fs.writeFileSync(sidecar, JSON.stringify({
+      schema: 1, claudeSessionId: 'pending', transcriptPath: path.join(dir, 'nope', 'pending.jsonl'), cwd, event: 'start', at: Date.now(),
+    }));
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, claudeBindSidecar: sidecar });
+    await self._pumpStickyJsonl('tab1', cwd);
+    assert.strictEqual(self._stickyJsonl.get('tab1'), undefined, 'does NOT bind to the stranger session while waiting');
+  });
+
+  it('SIDECAR: _ownedClaudeSessions reserves a tab pinned via sidecar', function () {
+    const self = makeBindStub();
+    self.claudeSessions.set('tab1', { claudePinnedSessionId: 'pinned-x' });
+    assert.ok(self._ownedClaudeSessions('tab2').has('pinned-x'), 'reserved against other tabs');
+    assert.ok(!self._ownedClaudeSessions('tab1').has('pinned-x'), 'excludes the asking tab');
+  });
+
+  it('SIDECAR: an UNCHANGED sidecar does not re-bind every tick (no churn)', async function () {
+    const cwd = '/Users/x/proj';
+    const a = writeSession(cwd, 'sess-a.jsonl', null, 30);
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'tab1.json');
+    fs.writeFileSync(sidecar, JSON.stringify({ schema: 1, claudeSessionId: 'sess-a', transcriptPath: a, cwd, event: 'start', at: Date.now() }));
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, claudeBindSidecar: sidecar });
+    await self._pumpStickyJsonl('tab1', cwd);
+    const first = self._stickyJsonl.get('tab1');
+    assert.ok(first && first.claudeSessionId === 'sess-a');
+    await self._pumpStickyJsonl('tab1', cwd); // same sidecar, same id → must NOT rebind
+    assert.strictEqual(self._stickyJsonl.get('tab1'), first, 'binding object is the SAME (no re-bind)');
   });
 
   it('binds a tab to its claude session and skips agent-*.jsonl', async function () {
