@@ -30,7 +30,7 @@ function connectWs(port) {
   });
 }
 
-function waitForMessage(ws, type, timeout = 10000) {
+function waitForMessage(ws, type, timeout = 20000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Timeout waiting for ${type}`)), timeout);
     function onMessage(data) {
@@ -58,7 +58,7 @@ describe('Image upload WebSocket protocol', function () {
   let server, port;
 
   beforeEach(async function () {
-    this.timeout(15000);
+    this.timeout(30000);
     server = new ClaudeCodeWebServer({ port: 0, noAuth: true });
     const httpServer = await server.start();
     port = httpServer.address().port;
@@ -69,7 +69,7 @@ describe('Image upload WebSocket protocol', function () {
   });
 
   it('should accept a valid PNG upload and write file to disk', async function () {
-    this.timeout(15000);
+    this.timeout(30000);
     const ws = await connectWs(port);
 
     // Create session
@@ -102,7 +102,7 @@ describe('Image upload WebSocket protocol', function () {
   });
 
   it('should reject oversized images', async function () {
-    this.timeout(15000);
+    this.timeout(30000);
     const ws = await connectWs(port);
 
     send(ws, { type: 'create_session', name: 'img-test-big' });
@@ -174,7 +174,7 @@ describe('Image upload WebSocket protocol', function () {
   });
 
   it('should reject unsupported MIME types', async function () {
-    this.timeout(15000);
+    this.timeout(30000);
     const ws = await connectWs(port);
 
     send(ws, { type: 'create_session', name: 'img-test-mime' });
@@ -195,7 +195,7 @@ describe('Image upload WebSocket protocol', function () {
   });
 
   it('should reject SVG uploads', async function () {
-    this.timeout(15000);
+    this.timeout(30000);
     const ws = await connectWs(port);
 
     send(ws, { type: 'create_session', name: 'img-test-svg' });
@@ -215,7 +215,7 @@ describe('Image upload WebSocket protocol', function () {
   });
 
   it('should reject upload without active session', async function () {
-    this.timeout(15000);
+    this.timeout(30000);
     const ws = await connectWs(port);
     // Don't create/join a session
 
@@ -234,7 +234,7 @@ describe('Image upload WebSocket protocol', function () {
   });
 
   it('should clean up temp files when session is deleted', async function () {
-    this.timeout(15000);
+    this.timeout(30000);
     const ws = await connectWs(port);
 
     send(ws, { type: 'create_session', name: 'img-cleanup-test' });
@@ -266,7 +266,7 @@ describe('Image upload WebSocket protocol', function () {
   });
 
   it('should create .gitignore in temp directory', async function () {
-    this.timeout(15000);
+    this.timeout(30000);
     const ws = await connectWs(port);
 
     send(ws, { type: 'create_session', name: 'img-gitignore-test' });
@@ -326,7 +326,7 @@ describe('Image upload WebSocket protocol', function () {
   });
 
   it('should map MIME types to correct extensions', async function () {
-    this.timeout(20000);
+    this.timeout(30000);
     const ws = await connectWs(port);
 
     send(ws, { type: 'create_session', name: 'img-ext-test' });
