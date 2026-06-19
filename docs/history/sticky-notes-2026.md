@@ -226,3 +226,40 @@ Engine/worker/summarizer/transcript/prompt under `src/sticky-note-*.js`;
 `src/public/sticky-note-card.js` + `components/sticky-note.css`. Tests:
 `test/sticky-note-*.test.js` (78 cases, no model download — real inference is
 manual).
+
+## Cross-tab contamination fix: deterministic sidecar binding (ADR-0026)
+
+**Symptom (reported):** with multiple Terminal tabs each running `npx github-router@latest
+claude` across distinct projects, several tabs showed the SAME (growing) session's note/title
+instead of their own.
+
+**Root cause:** the binder scoped by `cwd = liveCwd || workingDir` then picked newest-mtime.
+For terminal-launched claude, `liveCwd` comes only from OSC 7, which `cmd.exe` cannot emit and
+which otherwise needs a prompt hook. With `liveCwd` null, every tab collapsed onto the same
+folder-mode `workingDir` base, all scanned one `~/.claude/projects/<base-slug>/`, and the one
+actively-growing session won everywhere. (The user never runs two claude in one folder, so it
+was pure cwd-collapse + mtime-guess, not a same-dir collision.)
+
+**Fix (two repos, contract = one env var + a JSON sidecar):**
+- github-router (`src/internal-session-bind.ts`, registered in `src/claude.ts`): a Claude Code
+  `SessionStart`/`SessionEnd` hook writes `{schema, claudeSessionId, transcriptPath, cwd,
+  event, source?, reason?, at}` to the per-tab sidecar named by `AIORDIE_CLAUDE_BIND`, on every
+  startup / `/resume` / `/clear` / `/compact`. Skips subagent/teammate payloads
+  (`agent_id`/`agent_type`); strips `AIORDIE_CLAUDE_BIND` from claude's env (nested-launch
+  safety); realpaths `transcriptPath` through the per-launch mirror's SHARED `projects`
+  junction to the real `~/.claude/projects`.
+- ai-or-die (`src/base-bridge.js` `extraEnv`; `src/server.js` `_pumpStickyJsonl`): sets the env
+  on Terminal shells, then binds the tab DIRECTLY to `transcriptPath` by exact path when a
+  sidecar exists (authoritative; no cwd/mtime), rebinding on id change. Newest-mtime inference
+  (ADR-0024) is retained only as the no-sidecar fallback.
+
+**Why a hook, not a launch-time `--session-id`:** the hook fires on every transition, so
+in-session `/resume` and `/clear` are auto-maintained (the user resumes frequently). It also
+removes all `--session-id`/argv-grammar fragility and avoids a phantom pin (a tab binds only
+after claude actually reports a session). An earlier OSC-marker-over-PTY idea was rejected in
+cross-lab review (terminal-stream injection / false positives / chunk-buffering / tap race).
+
+**Gotchas:** the read-cache in `_readClaudeBindSidecar` keys on the sidecar mtime, so a same-ms
+rewrite needs a bumped mtime (tests `utimes` to force it). A restored tab clears its stale
+sidecar on terminal restart so it never binds a dead session before the first SessionStart.
+Depends on github-router's `projects` mirror entry staying `SHARED` (`paths.ts`).

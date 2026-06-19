@@ -262,7 +262,8 @@ class BaseBridge {
       onExit = () => {},
       onError = () => {},
       cols = 80,
-      rows = 24
+      rows = 24,
+      extraEnv = null
     } = options;
 
     try {
@@ -280,7 +281,8 @@ class BaseBridge {
         ...process.env,
         TERM: 'xterm-256color',
         FORCE_COLOR: '1',
-        COLORTERM: 'truecolor'
+        COLORTERM: 'truecolor',
+        ...((extraEnv && typeof extraEnv === 'object') ? extraEnv : {})
       };
 
       const ptyProcess = spawn(this.command, args, {

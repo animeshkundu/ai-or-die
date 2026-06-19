@@ -296,6 +296,8 @@ class ClaudeCodeWebServer {
         }
       }
       this._capClaudeNotes();
+      // Remove orphan claude-bind sidecars whose tab no longer exists.
+      this._sweepClaudeBindSidecars();
       if (sessions.size > 0) {
         console.log(`Loaded ${sessions.size} persisted sessions`);
       }
@@ -1372,6 +1374,7 @@ class ClaudeCodeWebServer {
       // Stop + tear down the summariser so an in-flight inference is discarded.
       this.stickyNoteSummarizer.cancel(sessionId);
       this._stickyJsonl.delete(sessionId);
+      this._removeClaudeBindSidecar(session);
       if (this._foregroundSessionId === sessionId) this._foregroundSessionId = null;
 
       this.claudeSessions.delete(sessionId);
@@ -3987,6 +3990,12 @@ class ClaudeCodeWebServer {
       // process; their session.liveCwd stays null. We pass the OSC 7
       // hooks only when starting a Terminal session so the other bridges
       // remain a true no-op.
+      const terminalExtraEnv = {};
+      if (toolName === 'terminal') {
+        const sidecarPath = this._prepareClaudeBindSidecar(sessionId, session);
+        if (sidecarPath) terminalExtraEnv.AIORDIE_CLAUDE_BIND = sidecarPath;
+      }
+
       const osc7Hooks = (toolName === 'terminal') ? {
         validatePath: (p) => this.validatePath(p),
         onCwdChange: (cwd, prev) => {
@@ -4063,7 +4072,13 @@ class ClaudeCodeWebServer {
           this.broadcastToSession(sessionId, { type: 'error', message: error.message });
           this.broadcastSessionActivity(sessionId, 'session_error');
         },
-        ...options
+        ...options,
+        extraEnv: toolName === 'terminal'
+          ? {
+              ...((options.extraEnv && typeof options.extraEnv === 'object') ? options.extraEnv : {}),
+              ...terminalExtraEnv,
+            }
+          : options.extraEnv
       });
 
       session.lastActivity = new Date();
@@ -4280,13 +4295,57 @@ class ClaudeCodeWebServer {
   async _pumpStickyJsonl(sessionId, cwd) {
     let binding = this._stickyJsonl.get(sessionId);
     binding && (binding._ticks = (binding._ticks || 0) + 1);
+    const session = this.claudeSessions.get(sessionId);
 
-    // Periodically (or while unbound) reconcile the binding. A tab STAYS on its
-    // bound session while that file is alive and not owned by another tab; it
-    // only moves to a newer unowned session once its own has gone quiet (an
-    // in-session /resume) — so a third, unrelated session can't steal an active
-    // tab. agent-*.jsonl is excluded by findActiveSessions.
-    if (!binding || binding._ticks % 5 === 0) {
+    // DETERMINISTIC SIDECAR BINDING (terminal tabs launched via github-router).
+    // ai-or-die set AIORDIE_CLAUDE_BIND=<sidecar> on the shell; github-router's
+    // SessionStart/SessionEnd hook writes the ACTIVE claude session id +
+    // transcript path there on every startup / resume / clear / compact. When a
+    // sidecar exists it is AUTHORITATIVE: bind directly to that transcript by
+    // exact path and skip the cwd+mtime inference entirely. Survives in-session
+    // /resume, /clear and exit→relaunch, and works even when liveCwd is null
+    // (cmd.exe / no OSC 7) — the case the inference path gets wrong.
+    const sidecar = session ? await this._readClaudeBindSidecar(session) : null;
+    if (sidecar) {
+      session._sidecarSeen = true;
+      // A SessionEnd record is intentionally NOT acted on: an in-session /resume
+      // or /clear writes end-then-start, and the following start drives the
+      // rebind; a terminal end (logout / prompt_input_exit) means claude exited,
+      // and the PTY onExit flips session.active=false so _pollStickyJsonl stops
+      // pumping this tab. So we keep the current binding (note frozen at its last
+      // state) and only (re)bind on a start with a NEW claude session id.
+      if (
+        sidecar.event !== 'end' &&
+        sidecar.claudeSessionId &&
+        sidecar.transcriptPath &&
+        (!binding || binding.claudeSessionId !== sidecar.claudeSessionId)
+      ) {
+        const stp = await this._statQuiet(sidecar.transcriptPath);
+        if (stp) {
+          this._bindStickyJsonl(sessionId, {
+            file: sidecar.transcriptPath,
+            sessionId: sidecar.claudeSessionId,
+            mtimeMs: stp.mtimeMs,
+            size: stp.size,
+          });
+          binding = this._stickyJsonl.get(sessionId);
+          session.claudePinnedSessionId = sidecar.claudeSessionId;
+          this.sessionStore.markDirty();
+        }
+        // transcript not created yet → wait for a later tick (never inference).
+      }
+      // Pinned tabs never run the mtime inference / resume-follow below.
+    } else if (session && session._sidecarSeen) {
+      // Previously sidecar-managed but the file is momentarily absent/unreadable
+      // → keep the current binding; do NOT fall back to mtime inference (which
+      // could grab a stranger session). Wait for the next sidecar write.
+    } else if (!binding || binding._ticks % 5 === 0) {
+      // INFERENCE FALLBACK (no sidecar — e.g. claude launched without
+      // github-router). Periodically (or while unbound) reconcile the binding. A
+      // tab STAYS on its bound session while that file is alive and not owned by
+      // another tab; it only moves to a newer unowned session once its own has
+      // gone quiet (an in-session /resume) — so a third, unrelated session can't
+      // steal an active tab. agent-*.jsonl is excluded by findActiveSessions.
       const candidates = await StickyNoteJsonl.findActiveSessions(cwd, { projectsDir: this._stickyProjectsDir });
       const ownedByOthers = this._ownedClaudeSessions(sessionId);
       // Only (re)bind to a session being ACTIVELY written (recent mtime). A fresh
@@ -4299,7 +4358,6 @@ class ClaudeCodeWebServer {
       // the recency gate, so a restart / lost binding can re-resume an idle-but-
       // live session. A FRESH tab has no own-session, so it still won't adopt a
       // stale stranger session in the project.
-      const session = this.claudeSessions.get(sessionId);
       const ownClaudeSession = session && session.stickyClaudeSessionId;
       const eligible = (c) => !ownedByOthers.has(c.sessionId) && (freshlyActive(c) || c.sessionId === ownClaudeSession);
       const currentValid =
@@ -4408,8 +4466,98 @@ class ClaudeCodeWebServer {
     for (const [sid, b] of this._stickyJsonl) {
       if (sid !== exceptSessionId && b && b.claudeSessionId) owned.add(b.claudeSessionId);
     }
+    // Also reserve every OTHER tab's pinned (sidecar) claude session, so an
+    // unpinned tab's inference fallback can never adopt a pinned tab's session
+    // even in the window before that tab has finished binding.
+    for (const [sid, s] of this.claudeSessions) {
+      if (sid !== exceptSessionId && s && s.claudePinnedSessionId) owned.add(s.claudePinnedSessionId);
+    }
     return owned;
   }
+
+  /** Absolute path to this server's per-tab claude-bind sidecar directory. */
+  _claudeBindSidecarDir() {
+    const base = (this.sessionStore && this.sessionStore.storageDir) || path.join(os.homedir(), '.ai-or-die');
+    return path.join(base, 'claude-bindings');
+  }
+
+  /**
+   * Allocate (and record on the session) the per-tab sidecar path that
+   * github-router's SessionStart/SessionEnd hook writes the active claude
+   * session id + transcript path into. Returns the absolute path, or null on
+   * failure (the tab then degrades to the inference fallback). Best-effort mkdir.
+   */
+  _prepareClaudeBindSidecar(sessionId, session) {
+    try {
+      const dir = this._claudeBindSidecarDir();
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (_) { /* best-effort */ }
+      const file = path.join(dir, `${sessionId}.json`);
+      // Clear any stale sidecar from a previous run/launch so this fresh terminal
+      // start waits for github-router's next SessionStart write instead of binding
+      // to a dead session's transcript. (Runs before any github-router launch in
+      // this shell, so it can't race the hook.)
+      try { fs.unlinkSync(file); } catch (_) { /* none / best-effort */ }
+      if (session) {
+        session.claudeBindSidecar = file;
+        session._sidecarSeen = false;
+      }
+      return file;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /**
+   * Read + parse the tab's sidecar (written atomically by github-router's hook).
+   * Returns the parsed record `{claudeSessionId, transcriptPath, cwd, event,
+   * source?, reason?}` or null (no file / unreadable / malformed). The file is
+   * tiny, so we re-read every tick (no mtime cache: a SessionEnd→SessionStart
+   * rewrite on /resume can land in the same mtime tick, and a cache keyed on
+   * mtime would then serve the stale record and never rebind). Never throws — any
+   * error yields null so the poll is unaffected.
+   */
+  async _readClaudeBindSidecar(session) {
+    if (!session || !session.claudeBindSidecar) return null;
+    let raw;
+    try {
+      raw = await fs.promises.readFile(session.claudeBindSidecar, 'utf8');
+    } catch (_) {
+      return null; // no sidecar yet (claude not launched via github-router, or pending)
+    }
+    try {
+      const obj = JSON.parse(raw);
+      if (!obj || typeof obj !== 'object' || typeof obj.claudeSessionId !== 'string') return null;
+      return obj;
+    } catch (_) {
+      return null; // mid-write / malformed → skip this tick
+    }
+  }
+
+  /** Best-effort: delete a tab's sidecar file (on session close). */
+  _removeClaudeBindSidecar(session) {
+    const file = session && session.claudeBindSidecar;
+    if (!file) return;
+    try { fs.unlinkSync(file); } catch (_) { /* already gone / best-effort */ }
+  }
+
+  /**
+   * Startup sweep: remove orphan sidecar files (`<sessionId>.json`) whose tab is
+   * no longer in the active session set. Best-effort, bounded, never fatal.
+   */
+  _sweepClaudeBindSidecars() {
+    try {
+      const dir = this._claudeBindSidecarDir();
+      let entries;
+      try { entries = fs.readdirSync(dir); } catch (_) { return; } // no dir → nothing to sweep
+      for (const name of entries) {
+        if (!name.endsWith('.json')) continue;
+        const sid = name.slice(0, -'.json'.length);
+        if (this.claudeSessions.has(sid)) continue; // live tab → keep
+        try { fs.unlinkSync(path.join(dir, name)); } catch (_) { /* best-effort */ }
+      }
+    } catch (_) { /* never fatal */ }
+  }
+
 
   /**
    * Bind a tab to a claude transcript and resume its durable note. Binds near the
