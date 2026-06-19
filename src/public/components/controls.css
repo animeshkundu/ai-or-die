@@ -164,30 +164,37 @@
   appearance: none;
   -webkit-appearance: none;
   position: relative;
-  width: 42px;
-  height: 24px;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 26px;
   margin: 0;
   border-radius: var(--radius-full);
   background: var(--surface-tertiary);
   border: 1px solid var(--border-default);
   cursor: pointer;
-  flex: 0 0 auto;
+  vertical-align: middle;
   transition: background-color var(--duration-normal) var(--ease-default),
               border-color var(--duration-normal) var(--ease-default);
 }
 
+/* The sliding thumb — a white knob with a soft drop shadow for a tactile,
+   premium feel that reads on both light and dark tracks. */
 .settings-modal .switch-input::before {
   content: "";
   position: absolute;
   top: 50%;
-  left: 2px;
-  width: 17px;
-  height: 17px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  background: var(--text-muted);
+  background: #fff;
   transform: translateY(-50%);
-  transition: transform var(--duration-normal) var(--ease-default),
-              background-color var(--duration-normal) var(--ease-default);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 1px 1px rgba(0, 0, 0, 0.16);
+  transition: transform var(--duration-normal) var(--ease-default);
+}
+
+.settings-modal .switch-input:hover {
+  border-color: var(--border-hover);
 }
 
 .settings-modal .switch-input:checked {
@@ -197,7 +204,6 @@
 
 .settings-modal .switch-input:checked::before {
   transform: translateY(-50%) translateX(18px);
-  background: #fff;
 }
 
 .settings-modal .switch-input:focus-visible {

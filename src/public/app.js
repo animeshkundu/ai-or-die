@@ -3944,11 +3944,15 @@ class ClaudeCodeWebInterface {
                 content.classList.remove('closing');
                 overlay.classList.remove('closing');
                 overlay.classList.remove('active');
-                overlay.style.display = 'none';
+                // Clear (don't set) the inline display so the modal hides via its
+                // base CSS rule (.<modal> { display: none }). Setting an inline
+                // display:none would win over `.active { display: flex }` and
+                // permanently block reopening the modal.
+                overlay.style.removeProperty('display');
             }, 150);
         } else {
             overlay.classList.remove('active');
-            overlay.style.display = 'none';
+            overlay.style.removeProperty('display');
         }
     }
 
