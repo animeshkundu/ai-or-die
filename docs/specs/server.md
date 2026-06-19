@@ -48,6 +48,17 @@ new ClaudeCodeWebServer(options)
 
 ### Public (pre-auth)
 
+#### `GET /manifest.json`
+Serves the PWA manifest with `Content-Type: application/manifest+json` and `Cache-Control: no-cache`.
+
+The route is registered before `express.static` and before the auth middleware, so it is intentionally available pre-auth. It builds the manifest in memory by parsing the neutral base manifest (`public/manifest.json`): from `sea.getRawAsset('public/manifest.json')` in SEA mode, or from `fs.readFileSync(path.join(__dirname, 'public', 'manifest.json'))` in filesystem mode.
+
+Hostname injection is privacy-gated because the route is pre-auth:
+- When no auth token is configured (`!this.auth`), the server uses `os.hostname()` with the shared `public/app-identity.js` helpers to set `name` to `[HOST] ai-or-die` and `short_name` to the hard-truncated host label. This is fail-closed: if any token is set the host is never embedded.
+- When an auth token is set, the manifest stays neutral (`ai-or-die`) so unauthenticated clients cannot learn the machine hostname. The authenticated in-session UI still receives `hostname` from `/api/config` and shows `[HOST] ai-or-die` after login.
+
+On any read/parse/formatting error, the handler falls back to sending the static/base manifest (via `_sendSeaAsset` in SEA mode, or `res.sendFile` otherwise). The service worker treats `/manifest.json` as network-only and does not cache it, so installed-app metadata is not served stale from the PWA cache.
+
 #### `GET /auth-status`
 Returns whether authentication is required.
 
@@ -118,7 +129,7 @@ Delete a session. Stops the running agent process (if any), sends `session_delet
 **Response:** `{ "success": true, "message": "Session deleted" }`
 
 #### `GET /api/config`
-Returns server configuration relevant to the client.
+Returns server configuration relevant to the client, including the machine hostname used by the in-session app identity and desktop notification formatter.
 
 **Response:**
 ```json
@@ -126,9 +137,18 @@ Returns server configuration relevant to the client.
   "folderMode": true,
   "selectedWorkingDir": "/home/user/project",
   "baseFolder": "/home/user",
-  "aliases": { "claude": "Claude", "codex": "Codex", "agent": "Cursor" }
+  "hostname": "workstation.local",
+  "aliases": { "claude": "Claude", "codex": "Codex", "agent": "Cursor", "copilot": "Copilot", "gemini": "Gemini", "terminal": "Terminal" },
+  "tools": {
+    "claude": { "alias": "Claude", "available": true, "hasDangerousMode": true },
+    "terminal": { "alias": "Terminal", "available": true, "hasDangerousMode": false }
+  },
+  "vscodeTunnel": { "available": true, "devtunnelAvailable": true },
+  "voiceInput": { "localStatus": { "state": "ready" }, "localEnabled": true, "cloudAvailable": true }
 }
 ```
+
+`tools` entries for unavailable tools include install-advisor details, and `prerequisites` is included when any unavailable tool needs prerequisite information.
 
 #### `GET /api/folders`
 Browse directories within `baseFolder`.
@@ -375,9 +395,10 @@ Every endpoint that accepts a filesystem path (`/api/folders`, `/api/set-working
 
 ## Static Assets and PWA
 
-- `express.static` serves `src/public/`.
-- `manifest.json` is served with `Content-Type: application/manifest+json`.
-- Dynamic SVG icons are generated at `/icon-{16,32,144,180,192,512}.png` with monospace "CC" text on a dark background, served as `image/svg+xml` with a 1-year cache header.
+- `express.static` serves `src/public/` (or SEA asset middleware serves bundled `public/*` assets in SEA mode).
+- `/manifest.json` is served by the pre-auth dynamic route above with `Content-Type: application/manifest+json`, `Cache-Control: no-cache`, auth-gated hostname injection, and static/base fallback.
+- PWA icons are real static PNG files at `/icon-{16,32,144,180,192,512}.png`, served by `express.static`/SEA assets so the wire `Content-Type` matches the manifest's declared `image/png`.
+- Screenshots at `/screenshot-wide.png` and `/screenshot-narrow.png` are pre-built SVG screenshot assets served by explicit routes with long-lived cache headers.
 
 ---
 

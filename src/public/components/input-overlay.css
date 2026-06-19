@@ -4,7 +4,7 @@
 .input-overlay-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--overlay-backdrop-light);
   z-index: calc(var(--z-input-overlay) - 1);
 }
 

@@ -105,10 +105,10 @@ Settings accessible from Settings modal under "Notifications" section.
 ## API
 
 ### `GET /api/config`
-Returns `hostname` field (`os.hostname()`) for notification title prefixing.
+Returns `hostname` field (`os.hostname()`). The client stores it on `ClaudeCodeWebInterface.hostname`; notification titles use the shared `window.AppIdentity.formatNotificationTitle(title, hostname)` formatter rather than building a raw prefix locally.
 
 ### `sendNotification(opts)`
-Accepts object `{ title, body, sessionId, type }` or legacy positional args `(title, body, sessionId)`.
+Accepts object `{ title, body, sessionId, type }` or legacy positional args `(title, body, sessionId)`. Before dispatching desktop notifications, `session-manager.js` formats the title with `formatNotificationTitle()`, producing `[HOST] <title>` when a hostname is available and leaving the title unchanged when it is not. The formatter is idempotent, so callers may pass an already-prefixed title without causing a double `[HOST] [HOST] ...` prefix.
 
 ### `playNotificationChime(type)`
 Plays synthesized chime for given type. Respects `notifSound` and `notifVolume` settings.
@@ -121,7 +121,8 @@ Plays synthesized chime for given type. Respects `notifSound` and `notifVolume` 
 | `src/public/components/feedback.css` | Toast styles |
 | `src/public/components/banner-base.css` | Shared banner base styles (Layer 3) |
 | `src/public/clipboard-handler.js` | Micro-feedback callback (`showCopiedFeedback`) |
-| `src/public/session-manager.js` | Notification triggering, chime synthesis, desktop notifications |
+| `src/public/app-identity.js` | Shared notification title formatter (`formatNotificationTitle`) |
+| `src/public/session-manager.js` | Notification triggering, shared title formatting, chime synthesis, desktop notifications |
 | `src/public/service-worker.js` | `notificationclick` handler, cache version |
 | `src/public/app.js` | Micro-feedback wiring, modal mutex, voice redirect |
 | `src/public/index.html` | Badge element, notification settings HTML, toast script tag |

@@ -19,6 +19,7 @@ The frontend is a single-page application served from `src/public/`. It runs ent
 | Inter | -- | Google Fonts | UI font for headers, tabs, controls |
 | clipboard-handler.js | -- | Local | Keyboard shortcuts (Ctrl+C/V) and clipboard utility functions |
 | feedback-manager.js | -- | Local | Toast notification system (FeedbackManager singleton) |
+| app-identity.js | -- | Local | Shared per-machine app identity formatter (`window.AppIdentity`) |
 | input-overlay.js | -- | Local | Type-ahead input overlay with voice integration |
 
 ---
@@ -27,11 +28,13 @@ The frontend is a single-page application served from `src/public/`. It runs ent
 
 Source: `src/public/tokens.css`
 
-Three-tier architecture loaded before `style.css`:
+Three-tier token architecture loaded before `base.css`, component styles, and `style.css`:
 
 1. **Primitive tokens** — raw color/size values (e.g., `--color-gray-200`, `--space-4`)
 2. **Semantic tokens** — role-based references (e.g., `--surface-primary`, `--accent-default`)
-3. **Theme overrides** — `[data-theme="name"]` blocks override semantic tokens only
+3. **Component tokens** — sparing, named values for component identity that should not follow the active theme accent
+
+Theme overrides use `[data-theme="name"]` blocks and override semantic tokens only.
 
 ### Available Themes
 
@@ -45,20 +48,49 @@ Three-tier architecture loaded before `style.css`:
 | Solarized Dark | `solarized-dark` | No |
 | Solarized Light | `solarized-light` | No |
 
+### Token Groups
+
+Primitive tokens include the raw palettes, spacing scale, typography scale, elevation scale, z-index scale, safe-area values, and theme-independent overlay scrims:
+
+| Token | Purpose |
+|-------|---------|
+| `--overlay-backdrop` | Standard blocking modal/dialog scrim (`rgba(0, 0, 0, 0.70)`) |
+| `--overlay-backdrop-light` | Non-blocking dim layer for type-ahead overlays (`rgba(0, 0, 0, 0.40)`) |
+| `--overlay-backdrop-strong` | Strong terminal/auth blocking overlay (`rgba(0, 0, 0, 0.92)`) |
+
+The overlay scrims intentionally stay black and theme-independent so modal darkness is consistent across all themes.
+
+Semantic border tokens include `--border-default`, `--border-hover`, `--border-focus`, and `--border-subtle`. `--border-subtle` is defined in every theme block: dark themes use `rgba(255, 255, 255, 0.08)` and light themes use `rgba(0, 0, 0, 0.08)`. Use it for quiet separators and low-emphasis outlines that must not disappear in light themes.
+
+Component tool-identity tokens carry stable assistant colors that are shared by tab badges and tool-card tints:
+
+| Tool | Color token | RGB token |
+|------|-------------|-----------|
+| Claude | `--tool-claude` | `--tool-claude-rgb` |
+| Codex | `--tool-codex` | `--tool-codex-rgb` |
+| Copilot | `--tool-copilot` | `--tool-copilot-rgb` |
+| Gemini | `--tool-gemini` | `--tool-gemini-rgb` |
+| Terminal | `--tool-terminal` | `--tool-terminal-rgb` |
+
+The `-rgb` triples are for `rgba(var(--tool-*-rgb), <alpha>)` tints. These brand colors are component identity, not theme accents; see [ADR-0029](../adrs/0029-overlay-and-tool-identity-tokens.md).
+
 ### Backward Compatibility
 
-`style.css` defines aliases mapping old variable names to new semantic tokens:
+`base.css` defines aliases mapping old variable names to new semantic tokens:
 - `--bg-primary` → `var(--surface-primary)`
+- `--bg-secondary` → `var(--surface-secondary)`
+- `--bg-tertiary` → `var(--surface-tertiary)`
 - `--accent` → `var(--accent-default)`
 - `--success` → `var(--status-success)`
 - `--error` → `var(--status-error)`
+- `--warning` → `var(--status-warning)`
 - `--border` → `var(--border-default)`
 
 ---
 
 ## ClaudeCodeWebInterface
 
-Source: `src/public/app.js` (~2700 lines)
+Source: `src/public/app.js` (~6100 lines)
 
 The main application controller. Instantiated once on page load.
 
@@ -100,15 +132,13 @@ The main application controller. Instantiated once on page load.
 `init()` performs these steps in order:
 
 1. Call `window.authManager.initialize()`. If it returns `false`, the login prompt is displayed and initialization halts.
-2. Fetch `/api/config` to get folder mode, aliases, and base folder.
-3. Set up the terminal (xterm.js with fit, web links, and unicode11 addons).
-4. Apply saved settings (font, theme, cursor) immediately via `applySettings(loadSettings())`.
-5. Establish WebSocket connection.
-6. Set up UI event handlers (folder browser, session controls, resize observer).
-7. Initialize `SessionTabManager`.
-8. Initialize `PlanDetector`.
-9. Load existing sessions from the server.
-10. Start usage polling interval.
+2. Fetch `/api/config` to get folder mode, aliases, base folder, tool availability, voice config, prerequisites, and `hostname`.
+3. Compute the app identity with `window.AppIdentity.formatAppIdentity({ hostname })` and apply it with `applyAppIdentity()` before the first notification title flash. This updates `document.title`, `#mobileMenuTitle`, `#app`'s `aria-label`, the `apple-mobile-web-app-title` and `application-name` meta tags, and the start screen identity chip (`#startPromptIdentity`) to `[HOST] ai-or-die`. Empty hostnames degrade to `ai-or-die`.
+4. Set up the terminal, mobile extra keys, orientation/PWA handlers, UI event handlers, voice input (when configured), plan detection, and type-ahead input overlay.
+5. Apply saved settings (font, theme, cursor, padding, notification preferences, sticky-note toggle) via `applySettings(loadSettings())`.
+6. Establish the WebSocket connection.
+7. Initialize `SessionTabManager` and load sessions.
+8. Initialize per-tab sticky-note state and the remaining session/usage UI.
 
 ### WebSocket Management
 
@@ -204,19 +234,29 @@ document.fonts.addEventListener('loadingdone', () => {
 
 ### Settings Modal
 
-The settings modal is structured into 5 collapsible sections, each with a `setting-section-header` that toggles visibility:
+The settings modal (`#settingsModal`) is a two-pane dialog, not a collapsible stack. The left rail (`.settings-nav`) is an ARIA tablist (`role="tablist"`, `aria-orientation="vertical"`) with six `.settings-tab` buttons. The right side (`.settings-panes`) contains six `.settings-pane` tabpanels. One pane is visible at a time; inactive panes stay in the DOM with `[hidden]` so existing control IDs and JavaScript references remain stable.
 
-| Section | Settings |
-|---------|----------|
-| Terminal | Font family, font size, cursor style, terminal padding (range slider, default 8px) |
-| Voice Input | Recording mode (push-to-talk default, toggle), input method (auto/local/cloud), mic sounds (checkbox, default on) |
-| Notifications | Volume slider, desktop notification toggle |
-| Display | Theme selector |
-| Advanced | Scrollback lines, debug mode |
+| Tab / pane | Settings |
+|------------|----------|
+| Terminal | Theme, font family, font size, cursor style/blink, scrollback, terminal padding |
+| Voice Input | Recording mode (push-to-talk default, toggle), input method (auto/cloud/local), mic sounds |
+| Notifications | Sound toggle, volume slider, desktop alerts toggle |
+| Display | Token stats toggle, session sticky notes & auto-titles toggle |
+| Advanced | Autonomous mode toggle and warning copy |
+| Install | Install availability status, install button, iOS Add-to-Home-Screen instructions |
 
-Settings are persisted to `localStorage` under the `cc-web-settings` key. `loadSettings()` returns defaults merged with stored values. `applySettings()` applies all values to the terminal and UI, including the terminal padding via xterm's `options.padding`.
+Keyboard handling in `setupSettingsModal()` implements roving `tabindex` plus Arrow Up/Down/Left/Right, Home, and End navigation. The Install tab and pane are hidden when `_isInstalled` indicates the app is already running as an installed PWA. The install state machine still owns `#installStatus`, `#settingsInstallBtn`, and `#installIOSInstructions`.
 
-Default settings include `voiceRecordingMode: 'push-to-talk'`, `voiceMethod: 'auto'`, `micSounds: true`, `terminalPadding: 8`.
+`src/public/components/controls.css` scopes the redesign under `.settings-modal`. It provides the two-pane layout and restyles the native controls without changing their JavaScript contract:
+
+- Checkboxes keep native `<input type="checkbox">` elements and IDs, but add `.switch-input` for toggle-switch styling; `.checked` and `change` events are unchanged.
+- `<select>` elements remain native selects with a token-backed closed-control style and chevron.
+- Range controls are wrapped in `.range-field` and show a `.range-value` pill (`#fontSizeValue`, `#terminalPaddingValue`, `#notifVolumeValue`) updated by existing input handlers.
+- Forced-colors and `prefers-reduced-motion` rules keep selected tabs, switches, sliders, and selects usable in high-contrast and reduced-motion environments.
+
+Settings are persisted to `localStorage` under the `cc-web-settings` key. `loadSettings()` returns defaults merged with stored values. `saveSettings()` still reads `.value` / `.checked` from the preserved IDs, and `applySettings()` applies all values to the terminal and UI, including terminal padding.
+
+Default settings include `voiceRecordingMode: 'push-to-talk'`, `voiceMethod: 'auto'`, `micSounds: true`, `terminalPadding: 8`, `notifSound: true`, `notifVolume: 30`, `notifDesktop: true`, and `enableSessionStickyNotes: true`.
 
 ### Folder Browser
 
@@ -410,15 +450,27 @@ See the [Authentication Specification](authentication.md) for full details. Key 
 
 ---
 
+## App Identity (Client)
+
+Source: `src/public/app-identity.js`
+
+`app-identity.js` is loaded before `session-manager.js` and `app.js` and exposes `window.AppIdentity` in the browser. It is also a CommonJS module for the server-side dynamic manifest path.
+
+The shared display format is `[HOST] ai-or-die`; when the sanitized hostname is empty, the identity falls back to `ai-or-die`. `sanitizeHostnameForDisplay()` removes control, bidi, and zero-width characters, collapses whitespace, uses the first DNS label by default, and ellipsizes long host labels. `formatNotificationTitle(title, hostname)` uses the same prefix and is idempotent so notifications are never double-prefixed.
+
+After authenticated `loadConfig()` populates `this.hostname`, `init()` calls `formatAppIdentity()` and `applyAppIdentity()`. The application identity updates `document.title`, the mobile menu title, the app `aria-label`, PWA title meta tags, and the start screen live-status chip.
+
+---
+
 ## PWA Support
 
 ### Service Worker
 
 Source: `src/public/service-worker.js`
 
-- **Cache name:** `ai-or-die-v9` (bump on every cache-shape change).
-- **Precached resources:** root paths (`/`, `/index.html`), all stylesheets (tokens, base, components, mobile, main), JS modules (app, command-palette, clipboard-handler, session-manager, plan-detector, splits, icons, voice-handler, image-handler, input-overlay, feedback-manager, file-browser, file-editor, extra-keys), and the MesloLGS Nerd Font WOFF2 variants (other Nerd Font families are cached on demand).
-- **Strategy for API/WebSocket routes:** Network only, with a 503 offline fallback for `/api/*`.
+- **Cache name:** `ai-or-die-v10` (bump on every cache-shape change).
+- **Precached resources:** root paths (`/`, `/index.html`), core stylesheets (tokens, base, component CSS including `components/controls.css`, mobile, main), JS modules (including `app-identity.js`, app, command-palette, clipboard-handler, session-manager, plan-detector, splits, icons, voice-handler, image-handler, input-overlay, feedback-manager, file-browser, file-editor, extra-keys), and the MesloLGS Nerd Font WOFF2 variants (other Nerd Font families are cached on demand).
+- **Strategy for API/WebSocket/manifest routes:** Network only, with a 503 offline fallback for `/api/*`. `/manifest.json` is network-only because it is built per-machine and must not be served stale from the service-worker cache.
 - **Strategy for versioned CDN assets** (unpkg, cdnjs, jsdelivr, Google Fonts): Cache-first.
 - **Strategy for static assets:** Network first, cache on success, fall back to cache when offline. Navigations fall back to `/index.html` when offline.
 - Activates immediately via `skipWaiting()` + `clients.claim()`.
@@ -428,13 +480,17 @@ Source: `src/public/service-worker.js`
 
 ### Manifest
 
-Source: `src/public/manifest.json`
+Source: `src/public/manifest.json` plus the dynamic `GET /manifest.json` route in `src/server.js`
 
-Provides installable PWA metadata. Served at `/manifest.json` with `Cache-Control: no-cache` so manifest changes propagate on the next visit.
+`src/public/manifest.json` is the neutral base manifest (`name` and `short_name` are `ai-or-die`). The server serves `/manifest.json` with `Content-Type: application/manifest+json` and `Cache-Control: no-cache`, parses the base manifest in memory, and injects per-machine install metadata only when doing so is safe:
 
-Icons are currently served by dynamic Express routes at `/icon-{size}.png` (sizes 16, 32, 144, 180, 192, 512). The manifest declares `"type": "image/png"` for icon entries; the routes return SVG bytes with `Content-Type: image/svg+xml`. Chromium 145 tolerates this MIME mismatch but it is a wire-protocol contract violation — Safari iOS Add-to-Home-Screen and Firefox Android may reject it. See [docs/history/pwa-install-lan-self-signed-cert.md](../history/pwa-install-lan-self-signed-cert.md) for context; a follow-up is tracked but not yet shipped.
+- In normal filesystem mode, the base manifest is read from `src/public/manifest.json`.
+- In SEA mode, the base manifest is read via `sea.getRawAsset('public/manifest.json')`.
+- When auth is **not** enforced (`this.noAuth || !this.auth`), `name` becomes `[HOST] ai-or-die` via `formatAppIdentity()` and `short_name` becomes the hard-truncated host via `formatShortName()`.
+- When auth **is** enforced, the pre-auth manifest remains neutral (`ai-or-die`) so `os.hostname()` is not leaked to unauthenticated clients. After authenticated `/api/config`, the in-session title and UI still show `[HOST] ai-or-die`.
+- On any dynamic-build error, the route falls back to the static/base manifest.
 
-Screenshots at `/screenshot-wide.png` and `/screenshot-narrow.png` similarly serve SVG bytes despite the `.png` URL.
+Icons are static PNG files in `src/public/` (`/icon-{16,32,144,180,192,512}.png`) so the served `Content-Type` matches the manifest's declared `image/png`. Screenshots at `/screenshot-wide.png` and `/screenshot-narrow.png` are pre-built SVG screenshot assets served from `.png` URLs for manifest compatibility.
 
 ### Installability requirements
 
@@ -452,9 +508,9 @@ Workarounds for LAN testing: use `--tunnel` (Microsoft Dev Tunnels supplies a CA
 
 ### Install state machine
 
-Source: `src/public/app.js` (`_installState`, `_setInstallState`, `_updateInstallSection`, `_triggerInstall`, lines 92-125 and 3260-3370).
+Source: `src/public/app.js` (`_installState`, `_setInstallState`, `_updateInstallSection`, `_triggerInstall`).
 
-Single `_installState` property drives both the floating Install button and the Settings → Install panel. States:
+Single `_installState` property drives both the floating Install button and the Settings → Install pane. States:
 
 | State | Trigger | UI |
 |---|---|---|
@@ -465,7 +521,7 @@ Single `_installState` property drives both the floating Install button and the 
 | `unavailable-ios` | iOS device detected | iOS Share/Add-to-Home instructions |
 | `unavailable-https` | `window.isSecureContext === false` | "Requires a secure connection. Use localhost or restart with --https." |
 | `unavailable-browser` | Firefox or Samsung Internet | "Use your browser's menu to add this app to your home screen." |
-| `unavailable` | 3-second timer expired with no other condition matching | "Not available in this browser." (catch-all; in practice often a cert-trust failure on LAN — see history doc) |
+| `unavailable` | 3-second timer expired with no other condition matching | "If no install button appears, use your browser menu → \"Install this site as an app\"." |
 | `dismissed` | User rejected the install prompt | "Install was cancelled. Reload the page to try again." |
 
 The 3-second fallback timer is a heuristic — `beforeinstallprompt` typically fires within a few hundred ms of page load on real hardware once criteria are met. The listener overrides the late-arriving event if the timer fires first.

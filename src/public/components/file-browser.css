@@ -301,13 +301,13 @@
   gap: var(--space-1, 4px);
   padding: var(--space-2, 8px);
   background: var(--bg-tertiary, #14171c);
-  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  border-bottom: 1px solid var(--border-subtle);
   flex-wrap: wrap;
 }
 .fb-pdf-btn {
   background: transparent;
   color: var(--text-primary, #e6edf3);
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm, 4px);
   padding: 4px 10px;
   cursor: pointer;
@@ -335,7 +335,7 @@
 .fb-pdf-sep {
   width: 1px;
   height: 18px;
-  background: var(--border-subtle, rgba(255, 255, 255, 0.12));
+  background: var(--border-subtle);
   margin: 0 var(--space-2, 8px);
 }
 .fb-pdf-viewport {
@@ -827,7 +827,7 @@
 .file-browser-backdrop {
   display: none;
   position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-backdrop);
   backdrop-filter: blur(4px);
   z-index: var(--z-overlay);
 }

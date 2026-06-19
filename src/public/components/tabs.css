@@ -139,6 +139,13 @@
     line-height: 1;
 }
 
+/* Per-tool badge background (token-backed brand colors, shared with tool cards) */
+.tab-badge[data-tool="claude"]   { background: var(--tool-claude); }
+.tab-badge[data-tool="codex"]    { background: var(--tool-codex); }
+.tab-badge[data-tool="copilot"]  { background: var(--tool-copilot); }
+.tab-badge[data-tool="gemini"]   { background: var(--tool-gemini); }
+.tab-badge[data-tool="terminal"] { background: var(--tool-terminal); }
+
 .session-tab.dragging {
     opacity: 0.5;
 }
@@ -521,7 +528,7 @@
     background-color: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow-md);
     min-width: 200px;
     max-width: 300px;
     z-index: var(--z-dropdown);
