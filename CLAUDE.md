@@ -54,6 +54,7 @@ Before starting any task, consult the relevant documentation:
 5. **Local-first testing**: All tests (unit + integration + e2e for the surface you changed) must pass locally before pushing. CI on GitHub Actions runs the same suites on Windows + Linux + clean-checkout `npm ci` as the final cross-platform verification gate. Local-pass is necessary but not sufficient — CI green is the merge gate. See `docs/agent-instructions/06-local-first-then-ci.md`.
 6. **Document what you solve**: Every solved problem goes in `docs/history/`. LLMs don't carry memories — written docs are the only institutional memory.
 7. **Consult before committing**: For significant decisions, spawn expert subagents (architect, principal engineer, lead QA, PM, designer, user researcher) in parallel. See `docs/agent-instructions/08-multi-agent-consultation.md`.
+8. **All failing tests get addressed holistically**: CI green is non-negotiable. Every failing or flaky check on a PR must be driven to green before merge — **including failures the current PR did not introduce** (pre-existing flakes, wall-clock/job-timeout failures, environment/runner issues, unrelated visual or integration tests). "Not my change" is not an acceptable reason to leave a check red. Diagnose the root cause and fix it at the source (deflake the test, fix the underlying race/timeout, speed up or split the job, repair the harness); do not paper over with a blind retry, a skipped/`.only`'d test, a relaxed assertion, or a platform carve-out that hides the defect. A diagnosed retry of a confirmed-flaky job is allowed only after the root cause is understood and recorded; if a fix is genuinely out of scope, escalate to the user with the diagnosis rather than merging red.
 
 ## Common Commands
 
@@ -120,6 +121,9 @@ powershell scripts/validate.ps1
 
 **Sticky Notes (local-LLM session summaries)**
 - Server: `src/sticky-note-{engine,worker,summarizer,transcript,prompt}.js`, `src/utils/{secret-redact,gguf-model-manager}.js`. A worker-thread `node-llama-cpp` (Liquid LFM2-2.6B) summarises each AI tab's claude JSONL transcript into a per-tab note + auto tab title. Notes are keyed by claude sessionId (durable + resume; per-tab ownership; skips `agent-*.jsonl`). Note inference is expand-gated (runs only while a viewer has the card expanded); the tab title tails claude's own `ai-title` with no model. ON by default; `--no-sticky-notes` disables. Degrades to `unavailable` if the model/binding is missing. See ADR-0022, ADR-0023 (model bake-off), ADR-0024 (binding/resume), ADR-0025 (expand-gating) and `docs/specs/sticky-notes.md`.
+
+**Keep-Awake (prevent OS sleep, Windows-first)**
+- `src/keepalive-manager.js`. While the server runs it holds a Windows power assertion (`SetThreadExecutionState`) via one persistent in-box `powershell.exe` helper that blocks on stdin and releases on EOF (graceful or parent death). No deps, no `powercfg`. ON by default on Windows (`--no-keepalive` / `AIORDIE_DISABLE_KEEPALIVE=1` disables); instant no-op on macOS/Linux. System-awake only; `--keepalive-display` also holds the display. Degrades to a visible warning under WDAC/CLM/EDR. See ADR-0028, `docs/specs/keepalive.md`.
 
 ### WebSocket Protocol
 

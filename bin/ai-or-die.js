@@ -43,7 +43,9 @@ program
   .option('--no-sticky-notes', 'disable per-tab AI session summaries + auto tab titles (on by default)')
   .option('--sticky-notes-model-dir <path>', 'custom directory for the sticky-note model file')
   .option('--sticky-notes-model <url>', 'override the sticky-note model GGUF download URL')
-  .option('--sticky-notes-threads <number>', 'CPU threads for sticky-note inference (default: auto, max 4)');
+  .option('--sticky-notes-threads <number>', 'CPU threads for sticky-note inference (default: auto, max 4)')
+  .option('--no-keepalive', 'disable keeping the machine awake while the server runs (Windows only; on by default)')
+  .option('--keepalive-display', 'also keep the display on (default keeps the system awake but lets the monitor sleep)');
 
 // Auto-open is OFF by default and opt-in via --open. Legacy callers may still pass
 // --no-open (the old opt-out flag); filter it out so it parses harmlessly as a no-op.
@@ -123,6 +125,12 @@ async function main() {
       stickyNotesModelDir: options.stickyNotesModelDir || process.env.STICKY_NOTES_MODEL_DIR,
       stickyNotesModel: options.stickyNotesModel || process.env.STICKY_NOTES_MODEL,
       stickyNotesThreads: options.stickyNotesThreads || process.env.STICKY_NOTES_THREADS,
+      // Keep the host awake while the server runs (Windows only; on by default;
+      // --no-keepalive / AIORDIE_DISABLE_KEEPALIVE=1 disables). System-awake by
+      // default; --keepalive-display / AIORDIE_KEEPALIVE_DISPLAY=1 also holds
+      // the display on.
+      keepalive: options.keepalive !== false && process.env.AIORDIE_DISABLE_KEEPALIVE !== '1',
+      keepaliveDisplay: options.keepaliveDisplay === true || process.env.AIORDIE_KEEPALIVE_DISPLAY === '1',
     };
 
     console.log('Starting ai-or-die...');
