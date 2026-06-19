@@ -91,7 +91,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -131,7 +140,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -171,7 +189,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -211,7 +238,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -253,7 +289,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -307,7 +352,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -347,7 +401,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -387,7 +450,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -427,7 +499,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -467,7 +548,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -507,7 +597,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -547,7 +646,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -587,7 +695,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -627,7 +744,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -667,7 +793,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
@@ -707,7 +842,16 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+        # Retry: the browser CDN download flakes intermittently (exit 100 /
+        # mid-install cancellation) and a single failure sinks the whole job.
+        # bash works on both ubuntu and the Windows runners (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
       # No model cache needed: the sticky-note spec runs the server with both
       # native engines off and injects the server->client messages (no download).
       - name: Run sticky-note tests

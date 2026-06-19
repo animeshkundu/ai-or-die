@@ -58,9 +58,23 @@ limits, so timing-sensitive tests flake and whole jobs occasionally exceed the
   so this was a load-sensitive spawn+readiness flake, not a regression (it passed
   locally in ~3.6s). Raised the readiness waits (15s→30s, 10s→20s) and the suite
   timeout (30s→90s) for headroom under a contended runner.
+- **Playwright install retry** (`.github/workflows/ci.yml`): `npx playwright
+  install chromium --with-deps` failed/cancelled intermittently across many
+  browser jobs (`exit code 100`, mid-install cancellation) — a flaky browser-CDN
+  download with no retry, the single most common red across runs. Wrapped all 16
+  install steps in a 3-attempt bash retry (`shell: bash` works on ubuntu and the
+  Windows Git Bash).
 
 ## Still to watch (not papered over)
 
+- **`test-browser-sticky-notes (windows)` is slow** — `7 passed (15.9m)` post-merge
+  vs `8.2m` pre-merge, inflated by a flaky node-pty `AttachConsole failed` crash in
+  `@lydell/node-pty-win32-x64/.../conpty_console_list_agent.js` that triggers a
+  Playwright retry. The tests still pass; the crash-retry can push the job past the
+  20-min cap. It is a node-pty/Windows issue (in `node_modules`), not ours and not
+  keep-awake (which is gated off in CI). If it recurs deterministically rather than
+  as a flake, reduce that suite's Playwright `retries`, or pin the node-pty console
+  agent, rather than just raising the cap.
 - The nerd-font test (`e2e/tests/14-nerd-font-rendering.spec.js`) flaked once
   under contention but passed on re-run. If it recurs deterministically, deflake
   it at the source: gate the clear+`term.write` on terminal idle so the shell
