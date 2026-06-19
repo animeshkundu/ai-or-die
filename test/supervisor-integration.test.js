@@ -24,7 +24,7 @@ const WebSocket = require('ws');
 const supervisorScript = path.join(__dirname, '..', 'bin', 'supervisor.js');
 const mockServerScript = path.join(__dirname, 'fixtures', 'mock-supervised-server.js');
 
-function waitForServerReady(port, timeoutMs = 15000) {
+function waitForServerReady(port, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const check = () => {
@@ -75,7 +75,11 @@ function waitForMessage(ws, type, timeoutMs = 5000) {
 }
 
 describe('Supervisor Integration', function () {
-  this.timeout(30000);
+  // Generous wall-clock: the test spawns a real supervisor child process and
+  // polls HTTP readiness twice; on a heavily-loaded CI runner (esp. Windows)
+  // process spawn + readiness can take far longer than the local ~3-5s. These
+  // are wait bounds for a working round-trip, not correctness assertions.
+  this.timeout(90000);
 
   let supervisorProcess;
   // Use a random high port; pick at test time to avoid stale conflicts
@@ -166,7 +170,7 @@ describe('Supervisor Integration', function () {
     });
 
     // 8. Wait for supervisor to respawn the mock server
-    await waitForServerReady(port, 10000);
+    await waitForServerReady(port, 20000);
 
     // 9. Reconnect with a new WebSocket
     const { ws: ws2 } = await connectWs(port);

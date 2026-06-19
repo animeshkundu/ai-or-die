@@ -51,6 +51,13 @@ limits, so timing-sensitive tests flake and whole jobs occasionally exceed the
   keep-awake on `!isCI` (CI / GITHUB_ACTIONS), so CI server processes (binary
   smoke, browser e2e, soak) never spawn the helper. The gate is in the server,
   not `KeepaliveManager`, so the unit tests still exercise win32 logic directly.
+- **supervisor-integration readiness bound** (`test/supervisor-integration.test.js`):
+  `Server not ready on port … within 15000ms` on Windows after merging main. The
+  test's mock child server (`test/fixtures/mock-supervised-server.js`) imports
+  only `http`/`ws`/`uuid`/`fs` — zero dependency on the merged code or keep-awake —
+  so this was a load-sensitive spawn+readiness flake, not a regression (it passed
+  locally in ~3.6s). Raised the readiness waits (15s→30s, 10s→20s) and the suite
+  timeout (30s→90s) for headroom under a contended runner.
 
 ## Still to watch (not papered over)
 
