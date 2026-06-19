@@ -780,7 +780,7 @@ Event shape: `{type, path, relPath, mtime, hash?, prevPath?}`. Types: `change` (
 | Event | Tab state | Reaction |
 |-------|-----------|----------|
 | `change` matching open path | clean (Monaco model value === `_lastSavedContent`) | **Silent reload**. `GET /api/files/content`, swap content into Monaco model, **preserve cursor + scroll + selection** via `getPosition()` → `setValue()` → `setPosition(saved)` with bounds-check. Reuses the `_suppressContentChange` flag from the existing `_reloadFile` path. Update `_lastSavedContent` to the new content. |
-| `change` matching open path | dirty | **Non-blocking toast** on the tab strip: `agent modified <path>` with three buttons — **Reload (discard)** / **Compare** / **Keep mine**. Don't force a modal mid-typing. The existing 409 modal still fires if the user hits Save. |
+| `change` matching open path | dirty | **Non-blocking toast** on the tab strip: `agent modified <path>` with three buttons — **Reload (discard)** / **Compare** / **Keep mine**. Don't force a modal mid-typing. The 409 save backstop still renders as an editor-local inline banner if the user hits Save. |
 | `add` / `unlink` matching panel's current dir | — | Refresh directory listing without user F5. |
 | `rename` matching open tab path | — | Tab's path metadata updates in-place. Subsequent saves go to `path`, not `prevPath`. Listing refresh treats it as `unlink(prevPath) + add(path)`. |
 | Any event after EventSource reconnect | open tabs | Mark all open tabs as needing an `mtime` re-check on next focus. Don't speculatively re-fetch (would thrash); use mtime drift as the staleness signal. |
@@ -1016,7 +1016,7 @@ has been superseded.
 
 On save, the server compares the submitted hash with the current file hash:
 - **Match:** File saved, new hash returned.
-- **Mismatch (409):** Conflict dialog with three options:
+- **Mismatch (409):** The editor renders an inline `.file-browser-conflict-banner` above the Monaco editor. This is an intentional Layer-3 inline banner: the conflict is a persistent state scoped to the current editor, so it stays contextual instead of opening an app-level modal. The banner has three actions:
   - **Keep My Changes** -- discard server changes, force-save the editor content.
   - **Reload File** -- discard editor changes, reload from server.
   - **Compare Changes** -- open a `monaco.editor.createDiffEditor` modal showing

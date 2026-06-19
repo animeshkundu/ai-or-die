@@ -162,8 +162,8 @@
     right: 0;
     bottom: 0;
     width: 100px;
-    background: rgba(88, 166, 255, 0.15);
-    border: 2px dashed rgba(88, 166, 255, 0.5);
+    background: var(--accent-soft);
+    border: 2px dashed var(--accent-default);
     border-radius: 8px;
     pointer-events: none;
     z-index: var(--z-dropdown);
@@ -183,7 +183,7 @@
     right: 0;
     bottom: 0;
     z-index: var(--z-overlay);
-    background-color: rgba(0, 0, 0, 0.92);
+    background-color: var(--overlay-backdrop-strong);
     display: flex;
     align-items: center;
     justify-content: center;

@@ -14,11 +14,11 @@
   overflow: hidden;
   font-size: 12px;
   line-height: 1.4;
-  color: var(--text-primary, #e6e6e6);
-  background: var(--bg-elevated, rgba(28, 28, 34, 0.92));
-  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.12));
-  border-radius: var(--radius-md, 8px);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  color: var(--text-primary);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
   backdrop-filter: blur(6px);
   /* Float over xterm without capturing scroll/click on the body region. */
   pointer-events: auto;
@@ -44,8 +44,7 @@
   gap: 6px;
   padding: 6px 8px;
   cursor: default;
-  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
-  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .sticky-note-titlebar {
@@ -60,7 +59,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent, #5ac8fa);
+  background: var(--accent);
   flex: 0 0 auto;
 }
 
@@ -94,7 +93,7 @@
   cursor: pointer;
   opacity: 0.7;
 }
-.sticky-note-collapse:hover { opacity: 1; background: rgba(255, 255, 255, 0.08); }
+.sticky-note-collapse:hover { opacity: 1; background: var(--surface-tertiary); }
 
 .sticky-note-body {
   padding: 8px;
@@ -121,7 +120,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 2px 0;
-  border-bottom: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.06));
+  border-bottom: 1px solid var(--border-subtle);
 }
 .sn-updates .sn-list li:last-child { border-bottom: none; }
 .sn-update-text { word-break: break-word; }

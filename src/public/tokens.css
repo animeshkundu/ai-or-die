@@ -114,6 +114,22 @@
   --danger-text: #fff;
   --danger-shadow: rgba(139, 0, 0, 0.5);
 
+  /* --- Overlay scrims (theme-independent; a black scrim reads over any theme) ---
+     Every full-screen dim/backdrop routes through one of these so the darkness
+     level is consistent instead of drifting per modal. */
+  --overlay-backdrop: rgba(0, 0, 0, 0.70);        /* standard modal/dialog scrim */
+  --overlay-backdrop-light: rgba(0, 0, 0, 0.40);  /* non-blocking dim (type-ahead) */
+  --overlay-backdrop-strong: rgba(0, 0, 0, 0.92); /* terminal blocking overlay */
+
+  /* --- Tool identity (brand colors — intentionally NOT theme accents) ---
+     Shared by tab badges (session-manager.js) and tool cards (cards.css). The
+     -rgb triples let consumers build rgba(var(--tool-*-rgb), <alpha>) tints. */
+  --tool-claude: #d97706;   --tool-claude-rgb: 217, 119, 6;
+  --tool-codex: #059669;    --tool-codex-rgb: 5, 150, 105;
+  --tool-copilot: #6366f1;  --tool-copilot-rgb: 99, 102, 241;
+  --tool-gemini: #2563eb;   --tool-gemini-rgb: 37, 99, 235;
+  --tool-terminal: #71717a; --tool-terminal-rgb: 113, 113, 122;
+
   /* --- Z-Index Scale --- */
   --z-base: 0;
   --z-banner: 50;
@@ -161,6 +177,7 @@
   --border-default: var(--color-gray-200);
   --border-hover: var(--color-gray-300);
   --border-focus: var(--color-blue-500);
+  --border-subtle: rgba(255, 255, 255, 0.08);
 
   /* --- Accent --- */
   --accent-default: var(--color-blue-500);
@@ -198,6 +215,7 @@
   --border-default: #30363d;
   --border-hover: #484f58;
   --border-focus: #ff6b00;
+  --border-subtle: rgba(255, 255, 255, 0.08);
 
   --accent-default: #ff6b00;
   --accent-hover: #e65f00;
@@ -233,6 +251,7 @@
   --border-default: #e6e7eb;
   --border-hover: #d4d6db;
   --border-focus: #e05d00;
+  --border-subtle: rgba(0, 0, 0, 0.08);
 
   --accent-default: #e05d00;
   --accent-hover: #cc5200;
@@ -272,6 +291,7 @@
   --border-default: #49483e;
   --border-hover: #5b5a50;
   --border-focus: #a6e22e;
+  --border-subtle: rgba(255, 255, 255, 0.08);
 
   --accent-default: #a6e22e;
   --accent-hover: #b6f23e;
@@ -306,6 +326,7 @@
   --border-default: #4c566a;
   --border-hover: #5e6a82;
   --border-focus: #88c0d0;
+  --border-subtle: rgba(255, 255, 255, 0.08);
 
   --accent-default: #88c0d0;
   --accent-hover: #8fbcbb;
@@ -340,6 +361,7 @@
   --border-default: #094959;
   --border-hover: #0b5c6e;
   --border-focus: #268bd2;
+  --border-subtle: rgba(255, 255, 255, 0.08);
 
   --accent-default: #268bd2;
   --accent-hover: #2e9fe6;
@@ -374,6 +396,7 @@
   --border-default: #d3cbb7;
   --border-hover: #c5bca8;
   --border-focus: #268bd2;
+  --border-subtle: rgba(0, 0, 0, 0.08);
 
   --accent-default: #268bd2;
   --accent-hover: #2e9fe6;

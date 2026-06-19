@@ -58,26 +58,26 @@
   transform: translateY(-1px);
 }
 
-/* Per-tool brand color hover tints */
+/* Per-tool brand color hover tints (tokens shared with the tab badges) */
 .tool-card[data-tool="terminal"]:hover:not(.disabled) {
-  border-color: rgba(113, 113, 122, 0.5);
-  background: rgba(113, 113, 122, 0.08);
+  border-color: rgba(var(--tool-terminal-rgb), 0.5);
+  background: rgba(var(--tool-terminal-rgb), 0.08);
 }
 .tool-card[data-tool="claude"]:hover:not(.disabled) {
-  border-color: rgba(217, 119, 6, 0.5);
-  background: rgba(217, 119, 6, 0.08);
+  border-color: rgba(var(--tool-claude-rgb), 0.5);
+  background: rgba(var(--tool-claude-rgb), 0.08);
 }
 .tool-card[data-tool="codex"]:hover:not(.disabled) {
-  border-color: rgba(5, 150, 105, 0.5);
-  background: rgba(5, 150, 105, 0.08);
+  border-color: rgba(var(--tool-codex-rgb), 0.5);
+  background: rgba(var(--tool-codex-rgb), 0.08);
 }
 .tool-card[data-tool="copilot"]:hover:not(.disabled) {
-  border-color: rgba(99, 102, 241, 0.5);
-  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(var(--tool-copilot-rgb), 0.5);
+  background: rgba(var(--tool-copilot-rgb), 0.08);
 }
 .tool-card[data-tool="gemini"]:hover:not(.disabled) {
-  border-color: rgba(37, 99, 235, 0.5);
-  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(var(--tool-gemini-rgb), 0.5);
+  background: rgba(var(--tool-gemini-rgb), 0.08);
 }
 
 /* Focus visible for keyboard navigation */
@@ -112,20 +112,20 @@
 
 /* Per-tool brand color hover for installable cards (softer than available) */
 .tool-card.installable[data-tool="claude"]:hover {
-  border-color: rgba(217, 119, 6, 0.3);
-  background: rgba(217, 119, 6, 0.04);
+  border-color: rgba(var(--tool-claude-rgb), 0.3);
+  background: rgba(var(--tool-claude-rgb), 0.04);
 }
 .tool-card.installable[data-tool="codex"]:hover {
-  border-color: rgba(5, 150, 105, 0.3);
-  background: rgba(5, 150, 105, 0.04);
+  border-color: rgba(var(--tool-codex-rgb), 0.3);
+  background: rgba(var(--tool-codex-rgb), 0.04);
 }
 .tool-card.installable[data-tool="copilot"]:hover {
-  border-color: rgba(99, 102, 241, 0.3);
-  background: rgba(99, 102, 241, 0.04);
+  border-color: rgba(var(--tool-copilot-rgb), 0.3);
+  background: rgba(var(--tool-copilot-rgb), 0.04);
 }
 .tool-card.installable[data-tool="gemini"]:hover {
-  border-color: rgba(37, 99, 235, 0.3);
-  background: rgba(37, 99, 235, 0.04);
+  border-color: rgba(var(--tool-gemini-rgb), 0.3);
+  background: rgba(var(--tool-gemini-rgb), 0.04);
 }
 
 /* Expanded state */
@@ -472,6 +472,30 @@
   letter-spacing: -0.02em;
   line-height: var(--leading-tight);
   margin-bottom: var(--space-2);
+}
+
+/* Machine-identity chip — reads like a live terminal status badge */
+.start-prompt-identity {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.start-prompt-identity[hidden] { display: none; }
+.start-prompt-identity-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-success);
+  flex: 0 0 auto;
 }
 
 /* Start prompt subtitle */

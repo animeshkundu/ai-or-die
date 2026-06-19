@@ -133,7 +133,7 @@ class AuthManager {
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.95);
+            background: var(--overlay-backdrop-strong, rgba(0, 0, 0, 0.95));
             display: flex;
             align-items: center;
             justify-content: center;
@@ -143,12 +143,12 @@ class AuthManager {
         const loginForm = document.createElement('div');
         loginForm.style.cssText = `
             background: var(--bg-secondary, #1c2128);
-            border: 1px solid var(--border-color, #30363d);
+            border: 1px solid var(--border-default, #30363d);
             border-radius: 12px;
             padding: 32px;
             max-width: 400px;
             width: 90%;
-            box-shadow: 0 10px 50px rgba(0, 0, 0, 0.5);
+            box-shadow: var(--shadow-xl);
         `;
 
         loginForm.innerHTML = `
@@ -157,7 +157,7 @@ class AuthManager {
                 Authentication Required
             </h2>
             <p style="color: var(--text-secondary, #8b949e); margin: 0 0 24px 0; font-size: 14px;">
-                This ai-or-die instance requires authentication.
+                This instance requires authentication.
             </p>
             <form id="auth-form">
                 <div style="margin-bottom: 16px;">
@@ -172,7 +172,7 @@ class AuthManager {
                             width: 100%;
                             padding: 10px 12px;
                             background: var(--bg-primary, #0d1117);
-                            border: 1px solid var(--border-color, #30363d);
+                            border: 1px solid var(--border-default, #30363d);
                             border-radius: 6px;
                             color: var(--text-primary, #f0f6fc);
                             font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, 'JetBrains Mono', monospace;
@@ -183,7 +183,7 @@ class AuthManager {
                         required
                     />
                 </div>
-                <div id="auth-error" style="color: #f85149; margin-bottom: 16px; font-size: 14px; display: none;"></div>
+                <div id="auth-error" style="color: var(--status-error, #f85149); margin-bottom: 16px; font-size: 14px; display: none;"></div>
                 <button 
                     type="submit"
                     style="

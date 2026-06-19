@@ -163,7 +163,7 @@
     border: 2px solid var(--border);
     border-radius: 50%;
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow-md);
     transition: all var(--duration-slow, 300ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
     width: 56px;
     height: 56px;
@@ -173,7 +173,7 @@
     background-color: var(--bg-tertiary);
     border-color: var(--accent);
     transform: translateY(-2px);
-    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow-lg);
 }
 
 .mode-switcher-btn:active {
@@ -212,7 +212,7 @@
     border: 2px solid var(--error);
     border-radius: 50%;
     cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow-md);
     transition: all var(--duration-slow, 300ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
     width: 56px;
     height: 56px;
@@ -222,6 +222,7 @@
     background-color: var(--bg-tertiary);
     border-color: var(--color-red-400);
     transform: translateY(-2px);
+    /* Intentional red destructive-escape glow (not a neutral elevation shadow). */
     box-shadow: 0 6px 16px rgba(248, 113, 113, 0.2);
 }
 

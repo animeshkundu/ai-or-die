@@ -1,0 +1,422 @@
+/* controls.css — redesigned Settings modal (two-pane) + reusable form controls.
+   Everything is token-driven so all 7 themes work; scoped under .settings-modal
+   so it never disturbs the other modals that share .modal-content chrome.
+   Controls keep their native <input>/<select> elements (and their ids) — these
+   rules only restyle them, so the settings JS (.value/.checked/change) is
+   unchanged. */
+
+/* ============================================================
+   Two-pane shell
+   ============================================================ */
+.settings-modal .modal-content {
+  width: 760px;
+  max-width: 94vw;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* header/footer fixed; the panes scroll, not the whole box */
+  padding: 0;
+}
+
+.settings-modal .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+}
+
+.settings-layout {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  min-height: 0;
+}
+
+/* --- Left nav rail (ARIA tablist) --- */
+.settings-nav {
+  flex: 0 0 196px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3);
+  border-right: 1px solid var(--border-default);
+  background: var(--surface-primary);
+  overflow-y: auto;
+}
+
+.settings-tab {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2-5);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--duration-fast) var(--ease-default),
+              color var(--duration-fast) var(--ease-default);
+}
+
+.settings-tab .settings-tab-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  color: var(--text-muted);
+}
+
+.settings-tab:hover {
+  background: var(--surface-tertiary);
+  color: var(--text-primary);
+}
+
+.settings-tab[aria-selected="true"] {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  border-color: var(--accent-soft);
+}
+
+.settings-tab[aria-selected="true"] .settings-tab-icon {
+  color: var(--accent-default);
+}
+
+.settings-tab:focus-visible {
+  outline: 2px solid var(--accent-default);
+  outline-offset: 2px;
+}
+
+/* --- Right pane area --- */
+.settings-panes {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-5) var(--space-6);
+}
+
+.settings-pane {
+  margin: 0;
+}
+
+.settings-pane[hidden] {
+  display: none;
+}
+
+.settings-pane-title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.settings-pane-sub {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   Setting rows (override modals.css within the settings modal)
+   ============================================================ */
+.settings-modal .setting-group {
+  margin: 0;
+  padding: var(--space-3) 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.settings-modal .setting-group:last-child {
+  border-bottom: none;
+}
+
+.settings-modal .setting-group > label {
+  flex: 1 1 auto;
+  width: auto;
+  font-weight: var(--weight-medium);
+  font-size: var(--text-md);
+  color: var(--text-primary);
+}
+
+/* The interactive control sits at the trailing edge of the row. */
+.settings-modal .setting-group > select,
+.settings-modal .setting-group > .range-field,
+.settings-modal .setting-group > .switch-input {
+  flex: 0 0 auto;
+}
+
+.settings-modal .setting-hint {
+  margin: 0;
+  padding-bottom: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   Toggle switch (a native checkbox, restyled — .checked preserved)
+   ============================================================ */
+.settings-modal .switch-input {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 26px;
+  margin: 0;
+  border-radius: var(--radius-full);
+  background: var(--surface-tertiary);
+  border: 1px solid var(--border-default);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background-color var(--duration-normal) var(--ease-default),
+              border-color var(--duration-normal) var(--ease-default);
+}
+
+/* The sliding thumb — a white knob with a soft drop shadow for a tactile,
+   premium feel that reads on both light and dark tracks. */
+.settings-modal .switch-input::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translateY(-50%);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 1px 1px rgba(0, 0, 0, 0.16);
+  transition: transform var(--duration-normal) var(--ease-default);
+}
+
+.settings-modal .switch-input:hover {
+  border-color: var(--border-hover);
+}
+
+.settings-modal .switch-input:checked {
+  background: var(--accent-default);
+  border-color: var(--accent-default);
+}
+
+.settings-modal .switch-input:checked::before {
+  transform: translateY(-50%) translateX(18px);
+}
+
+.settings-modal .switch-input:focus-visible {
+  outline: 2px solid var(--accent-default);
+  outline-offset: 2px;
+}
+
+/* ============================================================
+   Refined select (closed control only; native dropdown stays native)
+   ============================================================ */
+.settings-modal .setting-group select {
+  appearance: none;
+  -webkit-appearance: none;
+  min-width: 190px;
+  max-width: 260px;
+  padding: var(--space-2) var(--space-8) var(--space-2) var(--space-3);
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--text-primary);
+  background-color: var(--surface-tertiary);
+  /* chevron — neutral gray reads on both light and dark themes */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%239aa0a6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right var(--space-3) center;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-default);
+}
+
+.settings-modal .setting-group select:hover {
+  border-color: var(--border-hover);
+}
+
+.settings-modal .setting-group select:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* ============================================================
+   Range slider + value pill
+   ============================================================ */
+.settings-modal .range-field {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 230px;
+}
+
+.settings-modal .setting-group input[type="range"] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: 1 1 auto;
+  width: 160px;
+  height: 4px;
+  background: var(--border-default);
+  border-radius: var(--radius-full);
+  outline: none;
+  cursor: pointer;
+}
+
+.settings-modal .setting-group input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent-default);
+  border: 2px solid var(--surface-secondary);
+  cursor: pointer;
+}
+
+.settings-modal .setting-group input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--surface-secondary);
+  border-radius: 50%;
+  background: var(--accent-default);
+  cursor: pointer;
+}
+
+.settings-modal .setting-group input[type="range"]:focus-visible {
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-radius: var(--radius-full);
+}
+
+.settings-modal .range-value {
+  flex: 0 0 auto;
+  min-width: 44px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   Autonomous-mode danger card + install pane
+   ============================================================ */
+.settings-modal .setting-group--warning {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+  padding: var(--space-4);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-lg);
+  background: var(--surface-tertiary);
+}
+
+.settings-modal .setting-group--warning .switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+}
+
+.settings-modal .setting-group--warning .switch-row label {
+  flex: 1 1 auto;
+  font-weight: var(--weight-semibold);
+}
+
+.settings-modal .setting-warning {
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--status-warning);
+}
+
+.settings-modal #installStatusGroup {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+/* ============================================================
+   Footer
+   ============================================================ */
+.settings-modal .modal-footer {
+  flex: 0 0 auto;
+}
+
+/* ============================================================
+   Mobile: collapse the two panes into a single stacked column.
+   The nav rail becomes a horizontal scrolling strip on top.
+   ============================================================ */
+@media (max-width: 820px) {
+  .settings-modal .modal-content {
+    width: 96vw;
+    max-height: 90vh;
+  }
+  .settings-layout {
+    flex-direction: column;
+  }
+  .settings-nav {
+    flex: 0 0 auto;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    gap: var(--space-1);
+    border-right: none;
+    border-bottom: 1px solid var(--border-default);
+    -webkit-overflow-scrolling: touch;
+  }
+  .settings-tab {
+    flex: 0 0 auto;
+  }
+  .settings-panes {
+    padding: var(--space-4);
+  }
+}
+
+@media (max-width: 480px) {
+  .settings-modal .setting-group {
+    flex-wrap: wrap;
+  }
+  .settings-modal .setting-group select,
+  .settings-modal .range-field {
+    width: 100%;
+    max-width: none;
+  }
+}
+
+/* ============================================================
+   Forced colors / Windows high contrast — keep state visible
+   ============================================================ */
+@media (forced-colors: active) {
+  .settings-tab[aria-selected="true"] {
+    outline: 2px solid Highlight;
+  }
+  .settings-modal .switch-input {
+    border: 1px solid CanvasText;
+  }
+  .settings-modal .switch-input::before {
+    background: CanvasText;
+  }
+  .settings-modal .switch-input:checked {
+    background: Highlight;
+  }
+  .settings-modal .switch-input:checked::before {
+    background: Canvas;
+  }
+  .settings-modal .setting-group input[type="range"]::-webkit-slider-thumb {
+    background: Highlight;
+  }
+}
+
+/* Respect reduced-motion: drop control transitions. */
+@media (prefers-reduced-motion: reduce) {
+  .settings-tab,
+  .settings-modal .switch-input,
+  .settings-modal .switch-input::before,
+  .settings-modal .setting-group select {
+    transition: none;
+  }
+}

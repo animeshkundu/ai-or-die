@@ -1026,14 +1026,42 @@ class ClaudeCodeWebServer {
       return _globalJsonParser(req, res, next);
     });
     
-    // Serve manifest.json with correct MIME type
+    // Serve manifest.json with the correct MIME type. The manifest is built
+    // dynamically so the installed PWA name can carry the machine identity
+    // (`[HOST] ai-or-die`). Registered BEFORE express.static so the dynamic
+    // route wins over the physical public/manifest.json file.
     this.app.get('/manifest.json', (req, res) => {
       res.setHeader('Content-Type', 'application/manifest+json');
       res.setHeader('Cache-Control', 'no-cache');
-      if (global.__SEA_MODE__) {
-        this._sendSeaAsset(res, 'public/manifest.json');
-      } else {
-        res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
+      try {
+        const appIdentity = require('./public/app-identity.js');
+        let raw;
+        if (global.__SEA_MODE__) {
+          const sea = require('node:sea');
+          raw = Buffer.from(sea.getRawAsset('public/manifest.json')).toString('utf8');
+        } else {
+          raw = fs.readFileSync(path.join(__dirname, 'public', 'manifest.json'), 'utf8');
+        }
+        const manifest = JSON.parse(raw);
+        // Privacy: the manifest is served pre-auth (this route is registered
+        // before the auth middleware), so embed the host ONLY when there is no
+        // auth token at all. Fail-closed: if any token is set we never put
+        // os.hostname() in the publicly-fetchable manifest. In-session title/UI
+        // still show the host in all cases.
+        if (!this.auth) {
+          const host = os.hostname();
+          manifest.name = appIdentity.formatAppIdentity({ hostname: host });
+          manifest.short_name = appIdentity.formatShortName({ hostname: host });
+        }
+        res.send(JSON.stringify(manifest));
+      } catch (err) {
+        // Fall back to the static manifest so install metadata still works.
+        console.warn('[manifest] dynamic build failed, serving static:', err && err.message);
+        if (global.__SEA_MODE__) {
+          this._sendSeaAsset(res, 'public/manifest.json');
+        } else {
+          res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
+        }
       }
     });
 

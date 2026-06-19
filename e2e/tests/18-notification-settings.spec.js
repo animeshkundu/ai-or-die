@@ -36,6 +36,7 @@ test.describe('Notification settings', () => {
       if (window.app.showSettings) window.app.showSettings();
     });
     await page.waitForTimeout(500);
+    await page.click('#settingsTab-notifications');
 
     // Assert notification setting elements exist
     const hasNotifSound = await page.evaluate(() => !!document.getElementById('notifSound'));
@@ -62,6 +63,7 @@ test.describe('Notification settings', () => {
       if (window.app.showSettings) window.app.showSettings();
     });
     await page.waitForTimeout(300);
+    await page.click('#settingsTab-notifications');
 
     // Uncheck sound, set volume to 60, keep desktop on
     await page.evaluate(() => {
@@ -94,6 +96,7 @@ test.describe('Notification settings', () => {
       if (window.app.showSettings) window.app.showSettings();
     });
     await page.waitForTimeout(300);
+    await page.click('#settingsTab-notifications');
 
     const restored = await page.evaluate(() => ({
       notifSound: document.getElementById('notifSound').checked,
@@ -161,7 +164,7 @@ test.describe('Notification settings', () => {
     expect(config.hostname.length).toBeGreaterThan(0);
   });
 
-  test('notification divider is visible between settings sections', async ({ page }) => {
+  test('notification settings are reachable from the settings tablist', async ({ page }) => {
     setupPageCapture(page);
 
     await createSessionViaApi(port, 'Divider Test');
@@ -174,9 +177,13 @@ test.describe('Notification settings', () => {
     });
     await page.waitForTimeout(300);
 
-    const hasSections = await page.evaluate(() => {
-      return document.querySelectorAll('.setting-section-header').length >= 2;
-    });
-    expect(hasSections).toBe(true);
+    await expect(page.locator('.settings-nav[role="tablist"]')).toBeVisible();
+    await expect(page.locator('#settingsTab-notifications')).toHaveAttribute('aria-controls', 'settingsPane-notifications');
+
+    await page.click('#settingsTab-notifications');
+
+    await expect(page.locator('#settingsTab-notifications')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#settingsPane-notifications')).toBeVisible();
+    await expect(page.locator('#settingsPane-terminal')).toHaveAttribute('hidden', '');
   });
 });

@@ -37,6 +37,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings modal
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
     // Verify Recording Mode select exists
     const selectExists = await page.evaluate(() => {
@@ -75,6 +76,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
     // Check default value
     const defaultMode = await page.evaluate(() => {
@@ -97,6 +99,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings and change to Toggle
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
     await page.selectOption('#voiceRecordingMode', 'toggle');
     await page.waitForTimeout(200);
@@ -120,6 +123,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings programmatically (avoids overlay/stability race)
     await page.evaluate(() => { if (window.app) window.app.showSettings(); });
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
     // Verify Toggle is still selected
     const mode = await page.evaluate(() => {
@@ -149,6 +153,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
     // Verify Input Method select exists
     const selectExists = await page.evaluate(() => {
@@ -188,6 +193,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
     // Verify Mic Sounds checkbox exists
     const checkboxExists = await page.evaluate(() => {
@@ -217,6 +223,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings and uncheck Mic Sounds
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
     await page.evaluate(() => {
       const cb = document.getElementById('micSounds');
@@ -243,6 +250,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings programmatically
     await page.evaluate(() => { if (window.app) window.app.showSettings(); });
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
     // Verify Mic Sounds remains unchecked
     const isChecked = await page.evaluate(() => {
@@ -261,7 +269,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     await page.click('#closeSettingsBtn');
   });
 
-  test('Voice Input section header is present in settings modal', async ({ page }) => {
+  test('Voice Input tab and pane are present in settings modal', async ({ page }) => {
     setupPageCapture(page);
     const sessionId = await createSessionViaApi(port, 'voice-settings-section');
     await page.goto(url);
@@ -272,15 +280,13 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
-    // Verify the Voice Input section header exists
-    const sectionHeader = await page.evaluate(() => {
-      const section = document.querySelector('.setting-section[data-section="voice"]');
-      if (!section) return null;
-      const header = section.querySelector('.setting-section-header');
-      return header ? header.textContent.trim() : null;
-    });
-    expect(sectionHeader).toBe('Voice Input');
+    await expect(page.locator('#settingsTab-voice')).toHaveText(/Voice Input/);
+    await expect(page.locator('#settingsTab-voice')).toHaveAttribute('aria-controls', 'settingsPane-voice');
+    await expect(page.locator('#settingsTab-voice')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#settingsPane-voice')).toBeVisible();
+    await expect(page.locator('#settingsPane-voice .settings-pane-title')).toHaveText('Voice Input');
 
     await page.click('#closeSettingsBtn');
   });
@@ -296,6 +302,7 @@ test.describe('Voice Settings — recording mode, input method, mic sounds', () 
     // Open settings
     await page.click('#settingsBtn');
     await page.waitForSelector('.settings-modal.active', { timeout: 5000 });
+    await page.click('#settingsTab-voice');
 
     const defaultMethod = await page.evaluate(() => {
       const select = document.getElementById('voiceMethod');

@@ -1,6 +1,6 @@
 // Bump this version when urlsToCache entries are added or removed.
 // Content changes to existing files are handled by the network-first fetch strategy.
-const CACHE_NAME = 'ai-or-die-v9';
+const CACHE_NAME = 'ai-or-die-v10';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -17,6 +17,7 @@ const urlsToCache = [
   '/components/terminal.css',
   '/components/buttons.css',
   '/components/modals.css',
+  '/components/controls.css',
   '/components/cards.css',
   '/components/menus.css',
   '/components/notifications.css',
@@ -24,6 +25,7 @@ const urlsToCache = [
   '/mobile.css',
   '/style.css',
   '/app.js',
+  '/app-identity.js',
   '/command-palette.js',
   '/clipboard-handler.js',
   '/session-manager.js',
@@ -90,10 +92,13 @@ self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // For API calls and WebSocket connections, always use network
-  if (url.pathname.startsWith('/api/') || 
+  // For API calls and WebSocket connections, always use network. The PWA
+  // manifest is also network-only: it is built per-machine on the server and
+  // must never be served stale from cache.
+  if (url.pathname.startsWith('/api/') ||
       url.pathname.startsWith('/ws') ||
       url.pathname === '/auth-status' ||
+      url.pathname === '/manifest.json' ||
       request.url.includes('socket.io')) {
     event.respondWith(
       fetch(request)

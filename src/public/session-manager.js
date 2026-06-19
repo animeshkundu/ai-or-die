@@ -69,9 +69,12 @@ class SessionTabManager {
         // Don't send notification for active tab
         if (sessionId === this.activeTabId) return;
 
-        // Prepend hostname for multi-machine context
+        // Prepend hostname for multi-machine context (shared formatter keeps
+        // notifications and the tab/window title agreeing on host formatting).
         const hostname = this.claudeInterface?.hostname || '';
-        const fullTitle = hostname ? `[${hostname}] ${title}` : title;
+        const fullTitle = (window.AppIdentity && window.AppIdentity.formatNotificationTitle)
+            ? window.AppIdentity.formatNotificationTitle(title, hostname)
+            : (hostname ? `[${hostname}] ${title}` : title);
 
         // Check user preference for desktop notifications
         const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
@@ -617,17 +620,19 @@ class SessionTabManager {
         const folderName = workingDir ? workingDir.split('/').pop() || '/' : null;
         const displayName = !isDefaultSessionName ? sessionName : (folderName || sessionName);
         
-        // Tool type badge mapping
+        // Tool type badge mapping. Color comes from token-backed CSS
+        // (.tab-badge[data-tool="..."] in tabs.css), not an inline style, so
+        // the badges stay consistent with the tool cards and don't bypass tokens.
         const toolBadges = {
-            claude: { label: 'C', color: '#d97706' },
-            codex: { label: 'Cx', color: '#059669' },
-            copilot: { label: 'Cp', color: '#6366f1' },
-            gemini: { label: 'G', color: '#2563eb' },
-            terminal: { label: '>_', color: '#71717a' },
+            claude: { label: 'C' },
+            codex: { label: 'Cx' },
+            copilot: { label: 'Cp' },
+            gemini: { label: 'G' },
+            terminal: { label: '>_' },
         };
         const badge = toolBadges[toolType] || null;
         const badgeHtml = badge
-            ? `<span class="tab-badge" style="background:${badge.color}" title="${toolType || ''}">${badge.label}</span>`
+            ? `<span class="tab-badge" data-tool="${toolType || ''}" title="${toolType || ''}">${badge.label}</span>`
             : '';
 
         const statusLabel = status === 'active' ? 'Active' : status === 'error' ? 'Error' : 'Idle';
@@ -1341,17 +1346,17 @@ class SessionTabManager {
         // Add badge if not already present
         if (!tab.querySelector('.tab-badge')) {
             const toolBadges = {
-                claude: { label: 'C', color: '#d97706' },
-                codex: { label: 'Cx', color: '#059669' },
-                copilot: { label: 'Cp', color: '#6366f1' },
-                gemini: { label: 'G', color: '#2563eb' },
-                terminal: { label: '>_', color: '#71717a' },
+                claude: { label: 'C' },
+                codex: { label: 'Cx' },
+                copilot: { label: 'Cp' },
+                gemini: { label: 'G' },
+                terminal: { label: '>_' },
             };
             const badge = toolBadges[toolType];
             if (badge) {
                 const badgeEl = document.createElement('span');
                 badgeEl.className = 'tab-badge';
-                badgeEl.style.background = badge.color;
+                if (toolType) badgeEl.setAttribute('data-tool', toolType);
                 badgeEl.title = toolType;
                 badgeEl.textContent = badge.label;
                 const content = tab.querySelector('.tab-content');

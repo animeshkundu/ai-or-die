@@ -144,7 +144,11 @@ Tokens are stored in `sessionStorage` under the key `cc-web-token`. This means:
 
 #### Login Prompt
 
-`showLoginPrompt()` creates a full-screen overlay (`z-index: 10000`) with:
+`showLoginPrompt()` creates a full-screen overlay (`z-index: var(--z-auth, 9999)`) with identity-neutral copy because it renders before authenticated `/api/config` can provide the machine hostname:
+
+> This instance requires authentication.
+
+The overlay uses the shared strong backdrop/elevation tokens (`--overlay-backdrop-strong`, `--shadow-xl`) and token-backed status color for errors. It contains:
 - A password input field for the access token.
 - A submit button that calls `verifyToken()`.
 - Error display for invalid tokens.

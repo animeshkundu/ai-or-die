@@ -191,6 +191,18 @@ class ClaudeCodeWebInterface {
         }
         
         await this.loadConfig();
+        // Apply per-machine identity (`[HOST] ai-or-die`) to the tab/window
+        // title, mobile menu header, aria-label, and PWA meta tags now that
+        // this.hostname is populated. Must run before the first notification
+        // flash, which saves/restores the then-current document.title.
+        if (window.AppIdentity) {
+            const identity = window.AppIdentity.formatAppIdentity({ hostname: this.hostname });
+            window.AppIdentity.applyAppIdentity(identity);
+            // Surface the machine identity on the start screen too.
+            const spIdText = document.getElementById('startPromptIdentityText');
+            const spId = document.getElementById('startPromptIdentity');
+            if (spIdText && spId) { spIdText.textContent = identity; spId.hidden = false; }
+        }
         this.setupTerminal();
         this._setupExtraKeys();
         this._setupOrientationHandler();
@@ -1929,19 +1941,34 @@ class ClaudeCodeWebInterface {
             });
         }
 
-        // Section collapse/expand (keyboard accessible)
-        modal.querySelectorAll('.setting-section-header').forEach((header) => {
-            const toggle = () => {
-                const section = header.parentElement;
-                const isCollapsed = section.classList.toggle('collapsed');
-                header.setAttribute('aria-expanded', String(!isCollapsed));
-            };
-            header.addEventListener('click', toggle);
-            header.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    toggle();
-                }
+        // Two-pane settings nav (ARIA tablist): switch panes, roving tabindex,
+        // arrow/Home/End keyboard support. Replaces the old collapsible sections.
+        const settingsTabs = Array.from(modal.querySelectorAll('.settings-tab'));
+        const selectSettingsTab = (tab, focus = true) => {
+            settingsTabs.forEach((t) => {
+                const selected = t === tab;
+                t.setAttribute('aria-selected', String(selected));
+                t.tabIndex = selected ? 0 : -1;
+                const pane = document.getElementById(t.getAttribute('aria-controls'));
+                if (pane) pane.hidden = !selected;
+            });
+            if (focus && tab) tab.focus();
+        };
+        settingsTabs.forEach((tab) => {
+            tab.addEventListener('click', () => selectSettingsTab(tab, false));
+            tab.addEventListener('keydown', (e) => {
+                // Navigate among VISIBLE tabs only (the Install tab is hidden
+                // when running as an installed PWA) so focus never lands on an
+                // invisible element and escapes the modal focus trap.
+                const visible = settingsTabs.filter((t) => t.style.display !== 'none' && !t.hidden);
+                const idx = visible.indexOf(tab);
+                if (idx === -1) return;
+                let next = null;
+                if (e.key === 'ArrowDown' || e.key === 'ArrowRight') next = visible[(idx + 1) % visible.length];
+                else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') next = visible[(idx - 1 + visible.length) % visible.length];
+                else if (e.key === 'Home') next = visible[0];
+                else if (e.key === 'End') next = visible[visible.length - 1];
+                if (next) { e.preventDefault(); selectSettingsTab(next); }
             });
         });
 
@@ -3917,11 +3944,15 @@ class ClaudeCodeWebInterface {
                 content.classList.remove('closing');
                 overlay.classList.remove('closing');
                 overlay.classList.remove('active');
-                overlay.style.display = 'none';
+                // Clear (don't set) the inline display so the modal hides via its
+                // base CSS rule (.<modal> { display: none }). Setting an inline
+                // display:none would win over `.active { display: flex }` and
+                // permanently block reopening the modal.
+                overlay.style.removeProperty('display');
             }, 150);
         } else {
             overlay.classList.remove('active');
-            overlay.style.display = 'none';
+            overlay.style.removeProperty('display');
         }
     }
 
@@ -4196,10 +4227,17 @@ class ClaudeCodeWebInterface {
         if (installBtn) installBtn.style.display = 'none';
         if (iosInstructions) iosInstructions.style.display = 'none';
 
-        // If running inside installed PWA, hide the entire section
-        const section = document.querySelector('[data-section="install"]');
-        if (section) {
-            section.style.display = this._isInstalled ? 'none' : '';
+        // If running inside an installed PWA, hide the Install tab + pane.
+        const installTab = document.getElementById('settingsTab-install');
+        const installPane = document.getElementById('settingsPane-install');
+        if (installTab) installTab.style.display = this._isInstalled ? 'none' : '';
+        if (installPane && this._isInstalled) installPane.hidden = true;
+        // If the Install tab was the active one and is now hidden, fall back to
+        // the first visible tab so the pane area is never left blank/unreachable.
+        if (this._isInstalled && installTab && installTab.getAttribute('aria-selected') === 'true') {
+            const firstVisible = Array.from(document.querySelectorAll('.settings-tab'))
+                .find((t) => t.style.display !== 'none');
+            if (firstVisible) firstVisible.click();
         }
 
         switch (this._installState) {
