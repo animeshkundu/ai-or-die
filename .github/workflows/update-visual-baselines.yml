@@ -1,0 +1,75 @@
+name: Update Visual Baselines
+
+# Regenerate the Playwright visual-regression baselines and commit them back
+# to the branch. Visual regression runs on Linux only in CI (Windows skips —
+# see 09-visual-regression.spec.js), so this updates the *-linux.png baselines.
+#
+# Trigger: push a commit whose message contains "[update-baselines]". (A
+# workflow_dispatch trigger only works once the file is on the default branch;
+# the marker keeps this self-contained on a feature branch and inert on normal
+# pushes.) Mirrors the test-browser-visual job in ci.yml, plus --update-snapshots
+# and a commit-back step.
+on:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-visual-baselines-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  update-baselines:
+    if: contains(github.event.head_commit.message, '[update-baselines]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        # persist-credentials (default true) keeps the token so we can push.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install chromium --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
+      - name: Restore local models (STT, cached)
+        uses: ./.github/actions/cache-models
+        with:
+          models: stt
+      - name: Regenerate visual baselines
+        run: npx playwright test --config e2e/playwright.config.js --project visual-regression --update-snapshots
+      - name: Commit and push updated baselines
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add e2e/tests/
+          if git diff --cached --quiet; then
+            echo "No baseline changes to commit."
+          else
+            git commit -m "test: regenerate linux visual baselines"
+            git push origin HEAD:${{ github.ref_name }}
+            echo "Pushed regenerated baselines."
+          fi
+      - name: Upload regenerated baselines (artifact)
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: visual-baselines
+          path: e2e/tests/**/*-snapshots/
+          retention-days: 14
