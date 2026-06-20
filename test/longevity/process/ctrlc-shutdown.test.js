@@ -93,6 +93,15 @@ describe('Ctrl+C native-worker shutdown (e2e)', function () {
   this.timeout(70000);
 
   before(async function () {
+    // POSIX-only: this drives a real terminal Ctrl+C via a process-group SIGINT
+    // (`process.kill(-pid, 'SIGINT')` on a detached child). Windows has no POSIX
+    // process groups / SIGINT delivery, so that mechanism is a no-op there and the
+    // child never receives the signal (the test would hang to its timeout). The
+    // Windows shutdown path is IPC-driven and is covered end-to-end by
+    // server-shutdown-e2e.test.js ("graceful shutdown exits cleanly").
+    if (process.platform === 'win32') {
+      this.skip();
+    }
     if (!(await modelsPresent())) {
       this.skip(); // models not downloaded — the native abort cannot occur
     }
