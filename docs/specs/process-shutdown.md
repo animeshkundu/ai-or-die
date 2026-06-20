@@ -46,10 +46,23 @@ No-op on non-Windows and whenever koffi is unavailable. Never throws into the ca
    still in the **supervisor** job, so it dies on supervisor death regardless. The per-PTY job is
    per-session convenience + defense in depth, not the primary guarantee.
 
-**Degraded mode**: if koffi won't load or job create/assign fails (EDR / Constrained Language
-Mode / Server Silo / outer-job UI limits → `ERROR_ACCESS_DENIED`), the supervisor still starts,
-logs a prominent warning, and the server reports `process_guard.job_guard_active = false` in
-`/api/diagnostics`. Teardown then falls back to best-effort `taskkill /T /F` (`src/utils/process-tree.js`).
+**Degraded mode**: the deterministic kernel guarantee needs koffi + a usable Job Object. When
+that's unavailable — koffi fails to load (e.g. the **SEA single-file binary**, where koffi is
+left as an external runtime require and there is no `node_modules`), `AssignProcessToJobObject`
+is denied (EDR / Constrained Language Mode / Server Silo / outer-job UI limits), or the operator
+sets `AOD_DISABLE_JOB_GUARD=1` — `isAvailable()` returns false and **every** teardown path falls
+back to the best-effort `src/utils/process-tree.js` helper: `taskkill /T /F /PID` on Windows, a
+`kill(-pgid)` process-group kill on POSIX. This fires on the spawn-watchdog, error, `stopSession`,
+`uncaughtException`, and IPC-disconnect paths (gated on "no job was closed", so it never
+double-kills when the kernel job already reaped the subtree). The supervisor logs a prominent
+warning and the server reports `process_guard.job_guard_active=false` in `/api/diagnostics`.
+
+> **SEA binary note:** `sea-bootstrap.js` runs `bin/ai-or-die.js` **directly** (no supervisor),
+> and koffi is externalized out of the bundle, so the packaged binary always runs in degraded
+> mode: best-effort `taskkill` teardown on the paths it controls, no kernel guarantee against an
+> uncatchable kill. Wiring full koffi-in-SEA (extracting `@koromix/koffi-<platform>-<arch>` as a
+> SEA asset + a load shim, mirroring `pty-sea-shim.js`) is a tracked follow-up. The npm-install
+> path (the supervisor + koffi) gets the full kernel guarantee.
 
 ### POSIX (best-effort)
 

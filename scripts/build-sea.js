@@ -52,6 +52,19 @@ async function bundle() {
       'sherpa-onnx-darwin-arm64',
       // open uses dynamic import() — lazy-loaded in bin/ai-or-die.js
       'open',
+      // koffi (Windows Job Object FFI) loads a per-platform native addon
+      // (@koromix/koffi-<platform>-<arch>/.../koffi.node) that esbuild can't
+      // bundle ("No loader for .node"). Leave it as a runtime require: in a
+      // normal npm install it loads fully; in the SEA binary (no node_modules)
+      // the require throws and src/job-guard.js degrades to best-effort teardown
+      // (jobGuard:false). See docs/specs/process-shutdown.md.
+      'koffi',
+      '@koromix/koffi-win32-x64',
+      '@koromix/koffi-win32-arm64',
+      '@koromix/koffi-linux-x64',
+      '@koromix/koffi-linux-arm64',
+      '@koromix/koffi-darwin-x64',
+      '@koromix/koffi-darwin-arm64',
     ],
   });
 

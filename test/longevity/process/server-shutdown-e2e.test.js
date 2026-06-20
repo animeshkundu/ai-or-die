@@ -61,7 +61,7 @@ async function waitFor(fn, timeoutMs, iv = 200) {
 
 // Boot the real supervisor, open a WS, start a real terminal PTY, and type a command that
 // launches a real `node` grandchild. Resolves { sup, gcPid, port, out, exitInfo }.
-async function bootAndSpawnGrandchild(port, withIpc) {
+async function bootAndSpawnGrandchild(port, withIpc, extraEnv) {
   const gcFile = path.join(os.tmpdir(), `aod-e2e-gc-${process.pid}-${port}-${Date.now()}.pid`);
   try { fs.rmSync(gcFile, { force: true }); } catch (_) { /* ignore */ }
 
@@ -70,7 +70,7 @@ async function bootAndSpawnGrandchild(port, withIpc) {
   const sup = spawn(process.execPath, [
     SUPERVISOR, '--port', String(port), '--disable-auth',
     '--no-sticky-notes', '--no-stt', '--no-keepalive',
-  ], { cwd: REPO_ROOT, stdio, env: { ...process.env, AOD_SUPERVISOR_RESTART: '1' } });
+  ], { cwd: REPO_ROOT, stdio, env: { ...process.env, AOD_SUPERVISOR_RESTART: '1', ...(extraEnv || {}) } });
   state.sup = sup;
   sup.stdout.on('data', (d) => { state.out += d.toString(); });
   sup.stderr.on('data', (d) => { state.out += d.toString(); });
@@ -147,6 +147,33 @@ describe('deterministic shutdown: real-server end-to-end (PTY + node grandchild)
 
       const gcDead = await waitFor(() => !pidAlive(state.gcPid), 12000);
       assert.ok(gcDead, 'node grandchild SURVIVED graceful shutdown — orphan leaked');
+    } finally {
+      cleanup(state);
+    }
+  });
+
+  // Degraded mode: force the Job Object guard off (AOD_DISABLE_JOB_GUARD=1) so teardown
+  // must use the best-effort fallback (taskkill /T /F on Windows, process-group kill on
+  // POSIX) instead of the kernel job. This is the path the SEA binary takes (no koffi) and
+  // any koffi/EDR-blocked host. It must STILL reap the grandchild on graceful shutdown.
+  it('graceful shutdown reaps the grandchild even with the job guard disabled (degraded fallback)', async function () {
+    const port = 11975;
+    let state;
+    try {
+      state = await bootAndSpawnGrandchild(port, true, { AOD_DISABLE_JOB_GUARD: '1' });
+      // Sanity: in degraded mode the supervisor must NOT report the job active.
+      assert.ok(!/kill-on-close job active/.test(state.out),
+        'job guard should be OFF under AOD_DISABLE_JOB_GUARD=1');
+      assert.ok(pidAlive(state.gcPid), 'grandchild should be alive before shutdown');
+
+      state.sup.send({ type: 'shutdown' });
+
+      const exited = await waitFor(() => state.exitInfo !== null, 30000);
+      assert.ok(exited, 'supervisor did not exit within 30s (degraded)');
+      assert.strictEqual(state.exitInfo.code, 0, `degraded graceful shutdown must exit 0 (got ${JSON.stringify(state.exitInfo)})`);
+
+      const gcDead = await waitFor(() => !pidAlive(state.gcPid), 12000);
+      assert.ok(gcDead, 'grandchild SURVIVED degraded graceful shutdown — best-effort taskkill/group-kill fallback did not reap it');
     } finally {
       cleanup(state);
     }

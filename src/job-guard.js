@@ -100,7 +100,10 @@ function _ensureApi() {
 }
 
 // True only when the koffi-backed Win32 binding is usable on this platform.
+// `AOD_DISABLE_JOB_GUARD=1` forces it off (operator escape hatch if koffi/the FFI ever
+// misbehaves, and the hook that lets tests exercise the best-effort degraded teardown).
 function isAvailable() {
+  if (process.env.AOD_DISABLE_JOB_GUARD === '1') return false;
   return !!_ensureApi();
 }
 
