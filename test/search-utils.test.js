@@ -257,6 +257,26 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
       return realAccessSync.apply(fs, arguments);
     };
 
+    // Stub the `require('@vscode/ripgrep')` resolution (search.js step 3) instead of
+    // hitting the real package. Required because @vscode/ripgrep is an ESM module that
+    // resolves a PER-PLATFORM binary package (`@vscode/ripgrep-<platform>-<arch>`) at
+    // load time and THROWS for any platform whose package isn't installed — and a CI
+    // runner only has its own platform's binary, never all three. Worse, that ESM
+    // evaluation rejection is cached by the ESM loader and is NOT cleared by
+    // `delete require.cache[...]`, so the first probe under a stubbed foreign platform
+    // would poison every later probe. Intercepting at Module._load decouples the test
+    // from the real package, mirrors search.js's "bundled present/absent" branches via
+    // `bundledAvailable`, and is restored in restore().
+    const fakeRgPath = '/fake/node_modules/@vscode/ripgrep/bin/' + (platform === 'win32' ? 'rg.exe' : 'rg');
+    const realModuleLoad = Module._load;
+    Module._load = function (request) {
+      if (request === '@vscode/ripgrep') {
+        if (bundledAvailable) return { rgPath: fakeRgPath };
+        const e = new Error("Cannot find module '@vscode/ripgrep'"); e.code = 'MODULE_NOT_FOUND'; throw e;
+      }
+      return realModuleLoad.apply(this, arguments);
+    };
+
     const searchPath = require.resolve('../src/utils/search');
     delete require.cache[searchPath];
     const search = require(searchPath);
@@ -265,6 +285,7 @@ describe('utils/search — backend detection (bde844f MEDIUM-2)', function () {
       restore: function () {
         realCp.execFileSync = realExec;
         fs.accessSync = realAccessSync;
+        Module._load = realModuleLoad;
         Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
         delete require.cache[searchPath];
       },

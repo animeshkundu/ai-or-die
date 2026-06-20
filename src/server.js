@@ -384,6 +384,10 @@ class ClaudeCodeWebServer {
       } catch (saveErr) {
         console.error('Failed to save sessions on crash:', saveErr);
       }
+      // Reap PTY subtrees so the CLI's node/bun grandchildren don't outlive this crashed
+      // server. Synchronous (the event loop is unsafe here). Windows closes each per-PTY
+      // job; POSIX group-kills. Best-effort; never rethrows.
+      try { this._reapAllPtySubtreesSync(); } catch (_) { /* ignore */ }
       process.exit(1);
     });
     process.on('unhandledRejection', (reason) => {
@@ -401,10 +405,21 @@ class ClaudeCodeWebServer {
         this.handleShutdown();
       }
     });
-    // If the supervisor crashes, continue running standalone
+    // If the supervisor's IPC channel drops, the supervisor died. Per the
+    // "everything dies when the main process dies" contract, this server must NOT
+    // keep running standalone (the old behavior) — it tears down its own PTY trees
+    // (incl. the CLI's node/bun grandchildren) and shuts down.
     process.on('disconnect', () => {
-      console.warn('IPC channel disconnected (supervisor may have crashed). Continuing standalone.');
-      this.supervised = false;
+      // Expected channel close: a graceful shutdown / memory-restart we initiated is
+      // already in flight (the supervisor sent {type:'shutdown'} or we exited 75). No-op.
+      if (this.isShuttingDown) return;
+      console.warn('IPC channel disconnected (supervisor died). Tearing down this server and its process tree.');
+      // Reap PTY subtrees synchronously FIRST so the node/bun grandchildren die immediately,
+      // even if the ordered handleShutdown below is slow. On Windows with the job guard
+      // active the kernel has usually already killed us; this is the cross-platform /
+      // degraded-mode backstop.
+      try { this._reapAllPtySubtreesSync(); } catch (_) { /* best-effort */ }
+      this.handleShutdown(0);
     });
   }
   
@@ -3937,6 +3952,24 @@ class ClaudeCodeWebServer {
     return bridges[agentType] || null;
   }
 
+  /**
+   * Synchronously reap every PTY subtree across all bridges. For the crash / supervisor-
+   * death paths where we are exiting and cannot await async teardown. Windows closes each
+   * per-PTY kill-on-close job (terminates the shell + node/bun grandchildren); POSIX
+   * process-group kills. Best-effort; never throws.
+   */
+  _reapAllPtySubtreesSync() {
+    const bridges = [
+      this.claudeBridge, this.codexBridge, this.copilotBridge,
+      this.geminiBridge, this.terminalBridge,
+    ];
+    for (const b of bridges) {
+      if (b && typeof b.killAllSubtreesSync === 'function') {
+        try { b.killAllSubtreesSync(); } catch (_) { /* ignore */ }
+      }
+    }
+  }
+
   async startToolSession(wsId, toolName, bridge, options, cols, rows) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) {
@@ -5225,6 +5258,15 @@ class ClaudeCodeWebServer {
         voice_upload_counts: Array.from(this.claudeSessions.values())
           .filter(s => s._voiceUploadTimestamps && s._voiceUploadTimestamps.length).length,
         activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
+      },
+      // Deterministic-shutdown guard status. On win32, job_guard_active reflects whether
+      // the supervisor established the kill-on-close Job Object (false ⇒ degraded:
+      // EDR/CLM/koffi unavailable ⇒ best-effort taskkill teardown). null off win32 (the
+      // job mechanism is Windows-only; POSIX uses process-group teardown). See
+      // docs/specs/process-shutdown.md.
+      process_guard: {
+        job_guard_active: process.platform === 'win32' ? (process.env.AOD_JOB_GUARD === '1') : null,
+        supervised: !!this.supervised,
       },
       // DISK-02/03: cached disk usage sample (60 s TTL, never blocks the
       // event loop). Populated by _sampleDiskUsage() — see method
