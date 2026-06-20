@@ -3,6 +3,8 @@ const { execFile } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const jobGuard = require('./job-guard');
+const { killProcessTreeSync } = require('./utils/process-tree');
 
 /** Chunk size for PTY writes — safely below ConPTY ~16KB kernel buffer */
 const PTY_WRITE_CHUNK_SIZE = 4096;
@@ -314,6 +316,11 @@ class BaseBridge {
 
       this.sessions.set(sessionId, session);
 
+      // Windows: enclose the PTY in its own kill-on-close Job Object now, before the CLI
+      // boots, so the CLI's future node/bun MCP grandchildren auto-join and can be reaped
+      // atomically on stopSession. No-op elsewhere.
+      this._attachPtyJob(session, ptyProcess);
+
       // Spawn watchdog: if no data, exit, or error arrives within 30s, treat as failure
       let receivedLifeSign = false;
       const ptyStartedAt = Date.now();
@@ -334,6 +341,14 @@ class BaseBridge {
           // the kill() below succeeds.
           this._disposePtyDisposables(session, sessionId);
           try { ptyProcess.kill(); } catch (e) { /* ignore */ }
+          // Reap the PTY subtree (Windows job close / POSIX group kill) so a hung-at-startup
+          // shell + any children it already spawned don't leak.
+          {
+            const jobClosed = this._disposePtyJob(session);
+            if (!jobClosed && ptyProcess && ptyProcess.pid) {
+              try { killProcessTreeSync(ptyProcess.pid); } catch (_) { /* best-effort */ }
+            }
+          }
           onError(new Error(`${this.toolName} process did not respond within ${SPAWN_TIMEOUT_MS / 1000} seconds. The command may not be installed or may have hung during startup.`));
         }
       }, SPAWN_TIMEOUT_MS);
@@ -390,6 +405,10 @@ class BaseBridge {
         // still hold references to the data-buffer closures. Skip onExit
         // self-disposal (node-pty already removed it on fire).
         this._disposePtyDisposables(session, sessionId);
+        // The PTY exited on its own, but the CLI's node/bun grandchildren may still be
+        // alive (node-pty doesn't walk the console process list). Closing the per-PTY
+        // kill-on-close job reaps them and frees the handle (Windows; no-op on POSIX).
+        this._disposePtyJob(session);
         if (this.sessions.has(sessionId)) {
           session.active = false;
           this.sessions.delete(sessionId);
@@ -444,6 +463,14 @@ class BaseBridge {
         // the shell is alive but unreadable) doesn't leak as a zombie process /
         // FD — mirrors the spawn-watchdog teardown. Harmless if already dead.
         try { ptyProcess.kill(); } catch (e) { /* ignore — may already be dead */ }
+        // Reap the subtree (Windows job close / POSIX group kill) so the shell's
+        // node/bun grandchildren don't outlive the failed session.
+        {
+          const jobClosed = this._disposePtyJob(session);
+          if (!jobClosed && ptyProcess && ptyProcess.pid) {
+            try { killProcessTreeSync(ptyProcess.pid); } catch (_) { /* best-effort */ }
+          }
+        }
         if (this.sessions.has(sessionId)) {
           session.active = false;
           this.sessions.delete(sessionId);
@@ -584,6 +611,53 @@ class BaseBridge {
     }
   }
 
+  /**
+   * Windows only: put a freshly-spawned PTY in its OWN kill-on-close Job Object so the
+   * PTY and the CLI's node/bun MCP grandchildren can be torn down atomically per session
+   * (see _disposePtyJob). Assigned right after spawn — before the CLI boots and spawns its
+   * children — so those future grandchildren auto-join the job. No-op on POSIX / when the
+   * job guard is unavailable (then teardown falls back to process-group / taskkill).
+   * Defence in depth: the PTY is also in the supervisor-level job, so supervisor death
+   * reaps it regardless.
+   * @private
+   */
+  _attachPtyJob(session, ptyProcess) {
+    if (process.platform !== 'win32' || !session) return;
+    try {
+      if (!jobGuard.isAvailable()) return;
+      const pid = ptyProcess && ptyProcess.pid;
+      if (!pid) return;
+      // Defensive: if a handle already exists for this session (re-entrant call), close it
+      // first so we never overwrite a live kernel handle and leak it.
+      if (session.jobHandle) this._disposePtyJob(session);
+      const handle = jobGuard.createKillOnCloseJob();
+      if (!handle) return;
+      if (jobGuard.assignPid(handle, pid)) {
+        session.jobHandle = handle;
+      } else {
+        // Assign failed (already-orphaned / access denied) — closing an empty job is harmless.
+        jobGuard.closeJob(handle);
+      }
+    } catch (_) { /* best-effort; never break session start */ }
+  }
+
+  /**
+   * Close a session's per-PTY job handle. On Windows this is the deterministic teardown:
+   * KILL_ON_JOB_CLOSE terminates the PTY + every descendant still in the job (the node/bun
+   * grandchildren). Also frees the kernel handle. Idempotent; no-op when no handle exists.
+   * Returns true when a job was actually closed (the subtree is reaped deterministically),
+   * false otherwise — callers use this to decide whether to escalate to the best-effort
+   * fallback (taskkill /T /F on Windows / process-group kill on POSIX) for the degraded
+   * path where no job exists (koffi unavailable: SEA binary, EDR/CLM-blocked, or POSIX).
+   * @private
+   */
+  _disposePtyJob(session) {
+    if (!session || !session.jobHandle) return false;
+    const h = session.jobHandle;
+    session.jobHandle = null;
+    try { return !!jobGuard.closeJob(h); } catch (_) { return false; }
+  }
+
   async stopSession(sessionId) {
     const session = this.sessions.get(sessionId);
     if (!session) {
@@ -608,13 +682,20 @@ class BaseBridge {
     // runs.
     this._disposePtyDisposables(session, sessionId);
 
-    if (!session.process) return;
+    // No live process to wait on — close the per-PTY job (reaps any lingering grandchildren
+    // and frees the kernel handle) before returning, so this path can't leak the handle.
+    if (!session.process) { this._disposePtyJob(session); return; }
+
+    // Capture the pid before kill(): node-pty may clear it on exit, and we need it
+    // for the POSIX process-group escalation below.
+    const ptyPid = session.process.pid;
 
     // Return a promise that resolves when the PTY process actually exits
     // (or after a bounded timeout), so callers can await clean shutdown.
     return new Promise((resolve) => {
       let settled = false;
       let waitDisposable = null;
+      let exited = false;
 
       const cleanup = () => {
         if (settled) return;
@@ -628,11 +709,24 @@ class BaseBridge {
         if (waitDisposable && typeof waitDisposable.dispose === 'function') {
           try { waitDisposable.dispose(); } catch (_) { /* ignore */ }
         }
+        // Deterministic subtree teardown. On Windows with the job guard, closing the
+        // per-PTY kill-on-close job terminates the shell + its node/bun grandchildren and
+        // frees the handle — what node-pty's own kill() cannot do. When no job was closed
+        // (degraded: koffi unavailable in a SEA binary / EDR-blocked, or POSIX) AND the PTY
+        // did not exit on its own, escalate to the best-effort fallback: taskkill /T /F on
+        // Windows, or a process-group kill on POSIX (node-pty PTYs are session leaders). We
+        // skip the fallback after a clean exit to sidestep any pid/pgid-reuse window.
+        {
+          const jobClosed = this._disposePtyJob(session);
+          if (!jobClosed && !exited && ptyPid) {
+            try { killProcessTreeSync(ptyPid); } catch (_) { /* best-effort */ }
+          }
+        }
         resolve();
       };
 
       try {
-        const handle = session.process.onExit(() => cleanup());
+        const handle = session.process.onExit(() => { exited = true; cleanup(); });
         // node-pty returns an IDisposable; older mocks may return undefined.
         if (handle && typeof handle.dispose === 'function') waitDisposable = handle;
       } catch (_) {
@@ -670,6 +764,25 @@ class BaseBridge {
     const sessionIds = Array.from(this.sessions.keys());
     for (const sessionId of sessionIds) {
       await this.stopSession(sessionId);
+    }
+  }
+
+  /**
+   * Synchronous, best-effort reap of EVERY live PTY subtree this bridge owns. For the
+   * uncaughtException and supervisor-death (IPC disconnect) paths, where we are about to
+   * exit and cannot await async teardown. Windows: close each per-PTY kill-on-close job
+   * (terminates the shell + node/bun grandchildren). POSIX: process-group kill of each PTY.
+   * Never throws.
+   */
+  killAllSubtreesSync() {
+    for (const [, session] of this.sessions) {
+      let jobClosed = false;
+      try { jobClosed = this._disposePtyJob(session); } catch (_) { jobClosed = false; }
+      // Degraded fallback (no job closed): taskkill /T /F on Windows, process-group kill
+      // on POSIX. When the job WAS closed the kernel already reaped the subtree.
+      if (!jobClosed && session && session.process && session.process.pid) {
+        try { killProcessTreeSync(session.process.pid); } catch (_) { /* ignore */ }
+      }
     }
   }
 }

@@ -5,6 +5,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const { RESTART_EXIT_CODE } = require('../src/restart-manager');
+const jobGuard = require('../src/job-guard');
 
 // ---------------------------------------------------------------------------
 // Tunables — all overridable via env vars so the regression test can shrink
@@ -14,7 +15,12 @@ const { RESTART_EXIT_CODE } = require('../src/restart-manager');
 
 const RESTART_DELAY_MS         = parseInt(process.env.RESTART_DELAY_MS, 10)         || 1000;     // clean RESTART_EXIT_CODE respawn
 const CRASH_RESTART_DELAY_MS   = parseInt(process.env.CRASH_RESTART_DELAY_MS, 10)   || 3000;     // normal crash respawn
-const SHUTDOWN_TIMEOUT_MS      = parseInt(process.env.SHUTDOWN_TIMEOUT_MS, 10)      || 10000;    // SIGINT/SIGTERM hard-kill fallback
+// Must stay strictly GREATER than the server's own 15s force-exit budget
+// (src/server.js handleShutdown) so a hung graceful shutdown lets the server
+// finish (or self-force-exit) its own ordered teardown — including killing its
+// PTY trees — before the supervisor hard-kills it. A supervisor SIGKILL that
+// preempted the server would orphan the server's PTY/grandchild tree.
+const SHUTDOWN_TIMEOUT_MS      = parseInt(process.env.SHUTDOWN_TIMEOUT_MS, 10)      || 20000;    // SIGINT/SIGTERM hard-kill fallback
 
 // Tier 1 — tight crash loop. 3 crashes in 30 s historically tripped a hard
 // process.exit(1). The fix replaces that with an extended restart delay
@@ -48,6 +54,12 @@ let shuttingDown = false;
 let spawnCount = 0;
 let crashTimestamps = [];
 let pendingRestartTimer = null;
+
+// Windows Job Object guard. Set up once at startup (below, before the first spawn).
+// `jobGuardHandle` is held for the supervisor's entire life and intentionally NEVER
+// closed by us — process death closes it, which is exactly what fires KILL_ON_JOB_CLOSE.
+let jobGuardHandle = null;
+let jobGuardActive = false;
 
 // Queued IPC message delivered to the NEXT spawned child once its IPC channel
 // is open. Used to forward tier-2 escalation downstream so the in-process
@@ -121,6 +133,9 @@ function startServer() {
     env: {
       ...process.env,
       SUPERVISED: '1',
+      // Tell the server whether the kill-on-close job guard is active, so it can
+      // surface the unprotected state in /api/diagnostics (jobGuard:false).
+      AOD_JOB_GUARD: jobGuardActive ? '1' : '0',
       ...(isRestart ? { AOD_SUPERVISOR_RESTART: '1' } : {})
     }
   });
@@ -252,4 +267,39 @@ process.on('message', (msg) => {
   if (msg && msg.type === 'shutdown') shutdownGracefully();
 });
 
+// Establish the Windows Job Object guard BEFORE the first spawn so the server and its
+// entire future tree (PTYs, the CLI's node/bun MCP grandchildren) auto-join the job.
+// AssignProcessToJobObject is forward-looking: future children join, so the supervisor
+// must be assigned while it still has no descendants — i.e. before startServer(). When
+// the supervisor dies for ANY reason (Ctrl+C, crash, taskkill /F, console close), the OS
+// closes the in-process handle and the kernel atomically terminates the whole job.
+// No-op on non-Windows / when koffi is unavailable (jobGuardActive stays false →
+// best-effort teardown, surfaced as jobGuard:false in /api/diagnostics).
+function setupJobGuard() {
+  try {
+    if (!jobGuard.isAvailable()) {
+      if (process.platform === 'win32') {
+        console.warn('[supervisor] ⚠ process-guard: koffi unavailable; using best-effort teardown. ' +
+          'Child node/bun processes may survive an uncatchable kill (taskkill /F).');
+      }
+      return;
+    }
+    jobGuardHandle = jobGuard.createKillOnCloseJob();
+    if (jobGuardHandle && jobGuard.assignSelf(jobGuardHandle)) {
+      jobGuardActive = true;
+      console.log('[supervisor] process-guard: kill-on-close job active — the whole tree dies with the supervisor.');
+    } else {
+      jobGuardHandle = null;
+      console.warn('[supervisor] ⚠ process-guard: could not create/assign the job object ' +
+        '(outer job UI limits / EDR / silo?); using best-effort teardown. ' +
+        'Child node/bun processes may survive an uncatchable kill.');
+    }
+  } catch (e) {
+    jobGuardHandle = null;
+    jobGuardActive = false;
+    console.warn('[supervisor] ⚠ process-guard: setup failed (' + (e && e.message) + '); continuing without it.');
+  }
+}
+
+setupJobGuard();
 startServer();

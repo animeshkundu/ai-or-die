@@ -276,6 +276,23 @@ shutdown/restart APIs in earnest.
   `vscode-tunnel.js:327–346` and the login teardown at `:232–235`)
   into a single helper. Pure code-hygiene; no behavior change.
 
+## Update (2026-06-19): deterministic shutdown / PTY-grandchild gap closed
+
+This memo audited the app's OWN child-process owners (STT worker, tunnels, vscode-tunnel).
+A separate, larger gap — the CLI's `node`/`bun` MCP **grandchildren** spawned *inside* a PTY,
+which node-pty's Windows `kill()` does not reap — is now addressed by the deterministic-shutdown
+work in **ADR-0031** / `docs/specs/process-shutdown.md`:
+
+- Windows: a kill-on-close Job Object held in-process by the supervisor (whole tree dies with
+  it) plus per-PTY nested jobs (`src/job-guard.js`, `src/base-bridge.js`).
+- POSIX: process-group escalation, best-effort (`src/utils/process-tree.js`); honest `setsid`
+  crash-path limitation documented in the spec.
+- Cross-cutting: the server's IPC `disconnect` handler now reaps + exits on supervisor death
+  (was "continue standalone"), `uncaughtException` reaps PTY subtrees, and the supervisor
+  shutdown timeout (20s) was ordered above the server force-exit (15s).
+
+The `_loginProcess.kill()` no-follow-up-wait item below remains open (low severity).
+
 ## References
 
 - `src/stt-engine.js:148–195` — `_onWorkerExit` and `_restartWorker`
