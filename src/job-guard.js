@@ -102,8 +102,12 @@ function _ensureApi() {
 // True only when the koffi-backed Win32 binding is usable on this platform.
 // `AOD_DISABLE_JOB_GUARD=1` forces it off (operator escape hatch if koffi/the FFI ever
 // misbehaves, and the hook that lets tests exercise the best-effort degraded teardown).
+// In the SEA single-file binary koffi is externalized out of the bundle and there is no
+// node_modules, so it can never load — short-circuit to degraded mode without attempting
+// the require (keeps the PTY-start hot path free of a doomed module lookup).
 function isAvailable() {
   if (process.env.AOD_DISABLE_JOB_GUARD === '1') return false;
+  if (typeof global !== 'undefined' && global.__SEA_MODE__) return false;
   return !!_ensureApi();
 }
 
