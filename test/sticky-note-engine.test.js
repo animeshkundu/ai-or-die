@@ -80,6 +80,62 @@ describe('sticky-note engine', function () {
     await engine.shutdown();
   });
 
+  it('defaults to a watchdog-grade 300s inference timeout (fits slow CPU inference)', function () {
+    const engine = new StickyNoteEngine({ enabled: true, modelManager: readyMM });
+    assert.strictEqual(engine._inferTimeoutMs, 300000);
+  });
+
+  it('treats numThreads as auto unless explicitly pinned (omits it from workerData)', function () {
+    // Auto: no numThreads given -> worker decides based on the GPU backend.
+    const auto = new StickyNoteEngine({ enabled: true, modelManager: readyMM });
+    assert.strictEqual(auto._numThreadsExplicit, false);
+    assert.strictEqual(auto._numThreads, null);
+    assert.ok(!('numThreads' in auto._workerData()), 'auto must omit numThreads so the worker auto-picks');
+
+    // Explicit pin (--sticky-notes-threads): forwarded verbatim.
+    const pinned = new StickyNoteEngine({ enabled: true, modelManager: readyMM, numThreads: 6 });
+    assert.strictEqual(pinned._numThreadsExplicit, true);
+    assert.strictEqual(pinned._numThreads, 6);
+    assert.strictEqual(pinned._workerData().numThreads, 6);
+
+    // Bogus pins (0 / negative / NaN) fall back to auto.
+    for (const bad of [0, -1, NaN]) {
+      const e = new StickyNoteEngine({ enabled: true, modelManager: readyMM, numThreads: bad });
+      assert.strictEqual(e._numThreadsExplicit, false, `numThreads=${bad} must be treated as auto`);
+      assert.ok(!('numThreads' in e._workerData()));
+    }
+  });
+
+  it('records the worker-reported runtime info ({gpu, threads}) on ready', async function () {
+    const { engine, fake } = makeEngine();
+    const initP = engine.initialize();
+    await tick();
+    fake.emit('message', { type: 'ready', gpu: false, threads: 8 });
+    await initP;
+    assert.deepStrictEqual(engine.getRuntimeInfo(), { gpu: false, threads: 8 });
+    await engine.shutdown();
+  });
+
+  it('clears stale runtime info when the worker dies', async function () {
+    const { engine, fake } = makeEngine();
+    const initP = engine.initialize();
+    await tick();
+    fake.emit('message', { type: 'ready', gpu: false, threads: 8 });
+    await initP;
+    assert.ok(engine.getRuntimeInfo(), 'runtime info present while ready');
+    engine._stopping = true; // prevent the scheduled respawn from lingering
+    fake.crash(1);
+    await tick();
+    assert.strictEqual(engine.getRuntimeInfo(), null, 'must not report dead-worker backend/threads');
+  });
+
+  it('forwards a numeric-string thread pin as an explicit override', function () {
+    const e = new StickyNoteEngine({ enabled: true, modelManager: readyMM, numThreads: '8' });
+    assert.strictEqual(e._numThreadsExplicit, true);
+    assert.strictEqual(e._numThreads, 8);
+    assert.strictEqual(e._workerData().numThreads, 8);
+  });
+
   it('degrades to unavailable when node-llama-cpp is missing', async function () {
     const { engine, fake } = makeEngine();
     const initP = engine.initialize();

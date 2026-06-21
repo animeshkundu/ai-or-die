@@ -18,7 +18,7 @@ const DEFAULTS = {
   minIntervalMs: 20000, // floor between inferences for one session
   intervalFactor: 3, // adaptive: minInterval = max(floor, factor * lastDurationMs)
   turnDebounceMs: 1500, // (JSONL mode) coalesce a burst of appended turn lines
-  inferTimeoutMs: 75000, // backstop ABOVE the engine's own 60s timeout, so the
+  inferTimeoutMs: 330000, // backstop ABOVE the engine's own 300s timeout, so the
   // engine times out first (one timeout owner); this only fires if the engine
   // promise hangs entirely. Worker-side serialisation prevents concurrent runs.
   failureThreshold: 3, // consecutive failures -> open circuit breaker

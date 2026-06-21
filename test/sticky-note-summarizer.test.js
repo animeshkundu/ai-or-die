@@ -141,6 +141,21 @@ const FAST = {
 };
 
 describe('sticky-note summarizer scheduler', function () {
+  it('default backstop timeout stays strictly above the engine timeout (one timeout owner)', function () {
+    const StickyNoteEngine = require('../src/sticky-note-engine');
+    const { sum } = makeSummarizer(); // no config override -> DEFAULTS
+    const engine = new StickyNoteEngine({
+      enabled: true,
+      modelManager: { isModelReady: async () => true, ensureModel: async () => {}, getModelFile: () => '/tmp/m.gguf' },
+    });
+    assert.strictEqual(sum._cfg.inferTimeoutMs, 330000, 'summarizer backstop is 330s');
+    assert.strictEqual(engine._inferTimeoutMs, 300000, 'engine watchdog is 300s');
+    assert.ok(
+      sum._cfg.inferTimeoutMs > engine._inferTimeoutMs,
+      'summarizer backstop must exceed the engine timeout so the engine times out first'
+    );
+  });
+
   it('quiet trigger produces a summary after the debounce', async function () {
     const { sum, engine, clock, results } = makeSummarizer(FAST);
     sum.enable('s1');

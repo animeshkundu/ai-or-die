@@ -3,6 +3,51 @@
 Implementation of the per-tab local-LLM "sticky note" + auto tab title feature
 (ADR-0022, spec `docs/specs/sticky-notes.md`). Gotchas worth remembering:
 
+## Windows 11: card stuck on "No status yet" forever — CPU inference outran every timeout
+
+Symptom: on Windows 11 the sticky-note card stays on *"No status yet — a summary
+appears as the session works."* indefinitely, even with the card expanded.
+
+Not a wiring bug. Ground-truth on the machine ruled out the usual suspects:
+`node-llama-cpp@3.18.1` + win-x64 native bins present, GGUF model present, JSONL
+binding + sidecar present, the `slugForCwd` drive-letter-colon fix already in.
+Running the **real `StickyNoteEngine` in-process** is what found it:
+
+- The Vulkan GPU prebuilt binary is *"not compatible with the current system"* →
+  node-llama-cpp falls back to **pure CPU** (`llama.gpu === false`).
+- The engine capped inference at **2 threads** (`min(2, cpus-2)`) even on a
+  16-core box — a "keep it gentle" cap that assumed the GPU did the work.
+- A real grammar-constrained summary (maxTokens 320, full NOTE_SCHEMA) measured
+  **159.5s at 2 threads / 88.8s at 8 threads** on CPU.
+- Every timeout was below that: engine 60s, summariser 75s, even the real-
+  inference smoke 90s — all tuned for Metal (~7s/turn, ADR-0023). So **every**
+  inference timed out, three consecutive failures opened the circuit breaker,
+  and the note was never produced. Waiting longer could not help.
+
+Fix (`sticky-note-worker.js`, `sticky-note-engine.js`, `sticky-note-summarizer.js`):
+1. **Thread count is auto-selected by the worker** after `getLlama()` reports the
+   backend — extracted as the pure `sticky-note-threads.js` `pickThreads`:
+   GPU → full layer offload (`gpuLayers:'max'`, fallback `auto`) + gentle
+   `min(2, cores-2)` CPU threads; **CPU → three-quarters of the cores**
+   (`max(1, floor(cores*3/4))`, via `availableParallelism()` for hybrid P/E cores).
+   `--sticky-notes-threads` still pins it; the engine omits `numThreads` from
+   workerData when auto.
+2. **Unconditional 300s watchdog timeout** (engine), summariser backstop 330s
+   (stays above so the engine is the sole timeout owner). Generous on purpose:
+   correctness over speed — a slow note must *complete*, not be killed. Harmless
+   to GPU (returns in ~7s). A cross-lab review rejected a GPU-conditional timeout
+   (a `gpu=true→90s` budget falsely assumes GPU == fast; iGPU/bad-driver/partial-
+   offload can exceed it, and learning gpu from the worker's first `ready` adds a
+   bootstrap + restart race). Unconditional removes all three.
+3. Worker reports `{gpu, threads}` on `ready`; a dev log surfaces CPU mode.
+
+Why it self-heals now: the breaker only stayed open before because *every* infer
+timed out at 60s. With a 300s watchdog, inferences succeed (~90s on half cores),
+and a success resets the failure count (`summarizer.js` `s.failures = 0`), so any
+transient trip recovers after the 60s cooldown. Regression coverage:
+`test/sticky-note-threads.test.js`, new assertions in the engine/summariser tests,
+and `test/sticky-real-inference.js` (now omits numThreads + 310s budget).
+
 ## v2: summarize from the claude JSONL transcript, not the terminal
 
 The v1 input (scrape the rendered terminal) produced garbage for `github-router claude`:

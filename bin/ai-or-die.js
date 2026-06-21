@@ -43,7 +43,7 @@ program
   .option('--no-sticky-notes', 'disable per-tab AI session summaries + auto tab titles (on by default)')
   .option('--sticky-notes-model-dir <path>', 'custom directory for the sticky-note model file')
   .option('--sticky-notes-model <url>', 'override the sticky-note model GGUF download URL')
-  .option('--sticky-notes-threads <number>', 'CPU threads for sticky-note inference (default: auto, max 4)')
+  .option('--sticky-notes-threads <number>', 'CPU threads for sticky-note inference (default: auto — three-quarters of the cores on CPU, gentle on GPU)')
   .option('--no-keepalive', 'disable keeping the machine awake while the server runs (Windows only; on by default)')
   .option('--keepalive-display', 'also keep the display on (default keeps the system awake but lets the monitor sleep)');
 

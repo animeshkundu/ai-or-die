@@ -9,10 +9,10 @@
 const { parentPort, workerData } = require('worker_threads');
 const os = require('os');
 const { SYSTEM_PROMPT, NOTE_SCHEMA } = require('./sticky-note-prompt');
+const { pickThreads } = require('./sticky-note-threads');
 
 const modelPath = workerData.modelPath;
 const contextSize = workerData.contextSize || 8192;
-const numThreads = workerData.numThreads || Math.max(1, Math.min(2, os.cpus().length - 2));
 const maxTokens = workerData.maxTokens || 320;
 
 let llama;
@@ -42,12 +42,29 @@ async function init() {
   LlamaChatSessionCtor = LlamaChatSession;
 
   llama = await getLlama();
-  model = await llama.loadModel({ modelPath });
+  // availableParallelism() reflects usable parallelism better than cpus().length
+  // on Windows hybrid P/E-core machines; fall back where it's unavailable.
+  const cpus = (typeof os.availableParallelism === 'function' ? os.availableParallelism() : 0) || os.cpus().length;
+  // llama.gpu is false | 'cuda' | 'vulkan' | 'metal'; any non-empty string = GPU.
+  const gpu = !!llama.gpu;
+  const numThreads = pickThreads({ explicit: workerData.numThreads, gpu, cpus });
+  // Use the GPU fully when present: request all layers in VRAM ('max'). If the
+  // GPU can't fit them, 'max' throws — fall back to the default 'auto', which
+  // still offloads as many layers as fit (never worse than CPU-only).
+  if (gpu) {
+    try {
+      model = await llama.loadModel({ modelPath, gpuLayers: 'max' });
+    } catch {
+      model = await llama.loadModel({ modelPath });
+    }
+  } else {
+    model = await llama.loadModel({ modelPath });
+  }
   context = await model.createContext({ contextSize, threads: numThreads });
   sequence = context.getSequence();
   grammar = await llama.createGrammarForJsonSchema(NOTE_SCHEMA);
 
-  parentPort.postMessage({ type: 'ready' });
+  parentPort.postMessage({ type: 'ready', gpu, threads: numThreads });
 }
 
 async function handleInfer(msg) {

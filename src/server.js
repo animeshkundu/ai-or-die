@@ -4276,7 +4276,24 @@ class ClaudeCodeWebServer {
           percent: progress.percent,
         });
       })
-      .then(() => this._broadcastStickyStatus())
+      .then(() => {
+        // One-time visibility into the inference backend. On CPU (no GPU — common
+        // on Windows when the Vulkan/CUDA prebuilt is incompatible) summaries are
+        // materially slower; the worker compensates with more threads + a generous
+        // watchdog timeout, but a note can still take a couple of minutes.
+        const rt = this.stickyNoteEngine.getRuntimeInfo && this.stickyNoteEngine.getRuntimeInfo();
+        if (this.dev && rt) {
+          if (rt.gpu) {
+            console.log(`[sticky-notes] engine ready (GPU backend, ${rt.threads} threads)`);
+          } else {
+            console.log(
+              `[sticky-notes] engine ready (CPU backend, ${rt.threads} threads) — ` +
+                'summaries run on CPU and may take a couple of minutes; a Vulkan/CUDA driver would accelerate them'
+            );
+          }
+        }
+        this._broadcastStickyStatus();
+      })
       .catch((err) => {
         // Allow a later AI-session start to retry after a transient failure
         // (download blip). A permanent failure (no binding) just fails fast.
