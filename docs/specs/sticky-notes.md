@@ -53,8 +53,17 @@ minInterval), **initial**, **focus** (foreground transition, gated). Tab switch
 
 Guards: `minInterval = max(20s, 3 × lastInferenceMs)`; single-flight + dirty-bit
 (timeout clears the bit + backs off — no retry-storm); circuit breaker after N
-failures; foreground-first fair dispatch over one shared worker; thread cap
-`min(4, cores-2)`.
+failures; foreground-first fair dispatch over one shared worker. **Threads are
+auto-selected by the worker once it knows the backend** (`sticky-note-threads.js`
+`pickThreads`): GPU present → the worker requests **full layer offload**
+(`gpuLayers:'max'`, falling back to `auto` if VRAM is short) and keeps CPU threads
+gentle (`min(2, cores-2)`); **no GPU (CPU) → three-quarters of the cores**
+(`max(1, floor(cores*3/4))`, via `availableParallelism()`), since CPU inference is
+far slower and 2 threads blow the timeout. `--sticky-notes-threads` pins it
+explicitly. The
+per-request timeout is an unconditional **watchdog of 300s** (summariser backstop
+330s) — set well above real CPU latency so a slow note completes rather than
+being killed; GPU runs return in ~7s and are unaffected.
 
 ## Data shapes (v2)
 
@@ -174,6 +183,16 @@ unsupported, the engine reports `unavailable`, no card appears, and the terminal
 path is unaffected. Inference errors/timeouts never propagate into the PTY path;
 a failed summary is retried after backoff (never stranded) and repeated failures
 open a per-session circuit breaker.
+
+**Windows / CPU backend (primary target).** When the Vulkan/CUDA prebuilt binary
+is incompatible (common on Windows 11), node-llama-cpp falls back to pure CPU
+(`llama.gpu === false`). CPU inference is materially slower — a grammar-constrained
+summary measures ~90s on half-core threading and up to ~160s at 2 threads on a
+16-core box. The fix is twofold: the worker uses **half the cores** on CPU (not
+the gentle 2), and the per-request timeout is a generous **300s watchdog** (was
+60s, tuned for Metal). The first CPU note therefore renders ~90s after the card
+is expanded; the breaker self-heals (a success resets the failure count). A dev
+log on `ready` reports the backend + thread count. See ADR-0023.
 
 **Runtime: Node.js only.** The feature is force-disabled under Bun
 (`server.js` `!isBun()` + `StickyNoteEngine._doInitialize` self-gate →

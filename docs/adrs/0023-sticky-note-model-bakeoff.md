@@ -82,6 +82,13 @@ for a silent on-by-default download.
 - Latencies are Mac/Metal; a Windows CPU/Vulkan regression check belongs in the
   perf budget. If LFM2-2.6B proves too heavy on low-end Windows boxes, LFM2-1.2B
   is a one-line default downgrade with most of the quality.
+- **Windows-CPU latency budget (2026-06 follow-up).** On Windows 11 the Vulkan
+  prebuilt is frequently incompatible → pure-CPU inference at ~90–160s/turn, which
+  blew the original 60s engine timeout and left the card stuck on "No status yet."
+  Resolved by GPU-aware threading (CPU uses three-quarters of the cores, not 2;
+  GPU does full layer offload) + an unconditional 300s watchdog timeout
+  (summariser backstop 330s). See
+  `docs/history/sticky-notes-2026.md` and `src/sticky-note-threads.js`.
 - Gemma 4 E2B remains the eventual candidate once a `gemma4`-capable
   node-llama-cpp ships; re-run this bake-off against it before switching.
 

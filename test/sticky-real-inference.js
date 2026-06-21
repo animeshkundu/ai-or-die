@@ -19,8 +19,10 @@ const WORKER_PATH = path.join(__dirname, '..', 'src', 'sticky-note-worker.js');
 
 function spawnWorker(modelPath) {
   return new Promise((resolve, reject) => {
+    // Omit numThreads so the worker auto-picks based on the GPU backend it
+    // detects (GPU -> gentle 2; CPU -> half the cores) — the real production path.
     const worker = new Worker(WORKER_PATH, {
-      workerData: { modelPath, numThreads: 2, contextSize: 4096 },
+      workerData: { modelPath, contextSize: 4096 },
     });
     const timeout = setTimeout(() => {
       reject(new Error('Worker did not become ready within 120s'));
@@ -42,7 +44,11 @@ function spawnWorker(modelPath) {
 function infer(worker, prompt) {
   return new Promise((resolve, reject) => {
     const id = 1;
-    const timeout = setTimeout(() => reject(new Error('Inference timed out after 90s')), 90000);
+    // Generous budget: on a CPU backend (no GPU — common on Windows when the
+    // Vulkan/CUDA prebuilt is incompatible) a real grammar-constrained summary
+    // takes ~90s on half-core threading and up to ~160s on small boxes. Matches
+    // the production watchdog (engine 300s).
+    const timeout = setTimeout(() => reject(new Error('Inference timed out after 310s')), 310000);
     const handler = (msg) => {
       if (msg.type !== 'result' || msg.id !== id) return;
       clearTimeout(timeout);

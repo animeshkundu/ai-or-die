@@ -9,21 +9,31 @@
 
 const { Worker } = require('worker_threads');
 const path = require('path');
-const os = require('os');
 const GgufModelManager = require('./utils/gguf-model-manager');
 const { isBun } = require('./utils/runtime');
 
 const MAX_QUEUE_SIZE = 3;
-const DEFAULT_INFER_TIMEOUT_MS = 60000;
+// Watchdog-grade, unconditional per-request timeout. Real grammar-constrained
+// summaries on a CPU backend (no GPU — common on Windows when the Vulkan/CUDA
+// prebuilt is incompatible) take ~90s on half-core threading and up to ~160s on
+// 2 threads. This is a true catastrophic watchdog set well above that, NOT an
+// expected boundary: correctness over speed (a slow note must still complete).
+// GPU runs finish in ~7s and return immediately, so the high cap costs them
+// nothing. The summarizer's backstop sits strictly above this (one timeout
+// owner). An explicit inferTimeoutMs still overrides.
+const DEFAULT_INFER_TIMEOUT_MS = 300000;
 const MAX_RESTART_DELAY_MS = 15000;
 const MAX_RESTART_ATTEMPTS = 5;
 
 class StickyNoteEngine {
   constructor(options = {}) {
     this._enabled = !!options.enabled;
-    // Low thread cap keeps inference gentle so the model can't saturate CPU and
-    // starve the terminal / AI agent. Summaries are infrequent + throttled.
-    this._numThreads = options.numThreads || Math.max(1, Math.min(2, os.cpus().length - 2));
+    // Thread count is auto-selected by the worker once it knows whether a GPU
+    // backend loaded (see sticky-note-threads.pickThreads), UNLESS the caller
+    // pins it explicitly (--sticky-notes-threads). Auto is signalled by leaving
+    // numThreads out of the worker data entirely.
+    this._numThreadsExplicit = Number.isFinite(Number(options.numThreads)) && Number(options.numThreads) > 0;
+    this._numThreads = this._numThreadsExplicit ? Math.floor(Number(options.numThreads)) : null;
     this._contextSize = options.contextSize || 8192;
     this._inferTimeoutMs = options.inferTimeoutMs || DEFAULT_INFER_TIMEOUT_MS;
     this._maxQueue = options.maxQueue || MAX_QUEUE_SIZE;
@@ -39,22 +49,30 @@ class StickyNoteEngine {
     this._stopping = false;
     this._initPromise = null;
     this._downloadProgress = null;
+    this._runtimeInfo = null; // { gpu, threads } reported by the worker on ready
 
     this._modelManager =
       options.modelManager ||
       new GgufModelManager({ model: options.model, modelsDir: options.modelsDir });
 
-    // Injectable for tests; default spawns the real worker thread.
+    // Injectable for tests; default spawns the real worker thread. numThreads is
+    // included ONLY when explicitly pinned — otherwise the worker auto-picks.
     this._createWorker =
       options.createWorker ||
-      (() =>
-        new Worker(path.join(__dirname, 'sticky-note-worker.js'), {
-          workerData: {
-            modelPath: this._modelManager.getModelFile(),
-            numThreads: this._numThreads,
-            contextSize: this._contextSize,
-          },
-        }));
+      (() => new Worker(path.join(__dirname, 'sticky-note-worker.js'), { workerData: this._workerData() }));
+  }
+
+  /**
+   * Build the worker's workerData. numThreads is OMITTED when auto (not pinned)
+   * so the worker auto-selects based on the GPU backend it detects; pinning it
+   * here would defeat that. Kept as a method so it is unit-testable.
+   */
+  _workerData() {
+    return {
+      modelPath: this._modelManager.getModelFile(),
+      ...(this._numThreadsExplicit ? { numThreads: this._numThreads } : {}),
+      contextSize: this._contextSize,
+    };
   }
 
   async initialize(onProgress) {
@@ -107,6 +125,11 @@ class StickyNoteEngine {
 
   getDownloadProgress() {
     return this._downloadProgress;
+  }
+
+  /** { gpu, threads } reported by the worker on ready, or null before ready. */
+  getRuntimeInfo() {
+    return this._runtimeInfo;
   }
 
   /**
@@ -173,6 +196,7 @@ class StickyNoteEngine {
     this._queue = [];
     this._currentRequest = null;
     this._worker = null;
+    this._runtimeInfo = null; // dead worker — drop its reported backend/threads
 
     if (this._stopping) {
       this._status = 'unavailable';
@@ -230,6 +254,7 @@ class StickyNoteEngine {
           this._status = 'ready';
           this._restartAttempts = 0;
           this._lastSpawnError = null;
+          this._runtimeInfo = { gpu: !!msg.gpu, threads: msg.threads || null };
           worker.on('message', (m) => this._onWorkerMessage(m));
           worker.on('exit', (c) => this._onWorkerExit(c));
           this._processQueue();
