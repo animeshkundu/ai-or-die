@@ -38,12 +38,27 @@ class BaseBridge {
     this.dangerousFlag = options.dangerousFlag || null;
     this.autoAcceptTrust = options.autoAcceptTrust || false;
 
+    // Fixed launcher: when provided, the tool is ALWAYS spawned as
+    // `<launcher.command> <launcher.prefixArgs...> <buildArgs...>` and PATH
+    // discovery is skipped. Used to launch claude through github-router
+    // (`npx -y github-router@latest claude --browse`). { command, prefixArgs }.
+    this.launcher = options.launcher && options.launcher.command ? options.launcher : null;
+    this._prefixArgs = this.launcher && Array.isArray(this.launcher.prefixArgs) ? this.launcher.prefixArgs : [];
+
     this._availableCache = null;
     this._availableCacheTime = 0;
 
-    // Start with default; resolved asynchronously via initCommand()
-    this.command = this.defaultCommand;
-    this._commandReady = this.initCommand();
+    if (this.launcher) {
+      // Explicit launcher binary (e.g. npx / npx.cmd): rely on PATH, no discovery.
+      this.command = this.launcher.command;
+      this._availableCache = true;
+      this._availableCacheTime = Date.now();
+      this._commandReady = Promise.resolve();
+    } else {
+      // Start with default; resolved asynchronously via initCommand()
+      this.command = this.defaultCommand;
+      this._commandReady = this.initCommand();
+    }
   }
 
   /**
@@ -503,10 +518,11 @@ class BaseBridge {
 
   // Override in subclasses for tool-specific argument construction
   buildArgs(options = {}) {
+    const prefix = this._prefixArgs || [];
     if (options.dangerouslySkipPermissions && this.dangerousFlag) {
-      return [this.dangerousFlag];
+      return [...prefix, this.dangerousFlag];
     }
-    return [];
+    return [...prefix];
   }
 
   // Override in subclasses for tool-specific output processing (e.g., trust prompt)
