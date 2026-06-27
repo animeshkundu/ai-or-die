@@ -1,0 +1,368 @@
+'use strict';
+
+// Express router for the fleet control plane: GET /api/control/* on each
+// ai-or-die instance. The github-router `fleet` MCP group calls these over the
+// instance's authed tunnel (the router is mounted AFTER server.js's Bearer
+// middleware, so every route here is already token-gated).
+//
+// Decoupled from server.js by an injected `deps` object so it unit-tests without
+// a live PTY (see test/control/routes.test.js):
+//   deps.sessions               Map<id, session>  (this.claudeSessions)
+//   deps.getStatusSignal(id)    -> { jsonl, renderedTail, exit, hadOutput }  (server-computed)
+//   deps.readTail(id, lines)    -> Promise<{ text, truncated, source }>
+//   deps.eventBus               ControlEventBus
+//   deps.createSession(opts)    -> Promise<{ sessionId, lifecycle }>
+//   deps.stopSession(id, mode, idempotencyKey) -> Promise<{ stopped, lifecycle }>
+//   deps.sendMessage(opts)      -> Promise<object>
+//   deps.sendKeys(opts)         -> Promise<object>
+//   deps.respond(opts)          -> Promise<object>
+
+const express = require('express');
+const { deriveStatus } = require('./session-status');
+
+const DEFAULT_READ_LINES = 80;
+const MAX_READ_LINES = 2000;
+const DEFAULT_EVENTS_TIMEOUT_MS = 25000;
+const MAX_EVENTS_TIMEOUT_MS = 60000;
+const ROUTE_IDEMPOTENCY_CAP = 500;
+const DEFAULT_RATE_LIMIT_MAX = 600;
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 60000;
+const RATE_LIMIT_IDENTITY_CAP = 2000;
+
+function statusForSession(deps, id, session) {
+  const signal = (deps.getStatusSignal && deps.getStatusSignal(id)) || {};
+  if (signal && typeof signal.then === 'function') {
+    return signal.then((resolved) => deriveStatusForSignal(resolved || {}, session));
+  }
+  return deriveStatusForSignal(signal, session);
+}
+
+function deriveStatusForSignal(signal, session) {
+  return deriveStatus({
+    session: { ...session, hadOutput: signal.hadOutput },
+    jsonl: signal.jsonl,
+    renderedTail: signal.renderedTail,
+    exit: signal.exit,
+  });
+}
+
+function sessionSummary(deps, id, session) {
+  const status = statusForSession(deps, id, session);
+  if (status && typeof status.then === 'function') return status.then((resolved) => summaryFromStatus(id, session, resolved));
+  return summaryFromStatus(id, session, status);
+}
+
+function summaryFromStatus(id, session, status) {
+  return {
+    sessionId: id,
+    name: session.name,
+    agent: session.agent || null,
+    workingDir: session.workingDir,
+    lifecycle: status.lifecycle,
+    interactionState: status.interactionState,
+    canAcceptInput: status.canAcceptInput,
+    lastActivity: session.lastActivity,
+  };
+}
+
+function parseCursor(raw) {
+  if (!raw) return undefined;
+  // Accept either "epoch:seq" or a base64url JSON blob.
+  if (typeof raw === 'string' && raw.includes(':')) {
+    const idx = raw.lastIndexOf(':');
+    const epoch = raw.slice(0, idx);
+    const seq = Number(raw.slice(idx + 1));
+    if (epoch && Number.isFinite(seq)) return { epoch, seq };
+  }
+  try {
+    const obj = JSON.parse(Buffer.from(String(raw), 'base64').toString('utf8'));
+    if (obj && typeof obj.epoch === 'string' && Number.isFinite(obj.seq)) return obj;
+  } catch {
+    /* fall through */
+  }
+  return undefined;
+}
+
+function encodeCursor(cursor) {
+  return `${cursor.epoch}:${cursor.seq}`;
+}
+
+function clampInt(v, def, min, max) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+function normalizeRateLimit(raw) {
+  raw = raw || {};
+  return {
+    max: clampInt(raw.max, DEFAULT_RATE_LIMIT_MAX, 0, Number.MAX_SAFE_INTEGER),
+    windowMs: clampInt(raw.windowMs, DEFAULT_RATE_LIMIT_WINDOW_MS, 0, Number.MAX_SAFE_INTEGER),
+  };
+}
+
+function isRateLimitExempt(req) {
+  if (req.method !== 'GET') return false;
+  const path = String(req.path || req.url || '').split('?')[0];
+  const originalPath = String(req.originalUrl || '').split('?')[0];
+  return path === '/events' || originalPath.endsWith('/api/control/events');
+}
+
+function bearerToken(req) {
+  const header = req.headers && req.headers.authorization;
+  if (!header) return null;
+  const value = String(Array.isArray(header) ? header[0] : header).trim();
+  const match = /^Bearer\s+(.+)$/i.exec(value);
+  return (match ? match[1] : value).trim() || null;
+}
+
+function rateLimitIdentity(req) {
+  const bearer = bearerToken(req);
+  if (bearer) return `token:${bearer}`;
+  if (req.query && req.query.token) return `token:${String(req.query.token)}`;
+  return `ip:${req.ip || (req.socket && req.socket.remoteAddress) || 'unknown'}`;
+}
+
+function checkRateLimit(buckets, limit, identity) {
+  const now = Date.now();
+  const cutoff = now - limit.windowMs;
+  pruneRateLimitBuckets(buckets, cutoff);
+
+  const bucket = buckets.get(identity) || [];
+  if (bucket.length >= limit.max) {
+    return { retryAfterMs: Math.max(1, bucket[0] + limit.windowMs - now) };
+  }
+
+  bucket.push(now);
+  buckets.delete(identity);
+  buckets.set(identity, bucket);
+  while (buckets.size > RATE_LIMIT_IDENTITY_CAP) buckets.delete(buckets.keys().next().value);
+  return null;
+}
+
+function pruneRateLimitBuckets(buckets, cutoff) {
+  for (const [identity, bucket] of buckets) {
+    while (bucket.length && bucket[0] <= cutoff) bucket.shift();
+    if (!bucket.length) buckets.delete(identity);
+  }
+}
+
+function createControlRouter(deps) {
+  const router = express.Router();
+  const routeIdempotency = new Map();
+  const rateLimitBuckets = new Map();
+  const rateLimit = normalizeRateLimit(deps.rateLimit);
+
+  router.use((req, res, next) => {
+    if (isRateLimitExempt(req) || !rateLimit.max || !rateLimit.windowMs) return next();
+    const limited = checkRateLimit(rateLimitBuckets, rateLimit, rateLimitIdentity(req));
+    if (limited) {
+      return res.status(429).json({
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many control requests; retry after the current rate-limit window',
+          retryAfterMs: limited.retryAfterMs,
+        },
+      });
+    }
+    next();
+  });
+
+  // GET /sessions — list with derived status (light).
+  router.get('/sessions', async (req, res, next) => {
+    try {
+      const sessions = [];
+      for (const [id, session] of deps.sessions) sessions.push(await sessionSummary(deps, id, session));
+      res.json({ sessions });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /sessions/:id/status — canonical state (the lines=0 case).
+  router.get('/sessions/:id/status', async (req, res, next) => {
+    try {
+      const session = deps.sessions.get(req.params.id);
+      if (!session) return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      res.json({ sessionId: req.params.id, status: await statusForSession(deps, req.params.id, session) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /sessions/:id/read?lines=80 — plain-text tail + status.
+  router.get('/sessions/:id/read', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      const session = deps.sessions.get(id);
+      if (!session) return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      const lines = clampInt(req.query.lines, DEFAULT_READ_LINES, 0, MAX_READ_LINES);
+      const status = await statusForSession(deps, id, session);
+      if (lines === 0) return res.json({ sessionId: id, text: '', truncated: false, source: 'none', status });
+      const tail = await deps.readTail(id, lines);
+      res.json({ sessionId: id, text: tail.text, truncated: !!tail.truncated, source: tail.source, status });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /sessions/create
+  router.post('/sessions/create', async (req, res, next) => {
+    try {
+      const out = await deps.createSession(req.body || {});
+      res.json(out);
+    } catch (err) {
+      if (err && err.code === 'INVALID_WORKDIR') {
+        return res.status(403).json({ error: { code: 'CAPABILITY_DENIED', message: err.message } });
+      }
+      next(err);
+    }
+  });
+
+  // POST /sessions/:id/stop
+  router.post('/sessions/:id/stop', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      const mode = req.body && req.body.mode === 'kill' ? 'kill' : 'graceful';
+      const out = await deps.stopSession(id, mode, req.body && req.body.idempotencyKey);
+      res.json(out);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /sessions/:id/message — send a user message and optionally await a turn end.
+  router.post('/sessions/:id/message', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      const body = req.body || {};
+      const out = await routeIdempotent(routeIdempotency, 'message', id, body.idempotencyKey, () =>
+        deps.sendMessage({
+          sessionId: id,
+          message: body.message,
+          idempotencyKey: body.idempotencyKey,
+          awaitMs: body.awaitMs,
+        })
+      );
+      sendControlResult(res, out);
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // POST /sessions/:id/keys — send raw or named key input.
+  router.post('/sessions/:id/keys', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      const body = req.body || {};
+      const out = await routeIdempotent(routeIdempotency, 'keys', id, body.idempotencyKey, () =>
+        deps.sendKeys({
+          sessionId: id,
+          keys: body.keys,
+          idempotencyKey: body.idempotencyKey,
+          raw: body.raw,
+        })
+      );
+      sendControlResult(res, out);
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // POST /sessions/:id/respond — answer the currently pending interaction.
+  router.post('/sessions/:id/respond', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      const body = req.body || {};
+      const out = await routeIdempotent(routeIdempotency, 'respond', id, body.idempotencyKey, () =>
+        deps.respond({
+          sessionId: id,
+          choice: body.choice,
+          optionValue: body.optionValue,
+          keys: body.keys,
+          idempotencyKey: body.idempotencyKey,
+        })
+      );
+      sendControlResult(res, out);
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // GET /events?cursor=&timeoutMs= — long-poll (the await_turn backend).
+  router.get('/events', async (req, res, next) => {
+    try {
+      const cursor = parseCursor(req.query.cursor);
+      const timeoutMs = clampInt(req.query.timeoutMs, DEFAULT_EVENTS_TIMEOUT_MS, 0, MAX_EVENTS_TIMEOUT_MS);
+      const filter = {};
+      if (req.query.sessionIds) filter.sessionIds = String(req.query.sessionIds).split(',').filter(Boolean);
+      if (req.query.kinds) filter.kinds = String(req.query.kinds).split(',').filter(Boolean);
+      const out = await deps.eventBus.waitFor(cursor, timeoutMs, filter);
+      res.json({ events: out.events, gaps: out.gaps, cursor: encodeCursor(out.cursor), more: out.more });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  return router;
+}
+
+function routeIdempotent(cache, kind, sessionId, idempotencyKey, fn) {
+  const key = idempotencyKey ? `${kind}:${sessionId}:${idempotencyKey}` : null;
+  if (key && cache.has(key)) return Promise.resolve({ ...cache.get(key), duplicated: true });
+  return Promise.resolve()
+    .then(fn)
+    .then((out) => {
+      if (key && !(out && out.error)) {
+        cache.set(key, { ...out, duplicated: false });
+        trimCache(cache, ROUTE_IDEMPOTENCY_CAP);
+      }
+      return out;
+    });
+}
+
+function trimCache(cache, cap) {
+  while (cache.size > cap) cache.delete(cache.keys().next().value);
+}
+
+function sendControlResult(res, out) {
+  if (out && out.error) {
+    return res.status(statusForErrorCode(out.error.code)).json(out);
+  }
+  res.json(out);
+}
+
+function sendControlError(res, next, err) {
+  const status = (err && (err.statusCode || err.status)) || null;
+  const code = err && err.code;
+  if (status || code === 'SESSION_NOT_FOUND' || code === 'PRECONDITION_FAILED' || code === 'INVALID_ARGUMENT') {
+    return res.status(status || statusForErrorCode(code)).json({
+      error: {
+        code: code || 'ERROR',
+        message: (err && err.message) || 'Request failed',
+      },
+    });
+  }
+  next(err);
+}
+
+function statusForErrorCode(code) {
+  if (code === 'SESSION_NOT_FOUND') return 404;
+  if (code === 'PRECONDITION_FAILED') return 409;
+  if (code === 'INVALID_ARGUMENT') return 400;
+  return 500;
+}
+
+module.exports = { createControlRouter, parseCursor, encodeCursor, sessionSummary, statusForSession };

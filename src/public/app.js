@@ -247,6 +247,17 @@ class ClaudeCodeWebInterface {
             console.warn('[sticky-notes] card init failed:', e && e.message);
         }
 
+        // Track A: per-tab artifact-review panel (ADR-0033). Mounts on the
+        // `artifact_review_opened` broadcast; degrades to nothing if the script
+        // failed to load.
+        try {
+            if (typeof ArtifactPanel !== 'undefined') {
+                this._artifactPanel = new ArtifactPanel(this);
+            }
+        } catch (e) {
+            console.warn('[artifact-review] panel init failed:', e && e.message);
+        }
+
         // Listen for service worker notification clicks (Windows Notification Center)
         if ('serviceWorker' in navigator) {
             navigator.serviceWorker.addEventListener('message', (event) => {
@@ -2492,6 +2503,9 @@ class ClaudeCodeWebInterface {
                 if (this._stickyNoteCard) {
                     this._stickyNoteCard.notifyActiveSessionChanged(message.sessionId);
                 }
+                if (this._artifactPanel) {
+                    this._artifactPanel.notifyActiveSessionChanged(message.sessionId);
+                }
                 
                 // Update tab status
                 if (this.sessionTabManager) {
@@ -2714,6 +2728,18 @@ class ClaudeCodeWebInterface {
 
             case 'sticky_note_update':
                 this._handleStickyNoteUpdate(message);
+                break;
+
+            case 'artifact_review_opened':
+                if (this._artifactPanel) this._artifactPanel.open(message);
+                break;
+
+            case 'artifact_review_ended':
+                if (this._artifactPanel) this._artifactPanel.endReview(message);
+                break;
+
+            case 'artifact_agent_reply':
+                if (this._artifactPanel) this._artifactPanel.agentReply(message);
                 break;
 
             case 'sticky_notes_model_progress': {

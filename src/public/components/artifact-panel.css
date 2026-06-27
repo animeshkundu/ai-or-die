@@ -1,0 +1,96 @@
+/* Artifact-review panel (Track A / ADR-0033). Per-tab overlay anchored bottom-right
+   of the terminal wrapper, mirroring the sticky-note card's placement language. */
+.artifact-panel {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 420px;
+  max-width: calc(100% - 32px);
+  height: 60%;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-bg, #1b1d23);
+  color: var(--panel-fg, #e6e6e6);
+  border: 1px solid var(--panel-border, #33363f);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+  z-index: 40;
+  overflow: hidden;
+  font-size: 13px;
+}
+.artifact-panel[hidden] { display: none; }
+
+.artifact-panel__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--panel-header-bg, #232630);
+  border-bottom: 1px solid var(--panel-border, #33363f);
+}
+.artifact-panel__title { font-weight: 600; }
+.artifact-panel__presence { color: #4ade80; font-size: 11px; }
+.artifact-panel__spacer { flex: 1; }
+.artifact-panel__btn {
+  background: transparent;
+  border: none;
+  color: var(--panel-fg, #e6e6e6);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.artifact-panel__btn:hover { background: rgba(255, 255, 255, 0.08); }
+
+.artifact-panel__frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #fff;
+}
+
+.artifact-panel__chat {
+  max-height: 30%;
+  overflow-y: auto;
+  padding: 6px 10px;
+  border-top: 1px solid var(--panel-border, #33363f);
+  background: var(--panel-bg, #1b1d23);
+}
+.artifact-panel__msg { margin: 3px 0; display: flex; gap: 6px; align-items: baseline; }
+.artifact-panel__role {
+  font-size: 10px;
+  text-transform: uppercase;
+  opacity: 0.6;
+  flex: 0 0 auto;
+  min-width: 34px;
+}
+.artifact-panel__msg--agent .artifact-panel__role { color: #60a5fa; }
+.artifact-panel__msg--you .artifact-panel__role { color: #fbbf24; }
+.artifact-panel__text { white-space: pre-wrap; word-break: break-word; }
+
+.artifact-panel__chatbar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--panel-border, #33363f);
+}
+.artifact-panel__input {
+  flex: 1;
+  background: var(--input-bg, #11131a);
+  color: var(--panel-fg, #e6e6e6);
+  border: 1px solid var(--panel-border, #33363f);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+.artifact-panel__send {
+  background: var(--accent, #2563eb);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.artifact-panel__send:hover { filter: brightness(1.1); }

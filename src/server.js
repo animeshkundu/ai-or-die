@@ -33,6 +33,12 @@ const CircularBuffer = require('./utils/circular-buffer');
 const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
 const KeepaliveManager = require('./keepalive-manager');
+const { ControlEventBus } = require('./control/event-bus');
+const TranscriptBuffer = require('./sticky-note-transcript');
+const { createControlRouter } = require('./control/routes');
+const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner } = require('./artifact-review');
+const { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen } = require('./control/session-status');
+const { detectAwaiting } = require('./control/jsonl-awaiting');
 
 // HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
 // large frame can't block the event loop for tens-to-hundreds of ms.
@@ -130,6 +136,13 @@ class ClaudeCodeWebServer {
     
     this.app = express();
     this.claudeSessions = new Map(); // Persistent sessions (claude, codex, or agent)
+    this.controlEventBus = new ControlEventBus();
+    this.artifactReviews = new ArtifactReviewStore();
+    this._artifactAssetSecret = crypto.randomBytes(32);
+    this._artifactAssetSigner = createAssetTokenSigner(this._artifactAssetSecret);
+    this.artifactPollHoldMs = options.artifactPollHoldMs || 25000;
+    this.artifactPollHeartbeatMs = options.artifactPollHeartbeatMs || 5000;
+    this.artifactSseHeartbeatMs = options.artifactSseHeartbeatMs || 15000;
     // PROC-04: min-heap of {id, lastActivity} pairs keyed by lastActivity.
     // Used by _evictStaleSessions to find the oldest session in O(log n)
     // rather than scanning the full Map every 5 min. Lazy-tombstone protocol
@@ -193,6 +206,8 @@ class ClaudeCodeWebServer {
     // summariser (JSONL mode). Tabs not running claude keep the scrape fallback.
     this._stickyJsonl = new Map();
     this._stickyJsonlPoll = null;
+    this._controlIdempotency = new Map();
+    this._controlSessionSeq = new Map();
     // Durable notes keyed by CLAUDE sessionId (the JSONL basename / --resume key),
     // so a note survives the tab closing and resumes when the same claude session
     // is reopened (claude --resume, /resume, or a server restart). Rebuilt from
@@ -1155,13 +1170,37 @@ class ClaudeCodeWebServer {
 
     if (!this.noAuth && this.auth) {
       this.app.use((req, res, next) => {
+        const asset = this._artifactAssetAuthFromPath(req);
+        if (asset && this._artifactAssetSigner.verify(asset.sessionId, asset.token)) {
+          req.artifactAssetPathToken = asset.token;
+          return next();
+        }
         const token = req.headers.authorization || req.query.token;
         if (token !== `Bearer ${this.auth}` && token !== this.auth) {
           return res.status(401).json({ error: 'Unauthorized' });
         }
         next();
       });
+    } else {
+      this.app.use((req, res, next) => {
+        const asset = this._artifactAssetAuthFromPath(req);
+        if (asset && this._artifactAssetSigner.verify(asset.sessionId, asset.token)) {
+          req.artifactAssetPathToken = asset.token;
+        }
+        next();
+      });
     }
+
+    this.app.use('/api/control', createControlRouter(this._buildControlDeps()));
+    this.app.use('/api/artifact', createArtifactReviewRouter({
+      store: this.artifactReviews,
+      validatePath: (p) => this.validatePath(p),
+      mintAssetToken: (sid) => this._artifactAssetSigner.mint(sid),
+      broadcastToSession: (sessionId, obj) => this.broadcastToSession(sessionId, obj),
+      pollHoldMs: this.artifactPollHoldMs,
+      pollHeartbeatMs: this.artifactPollHeartbeatMs,
+      sseHeartbeatMs: this.artifactSseHeartbeatMs,
+    }));
 
     // Commands API removed
 
@@ -1421,6 +1460,7 @@ class ClaudeCodeWebServer {
       if (this._foregroundSessionId === sessionId) this._foregroundSessionId = null;
 
       this.claudeSessions.delete(sessionId);
+      if (this.controlEventBus) this.controlEventBus.append(sessionId, 'session_deleted');
       this.activityBroadcastTimestamps.delete(sessionId);
       this.sessionStore.markDirty();
 
@@ -3941,6 +3981,26 @@ class ClaudeCodeWebServer {
     });
   }
 
+  // Artifact sub-resources (images/css/fonts the artifact HTML references inside
+  // the sandboxed iframe) cannot set an Authorization header or inherit the
+  // page's ?token=, so artifact <base href> embeds a scoped, per-session token in
+  // the asset PATH as /api/artifact/<sessionId>/asset/_auth/<token>/<relpath>.
+  // This parses only that scoped token form; bearer auth is never accepted from
+  // any URL path.
+  _artifactAssetAuthFromPath(req) {
+    const p = req && typeof req.path === 'string' ? req.path : '';
+    const m = /^\/api\/artifact\/([^/]+)\/asset\/_auth\/([^/]+)(?:\/|$)/.exec(p);
+    if (!m) return null;
+    try {
+      return {
+        sessionId: decodeURIComponent(m[1]),
+        token: decodeURIComponent(m[2]),
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
   getBridgeForAgent(agentType) {
     const bridges = {
       claude: this.claudeBridge,
@@ -3950,6 +4010,571 @@ class ClaudeCodeWebServer {
       terminal: this.terminalBridge
     };
     return bridges[agentType] || null;
+  }
+
+  _buildControlDeps() {
+    return {
+      sessions: this.claudeSessions,
+      eventBus: this.controlEventBus,
+      getStatusSignal: (id) => this._controlStatusSignal(id),
+      readTail: async (id, lines) => this._controlReadTail(id, lines),
+      createSession: async (opts) => this._controlCreateSession(opts),
+      stopSession: async (id, mode, idempotencyKey) => this._controlStopSession(id, mode, idempotencyKey),
+      sendMessage: async (opts) => this._controlSendMessage(opts),
+      sendKeys: async (opts) => this._controlSendKeys(opts),
+      respond: async (opts) => this._controlRespond(opts),
+    };
+  }
+
+  async _controlStatusSignal(id) {
+    const session = this.claudeSessions.get(id);
+    if (!session) return {};
+    const hadOutput = !!(session.outputBuffer && session.outputBuffer.size && session.outputBuffer.size > 0);
+    let renderedTail = '';
+    if (session._ctlTranscript) {
+      // Wide enough to capture a full approval/question modal header (claude's
+      // ExitPlanMode modal is ~8 rows tall, so an 8-row snapshot clips the
+      // "Would you like to proceed?" line that awaitingFromScreen keys on).
+      // deriveStatus applies the busy-footer regex to only the last few rows, so
+      // a wide window does not cause false-busy from stale scrollback.
+      try { renderedTail = await session._ctlTranscript.snapshot(20); } catch (_) { renderedTail = ''; }
+    } else if (session.outputBuffer) {
+      renderedTail = session.outputBuffer.slice(-6).join('\n');
+    }
+    const b = this._stickyJsonl.get(id);
+    const jsonl = b ? {
+      bound: true,
+      endsOnAssistant: !!b.lastEndsOnAssistant,
+      growing: !!b.lastGrowing,
+      lastTurnEndedAt: b.lastTurnEndedAt,
+    } : undefined;
+    if (jsonl && b.file) {
+      const awaiting = await this._controlDetectAwaitingCached(b);
+      if (awaiting) Object.assign(jsonl, awaiting);
+    }
+    return { hadOutput, jsonl, renderedTail, exit: session._lastExit || null };
+  }
+
+  async _controlDetectAwaitingCached(binding) {
+    if (!binding || !binding.file) return null;
+    const now = Date.now();
+    if (binding._awaitingAt && now - binding._awaitingAt < 1000) return binding._awaiting || null;
+    const awaiting = await detectAwaiting(binding.file);
+    binding._awaiting = awaiting || null;
+    binding._awaitingAt = now;
+    return binding._awaiting;
+  }
+
+  async _controlDerivedStatus(id) {
+    const session = this.claudeSessions.get(id);
+    if (!session) return null;
+    const signal = await this._controlStatusSignal(id);
+    return deriveStatus({
+      session: { ...session, hadOutput: signal.hadOutput },
+      jsonl: signal.jsonl,
+      renderedTail: signal.renderedTail,
+      exit: signal.exit,
+    });
+  }
+
+  _controlSessionSeqFor(sessionId) {
+    if (!this._controlSessionSeq) this._controlSessionSeq = new Map();
+    return this._controlSessionSeq.get(sessionId) || 0;
+  }
+
+  _controlBumpSessionSeq(sessionId) {
+    if (!this._controlSessionSeq) this._controlSessionSeq = new Map();
+    const next = (this._controlSessionSeq.get(sessionId) || 0) + 1;
+    this._controlSessionSeq.set(sessionId, next);
+    return next;
+  }
+
+  _controlAppendStateEvent(sessionId, kind, detail) {
+    if (!this.controlEventBus) return;
+    const withSeq = kind === 'turn_ended' || kind === 'became_busy' || kind === 'became_idle' || kind === 'waiting_input';
+    const eventDetail = detail ? { ...detail } : {};
+    if (withSeq) eventDetail.sessionStateSeq = this._controlBumpSessionSeq(sessionId);
+    this.controlEventBus.append(sessionId, kind, Object.keys(eventDetail).length ? eventDetail : undefined);
+  }
+
+  async _controlEmitInteractionTransition(sessionId) {
+    const status = await this._controlDerivedStatus(sessionId);
+    if (!status || !status.interactionState) return status;
+    const binding = this._stickyJsonl && this._stickyJsonl.get(sessionId);
+    const previous = binding ? binding._lastInteractionState : undefined;
+    if (previous === status.interactionState) return status;
+    if (binding) binding._lastInteractionState = status.interactionState;
+
+    const kind = this._controlEventKindForInteractionState(status.interactionState);
+    if (kind) this._controlAppendStateEvent(sessionId, kind, { interactionState: status.interactionState });
+    return status;
+  }
+
+  _controlEventKindForInteractionState(interactionState) {
+    if (interactionState === 'busy') return 'became_busy';
+    if (interactionState === 'idle') return 'became_idle';
+    if (interactionState === 'waiting_input') return 'waiting_input';
+    return null;
+  }
+
+  async _controlReadTail(id, lines) {
+    const s = this.claudeSessions.get(id);
+    if (!s) return { text: '', truncated: false, source: 'none' };
+    // For PTY/TUI agent sessions, return the RENDERED screen (replayed through
+    // @xterm/headless) rather than the raw repaint stream, so a reader sees what
+    // a human would — not interleaved cursor-move/clear escape sequences.
+    if (s._ctlTranscript) {
+      try {
+        const text = await s._ctlTranscript.snapshot(lines);
+        return { text, truncated: false, source: 'rendered' };
+      } catch (_) { /* fall back to the raw buffer */ }
+    }
+    const arr = s.outputBuffer ? s.outputBuffer.slice(-lines) : [];
+    return {
+      text: arr.join('\n'),
+      truncated: (s.outputBuffer && s.outputBuffer.size ? s.outputBuffer.size > lines : false),
+      source: 'buffer'
+    };
+  }
+
+  async _controlCreateSession(opts = {}) {
+    return this._controlWithIdempotency('create', opts.idempotencyKey, async () => {
+      const { name, workingDir } = opts;
+      const sessionId = uuidv4();
+
+      // Validate working directory if provided
+      let validWorkingDir = this.baseFolder;
+      if (workingDir) {
+        const validation = this.validatePath(workingDir);
+        if (!validation.valid) {
+          const err = new Error('Cannot create session with working directory outside the allowed area');
+          err.code = 'INVALID_WORKDIR';
+          throw err;
+        }
+        validWorkingDir = validation.path;
+      } else if (this.selectedWorkingDir) {
+        validWorkingDir = this.selectedWorkingDir;
+      }
+
+      // opts.start spawns the agent headlessly via _controlStartAgent (below).
+      const session = {
+        id: sessionId,
+        name: name || `Session ${new Date().toLocaleString()}`,
+        created: new Date(),
+        lastActivity: new Date(),
+        active: false,
+        agent: null, // 'claude' | 'codex' when started
+        workingDir: validWorkingDir,
+        connections: new Set(),
+        outputBuffer: new CircularBuffer(1000),
+        priority: 'foreground',
+        sessionStartTime: null,
+        sessionUsage: {
+          requests: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheTokens: 0,
+          totalCost: 0,
+          models: {}
+        },
+        maxBufferSize: 1000
+      };
+
+      this.claudeSessions.set(sessionId, session);
+      if (typeof this._pushEvictionEntry === 'function') this._pushEvictionEntry(sessionId);
+      this.sessionStore.markDirty();
+      this.saveSessionsToDisk();
+      if (this.controlEventBus) this.controlEventBus.append(sessionId, 'session_created');
+      // Headless start: spawn the agent over a PTY with NO WebSocket when
+      // requested (the fleet create_session(start:true) path). The agent gets a
+      // deterministic JSONL bind sidecar (turn detection) + the artifact tool
+      // env-trio so a github-router-claude can drive the review loop.
+      let lifecycle = 'created';
+      if (opts.start) {
+        const agent = opts.agent || 'claude';
+        try {
+          await this._controlStartAgent(sessionId, agent, {
+            cols: opts.cols, rows: opts.rows,
+            dangerouslySkipPermissions: !!opts.dangerouslySkipPermissions,
+          });
+        } catch (e) {
+          lifecycle = 'exited';
+          return { sessionId, lifecycle, name: session.name, agent: null, startError: e && e.message };
+        }
+        lifecycle = session.active ? 'running' : 'starting';
+      }
+      return { sessionId, lifecycle, name: session.name, agent: session.agent || null };
+    });
+  }
+
+  // claude.exe boots slowly; ClaudeBridge's single-shot trust-accept Enter can
+  // fire before claude is interactive, leaving the folder-trust modal up. For a
+  // HEADLESS session (no human to click) re-send Enter while the rendered screen
+  // still shows the modal, until it clears. Watches the rendered TranscriptBuffer
+  // so it stops the moment trust is accepted (and never submits into the composer).
+  _controlReapTrustPrompt(sessionId) {
+    const bridge0 = (() => { const s = this.claudeSessions.get(sessionId); return s ? this.getBridgeForAgent(s.agent) : null; })();
+    if (!bridge0) return;
+    let tries = 0, sawModal = false;
+    const tick = async () => {
+      const s = this.claudeSessions.get(sessionId);
+      if (!s || !s.active || !s._ctlTranscript || tries > 14) return;
+      tries++;
+      let screen = '';
+      try { screen = await s._ctlTranscript.snapshot(40); } catch (_) { /* ignore */ }
+      const onModal = /trust this folder|Do you trust the files/i.test(screen);
+      if (onModal) {
+        sawModal = true;
+        try { await bridge0.sendInput(sessionId, '\r'); } catch (_) { /* pty may be gone */ }
+        setTimeout(tick, 1500);
+      } else if (!sawModal && tries < 8) {
+        setTimeout(tick, 1500); // modal not up yet (claude still booting) — keep watching
+      }
+      // modal seen then cleared, or never appeared after the watch window -> stop
+    };
+    setTimeout(tick, 1500);
+  }
+
+  // Headless agent spawn (no WebSocket): reuses the same bridge.startSession +
+  async _controlStartAgent(sessionId, toolName, opts = {}) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) throw this._controlError('SESSION_NOT_FOUND', 'Unknown session', 404);
+    const bridge = this.getBridgeForAgent(toolName);
+    if (!bridge) throw this._controlError('INVALID_ARGUMENT', `Unknown agent '${toolName}'`, 400);
+    if (session.active) return;
+    if (bridge._commandReady) { try { await bridge._commandReady; } catch (_) { /* fall through */ } }
+    if (typeof bridge.isAvailable === 'function' && !bridge.isAvailable()) {
+      throw this._controlError('PRECONDITION_FAILED', `${toolName} is not available on this instance`, 409);
+    }
+    const cols = opts.cols || 100;
+    const rows = opts.rows || 30;
+
+    const extraEnv = {};
+    try {
+      const sidecar = this._prepareClaudeBindSidecar(sessionId, session);
+      if (sidecar) extraEnv.AIORDIE_CLAUDE_BIND = sidecar; // deterministic JSONL turn detection (ADR-0026)
+    } catch (_) { /* sidecar best-effort */ }
+    if (this.auth) {
+      // So a github-router-claude spawned here can drive the artifact-review loop.
+      extraEnv.AIORDIE_BASE_URL = `${this.useHttps ? 'https' : 'http'}://127.0.0.1:${this.port}`;
+      extraEnv.AIORDIE_TOKEN = this.auth;
+      extraEnv.AIORDIE_SESSION_ID = sessionId;
+    }
+
+    try { session._ctlTranscript = new TranscriptBuffer({ cols, rows }); } catch (_) { session._ctlTranscript = null; }
+    session.active = true;
+    session.agent = toolName;
+    this.activityBroadcastTimestamps.set(sessionId, Date.now());
+    try {
+      await bridge.startSession(sessionId, {
+        workingDir: session.workingDir,
+        cols, rows,
+        dangerouslySkipPermissions: !!opts.dangerouslySkipPermissions,
+        onOutput: (data) => {
+          const s = this.claudeSessions.get(sessionId);
+          if (!s) return;
+          s.outputBuffer.push(data);
+          try { if (s._ctlTranscript) s._ctlTranscript.write(data); } catch (_) { /* isolate */ }
+          this.sessionStore.markDirty();
+          try { if (this.stickyNoteSummarizer && this.stickyNoteSummarizer.isEnabled(sessionId)) this.stickyNoteSummarizer.feed(sessionId, data); } catch (_) { /* isolate */ }
+        },
+        onExit: (code, signal) => {
+          const s = this.claudeSessions.get(sessionId);
+          if (s) {
+            if (typeof this._flushAndClearOutputTimer === 'function') this._flushAndClearOutputTimer(s, sessionId);
+            s.active = false;
+            s.agent = null;
+            s._lastExit = { code, signal };
+            this.sessionStore.markDirty();
+            try { if (s._ctlTranscript) { s._ctlTranscript.dispose(); s._ctlTranscript = null; } } catch (_) { /* isolate */ }
+          }
+          try { this.stickyNoteSummarizer && this.stickyNoteSummarizer.flushExit(sessionId); } catch (_) { /* isolate */ }
+          if (this.controlEventBus) this.controlEventBus.append(sessionId, 'exited', { code, signal });
+          this.broadcastToSession(sessionId, { type: 'exit', code, signal });
+        },
+        onError: (error) => {
+          const s = this.claudeSessions.get(sessionId);
+          if (s) { s.active = false; s.agent = null; this.sessionStore.markDirty(); }
+          this.broadcastToSession(sessionId, { type: 'error', message: error.message });
+        },
+        extraEnv,
+      });
+      session.lastActivity = new Date();
+      if (typeof this._pushEvictionEntry === 'function') this._pushEvictionEntry(sessionId);
+      if (!session.sessionStartTime) session.sessionStartTime = new Date();
+      this.sessionStore.markDirty();
+      if (this.controlEventBus) this.controlEventBus.append(sessionId, 'became_busy');
+      session.cols = cols; session.rows = rows;
+      try { this._maybeStartStickyNotes(sessionId, toolName, cols, rows); } catch (_) { /* isolate */ }
+      if (toolName === 'claude') this._controlReapTrustPrompt(sessionId);
+    } catch (error) {
+      session.active = false; session.agent = null;
+      this.activityBroadcastTimestamps.delete(sessionId);
+      throw this._controlError('UPSTREAM_ERROR', `Failed to start ${toolName}: ${error.message}`, 500);
+    }
+  }
+
+  async _controlStopSession(id, mode, idempotencyKey) {
+    return this._controlWithIdempotency(id, idempotencyKey, async () => {
+      const session = this.claudeSessions.get(id);
+      const bridge = session && this.getBridgeForAgent(session.agent);
+      if (bridge && session.active) {
+        await this.stopToolSession(id, mode);
+        // Record a clean exit so session_status reports 'exited' immediately:
+        // deriveStatus needs an exit marker, and the PTY's own onExit can lag the
+        // synchronous stop (and stopToolSession may clear session.agent, which
+        // would otherwise make a stopped session look like a never-started one).
+        session._lastExit = session._lastExit || { code: 0, signal: null };
+      }
+      return { stopped: true, lifecycle: 'exited' };
+    });
+  }
+
+  async _controlSendMessage(opts = {}) {
+    const { sessionId, message, idempotencyKey, awaitMs } = opts;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) throw this._controlError('SESSION_NOT_FOUND', 'Unknown session', 404);
+
+    return this._controlWithIdempotency(sessionId, idempotencyKey, async () => {
+      const bridge = this._controlInputBridge(sessionId, session);
+      const timeoutMs = this._controlClampInt(awaitMs, 120000, 0, 180000);
+      const cursor = this.controlEventBus && typeof this.controlEventBus.headCursor === 'function'
+        ? this.controlEventBus.headCursor()
+        : null;
+      const text = message == null ? '' : String(message);
+      if (text.includes('\n')) {
+        await bridge.sendInput(sessionId, `\x1b[200~${text}\x1b[201~`);
+      } else {
+        await bridge.sendInput(sessionId, text);
+      }
+      await bridge.sendInput(sessionId, '\r');
+
+      // Cold-boot submit reaper: a slow claude.exe Ink composer can drop the
+      // submit Enter, leaving the message sitting unsent (no turn starts, so the
+      // honest result is confirmed:false). If claude hasn't visibly started a turn
+      // shortly after, re-send Enter ONCE. Safe: an extra Enter on an already-empty
+      // composer (message already submitted) is a no-op in claude. Skipped for
+      // awaitMs=0 (fire-and-forget dispatch must not block). The waitFor below uses
+      // the pre-send cursor, so any turn that starts during this poll is not missed.
+      if (timeoutMs > 0) {
+        let started = false;
+        for (let i = 0; i < 4; i++) {
+          await new Promise((r) => setTimeout(r, 600));
+          const s = await this._controlDerivedStatus(sessionId);
+          if (s && (s.interactionState === 'busy' || s.interactionState === 'waiting_input')) { started = true; break; }
+        }
+        if (!started) { try { await bridge.sendInput(sessionId, '\r'); } catch (_) { /* pty may have exited */ } }
+      }
+
+      let confirmed = false;
+      if (this.controlEventBus && cursor && timeoutMs > 0 && typeof this.controlEventBus.waitFor === 'function') {
+        const out = await this.controlEventBus.waitFor(cursor, timeoutMs, {
+          sessionIds: [sessionId],
+          kinds: ['turn_ended'],
+        });
+        confirmed = !!(out.events || []).some((e) => e.sessionId === sessionId && e.kind === 'turn_ended');
+      }
+
+      const status = await this._controlDerivedStatus(sessionId);
+      // The github-router fleet MCP tool intentionally maps confirmed=false to
+      // an MCP isError (LOUD failure). ai-or-die itself returns honest delivery
+      // data here and relies on idempotency to ensure retries never re-type.
+      return {
+        messageId: uuidv4(),
+        delivered: true,
+        confirmed,
+        confidence: this._stickyJsonl && this._stickyJsonl.has(sessionId) ? 'high' : 'medium',
+        interactionState: status ? status.interactionState : 'unknown',
+        sessionStateSeq: this._controlSessionSeqFor(sessionId),
+        duplicated: false,
+      };
+    });
+  }
+
+  async _controlSendKeys(opts = {}) {
+    const { sessionId, keys, idempotencyKey, raw } = opts;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) throw this._controlError('SESSION_NOT_FOUND', 'Unknown session', 404);
+
+    return this._controlWithIdempotency(sessionId, idempotencyKey, async () => {
+      const bridge = this._controlInputBridge(sessionId, session);
+      const data = this._controlKeyBytes(keys, raw === true);
+      await bridge.sendInput(sessionId, data);
+      return { keysId: uuidv4(), delivered: true, duplicated: false };
+    });
+  }
+
+  async _controlRespond(opts = {}) {
+    const { sessionId, choice, optionValue, keys, idempotencyKey } = opts;
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) throw this._controlError('SESSION_NOT_FOUND', 'Unknown session', 404);
+
+    return this._controlWithIdempotency(sessionId, idempotencyKey, async () => {
+      const binding = this._stickyJsonl && this._stickyJsonl.get(sessionId);
+      const awaiting = binding && binding.file ? await detectAwaiting(binding.file) : null;
+      let awaitingKind = awaiting ? awaitingKindForPendingTool(awaiting.pendingUserFacingTool) : null;
+      // Fallback: when the JSONL binding isn't available (e.g. a raw claude.exe
+      // whose Windows project-slug doesn't resolve), derive the pending
+      // interaction from the live rendered screen — the same signal status uses.
+      if (!awaitingKind && session._ctlTranscript) {
+        try {
+          const screenAwait = awaitingFromScreen(await session._ctlTranscript.snapshot(20));
+          if (screenAwait) awaitingKind = screenAwait.kind;
+        } catch (_) { /* transcript unavailable */ }
+      }
+      let mappedKeys;
+
+      if (keys !== undefined && keys !== null) {
+        mappedKeys = String(keys);
+      } else {
+        if (!awaitingKind) {
+          return { error: { code: 'PRECONDITION_FAILED', message: 'no pending interaction' } };
+        }
+        mappedKeys = this._controlMapResponseKeys(awaitingKind, {
+          awaiting,
+          choice,
+          optionValue,
+          agent: session.agent,
+        });
+        if (!mappedKeys) {
+          return { error: { code: 'INVALID_ARGUMENT', message: 'could not map response to keystrokes' } };
+        }
+      }
+
+      const bridge = this._controlInputBridge(sessionId, session);
+      await bridge.sendInput(sessionId, mappedKeys);
+      return {
+        delivered: true,
+        awaitingKind: awaitingKind || null,
+        mappedKeys,
+        duplicated: false,
+      };
+    });
+  }
+
+  async _controlWithIdempotency(sessionId, idempotencyKey, fn) {
+    if (!idempotencyKey) return fn();
+    if (!this._controlIdempotency) this._controlIdempotency = new Map();
+    const key = `${sessionId}:${idempotencyKey}`;
+    if (this._controlIdempotency.has(key)) {
+      const cached = this._controlIdempotency.get(key);
+      const out = typeof cached.then === 'function' ? await cached : cached;
+      return { ...out, duplicated: true };
+    }
+
+    const pending = Promise.resolve()
+      .then(fn)
+      .then((out) => {
+        if (out && out.error) {
+          this._controlIdempotency.delete(key);
+          return out;
+        }
+        const cached = { ...out, duplicated: false };
+        this._controlIdempotency.set(key, cached);
+        this._controlTrimIdempotency();
+        return cached;
+      })
+      .catch((err) => {
+        this._controlIdempotency.delete(key);
+        throw err;
+      });
+    this._controlIdempotency.set(key, pending);
+    return pending;
+  }
+
+  _controlTrimIdempotency() {
+    if (!this._controlIdempotency) return;
+    while (this._controlIdempotency.size > 500) {
+      this._controlIdempotency.delete(this._controlIdempotency.keys().next().value);
+    }
+  }
+
+  _controlInputBridge(sessionId, session) {
+    const bridge = session && this.getBridgeForAgent(session.agent);
+    if (!session || !session.active || !bridge || typeof bridge.sendInput !== 'function') {
+      throw this._controlError('PRECONDITION_FAILED', 'session is not accepting PTY input', 409);
+    }
+    return bridge;
+  }
+
+  _controlKeyBytes(keys, raw) {
+    if (Array.isArray(keys)) return keys.map((k) => this._controlKeyBytes(k, raw)).join('');
+    const value = keys == null ? '' : String(keys);
+    if (raw) return value;
+    const named = {
+      enter: '\r',
+      escape: '\x1b',
+      esc: '\x1b',
+      tab: '\t',
+      'c-c': '\x03',
+      'ctrl-c': '\x03',
+      'c-d': '\x04',
+      'ctrl-d': '\x04',
+      up: '\x1b[A',
+      down: '\x1b[B',
+      right: '\x1b[C',
+      left: '\x1b[D',
+      space: ' ',
+      backspace: '\x7f',
+    };
+    const key = value.toLowerCase();
+    return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : value;
+  }
+
+  _controlMapResponseKeys(awaitingKind, opts = {}) {
+    const choice = this._controlNormalizeChoice(opts.choice);
+    const optionValue = opts.optionValue == null ? null : String(opts.optionValue);
+
+    // BEST-EFFORT mapping for claude's NUMBERED approval modals (plan + tool/
+    // permission), which select with the highlighted default + Enter and cancel
+    // with Esc — a literal y/n is typed into the modal, not interpreted as a
+    // choice. accept→Enter is proven live (plan_approval ExitPlanMode); reject→Esc
+    // is claude's documented cancel. Callers can always pass exact `keys` bytes.
+    if (awaitingKind === 'plan_approval') {
+      if (choice === 'accept' || choice === 'yes' || choice === 'allow') return '\r';
+      if (choice === 'reject' || choice === 'no' || choice === 'deny') return '\x1b';
+      return null;
+    }
+
+    if (awaitingKind === 'tool_approval') {
+      if (choice === 'yes' || choice === 'allow' || choice === 'accept') return '\r';
+      if (choice === 'no' || choice === 'deny' || choice === 'reject') return '\x1b';
+      return null;
+    }
+
+    if (awaitingKind === 'choice_question') {
+      if (optionValue !== null) return `${optionValue}\r`;
+      const options = (opts.awaiting && opts.awaiting.awaitingOptions) || [];
+      const originalChoice = opts.choice == null ? '' : String(opts.choice);
+      if (originalChoice) {
+        const match = options.findIndex((o) => {
+          if (!o) return false;
+          return String(o.value) === originalChoice || String(o.label) === originalChoice;
+        });
+        if (match >= 0) return `${match + 1}\r`;
+        return `${originalChoice}\r`;
+      }
+      return null;
+    }
+
+    return null;
+  }
+
+  _controlNormalizeChoice(choice) {
+    return choice == null ? '' : String(choice).trim().toLowerCase();
+  }
+
+  _controlClampInt(v, def, min, max) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return def;
+    return Math.min(max, Math.max(min, Math.trunc(n)));
+  }
+
+  _controlError(code, message, statusCode) {
+    const err = new Error(message);
+    err.code = code;
+    err.statusCode = statusCode;
+    return err;
   }
 
   /**
@@ -4114,10 +4739,12 @@ class ClaudeCodeWebServer {
             this._flushAndClearOutputTimer(currentSession, sessionId);
             currentSession.active = false;
             currentSession.agent = null;
+            currentSession._lastExit = { code, signal };
             this.sessionStore.markDirty();
           }
           // Final sticky-note flush to capture the "done" state, then stop.
           this.stickyNoteSummarizer.flushExit(sessionId);
+          this.controlEventBus.append(sessionId, 'exited', { code, signal });
           this.broadcastToSession(sessionId, { type: 'exit', code, signal });
           this.activityBroadcastTimestamps.delete(sessionId);
           this.broadcastSessionActivity(sessionId, 'session_exit', { code, signal });
@@ -4374,6 +5001,11 @@ class ClaudeCodeWebServer {
     let binding = this._stickyJsonl.get(sessionId);
     binding && (binding._ticks = (binding._ticks || 0) + 1);
     const session = this.claudeSessions.get(sessionId);
+    const emitTransition = async () => {
+      if (typeof this._controlEmitInteractionTransition === 'function') {
+        await this._controlEmitInteractionTransition(sessionId);
+      }
+    };
 
     // DETERMINISTIC SIDECAR BINDING (terminal tabs launched via github-router).
     // ai-or-die set AIORDIE_CLAUDE_BIND=<sidecar> on the shell; github-router's
@@ -4473,6 +5105,10 @@ class ClaudeCodeWebServer {
 
     const st = await this._statQuiet(binding.file);
     if (!st) { this._stickyJsonl.delete(sessionId); return; } // file gone → unbind (note kept)
+    if (binding._awaitingSize !== st.size) {
+      binding._awaitingAt = 0;
+      binding._awaitingSize = st.size;
+    }
     // File shrank (truncated / rotated / recreated under the same name) → our
     // offsets point past the end. Drop the binding so the next poll re-resolves
     // and re-binds from scratch rather than freezing forever.
@@ -4505,12 +5141,33 @@ class ClaudeCodeWebServer {
     // --- NOTE INFERENCE — ONLY while a viewer has the card EXPANDED. Collapsed
     // tabs freeze the note at their horizon (binding.offset); on re-expand the
     // next poll resumes from there in a single bounded catch-up read. ---
-    if (!this._isStickyExpandedActive(sessionId)) return;
-    if (st.size <= binding.offset) return;
+    if (!this._isStickyExpandedActive(sessionId)) {
+      await emitTransition();
+      return;
+    }
+    if (st.size <= binding.offset) {
+      await emitTransition();
+      return;
+    }
     const { turns, offset } = await StickyNoteJsonl.readNewTurns(binding.file, binding.offset);
-    if (offset <= binding.offset) return; // no complete new line for the note yet
+    if (offset <= binding.offset) {
+      await emitTransition();
+      return; // no complete new line for the note yet
+    }
     binding.offset = offset;
     this._claudeOffsets.set(binding.claudeSessionId, offset); // resume continues from here
+    const ends = require('./sticky-note-jsonl').endsOnAssistant(turns);
+    binding.lastGrowing = (turns.length > 0 && !ends);
+    if (ends && !binding.lastEndsOnAssistant) {
+      if (typeof this._controlAppendStateEvent === 'function') {
+        this._controlAppendStateEvent(sessionId, 'turn_ended');
+      } else if (this.controlEventBus) {
+        this.controlEventBus.append(sessionId, 'turn_ended');
+      }
+      binding.lastTurnEndedAt = Date.now();
+    }
+    binding.lastEndsOnAssistant = ends;
+    await emitTransition();
     const text = StickyNoteJsonl.formatTurns(turns);
     if (!text) return;
     this.stickyNoteSummarizer.feedTurns(sessionId, text, binding.lastTitle);
@@ -5070,6 +5727,7 @@ class ClaudeCodeWebServer {
         try { this._stickyJsonl.delete(top.id); } catch (_) { /* ignore */ }
         if (this._foregroundSessionId === top.id) this._foregroundSessionId = null;
         this.claudeSessions.delete(top.id);
+        this.controlEventBus.append(top.id, 'session_deleted');
         this.activityBroadcastTimestamps.delete(top.id);
         try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
         evictedCount++;
