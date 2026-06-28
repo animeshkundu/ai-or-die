@@ -352,4 +352,167 @@ describe('control/routes /api/control', function () {
     assert.deepEqual(parseCursor(encodeCursor(c)), c);
     assert.equal(parseCursor(undefined), undefined);
   });
+
+  it('FIX C: parseCursor rejects negative / non-integer / non-numeric seq', function () {
+    assert.equal(parseCursor('notvalid'), undefined);
+    assert.equal(parseCursor('epoch:-5'), undefined);
+    assert.equal(parseCursor('epoch:1.5'), undefined);
+    assert.equal(parseCursor('epoch:abc'), undefined);
+    assert.deepEqual(parseCursor('epoch:0'), { epoch: 'epoch', seq: 0 }); // 0 is valid
+  });
+
+  it('FIX C: GET /events with a PRESENT-but-INVALID cursor → 400 INVALID_ARGUMENT; ABSENT cursor → 200 fresh watcher', async function () {
+    const { server, port } = await listen(buildServer(fakeDeps({ eventBus: new ControlEventBus() })));
+    try {
+      for (const bad of ['notvalid', '-5', '1.5', 'epoch:1.5']) {
+        const r = await getJson(port, `/api/control/events?cursor=${encodeURIComponent(bad)}&timeoutMs=0`);
+        assert.equal(r.status, 400, `cursor='${bad}' → 400`);
+        assert.equal(r.body.error.code, 'INVALID_ARGUMENT');
+      }
+      // No cursor at all → a fresh watcher, 200 (non-blocking poll).
+      const fresh = await getJson(port, '/api/control/events?timeoutMs=0');
+      assert.equal(fresh.status, 200);
+      assert.ok(Array.isArray(fresh.body.events));
+    } finally {
+      server.close();
+    }
+  });
+
+  // ---- F15 snapshot + cursor atomicity --------------------------------------
+  it('F15: GET /snapshot returns sessions + cursor; resume long-poll sees ONLY new events, no gap', async function () {
+    const bus = new ControlEventBus();
+    bus.append('s1', 'turn_ended'); // seq 1, pre-snapshot
+    const deps = fakeDeps({
+      eventBus: bus,
+      snapshot: async () => ({
+        sessions: [
+          { sessionId: 's1', lifecycle: 'running', interactionState: 'idle', lastTurnEndedAt: 99, awaiting: null, sessionStateSeq: 1, bound: true },
+          { sessionId: 's2', lifecycle: 'exited', interactionState: 'exited', lastTurnEndedAt: null, awaiting: null, sessionStateSeq: 0, bound: false },
+        ],
+        cursor: bus.headCursor(), // captured atomically (seq 1)
+        capturedAt: 1234,
+      }),
+    });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const snap = await getJson(port, '/api/control/snapshot');
+      assert.equal(snap.status, 200);
+      assert.equal(snap.body.sessions.length, 2);
+      assert.ok(snap.body.cursor, 'snapshot carries an encoded cursor');
+      assert.equal(snap.body.capturedAt, 1234);
+      // A new event fires AFTER the snapshot was taken.
+      bus.append('s1', 'became_busy'); // seq 2
+      // Resume the long-poll from EXACTLY the snapshot cursor.
+      const ev = await getJson(port, `/api/control/events?cursor=${encodeURIComponent(snap.body.cursor)}&timeoutMs=500`);
+      assert.equal(ev.body.events.length, 1, 'only the post-snapshot event');
+      assert.equal(ev.body.events[0].kind, 'became_busy');
+      assert.equal(ev.body.gaps.length, 0, 'valid cursor → no gap, no loss, no duplicate');
+    } finally {
+      server.close();
+    }
+  });
+
+  // ---- F19 capability negotiation -------------------------------------------
+  const FROZEN_CAP_VOCAB = new Set([
+    'readiness_barrier', 'turn_binding', 'permission_mode', 'agent_args',
+    'events_cursor', 'events_retention', 'multiplex_watch', 'session_state_seq',
+  ]);
+
+  it('F19: GET /capabilities emits the frozen { capabilities: string[], controlVersion: string } shape', async function () {
+    // Route the REAL _controlCapabilities() through the HTTP layer so we assert the
+    // actual emitted wire shape, not a hand-written stub.
+    const { ClaudeCodeWebServer } = require('../../src/server');
+    const realCaps = () => ClaudeCodeWebServer.prototype._controlCapabilities.call({ controlEventBus: new ControlEventBus() });
+    const { server, port } = await listen(buildServer(fakeDeps({ capabilities: realCaps })));
+    try {
+      const r = await getJson(port, '/api/control/capabilities');
+      assert.equal(r.status, 200);
+      // capabilities MUST be a flat string[] the client can `new Set(...)` over.
+      assert.ok(Array.isArray(r.body.capabilities), 'capabilities is an array');
+      assert.doesNotThrow(() => new Set(r.body.capabilities), 'new Set(capabilities) does not throw');
+      for (const cap of r.body.capabilities) {
+        assert.equal(typeof cap, 'string');
+        assert.ok(FROZEN_CAP_VOCAB.has(cap), `'${cap}' is in the frozen vocabulary`);
+      }
+      // controlVersion is a STRING.
+      assert.equal(typeof r.body.controlVersion, 'string');
+      // The 6 expected tokens are present.
+      const set = new Set(r.body.capabilities);
+      for (const expected of ['permission_mode', 'agent_args', 'turn_binding', 'events_cursor', 'events_retention', 'session_state_seq']) {
+        assert.ok(set.has(expected), `advertises ${expected}`);
+      }
+    } finally {
+      server.close();
+    }
+  });
+
+  it('F19: an OLD instance that omits a capability surfaces its absence (client fails closed)', async function () {
+    // A pre-F10 instance: a valid frozen-shape array that simply lacks permission_mode.
+    const deps = fakeDeps({ capabilities: () => ({ capabilities: ['turn_binding'], controlVersion: '0' }) });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const r = await getJson(port, '/api/control/capabilities');
+      assert.equal(r.status, 200);
+      assert.ok(Array.isArray(r.body.capabilities));
+      assert.equal(new Set(r.body.capabilities).has('permission_mode'), false); // absent → client must NOT assume support
+      assert.equal(typeof r.body.controlVersion, 'string');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('F19: the /capabilities fallback (no deps.capabilities) is the frozen empty shape', async function () {
+    const deps = fakeDeps();
+    delete deps.capabilities;
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const r = await getJson(port, '/api/control/capabilities');
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body.capabilities, []);
+      assert.equal(r.body.controlVersion, '0');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('F10: a create that triggers INVALID_ARGUMENT returns HTTP 400 with the structured envelope', async function () {
+    // createSession throws exactly as _controlCreateSession does on a bad mode /
+    // conflicting agentArgs: Error with .code + .statusCode, no .type.
+    const deps = fakeDeps({
+      createSession: async () => {
+        const err = new Error("agentArgs may not contain '--dangerously-skip-permissions'; use permissionMode for permission control");
+        err.code = 'INVALID_ARGUMENT';
+        err.statusCode = 400;
+        throw err;
+      },
+    });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const r = await postJson(port, '/api/control/sessions/create', { start: true, agent: 'claude', permissionMode: 'plan', agentArgs: ['--dangerously-skip-permissions'] });
+      assert.equal(r.status, 400);
+      assert.equal(r.body.error.code, 'INVALID_ARGUMENT');
+      assert.equal(typeof r.body.error.message, 'string');
+      assert.ok(r.body.error.message.length > 0);
+    } finally {
+      server.close();
+    }
+  });
+
+  // ---- F21 classifiable rate limit ------------------------------------------
+  it('F21: a throttled request returns a classifiable 429 (RATE_LIMITED + Retry-After)', async function () {
+    const deps = fakeDeps({ rateLimit: { max: 1, windowMs: 60000 } });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      await getJson(port, '/api/control/sessions'); // consumes the single-request budget
+      const r = await fetch(`http://127.0.0.1:${port}/api/control/sessions`);
+      assert.equal(r.status, 429);
+      const body = await r.json();
+      assert.equal(body.error.code, 'RATE_LIMITED');
+      assert.ok(body.error.retryAfterMs > 0);
+      assert.ok(body.error.retryAfterSec >= 1);
+      assert.ok(r.headers.get('retry-after'), 'standard Retry-After header present for backoff');
+    } finally {
+      server.close();
+    }
+  });
 });

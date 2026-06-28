@@ -38,6 +38,28 @@ describe('control/session-status deriveStatus', function () {
     assert.equal(s.lastTurnEndedAt, 123);
   });
 
+  it('F8: bound+settled JSONL but the busy footer shows a running turn → busy (medium)', function () {
+    const s = deriveStatus({
+      session: { active: true, agent: 'claude', hadOutput: true },
+      jsonl: { bound: true, growing: false, endsOnAssistant: true, lastTurnEndedAt: 123 },
+      renderedTail: 'Pondering… (esc to interrupt)', // screen leads the polled transcript
+    });
+    assert.equal(s.interactionState, 'busy');
+    assert.equal(s.confidence, 'medium'); // screen raises busy; JSONL+screen disagree
+    assert.equal(s.canAcceptInput, false);
+  });
+
+  it('F8: bound+settled with NO busy footer stays idle/high (unchanged)', function () {
+    const s = deriveStatus({
+      session: { active: true, agent: 'claude', hadOutput: true },
+      jsonl: { bound: true, growing: false, endsOnAssistant: true },
+      renderedTail: '> ', // composer at rest
+    });
+    assert.equal(s.interactionState, 'idle');
+    assert.equal(s.confidence, 'high'); // JSONL + screen agree
+    assert.equal(s.awaiting.kind, 'next_message');
+  });
+
   it('pending ExitPlanMode → waiting_input plan_approval', function () {
     const s = deriveStatus({
       session: { active: true, agent: 'claude', hadOutput: true },
@@ -107,6 +129,70 @@ describe('control/session-status deriveStatus', function () {
     const s = deriveStatus({ session: { active: true, agent: 'terminal', hadOutput: true } });
     assert.equal(s.interactionState, 'unknown');
     assert.equal(s.confidence, 'low');
+  });
+
+  it('F12: unbound active + recent PTY output → busy, confidence low', function () {
+    const now = 1_000_000;
+    const s = deriveStatus({
+      session: { active: true, agent: 'terminal', hadOutput: true },
+      lastOutputAt: now - 500, // well within the quiet window
+      now,
+      quietWindowMs: 4000,
+    });
+    assert.equal(s.interactionState, 'busy');
+    assert.equal(s.confidence, 'low');
+    assert.equal(s.canAcceptInput, false);
+  });
+
+  it('F12: unbound active + quiet beyond the window → idle, confidence low', function () {
+    const now = 1_000_000;
+    const s = deriveStatus({
+      session: { active: true, agent: 'terminal', hadOutput: true },
+      lastOutputAt: now - 9000, // quiet > window
+      now,
+      quietWindowMs: 4000,
+    });
+    assert.equal(s.interactionState, 'idle');
+    assert.equal(s.confidence, 'low');
+    assert.equal(s.awaiting.kind, 'next_message');
+  });
+
+  it('F12: a busy footer with RECENT output → busy, medium confidence', function () {
+    const now = 1_000_000;
+    const s = deriveStatus({
+      session: { active: true, agent: 'terminal', hadOutput: true },
+      renderedTail: 'Generating… (esc to interrupt)',
+      lastOutputAt: now - 200, // fresh → footer corroborated
+      now,
+    });
+    assert.equal(s.interactionState, 'busy');
+    assert.equal(s.confidence, 'medium');
+  });
+
+  it('F12: a busy footer but output QUIET beyond the window → idle (stale footer)', function () {
+    const now = 1_000_000;
+    const s = deriveStatus({
+      session: { active: true, agent: 'terminal', hadOutput: true },
+      renderedTail: 'Generating… (esc to interrupt)',
+      lastOutputAt: now - 9000, // stale-quiet → footer treated as stale, recency wins
+      now,
+      quietWindowMs: 4000,
+    });
+    assert.equal(s.interactionState, 'idle');
+    assert.equal(s.confidence, 'low');
+    assert.equal(s.awaiting.kind, 'next_message');
+  });
+
+  it('F12: recency never overrides a bound session (JSONL stays authoritative)', function () {
+    const now = 1_000_000;
+    const s = deriveStatus({
+      session: { active: true, agent: 'claude', hadOutput: true },
+      jsonl: { bound: true, growing: false, endsOnAssistant: true },
+      lastOutputAt: now - 100, // recent, but bound → ignored
+      now,
+    });
+    assert.equal(s.interactionState, 'idle');
+    assert.equal(s.confidence, 'high');
   });
 
   it('awaitingKindForPendingTool mapping', function () {
@@ -208,5 +294,29 @@ describe('control/session-status awaitingFromScreen (screen-based fallback)', fu
     const live = [' output', ' output', ' output', ' output', ' Working…', ' esc to interrupt'].join('\n');
     const b = deriveStatus({ session: { active: true, agent: 'codex', hadOutput: true }, renderedTail: live });
     assert.equal(b.interactionState, 'busy');
+  });
+
+  describe('F7 folder-trust modal classification', function () {
+    const numbered = '\n 1. Yes, proceed\n 2. No, exit';
+    it('classifies "Do you trust the files in this folder?" + numbered list as trust_prompt', function () {
+      const a = awaitingFromScreen('Do you trust the files in this folder?' + numbered);
+      assert.equal(a.kind, 'trust_prompt');
+    });
+    it('classifies the "Is this a project you trust?" variant (previously missed)', function () {
+      const a = awaitingFromScreen('Is this a project you trust?\n ❯ 1. Yes\n 2. No');
+      assert.equal(a.kind, 'trust_prompt');
+    });
+    it('trust wording WITHOUT a numbered list → null (precision guard)', function () {
+      assert.equal(awaitingFromScreen('I do not trust the files in this folder, just prose here.'), null);
+    });
+    it('deriveStatus surfaces awaiting.kind=trust_prompt for a running session showing the modal', function () {
+      const s = deriveStatus({
+        session: { active: true, agent: 'claude', hadOutput: true },
+        renderedTail: 'Is this a project you trust?\n 1. Yes, proceed\n 2. No, exit',
+      });
+      assert.equal(s.interactionState, 'waiting_input');
+      assert.equal(s.awaiting.kind, 'trust_prompt');
+      assert.equal(s.canAcceptInput, true);
+    });
   });
 });

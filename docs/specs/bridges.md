@@ -100,9 +100,18 @@ Fallback: `'claude'`
 
 ### CLI Arguments
 
+claude is always launched through the github-router prefix
+(`npx -y github-router@latest claude --browse`); `buildArgs` appends the flags
+below **after** that prefix.
+
 | Flag | Condition |
 |------|-----------|
-| `--dangerously-skip-permissions` | When `options.dangerouslySkipPermissions` is `true` |
+| `--permission-mode <mode>` | When `options.permissionMode` is one of `plan` / `acceptEdits` / `default` / `bypassPermissions` (F10). This is the canonical translation layer. The mode supersedes the legacy dangerous flag; github-router drops `--dangerously-skip-permissions` for non-bypass modes. An unknown mode throws `INVALID_ARGUMENT`. |
+| `<...options.agentArgs>` | Caller passthrough flags, appended last. If `agentArgs` carries `--permission-mode` or `--dangerously-skip-permissions`, `buildArgs` throws `INVALID_ARGUMENT` (no duplicate/conflicting flags). |
+| `--dangerously-skip-permissions` | When `options.dangerouslySkipPermissions` is `true` AND no `permissionMode` is set (back-compat) |
+
+Runtime permission-mode cycling is driven by **Shift+Tab** (CSI Z / `\x1b[Z`),
+exposed through the control-plane named-key map `_controlKeyBytes` (F3).
 
 ### Trust Prompt Auto-Accept
 

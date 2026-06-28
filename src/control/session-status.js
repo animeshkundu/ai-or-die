@@ -28,6 +28,12 @@
 // ellipsis. Override with AIORDIE_BUSY_REGEX.
 const DEFAULT_BUSY_REGEX = /esc (to )?interrupt|Working|Thinking|Compacting|Generating|\b\w*ing\s*(…|\.\.\.)/i;
 
+// F12: coarse busy/idle for UNBOUND active sessions is derived from PTY-output
+// recency. This is a LOW-confidence courtesy, not a turn oracle, so we require a
+// LARGE quiet window before declaring idle (accept the responsiveness hit) — a
+// brief inter-token gap must not flap a streaming turn to idle (review caveat).
+const DEFAULT_UNBOUND_QUIET_MS = 4000;
+
 function resolveBusyRegex(envValue) {
   if (!envValue || !String(envValue).trim()) return DEFAULT_BUSY_REGEX;
   try {
@@ -62,6 +68,8 @@ function awaitingKindForPendingTool(toolName) {
  * @param {string} [input.renderedTail]   last few rendered terminal lines (plain text)
  * @param {?{code:?number, signal:?string}} [input.exit]  present once the PTY has exited
  * @param {number} [input.now]
+ * @param {number} [input.lastOutputAt]  ms epoch of the last PTY output chunk (F12, unbound recency)
+ * @param {number} [input.quietWindowMs] busy↔idle recency window for unbound sessions (F12)
  * @param {RegExp} [input.busyRegex]
  * @returns {object} status
  */
@@ -71,6 +79,9 @@ function deriveStatus(input) {
   const renderedTail = (input && input.renderedTail) || '';
   const exit = (input && input.exit) || null;
   const busyRegex = (input && input.busyRegex) || resolveBusyRegex(process.env.AIORDIE_BUSY_REGEX);
+  const now = (input && typeof input.now === 'number') ? input.now : Date.now();
+  const lastOutputAt = (input && typeof input.lastOutputAt === 'number') ? input.lastOutputAt : undefined;
+  const quietWindowMs = (input && typeof input.quietWindowMs === 'number') ? input.quietWindowMs : DEFAULT_UNBOUND_QUIET_MS;
 
   const lastActivity = toMs(session.lastActivity);
   const lastTurnEndedAt = jsonl && typeof jsonl.lastTurnEndedAt === 'number' ? jsonl.lastTurnEndedAt : undefined;
@@ -136,28 +147,64 @@ function deriveStatus(input) {
     };
   }
 
-  // 2) JSONL-bound (claude): the transcript is the source of truth.
+  // 2) JSONL-bound (claude): the transcript is the source of truth for BUSY, but
+  //    the polled transcript LAGS the rendered screen. Between a just-submitted
+  //    message and the poller detecting the new user turn, the last transcript
+  //    line is still the prior settled assistant turn (endsOnAssistant:true,
+  //    growing:false) → a spurious idle/high while claude is already mid-turn.
   if (jsonl && jsonl.bound) {
     if (jsonl.growing) {
-      return base('busy', false);
+      return base('busy', false); // authoritative busy from JSONL turn state (high)
     }
-    if (jsonl.endsOnAssistant) {
-      return withAwaiting(base('idle', true), 'next_message');
+    // F8: the rendered footer LEADS the polled transcript, so cross-check it
+    // BEFORE returning idle. If it shows a running turn ("esc to interrupt" /
+    // spinner gerund) while the JSONL looks settled, the screen wins and we
+    // report busy — but at MEDIUM confidence, because the footer is a
+    // low-confidence annotation (wording drifts across claude versions; a small
+    // or alternate-screen PTY can hide it; a stale footer can linger). It may
+    // only RAISE busy; it is NEVER an authoritative idle gate and must never be
+    // the sole signal that blocks a send (deadlock risk). The
+    // authoritative busy signal remains the JSONL turn state.
+    if (footerBusy(renderedTail, busyRegex)) {
+      return { lifecycle, interactionState: 'busy', canAcceptInput: false, confidence: 'medium', lastTurnEndedAt };
     }
-    // Bound but the last turn isn't a settled assistant reply and nothing is
-    // growing: most likely awaiting the user's first/next message.
+    // JSONL settled AND the screen agrees (or no footer) → high-confidence idle.
+    // (endsOnAssistant, or bound-but-unsettled awaiting the first/next message.)
     return withAwaiting(base('idle', true), 'next_message');
   }
 
-  // 3) Fallback: busy-footer regex over the rendered terminal tail. The footer
-  //    (spinner / "esc to interrupt") is always at the very bottom, so match
-  //    only the last few rows — renderedTail may be a wide window (so the
-  //    screen-await check above can see a tall modal header), and matching the
-  //    busy regex across all of it risks a false-busy from stale scrollback.
+  // 3) Unbound fallback (no JSONL binding). Combine two coarse signals:
+  //    - the busy FOOTER over the rendered tail ("esc to interrupt" / spinner) is a
+  //      specific busy annotation (MEDIUM confidence when a renderedTail exists);
+  //    - PTY OUTPUT RECENCY (F12) is a LOW-confidence freshness signal.
+  //    Freshness ARBITRATES staleness: if output has been QUIET beyond the window a
+  //    lingering footer is treated as STALE and we report idle, so the coarse
+  //    became_idle edge still fires for await_turn (without this, a stale footer
+  //    could pin the state busy forever and also swallow the next became_busy).
+  //    A footer only RAISES busy while output is not stale-quiet. Neither is a turn
+  //    oracle (review caveat): the supported real-turn path is
+  //    agent:"claude" (bound), surfaced otherwise as NO_TURN_BINDING. None of these
+  //    gate sending — _controlInputBridge only checks session.active — so a stale
+  //    footer can never deadlock a send.
+  const recent = typeof lastOutputAt === 'number' ? (now - lastOutputAt) < quietWindowMs : null;
+  const footer = footerBusy(renderedTail, busyRegex);
+  if (footer && recent !== false) {
+    // Footer says busy and output is not stale-quiet (fresh, or recency unknown).
+    return base('busy', false); // renderedTail present → confidence var = medium
+  }
+  if (recent === true) {
+    // No (or stale) footer but output is genuinely recent → coarse busy (low).
+    return { lifecycle, interactionState: 'busy', canAcceptInput: false, confidence: 'low', lastTurnEndedAt };
+  }
+  if (recent === false) {
+    // Quiet beyond the window → coarse idle (low); any footer is treated as stale.
+    const status = { lifecycle, interactionState: 'idle', canAcceptInput: true, confidence: 'low', lastTurnEndedAt };
+    status.awaiting = { kind: 'next_message' };
+    return status;
+  }
+  // No recency signal at all (recent === null) and the footer didn't match.
   if (renderedTail) {
-    const footer = renderedTail.split('\n').slice(-6).join('\n');
-    if (busyRegex.test(footer)) return base('busy', false);
-    return withAwaiting(base('idle', true), 'next_message');
+    return withAwaiting(base('idle', true), 'next_message'); // medium idle
   }
 
   // 4) No usable signal yet.
@@ -176,6 +223,18 @@ function isCrashExit(exit) {
   if (!exit) return false;
   if (exit.signal) return exit.signal !== 'SIGTERM' && exit.signal !== 'SIGINT';
   return typeof exit.code === 'number' && exit.code !== 0;
+}
+
+// The busy footer (spinner / "esc to interrupt") is always at the very bottom of
+// the screen, so match only the last few rows — renderedTail may be a wide window
+// (so the screen-await check can see a tall modal header), and matching the busy
+// regex across all of it risks a false-busy from stale scrollback.
+function footerTail(renderedTail) {
+  return String(renderedTail || '').split('\n').slice(-6).join('\n');
+}
+function footerBusy(renderedTail, busyRegex) {
+  if (!renderedTail) return false;
+  return busyRegex.test(footerTail(renderedTail));
 }
 
 function trimAwaiting(awaiting) {
@@ -210,6 +269,18 @@ function toMs(v) {
 //     numbered options), not independent global matches;
 //   - tolerate intra-phrase line wrapping (\s+) so a wrapped header still matches.
 const SCREEN_AWAIT_ROWS = 12;
+
+// Single source of truth for the folder-trust modal wording (F7). Claude's exact
+// wording is undocumented and shifts between versions, so we match the observed
+// variants empirically. Used by awaitingFromScreen (gated on a numbered list) AND
+// by the ANSI-buffer auto-accept paths in claude-bridge.js / server.js — exporting
+// one constant keeps those sites from drifting apart (they were duplicated and
+// out of sync, missing the "Is this a project you trust?" variant).
+//   - "Do you trust the files in this folder?"  → `do you trust the files`
+//   - "Is this a project you trust?"            → `is this a project you trust`
+//   - "1. Yes, I trust this folder"             → `trust this folder`
+const TRUST_PROMPT_REGEX = /do you trust the files|trust this folder|is this a project you trust/i;
+
 function awaitingFromScreen(renderedTail) {
   const full = String(renderedTail || '');
   if (!full) return null;
@@ -226,11 +297,18 @@ function awaitingFromScreen(renderedTail) {
   if (richPlan || exitPlan) {
     return { kind: 'plan_approval', prompt: 'Claude is ready to leave plan mode and execute.' };
   }
+  // Folder-trust modal (F7). High precision: the numbered-list guard above already
+  // ensures a real "1. Yes / 2. No" choice list, so stray prose mentioning "trust"
+  // can't trip it. accept = the EXPLICIT "1" choice (see _controlMapResponseKeys),
+  // never a bare Enter that could land on a wrong default.
+  if (TRUST_PROMPT_REGEX.test(t)) {
+    return { kind: 'trust_prompt', prompt: 'Claude is asking whether to trust this folder before starting.' };
+  }
   if (/do\s+you\s+want\s+to\s+(proceed|allow|run|make|create|edit|continue)/i.test(t)) {
     return { kind: 'tool_approval' };
   }
   return null;
 }
 
-module.exports = { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen, resolveBusyRegex, DEFAULT_BUSY_REGEX };
+module.exports = { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen, resolveBusyRegex, DEFAULT_BUSY_REGEX, DEFAULT_UNBOUND_QUIET_MS, TRUST_PROMPT_REGEX };
 

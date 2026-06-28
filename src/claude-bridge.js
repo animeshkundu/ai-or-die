@@ -1,4 +1,16 @@
 const BaseBridge = require('./base-bridge');
+const { TRUST_PROMPT_REGEX } = require('./control/session-status');
+
+// claude's --permission-mode allowlist (F10). The fleet/control plane forwards one
+// of these; an unknown value is rejected up front rather than passed to claude (a
+// flag silently ignored by a skewed claude is a dishonest "mode set").
+const VALID_PERMISSION_MODES = ['plan', 'acceptEdits', 'default', 'bypassPermissions'];
+
+function invalidArgument(message) {
+  const err = new Error(message);
+  err.code = 'INVALID_ARGUMENT';
+  return err;
+}
 
 // Claude is ALWAYS launched through github-router (never the raw `claude`
 // binary): `npx -y github-router@latest claude --browse [claude flags]`. This
@@ -53,22 +65,79 @@ class ClaudeBridge extends BaseBridge {
     this._trustPromptHandled = new Map();
   }
 
+  /**
+   * F10 — the ONE canonical translation layer from a high-level launch intent
+   * (permissionMode + caller agentArgs) to claude's argv, appended AFTER the
+   * github-router launcher prefix (`npx -y github-router@latest claude --browse`).
+   *
+   * claude is launched through github-router, whose `claude` subcommand emits
+   * `--dangerously-skip-permissions` by default and DROPS it when a non-bypass
+   * `--permission-mode` is present. So here we only need to forward the mode flag;
+   * github-router reconciles the dangerous flag on its side.
+   *
+   * Conflict policy: `agentArgs` may NOT itself carry
+   * `--permission-mode` or `--dangerously-skip-permissions` — that would emit
+   * duplicate/conflicting flags. We throw INVALID_ARGUMENT so the create fails
+   * cleanly instead of launching an ambiguous claude. An unknown `permissionMode`
+   * is likewise rejected.
+   */
+  buildArgs(options = {}) {
+    const prefix = this._prefixArgs || [];
+    const out = [...prefix];
+    const { permissionMode, agentArgs, dangerouslySkipPermissions } = options;
+
+    if (agentArgs != null && !Array.isArray(agentArgs)) {
+      throw invalidArgument('agentArgs must be an array of strings');
+    }
+    const extra = Array.isArray(agentArgs) ? agentArgs.map((a) => String(a)) : [];
+    for (const a of extra) {
+      if (/^--permission-mode(=|$)/.test(a) || a === '--dangerously-skip-permissions') {
+        throw invalidArgument(
+          `agentArgs may not contain '${a}'; use permissionMode for permission control`
+        );
+      }
+    }
+
+    if (permissionMode != null && permissionMode !== '') {
+      const mode = String(permissionMode);
+      if (!VALID_PERMISSION_MODES.includes(mode)) {
+        throw invalidArgument(
+          `Unknown permissionMode '${mode}' (expected one of: ${VALID_PERMISSION_MODES.join(', ')})`
+        );
+      }
+      // permissionMode is the source of truth: emit the canonical flag and let
+      // github-router drop --dangerously-skip-permissions for non-bypass modes.
+      out.push('--permission-mode', mode);
+    } else if (dangerouslySkipPermissions && this.dangerousFlag) {
+      // Back-compat: no explicit mode → honor the legacy skip-permissions toggle.
+      out.push(this.dangerousFlag);
+    }
+
+    out.push(...extra);
+    return out;
+  }
+
   processOutput(sessionId, ptyProcess, dataBuffer) {
     if (this._trustPromptHandled.get(sessionId)) return;
     // Strip ANSI first: claude's Ink TUI interleaves escape codes between words,
-    // so a clean-string `includes` misses the folder-trust modal (and the exact
-    // wording shifts between claude versions). Match a stable substring of the
-    // "Do you trust the files in this folder?" / "1. Yes, I trust this folder"
-    // modal on the de-ANSI'd buffer, then accept the default (Enter = Yes). The
+    // so a clean-string match misses the folder-trust modal (and the exact wording
+    // shifts between claude versions). Match the shared TRUST_PROMPT_REGEX on the
+    // de-ANSI'd buffer — but ONLY act when the modal's numbered "1. / 2." choice
+    // list is ALSO present. That structural guard (mirroring awaitingFromScreen)
+    // prevents a false positive from claude merely PRINTING a trust phrase in prose
+    // / a file / a commit message, which would otherwise inject a spurious keystroke
+    // into the live PTY. Then send the EXPLICIT "1" choice + Enter (not a bare Enter,
+    // which could land on a wrong default) — matching _controlMapResponseKeys. The
     // per-session guard makes this a one-shot. This is what lets HEADLESS /
     // fleet-spawned claude sessions (no human to click) get past trust.
     const plain = String(dataBuffer || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
-    if (/Do you trust the files in this folder|trust this folder/i.test(plain)) {
+    const numbered = /\b1\.\s/.test(plain) && /\b2\.\s/.test(plain);
+    if (numbered && TRUST_PROMPT_REGEX.test(plain)) {
       this._trustPromptHandled.set(sessionId, true);
       console.log(`Auto-accepting trust prompt for session ${sessionId}`);
       setTimeout(() => {
-        try { ptyProcess.write('\r'); } catch (_) { /* pty may have exited */ }
-        console.log(`Sent Enter to accept trust prompt for session ${sessionId}`);
+        try { ptyProcess.write('1\r'); } catch (_) { /* pty may have exited */ }
+        console.log(`Sent "1" + Enter to accept trust prompt for session ${sessionId}`);
       }, 500);
     }
   }
@@ -81,3 +150,4 @@ class ClaudeBridge extends BaseBridge {
 
 module.exports = ClaudeBridge;
 module.exports.resolveClaudeLauncher = resolveClaudeLauncher;
+module.exports.VALID_PERMISSION_MODES = VALID_PERMISSION_MODES;

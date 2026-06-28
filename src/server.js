@@ -13,6 +13,7 @@ const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const ClaudeBridge = require('./claude-bridge');
+const { VALID_PERMISSION_MODES } = require('./claude-bridge');
 const CodexBridge = require('./codex-bridge');
 const CopilotBridge = require('./copilot-bridge');
 const GeminiBridge = require('./gemini-bridge');
@@ -33,11 +34,11 @@ const CircularBuffer = require('./utils/circular-buffer');
 const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
 const KeepaliveManager = require('./keepalive-manager');
-const { ControlEventBus } = require('./control/event-bus');
+const { ControlEventBus, EVENT_KINDS: CONTROL_EVENT_KINDS } = require('./control/event-bus');
 const TranscriptBuffer = require('./sticky-note-transcript');
 const { createControlRouter } = require('./control/routes');
 const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner } = require('./artifact-review');
-const { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen } = require('./control/session-status');
+const { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen, TRUST_PROMPT_REGEX, DEFAULT_UNBOUND_QUIET_MS } = require('./control/session-status');
 const { detectAwaiting } = require('./control/jsonl-awaiting');
 
 // HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
@@ -53,6 +54,13 @@ const { detectAwaiting } = require('./control/jsonl-awaiting');
 //
 // See docs/audits/hot-03-ws-frame-size.md.
 const MAX_WS_MESSAGE_BYTES = 1 * 1024 * 1024;
+
+// Fleet control-plane contract version (F19). Bumped when the cross-repo wire
+// shape (status fields, event kinds, snapshot/capabilities/permission-mode
+// contract) changes in a way the github-router client must negotiate. The client
+// reads GET /api/control/capabilities once per instance and fails closed when a
+// required capability is absent.
+const CONTROL_CONTRACT_VERSION = 1;
 
 // Inbound binary voice frames (client mic -> server STT) bypass the JSON guard
 // above. Framing + validation (incl. the Buffer[] fragmented-frame normalize)
@@ -4023,8 +4031,106 @@ class ClaudeCodeWebServer {
       sendMessage: async (opts) => this._controlSendMessage(opts),
       sendKeys: async (opts) => this._controlSendKeys(opts),
       respond: async (opts) => this._controlRespond(opts),
+      snapshot: async () => this._controlSnapshot(),
+      capabilities: () => this._controlCapabilities(),
     };
   }
+
+  /**
+   * F15: an ATOMIC batch snapshot for O(1) reconnect after a cursor gap. Returns
+   * every session's full derived status PLUS the event cursor, such that the
+   * controller can resume the long-poll from exactly that cursor with zero LOST
+   * events. Atomicity rule: capture the cursor FIRST, then build the statuses. Any
+   * event that fires while the statuses are being read has seq > cursor and is
+   * therefore redelivered on resume — so the worst case is a harmless duplicate
+   * (an edge already reflected in the snapshot AND replayed), never a loss.
+   *
+   * Reconnect protocol (documented in ADR-0032): on a `gap`/`overflow`/`restart`
+   * marker from /events, call GET /snapshot, reconcile each session from the
+   * returned statuses, then resume the long-poll from `snapshot.cursor`.
+   */
+  async _controlSnapshot() {
+    const cursor = this.controlEventBus ? this.controlEventBus.headCursor() : { epoch: null, seq: 0 };
+    const ids = Array.from(this.claudeSessions.keys());
+    const sessions = await Promise.all(ids.map(async (id) => {
+      const session = this.claudeSessions.get(id);
+      if (!session) return null;
+      const status = await this._controlDerivedStatus(id);
+      return {
+        sessionId: id,
+        name: session.name,
+        agent: session.agent || null,
+        workingDir: session.workingDir,
+        lifecycle: status ? status.lifecycle : 'unknown',
+        interactionState: status ? status.interactionState : 'unknown',
+        canAcceptInput: status ? !!status.canAcceptInput : false,
+        confidence: status ? status.confidence : 'low',
+        lastTurnEndedAt: status && typeof status.lastTurnEndedAt === 'number' ? status.lastTurnEndedAt : null,
+        awaiting: (status && status.awaiting) || null,
+        sessionStateSeq: this._controlSessionSeqFor(id),
+        bound: !!(this._stickyJsonl && this._stickyJsonl.has(id)),
+        lastActivity: session.lastActivity || null,
+      };
+    }));
+    return { sessions: sessions.filter(Boolean), cursor, capturedAt: Date.now() };
+  }
+
+  /**
+   * F19: the cross-repo capability contract. The github-router fleet client reads
+   * this ONCE per instance and fails closed (or degrades explicitly) when a needed
+   * capability is absent — so a newer client talking to an older ai-or-die never
+   * silently believes a permission mode was set or a confirmation is available.
+   */
+  _controlCapabilities() {
+    return {
+      capabilities: [
+        'permission_mode',     // F10 create_session(permissionMode), validated + conflict-rejecting
+        'agent_args',          // F10 create_session(agentArgs[])
+        'turn_binding',        // ADR-0026 JSONL turn detection (bound claude)
+        'events_cursor',       // F22 cursor-based /events long-poll (epoch:seq, strictly-after)
+        'events_retention',    // F15 per-session event ring + overflow gap
+        'session_state_seq',   // monotonic per-session state seq surfaced in status/message responses
+      ],
+      controlVersion: String(CONTROL_CONTRACT_VERSION),
+      // Additive extras (the fleet client ignores unknown keys; kept for human/debug + future clients):
+      permissionModes: VALID_PERMISSION_MODES,
+      events: CONTROL_EVENT_KINDS,
+      limits: {
+        eventsPerSession: this.controlEventBus ? this.controlEventBus.maxEventsPerSession : null,
+        maxReadLines: 2000,
+        eventsLongPollMaxMs: 60000,
+      },
+    };
+  }
+
+  /**
+   * F16: a per-session STEERING MUTEX — a logical-command queue distinct from the
+   * byte-level writeQueue. Two DISTINCT concurrent steering ops (e.g. two
+   * send_message, or a send_message + a respond) to the SAME session would each
+   * enqueue their bytes separately on the writeQueue and could interleave at the
+   * message boundary (text1, text2, \r, \r). This queue serialises the whole op so
+   * one completes before the next begins. (The retry-double-submit case is already
+   * covered by idempotency + writeQueue; this closes the concurrent-distinct-ops
+   * interleave.) Idempotency stays OUTSIDE this lock, so a same-key retry
+   * short-circuits to the cached result without ever entering the critical section.
+   */
+  // NON-REENTRANT: fn() must not call _controlSteeringLock for the same session (would deadlock). All current callers (sendMessage/sendKeys/respond) do a single bridge op - verified no nested acquire.
+  _controlSteeringLock(sessionId, fn) {
+    if (!this._steeringQueues) this._steeringQueues = new Map();
+    const prev = this._steeringQueues.get(sessionId) || Promise.resolve();
+    // Run after the previous op settles (success OR failure — a failed op must not
+    // wedge the queue). The returned promise carries the real result/rejection.
+    const run = prev.then(() => fn(), () => fn());
+    // The stored tail is failure-guarded so the chain never rejection-propagates.
+    const tail = run.then(() => {}, () => {});
+    this._steeringQueues.set(sessionId, tail);
+    // Drop the queue entry once drained, so it doesn't leak per dead session.
+    tail.then(() => {
+      if (this._steeringQueues.get(sessionId) === tail) this._steeringQueues.delete(sessionId);
+    });
+    return run;
+  }
+
 
   async _controlStatusSignal(id) {
     const session = this.claudeSessions.get(id);
@@ -4074,6 +4180,11 @@ class ClaudeCodeWebServer {
       jsonl: signal.jsonl,
       renderedTail: signal.renderedTail,
       exit: signal.exit,
+      // F12: coarse PTY-output recency feeds the UNBOUND busy/idle fallback. Only
+      // consulted when there is no JSONL binding; bound claude returns earlier on
+      // the authoritative transcript turn state.
+      lastOutputAt: typeof session._ctlLastOutputAt === 'number' ? session._ctlLastOutputAt : undefined,
+      now: Date.now(),
     });
   }
 
@@ -4101,12 +4212,19 @@ class ClaudeCodeWebServer {
     const status = await this._controlDerivedStatus(sessionId);
     if (!status || !status.interactionState) return status;
     const binding = this._stickyJsonl && this._stickyJsonl.get(sessionId);
-    const previous = binding ? binding._lastInteractionState : undefined;
+    // F12: bound sessions debounce the edge on their JSONL binding (authoritative
+    // turn state); UNBOUND sessions have no binding, so they debounce on the
+    // session object instead — otherwise every poll would re-emit the same coarse
+    // PTY-recency edge. We only ever emit became_busy / became_idle here; a real
+    // turn_ended is emitted exclusively by the JSONL turn detector (bound only),
+    // never faked from the coarse unbound signal (review caveat).
+    const stateHolder = binding || this.claudeSessions.get(sessionId);
+    const previous = stateHolder ? stateHolder._lastInteractionState : undefined;
     if (previous === status.interactionState) return status;
-    if (binding) binding._lastInteractionState = status.interactionState;
+    if (stateHolder) stateHolder._lastInteractionState = status.interactionState;
 
     const kind = this._controlEventKindForInteractionState(status.interactionState);
-    if (kind) this._controlAppendStateEvent(sessionId, kind, { interactionState: status.interactionState });
+    if (kind) this._controlAppendStateEvent(sessionId, kind, { interactionState: status.interactionState, confidence: status.confidence });
     return status;
   }
 
@@ -4115,6 +4233,78 @@ class ClaudeCodeWebServer {
     if (interactionState === 'idle') return 'became_idle';
     if (interactionState === 'waiting_input') return 'waiting_input';
     return null;
+  }
+
+  // F12: record PTY-output recency and drive the COARSE busy/idle edges for
+  // UNBOUND active sessions (claude launched inside a `terminal` PTY, or a
+  // bound claude whose JSONL sidecar hasn't attached yet). Bound claude returns
+  // early — its authoritative turn_ended/became_busy come from the JSONL turn
+  // detector, so this coarse path is a no-op there and never competes.
+  //
+  // Two edges:
+  //   - rising  → emit became_busy promptly on the first chunk after quiet
+  //               (debounced inside _controlEmitInteractionTransition);
+  //   - falling → a LARGE quiet debounce timer; when no further output arrives
+  //               within the window, re-derive (now quiet → idle) and emit
+  //               became_idle. Reset on every chunk so a streaming turn never
+  //               flaps to idle (review caveat).
+  // We NEVER emit turn_ended from here — callers key on became_idle for coarse
+  // completion; the honest fix for unbound is NO_TURN_BINDING, not a fake turn.
+  _controlRecordPtyOutput(sessionId) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return;
+    session._ctlLastOutputAt = Date.now();
+    // Bound sessions get authoritative turn detection — skip the coarse path.
+    // (Presence in _stickyJsonl == bound: _controlStatusSignal hardcodes bound:true
+    // for any entry, and _controlIsTurnAgent keys 'bound' on the same has() check.)
+    if (this._stickyJsonl && this._stickyJsonl.has(sessionId)) return;
+    // Rising edge: emit became_busy only when NOT already busy. On a fast-streaming
+    // PTY (thousands of chunks/sec) this avoids flooding the microtask queue with a
+    // _controlDerivedStatus (snapshot + regex) per chunk — event-loop starvation.
+    // While already busy, a chunk just refreshes recency above and re-arms the idle
+    // timer below; that timer drives the eventual flip back to idle.
+    if (session._lastInteractionState !== 'busy' && typeof this._controlEmitInteractionTransition === 'function') {
+      Promise.resolve(this._controlEmitInteractionTransition(sessionId)).catch(() => {});
+    }
+    // Falling edge: re-arm the quiet-debounce timer.
+    if (session._ctlIdleTimer) clearTimeout(session._ctlIdleTimer);
+    const debounceMs = DEFAULT_UNBOUND_QUIET_MS + 500; // > the recency window so the re-derive reads quiet
+    session._ctlIdleTimer = setTimeout(() => {
+      session._ctlIdleTimer = null;
+      if (typeof this._controlEmitInteractionTransition === 'function') {
+        Promise.resolve(this._controlEmitInteractionTransition(sessionId)).catch(() => {});
+      }
+    }, debounceMs);
+    if (session._ctlIdleTimer && session._ctlIdleTimer.unref) session._ctlIdleTimer.unref();
+  }
+
+  /**
+   * F13: did a NEW activity edge (became_busy / waiting_input) appear AFTER the
+   * pre-send cursor? Positive evidence that THIS send started something, as
+   * opposed to a lingering prior-turn busy whose edge predates the cursor. Used to
+   * gate the unbound dropped-Enter reaper so a retry is only sent when no new edge
+   * is observed. Falls back to a status-poll heuristic when no event bus / cursor
+   * is available (keeps the legacy behaviour for callers without a bus).
+   */
+  async _controlAwaitActivityEdge(sessionId, preCursor, timeoutMs) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    if (this.controlEventBus && preCursor) {
+      const filter = { sessionIds: [sessionId], kinds: ['became_busy', 'waiting_input'] };
+      for (;;) {
+        const remaining = Math.max(0, deadline - Date.now());
+        const out = await this.controlEventBus.waitFor(preCursor, Math.min(remaining, 600), filter);
+        if (out && out.events && out.events.length) return true;
+        if (Date.now() >= deadline) return false;
+      }
+    }
+    // No bus / cursor: poll derived status for a visible busy/waiting edge. Clamp
+    // each sleep to the remaining budget so a short deadline isn't overshot.
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, Math.min(600, Math.max(0, deadline - Date.now()))));
+      const s = await this._controlDerivedStatus(sessionId);
+      if (s && (s.interactionState === 'busy' || s.interactionState === 'waiting_input')) return true;
+    }
+    return false;
   }
 
   async _controlReadTail(id, lines) {
@@ -4154,6 +4344,27 @@ class ClaudeCodeWebServer {
         validWorkingDir = validation.path;
       } else if (this.selectedWorkingDir) {
         validWorkingDir = this.selectedWorkingDir;
+      }
+
+      // F10: validate permissionMode/agentArgs UP FRONT (before allocating the
+      // session) through the bridge's canonical translation layer, so a bad mode
+      // or a conflicting agentArgs flag fails the create with INVALID_ARGUMENT
+      // rather than spawning an ambiguous agent. claude's ClaudeBridge.buildArgs
+      // validates + rejects; terminal/codex BaseBridge.buildArgs ignores both.
+      if (opts.start) {
+        const agentForValidation = opts.agent || 'claude';
+        const vbridge = this.getBridgeForAgent(agentForValidation);
+        if (vbridge && typeof vbridge.buildArgs === 'function') {
+          try {
+            vbridge.buildArgs({
+              dangerouslySkipPermissions: !!opts.dangerouslySkipPermissions,
+              permissionMode: opts.permissionMode,
+              agentArgs: opts.agentArgs,
+            });
+          } catch (e) {
+            throw this._controlError('INVALID_ARGUMENT', (e && e.message) || 'invalid launch arguments', 400);
+          }
+        }
       }
 
       // opts.start spawns the agent headlessly via _controlStartAgent (below).
@@ -4196,14 +4407,30 @@ class ClaudeCodeWebServer {
           await this._controlStartAgent(sessionId, agent, {
             cols: opts.cols, rows: opts.rows,
             dangerouslySkipPermissions: !!opts.dangerouslySkipPermissions,
+            permissionMode: opts.permissionMode,
+            agentArgs: opts.agentArgs,
           });
         } catch (e) {
           lifecycle = 'exited';
-          return { sessionId, lifecycle, name: session.name, agent: null, startError: e && e.message };
+          return { sessionId, lifecycle, name: session.name, agent: null, ready: false, bound: false, blocker: { kind: 'start_error', message: (e && e.message) || 'start failed' }, startError: e && e.message };
         }
-        lifecycle = session.active ? 'running' : 'starting';
+        // F17: readiness barrier — don't report success the moment the PTY spawns.
+        // Wait (bounded) until the agent is actually driveable (claude: JSONL-bound +
+        // prompt-ready), or surface a concrete blocker (trust modal / binding pending).
+        const readyTimeoutMs = this._controlClampInt(opts.readyTimeoutMs, 12000, 0, 30000);
+        const state = await this._controlAwaitReady(sessionId, readyTimeoutMs);
+        lifecycle = session.active ? (state.ready ? 'running' : 'starting') : 'exited';
+        return {
+          sessionId,
+          lifecycle,
+          name: session.name,
+          agent: session.agent || null,
+          ready: state.ready,
+          bound: state.bound,
+          ...(state.blocker ? { blocker: state.blocker } : {}),
+        };
       }
-      return { sessionId, lifecycle, name: session.name, agent: session.agent || null };
+      return { sessionId, lifecycle, name: session.name, agent: session.agent || null, ready: false, bound: false };
     });
   }
 
@@ -4222,7 +4449,7 @@ class ClaudeCodeWebServer {
       tries++;
       let screen = '';
       try { screen = await s._ctlTranscript.snapshot(40); } catch (_) { /* ignore */ }
-      const onModal = /trust this folder|Do you trust the files/i.test(screen);
+      const onModal = TRUST_PROMPT_REGEX.test(screen);
       if (onModal) {
         sawModal = true;
         try { await bridge0.sendInput(sessionId, '\r'); } catch (_) { /* pty may be gone */ }
@@ -4250,6 +4477,25 @@ class ClaudeCodeWebServer {
     const rows = opts.rows || 30;
 
     const extraEnv = {};
+    // F6: non-interactive env hardening for CONTROL-spawned PTYs only (interactive
+    // WebSocket terminals keep their pager UX). A headless fleet shell has no human
+    // to press 'q', so a paging git command (log/diff/branch → less) would hang the
+    // PTY until someone sends 'q'. Disable every common pager + interactive prompt:
+    //   - GIT_PAGER / PAGER / GH_PAGER / DELTA_PAGER / MANPAGER / AWS_PAGER / SYSTEMD_PAGER
+    //     route paged output straight to stdout (cat / empty = no pager).
+    //   - LESS=FRX makes any residual `less` exit immediately on a short page.
+    //   - GIT_TERMINAL_PROMPT=0 turns a credential prompt into an immediate git
+    //     FAILURE (fail-fast) instead of a silent hang — intended; the driver sees a
+    //     structural error rather than a stuck session.
+    extraEnv.GIT_PAGER = 'cat';
+    extraEnv.PAGER = 'cat';
+    extraEnv.GH_PAGER = 'cat';
+    extraEnv.DELTA_PAGER = 'cat';
+    extraEnv.MANPAGER = 'cat';
+    extraEnv.AWS_PAGER = '';
+    extraEnv.SYSTEMD_PAGER = '';
+    extraEnv.LESS = 'FRX';
+    extraEnv.GIT_TERMINAL_PROMPT = '0';
     try {
       const sidecar = this._prepareClaudeBindSidecar(sessionId, session);
       if (sidecar) extraEnv.AIORDIE_CLAUDE_BIND = sidecar; // deterministic JSONL turn detection (ADR-0026)
@@ -4270,11 +4516,19 @@ class ClaudeCodeWebServer {
         workingDir: session.workingDir,
         cols, rows,
         dangerouslySkipPermissions: !!opts.dangerouslySkipPermissions,
+        // F10: claude permission mode + caller passthrough flags (claude only;
+        // terminal/codex bridges ignore these in BaseBridge.buildArgs).
+        permissionMode: opts.permissionMode,
+        agentArgs: opts.agentArgs,
         onOutput: (data) => {
           const s = this.claudeSessions.get(sessionId);
           if (!s) return;
           s.outputBuffer.push(data);
           try { if (s._ctlTranscript) s._ctlTranscript.write(data); } catch (_) { /* isolate */ }
+          // F12: record PTY-output recency + drive coarse busy/idle edges for
+          // UNBOUND sessions (no-op for bound claude — the JSONL turn detector is
+          // authoritative there).
+          try { this._controlRecordPtyOutput(sessionId); } catch (_) { /* isolate */ }
           this.sessionStore.markDirty();
           try { if (this.stickyNoteSummarizer && this.stickyNoteSummarizer.isEnabled(sessionId)) this.stickyNoteSummarizer.feed(sessionId, data); } catch (_) { /* isolate */ }
         },
@@ -4287,6 +4541,8 @@ class ClaudeCodeWebServer {
             s._lastExit = { code, signal };
             this.sessionStore.markDirty();
             try { if (s._ctlTranscript) { s._ctlTranscript.dispose(); s._ctlTranscript = null; } } catch (_) { /* isolate */ }
+            // F12: stop the coarse idle-debounce timer for unbound sessions.
+            try { if (s._ctlIdleTimer) { clearTimeout(s._ctlIdleTimer); s._ctlIdleTimer = null; } } catch (_) { /* isolate */ }
           }
           try { this.stickyNoteSummarizer && this.stickyNoteSummarizer.flushExit(sessionId); } catch (_) { /* isolate */ }
           if (this.controlEventBus) this.controlEventBus.append(sessionId, 'exited', { code, signal });
@@ -4338,57 +4594,255 @@ class ClaudeCodeWebServer {
     return this._controlWithIdempotency(sessionId, idempotencyKey, async () => {
       const bridge = this._controlInputBridge(sessionId, session);
       const timeoutMs = this._controlClampInt(awaitMs, 120000, 0, 180000);
-      const cursor = this.controlEventBus && typeof this.controlEventBus.headCursor === 'function'
-        ? this.controlEventBus.headCursor()
-        : null;
       const text = message == null ? '' : String(message);
-      if (text.includes('\n')) {
-        await bridge.sendInput(sessionId, `\x1b[200~${text}\x1b[201~`);
-      } else {
-        await bridge.sendInput(sessionId, text);
-      }
-      await bridge.sendInput(sessionId, '\r');
+      // F1/F18: classify the agent's turn capability up front.
+      //   'terminal' — a shell / non-claude agent: NO turn model, so confirmation is
+      //                N/A (return honest delivery, never a false negative).
+      //   'unbound'  — claude expected but its JSONL turn-binding hasn't attached yet
+      //                (cold-boot race): we cannot prove submission/turn, so we run the
+      //                legacy dropped-Enter reaper but never claim a confirmed turn.
+      //   'bound'    — claude with a live JSONL binding: confirm the SPECIFIC message
+      //                submitted (a new matching user transcript entry) + its turn end.
+      const turnClass = this._controlIsTurnAgent(sessionId, session);
+      const binding = this._stickyJsonl && this._stickyJsonl.get(sessionId);
+      // One shared deadline so submission + turn detection together honour awaitMs.
+      const deadline = Date.now() + timeoutMs;
+      const remaining = () => Math.max(0, deadline - Date.now());
 
-      // Cold-boot submit reaper: a slow claude.exe Ink composer can drop the
-      // submit Enter, leaving the message sitting unsent (no turn starts, so the
-      // honest result is confirmed:false). If claude hasn't visibly started a turn
-      // shortly after, re-send Enter ONCE. Safe: an extra Enter on an already-empty
-      // composer (message already submitted) is a no-op in claude. Skipped for
-      // awaitMs=0 (fire-and-forget dispatch must not block). The waitFor below uses
-      // the pre-send cursor, so any turn that starts during this poll is not missed.
-      if (timeoutMs > 0) {
-        let started = false;
-        for (let i = 0; i < 4; i++) {
-          await new Promise((r) => setTimeout(r, 600));
-          const s = await this._controlDerivedStatus(sessionId);
-          if (s && (s.interactionState === 'busy' || s.interactionState === 'waiting_input')) { started = true; break; }
+      // F16: DELIVERY + SUBMISSION run under the per-session steering mutex so two
+      // concurrent DISTINCT steering ops on this session cannot interleave bytes
+      // (text1, text2, \r, \r). preSize/preCursor are captured INSIDE the lock,
+      // immediately before the bytes, so they bracket exactly THIS op's send. The
+      // possibly-long turn-completion await runs AFTER the lock releases, so it
+      // never blocks another command (e.g. a `respond`) on this session.
+      const phase = await this._controlSteeringLock(sessionId, async () => {
+        // Capture the transcript size BEFORE sending so F18 only matches a user
+        // entry produced by THIS message, not a pre-existing one.
+        let preSize = null;
+        if (turnClass === 'bound' && binding && binding.file) {
+          try { const stp = await this._statQuiet(binding.file); preSize = stp ? stp.size : null; } catch (_) { preSize = null; }
         }
-        if (!started) { try { await bridge.sendInput(sessionId, '\r'); } catch (_) { /* pty may have exited */ } }
+        // F13: capture the event-bus cursor BEFORE sending so the unbound reaper
+        // can distinguish a NEW activity edge (caused by THIS send) from a
+        // lingering prior-turn busy.
+        const preCursor = this.controlEventBus ? this.controlEventBus.headCursor() : null;
+
+        if (text.includes('\n')) {
+          await bridge.sendInput(sessionId, `\x1b[200~${text}\x1b[201~`);
+        } else {
+          await bridge.sendInput(sessionId, text);
+        }
+        await bridge.sendInput(sessionId, '\r');
+
+        if (turnClass === 'terminal') return { terminal: true };
+
+        let submission = 'unconfirmed';
+        if (turnClass === 'bound' && timeoutMs > 0) {
+          // F18: prove THIS message reached the composer by matching a new user
+          // entry in the transcript. Supersedes the busy-edge guesswork.
+          let submitted = await this._controlAwaitSubmission(binding, preSize, text, Math.min(remaining(), 4000));
+          if (!submitted && remaining() > 0) {
+            // Cold-boot Ink composer can drop the submit Enter; re-send ONCE (a stray
+            // Enter on an already-submitted composer is a no-op in claude), then re-check.
+            try { await bridge.sendInput(sessionId, '\r'); } catch (_) { /* pty may have exited */ }
+            submitted = await this._controlAwaitSubmission(binding, preSize, text, Math.min(remaining(), 4000));
+          }
+          submission = submitted ? 'submitted' : 'unconfirmed';
+        } else if (timeoutMs > 0) {
+          // Unbound cold-boot reaper (F13). No transcript to match against, so gate
+          // the dropped-Enter re-send on a NEW activity edge AFTER the pre-send
+          // cursor (became_busy / waiting_input — F12 emits became_busy from PTY
+          // recency even for unbound sessions), not on a lingering prior busy. The
+          // writeQueue + _controlWithIdempotency keep the retry duplicate-safe.
+          const started = await this._controlAwaitActivityEdge(sessionId, preCursor, Math.min(remaining(), 2400));
+          if (!started) { try { await bridge.sendInput(sessionId, '\r'); } catch (_) { /* pty may have exited */ } }
+          submission = 'no_turn_binding';
+        }
+        return { terminal: false, submission, preSize };
+      });
+
+      // ---- terminal / non-turn agent: honest delivery, no turn semantics (F1) ----
+      if (phase.terminal) {
+        const status = await this._controlDerivedStatus(sessionId);
+        return {
+          messageId: uuidv4(),
+          delivered: true,
+          confirmed: true,            // delivery-confirmed; a shell has no turn to await
+          confirmation: 'delivered',
+          delivery: { status: 'delivered' },
+          submission: { status: 'not_applicable' },
+          turn: { status: 'not_applicable' },
+          confidence: 'low',
+          interactionState: status ? status.interactionState : 'unknown',
+          sessionStateSeq: this._controlSessionSeqFor(sessionId),
+          duplicated: false,
+        };
       }
 
-      let confirmed = false;
-      if (this.controlEventBus && cursor && timeoutMs > 0 && typeof this.controlEventBus.waitFor === 'function') {
-        const out = await this.controlEventBus.waitFor(cursor, timeoutMs, {
-          sessionIds: [sessionId],
-          kinds: ['turn_ended'],
-        });
-        confirmed = !!(out.events || []).some((e) => e.sessionId === sessionId && e.kind === 'turn_ended');
+      const submission = phase.submission;
+      const preSize = phase.preSize;
+
+      // Turn completion (bound only) — CONTENT-BASED and tied to THIS message, run
+      // OUTSIDE the steering lock so a long turn doesn't block other commands. Watch
+      // the transcript from preSize for an assistant reply that settles AFTER our
+      // user entry (endsOnAssistant). Race-free vs a pre-send event cursor, which
+      // could miscount a lingering PRIOR turn's turn_ended (a prior turn's
+      // settle). A pending tool/permission prompt yields a tool-only assistant
+      // block (no settled text) → turnCompleted stays false → reported as
+      // submitted-but-awaiting, not a false confirmation.
+      let turnCompleted = false;
+      if (turnClass === 'bound' && submission === 'submitted' && timeoutMs > 0) {
+        turnCompleted = await this._controlAwaitTurnComplete(binding, preSize, remaining());
       }
 
       const status = await this._controlDerivedStatus(sessionId);
-      // The github-router fleet MCP tool intentionally maps confirmed=false to
-      // an MCP isError (LOUD failure). ai-or-die itself returns honest delivery
-      // data here and relies on idempotency to ensure retries never re-type.
+      const awaiting = (!turnCompleted && status && status.awaiting) ? status.awaiting : null;
+      const confirmed = turnClass === 'bound' && submission === 'submitted' && turnCompleted;
+      const confirmationTimedOut = turnClass === 'bound' && submission === 'submitted' && !turnCompleted && timeoutMs > 0;
+      // The github-router fleet MCP tool maps confirmed=false to an MCP isError today;
+      // F9 will switch it to delivery-only. ai-or-die returns honest, structured
+      // delivery/submission/turn statuses + idempotency so retries never re-type.
       return {
         messageId: uuidv4(),
         delivered: true,
         confirmed,
-        confidence: this._stickyJsonl && this._stickyJsonl.has(sessionId) ? 'high' : 'medium',
+        confirmation: confirmed ? 'turn_completed' : (submission === 'submitted' ? 'submitted' : (turnClass === 'bound' ? 'unconfirmed' : 'no_turn_binding')),
+        confirmationTimedOut,
+        delivery: { status: 'delivered' },
+        submission: { status: submission },
+        turn: { status: turnCompleted ? 'completed' : (submission === 'submitted' ? 'pending' : 'not_applicable'), ...(awaiting ? { awaiting } : {}) },
+        confidence: turnClass === 'bound' ? 'high' : 'medium',
         interactionState: status ? status.interactionState : 'unknown',
         sessionStateSeq: this._controlSessionSeqFor(sessionId),
         duplicated: false,
       };
     });
+  }
+
+  /**
+   * Classify a session's turn-detection capability (F1/F18):
+   *   'terminal' — non-claude agent (a shell has no turn model).
+   *   'unbound'  — claude whose JSONL turn-binding hasn't attached yet (cold-boot).
+   *   'bound'    — claude with a live JSONL binding (deterministic turn detection).
+   */
+  _controlIsTurnAgent(sessionId, session) {
+    if (!session || session.agent !== 'claude') return 'terminal';
+    return (this._stickyJsonl && this._stickyJsonl.has(sessionId)) ? 'bound' : 'unbound';
+  }
+
+  /** Normalise text for tolerant message↔transcript matching (F18). */
+  _controlNormalizeForMatch(s) {
+    return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 64);
+  }
+
+  /**
+   * Whether a transcript user-entry text corresponds to the sent message (F18).
+   * The transcript text may be clipped/prose-cleaned, so match by prefix
+   * containment in either direction rather than strict equality.
+   */
+  _controlUserEntryMatches(wantNorm, userText) {
+    const got = this._controlNormalizeForMatch(userText);
+    if (!got || !wantNorm) return false;
+    return got.startsWith(wantNorm) || wantNorm.startsWith(got) || got.includes(wantNorm);
+  }
+
+  /**
+   * Poll the transcript for a NEW user entry (after preSize) matching the sent
+   * message — positive proof that the message reached claude's composer (F18).
+   * Returns true on match, false on timeout. An empty message is treated as
+   * submitted (nothing to match).
+   */
+  async _controlAwaitSubmission(binding, preSize, sentText, timeoutMs) {
+    if (!binding || !binding.file || typeof preSize !== 'number') return false;
+    const want = this._controlNormalizeForMatch(sentText);
+    if (!want) return true;
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    for (;;) {
+      try {
+        const { turns } = await StickyNoteJsonl.readNewTurns(binding.file, preSize);
+        for (const t of turns) {
+          if (t && t.role === 'user' && this._controlUserEntryMatches(want, t.text)) return true;
+        }
+      } catch (_) { /* transient read error — retry */ }
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  /**
+   * Poll the transcript (from preSize) for the assistant reply that settles AFTER
+   * the message's user entry — content-based turn completion tied to THIS message
+   * (F18). Race-free vs an event cursor: a lingering prior turn cannot satisfy it
+   * because endsOnAssistant() only returns true once an assistant turn follows the
+   * last user turn (our message). A tool-only assistant block (pending permission)
+   * has no settled text, so it does NOT count as completed. Returns false on timeout.
+   */
+  async _controlAwaitTurnComplete(binding, preSize, timeoutMs) {
+    if (!binding || !binding.file || typeof preSize !== 'number') return false;
+    const endsOnAssistant = require('./sticky-note-jsonl').endsOnAssistant;
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    for (;;) {
+      try {
+        const { turns } = await StickyNoteJsonl.readNewTurns(binding.file, preSize);
+        if (endsOnAssistant(turns)) return true;
+      } catch (_) { /* transient read error — retry */ }
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
+  /**
+   * F17: compute a control session's readiness for driving. Returns
+   * { ready, bound, blocker? }. `bound` means a claude JSONL turn-binding is live
+   * (deterministic turn detection available). `blocker` names a concrete reason a
+   * session isn't ready yet (a startup modal, a pending binding, still starting).
+   */
+  async _controlReadinessState(sessionId) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session) return { ready: false, bound: false, blocker: { kind: 'gone', message: 'session not found' } };
+    if (!session.active) return { ready: false, bound: false, blocker: { kind: 'inactive', message: 'session is not active' } };
+    const isClaude = session.agent === 'claude';
+    const bound = isClaude && !!(this._stickyJsonl && this._stickyJsonl.has(sessionId));
+    // A folder-trust / onboarding modal on the rendered screen is a hard blocker —
+    // the agent is not driveable until it clears.
+    let blocker = null;
+    if (session._ctlTranscript) {
+      let screen = '';
+      try { screen = await session._ctlTranscript.snapshot(40); } catch (_) { screen = ''; }
+      if (TRUST_PROMPT_REGEX.test(screen)) {
+        blocker = { kind: 'trust', message: 'folder-trust prompt is awaiting acceptance' };
+      }
+    }
+    const hadOutput = !!(session.outputBuffer && session.outputBuffer.size && session.outputBuffer.size > 0);
+    if (isClaude) {
+      if (blocker) return { ready: false, bound, blocker };
+      if (!bound) return { ready: false, bound: false, blocker: { kind: 'binding_pending', message: 'claude turn-binding not attached yet' } };
+      if (!hadOutput) return { ready: false, bound: true, blocker: { kind: 'starting', message: 'no output yet' } };
+      return { ready: true, bound: true };
+    }
+    // Non-turn agent (terminal / other): ready once active with output; no binding.
+    if (blocker) return { ready: false, bound: false, blocker };
+    if (!hadOutput) return { ready: false, bound: false, blocker: { kind: 'starting', message: 'no output yet' } };
+    return { ready: true, bound: false };
+  }
+
+  /**
+   * F17: bounded wait until a freshly-started control session is ready (or a hard
+   * blocker like a trust modal appears, or the deadline passes). Lets the one-shot
+   * create_session(start:true) return a truthful ready/bound/blocker instead of
+   * succeeding the moment the PTY spawns.
+   */
+  async _controlAwaitReady(sessionId, timeoutMs) {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    let state = await this._controlReadinessState(sessionId);
+    while (!state.ready && Date.now() < deadline) {
+      // A trust/onboarding modal is terminal for this wait — surface it immediately
+      // so the driver can respond() rather than block the whole readiness window.
+      if (state.blocker && (state.blocker.kind === 'trust' || state.blocker.kind === 'inactive' || state.blocker.kind === 'gone')) break;
+      await new Promise((r) => setTimeout(r, 250));
+      state = await this._controlReadinessState(sessionId);
+    }
+    return state;
   }
 
   async _controlSendKeys(opts = {}) {
@@ -4397,10 +4851,12 @@ class ClaudeCodeWebServer {
     if (!session) throw this._controlError('SESSION_NOT_FOUND', 'Unknown session', 404);
 
     return this._controlWithIdempotency(sessionId, idempotencyKey, async () => {
-      const bridge = this._controlInputBridge(sessionId, session);
-      const data = this._controlKeyBytes(keys, raw === true);
-      await bridge.sendInput(sessionId, data);
-      return { keysId: uuidv4(), delivered: true, duplicated: false };
+      return this._controlSteeringLock(sessionId, async () => {
+        const bridge = this._controlInputBridge(sessionId, session);
+        const data = this._controlKeyBytes(keys, raw === true);
+        await bridge.sendInput(sessionId, data);
+        return { keysId: uuidv4(), delivered: true, duplicated: false };
+      });
     });
   }
 
@@ -4410,45 +4866,47 @@ class ClaudeCodeWebServer {
     if (!session) throw this._controlError('SESSION_NOT_FOUND', 'Unknown session', 404);
 
     return this._controlWithIdempotency(sessionId, idempotencyKey, async () => {
-      const binding = this._stickyJsonl && this._stickyJsonl.get(sessionId);
-      const awaiting = binding && binding.file ? await detectAwaiting(binding.file) : null;
-      let awaitingKind = awaiting ? awaitingKindForPendingTool(awaiting.pendingUserFacingTool) : null;
-      // Fallback: when the JSONL binding isn't available (e.g. a raw claude.exe
-      // whose Windows project-slug doesn't resolve), derive the pending
-      // interaction from the live rendered screen — the same signal status uses.
-      if (!awaitingKind && session._ctlTranscript) {
-        try {
-          const screenAwait = awaitingFromScreen(await session._ctlTranscript.snapshot(20));
-          if (screenAwait) awaitingKind = screenAwait.kind;
-        } catch (_) { /* transcript unavailable */ }
-      }
-      let mappedKeys;
-
-      if (keys !== undefined && keys !== null) {
-        mappedKeys = String(keys);
-      } else {
-        if (!awaitingKind) {
-          return { error: { code: 'PRECONDITION_FAILED', message: 'no pending interaction' } };
+      return this._controlSteeringLock(sessionId, async () => {
+        const binding = this._stickyJsonl && this._stickyJsonl.get(sessionId);
+        const awaiting = binding && binding.file ? await detectAwaiting(binding.file) : null;
+        let awaitingKind = awaiting ? awaitingKindForPendingTool(awaiting.pendingUserFacingTool) : null;
+        // Fallback: when the JSONL binding isn't available (e.g. a raw claude.exe
+        // whose Windows project-slug doesn't resolve), derive the pending
+        // interaction from the live rendered screen — the same signal status uses.
+        if (!awaitingKind && session._ctlTranscript) {
+          try {
+            const screenAwait = awaitingFromScreen(await session._ctlTranscript.snapshot(20));
+            if (screenAwait) awaitingKind = screenAwait.kind;
+          } catch (_) { /* transcript unavailable */ }
         }
-        mappedKeys = this._controlMapResponseKeys(awaitingKind, {
-          awaiting,
-          choice,
-          optionValue,
-          agent: session.agent,
-        });
-        if (!mappedKeys) {
-          return { error: { code: 'INVALID_ARGUMENT', message: 'could not map response to keystrokes' } };
-        }
-      }
+        let mappedKeys;
 
-      const bridge = this._controlInputBridge(sessionId, session);
-      await bridge.sendInput(sessionId, mappedKeys);
-      return {
-        delivered: true,
-        awaitingKind: awaitingKind || null,
-        mappedKeys,
-        duplicated: false,
-      };
+        if (keys !== undefined && keys !== null) {
+          mappedKeys = String(keys);
+        } else {
+          if (!awaitingKind) {
+            return { error: { code: 'PRECONDITION_FAILED', message: 'no pending interaction' } };
+          }
+          mappedKeys = this._controlMapResponseKeys(awaitingKind, {
+            awaiting,
+            choice,
+            optionValue,
+            agent: session.agent,
+          });
+          if (!mappedKeys) {
+            return { error: { code: 'INVALID_ARGUMENT', message: 'could not map response to keystrokes' } };
+          }
+        }
+
+        const bridge = this._controlInputBridge(sessionId, session);
+        await bridge.sendInput(sessionId, mappedKeys);
+        return {
+          delivered: true,
+          awaitingKind: awaitingKind || null,
+          mappedKeys,
+          duplicated: false,
+        };
+      });
     });
   }
 
@@ -4516,6 +4974,14 @@ class ClaudeCodeWebServer {
       left: '\x1b[D',
       space: ' ',
       backspace: '\x7f',
+      // Shift+Tab (CSI Z, back-tab) — claude's permission-mode cycle.
+      'shift-tab': '\x1b[Z',
+      's-tab': '\x1b[Z',
+      home: '\x1b[H',
+      end: '\x1b[F',
+      pageup: '\x1b[5~',
+      pagedown: '\x1b[6~',
+      delete: '\x1b[3~',
     };
     const key = value.toLowerCase();
     return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : value;
@@ -4539,6 +5005,15 @@ class ClaudeCodeWebServer {
     if (awaitingKind === 'tool_approval') {
       if (choice === 'yes' || choice === 'allow' || choice === 'accept') return '\r';
       if (choice === 'no' || choice === 'deny' || choice === 'reject') return '\x1b';
+      return null;
+    }
+
+    // Folder-trust modal (F7): a numbered "1. Yes, proceed / 2. No, exit" list. Send
+    // the EXPLICIT numbered choice, never a bare Enter — Enter can no-op mid-render or
+    // land on a non-default option, whereas "1"/"2" deterministically pick yes/no.
+    if (awaitingKind === 'trust_prompt') {
+      if (choice === 'accept' || choice === 'yes' || choice === 'trust' || choice === 'allow') return '1\r';
+      if (choice === 'reject' || choice === 'no' || choice === 'deny') return '2\r';
       return null;
     }
 
@@ -5138,9 +5613,39 @@ class ClaudeCodeWebServer {
       binding.idleTicks = (binding.idleTicks || 0) + 1; // quiet → eligible to follow /resume
     }
 
+    // --- TURN-BOUNDARY DETECTION — ALWAYS (cheap; no model). Decoupled from the
+    // UI expand-gate so headless / fleet-spawned claude sessions (no WebSocket
+    // viewer ever expands their card) still emit turn_ended / became_busy /
+    // became_idle and keep lastGrowing/lastEndsOnAssistant fresh — the signals the
+    // control plane's await_turn + send_message confirmation depend on (F14). Uses
+    // its OWN turnOffset so it never advances the note summariser's horizon
+    // (binding.offset); the summariser below keeps its independent, expand-gated
+    // catch-up read. ---
+    if (typeof binding.turnOffset !== 'number') binding.turnOffset = st.size; // start "from now": no replay of pre-bind history
+    if (st.size < binding.turnOffset) binding.turnOffset = st.size; // truncated/rotated
+    if (st.size > binding.turnOffset) {
+      const td = await StickyNoteJsonl.readNewTurns(binding.file, binding.turnOffset);
+      if (td.offset > binding.turnOffset) {
+        binding.turnOffset = td.offset;
+        const ends = require('./sticky-note-jsonl').endsOnAssistant(td.turns);
+        binding.lastGrowing = (td.turns.length > 0 && !ends);
+        if (ends && !binding.lastEndsOnAssistant) {
+          if (typeof this._controlAppendStateEvent === 'function') {
+            this._controlAppendStateEvent(sessionId, 'turn_ended');
+          } else if (this.controlEventBus) {
+            this.controlEventBus.append(sessionId, 'turn_ended');
+          }
+          binding.lastTurnEndedAt = Date.now();
+        }
+        binding.lastEndsOnAssistant = ends;
+      }
+    }
+
     // --- NOTE INFERENCE — ONLY while a viewer has the card EXPANDED. Collapsed
     // tabs freeze the note at their horizon (binding.offset); on re-expand the
-    // next poll resumes from there in a single bounded catch-up read. ---
+    // next poll resumes from there in a single bounded catch-up read. Turn
+    // detection above already ran unconditionally, so collapsing a tab no longer
+    // blinds the control plane to turn boundaries. ---
     if (!this._isStickyExpandedActive(sessionId)) {
       await emitTransition();
       return;
@@ -5156,17 +5661,6 @@ class ClaudeCodeWebServer {
     }
     binding.offset = offset;
     this._claudeOffsets.set(binding.claudeSessionId, offset); // resume continues from here
-    const ends = require('./sticky-note-jsonl').endsOnAssistant(turns);
-    binding.lastGrowing = (turns.length > 0 && !ends);
-    if (ends && !binding.lastEndsOnAssistant) {
-      if (typeof this._controlAppendStateEvent === 'function') {
-        this._controlAppendStateEvent(sessionId, 'turn_ended');
-      } else if (this.controlEventBus) {
-        this.controlEventBus.append(sessionId, 'turn_ended');
-      }
-      binding.lastTurnEndedAt = Date.now();
-    }
-    binding.lastEndsOnAssistant = ends;
     await emitTransition();
     const text = StickyNoteJsonl.formatTurns(turns);
     if (!text) return;

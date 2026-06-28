@@ -275,6 +275,8 @@ class BaseBridge {
     const {
       workingDir = process.cwd(),
       dangerouslySkipPermissions = false,
+      permissionMode = undefined,
+      agentArgs = undefined,
       onOutput = () => {},
       onExit = () => {},
       onError = () => {},
@@ -292,7 +294,10 @@ class BaseBridge {
         console.log(`WARNING: Using ${this.dangerousFlag} flag`);
       }
 
-      const args = this.buildArgs({ dangerouslySkipPermissions });
+      // F10: forward permissionMode/agentArgs so tool-specific buildArgs (claude)
+      // can emit --permission-mode + caller passthrough flags. Subclasses that
+      // don't override buildArgs (terminal/codex) ignore these.
+      const args = this.buildArgs({ dangerouslySkipPermissions, permissionMode, agentArgs });
 
       const env = {
         ...process.env,
