@@ -127,8 +127,18 @@ The toolbar toggle (`#stickyNoteBtn`) is shown only once the engine reports
 ### Expand-gating & ai-title (ADR-0025)
 
 The card starts **collapsed** (expanding is a deliberate "activate"). Processing
-splits in two:
+splits in **three** tiers by cost:
 
+- **Turn-boundary detection (cheap; no model) runs EVERY poll regardless of
+  collapse or whether any client is connected (F14).** A separate always-advancing
+  `binding.turnOffset` reads new transcript turns and maintains
+  `lastGrowing`/`lastEndsOnAssistant`/`lastTurnEndedAt`, emitting `turn_ended` +
+  driving the `became_busy`/`became_idle` control-plane transitions. This is what
+  the fleet control plane's `await_turn` + `send_message` confirmation depend on, so
+  it must NOT be gated on a UI viewer — a headless fleet-spawned claude has no
+  WebSocket card to expand. `turnOffset` is independent of the note horizon
+  (`binding.offset`), so always-on turn detection never steals the summariser's
+  catch-up window.
 - **Note summarisation (the LLM inference) runs only while ≥1 connected client
   has the card EXPANDED.** Clients report this with `set_sticky_active
   {sessionId, active}`; the server reference-counts expanded viewers per session

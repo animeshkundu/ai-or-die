@@ -67,16 +67,18 @@ function summaryFromStatus(id, session, status) {
 
 function parseCursor(raw) {
   if (!raw) return undefined;
-  // Accept either "epoch:seq" or a base64url JSON blob.
+  // Accept either "epoch:seq" or a base64url JSON blob. A valid seq is a
+  // non-negative safe integer (FIX C: reject -5, 1.5, NaN so a present-but-invalid
+  // cursor is a client bug surfaced as 400, not a silent fresh tail-follow).
   if (typeof raw === 'string' && raw.includes(':')) {
     const idx = raw.lastIndexOf(':');
     const epoch = raw.slice(0, idx);
     const seq = Number(raw.slice(idx + 1));
-    if (epoch && Number.isFinite(seq)) return { epoch, seq };
+    if (epoch && Number.isSafeInteger(seq) && seq >= 0) return { epoch, seq };
   }
   try {
     const obj = JSON.parse(Buffer.from(String(raw), 'base64').toString('utf8'));
-    if (obj && typeof obj.epoch === 'string' && Number.isFinite(obj.seq)) return obj;
+    if (obj && typeof obj.epoch === 'string' && Number.isSafeInteger(obj.seq) && obj.seq >= 0) return obj;
   } catch {
     /* fall through */
   }
@@ -157,15 +159,50 @@ function createControlRouter(deps) {
     if (isRateLimitExempt(req) || !rateLimit.max || !rateLimit.windowMs) return next();
     const limited = checkRateLimit(rateLimitBuckets, rateLimit, rateLimitIdentity(req));
     if (limited) {
+      // F21: a CLASSIFIABLE 429 so the fleet client can back off precisely rather
+      // than hammer. Stable error.code='RATE_LIMITED' + retryAfterMs in the body,
+      // and the standard Retry-After header (whole seconds, min 1).
+      const retryAfterSec = Math.max(1, Math.ceil(limited.retryAfterMs / 1000));
+      res.set('Retry-After', String(retryAfterSec));
       return res.status(429).json({
         error: {
           code: 'RATE_LIMITED',
           message: 'Too many control requests; retry after the current rate-limit window',
           retryAfterMs: limited.retryAfterMs,
+          retryAfterSec,
         },
       });
     }
     next();
+  });
+
+  // GET /capabilities — F19 cross-repo capability negotiation. The fleet client
+  // reads this ONCE per instance and fails closed on a missing capability, so a
+  // newer client never silently assumes an older instance supports a field/event.
+  router.get('/capabilities', (req, res, next) => {
+    try {
+      res.json(deps.capabilities ? deps.capabilities() : { capabilities: [], controlVersion: '0' });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /snapshot — F15 atomic batch resync. Returns every session's derived
+  // status PLUS the event cursor, captured atomically (cursor first, then
+  // statuses), so after a gap/overflow the controller resyncs in ONE call and
+  // resumes the long-poll from `cursor` with zero lost events (a boundary event
+  // may be redelivered — safe/idempotent — but never dropped).
+  router.get('/snapshot', async (req, res, next) => {
+    try {
+      const snap = deps.snapshot ? await deps.snapshot() : { sessions: [], cursor: null, capturedAt: Date.now() };
+      res.json({
+        sessions: snap.sessions || [],
+        cursor: snap.cursor ? encodeCursor(snap.cursor) : null,
+        capturedAt: snap.capturedAt,
+      });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // GET /sessions — list with derived status (light).
@@ -214,6 +251,11 @@ function createControlRouter(deps) {
     } catch (err) {
       if (err && err.code === 'INVALID_WORKDIR') {
         return res.status(403).json({ error: { code: 'CAPABILITY_DENIED', message: err.message } });
+      }
+      if (err && err.code) {
+        return res.status(err.statusCode || statusForErrorCode(err.code)).json({
+          error: { code: err.code, message: err.message },
+        });
       }
       next(err);
     }
@@ -305,6 +347,10 @@ function createControlRouter(deps) {
   router.get('/events', async (req, res, next) => {
     try {
       const cursor = parseCursor(req.query.cursor);
+      // FIX C: ABSENT cursor → fresh watcher (ok); PRESENT-but-INVALID → client bug.
+      if (req.query.cursor && cursor === undefined) {
+        return res.status(400).json({ error: { code: 'INVALID_ARGUMENT', message: 'invalid cursor' } });
+      }
       const timeoutMs = clampInt(req.query.timeoutMs, DEFAULT_EVENTS_TIMEOUT_MS, 0, MAX_EVENTS_TIMEOUT_MS);
       const filter = {};
       if (req.query.sessionIds) filter.sessionIds = String(req.query.sessionIds).split(',').filter(Boolean);

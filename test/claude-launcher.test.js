@@ -51,4 +51,81 @@ describe('claude launcher (always via github-router)', function () {
       assert.deepEqual(args, ['-y', 'github-router@latest', 'claude', '--browse', '--dangerously-skip-permissions']);
     });
   });
+
+  describe('F10 — ClaudeBridge.buildArgs permission mode', function () {
+    const PREFIX = ['-y', 'github-router@latest', 'claude', '--browse'];
+
+    it('appends --permission-mode <mode> AFTER the launcher prefix', function () {
+      const bridge = new ClaudeBridge();
+      const args = bridge.buildArgs({ permissionMode: 'plan' });
+      assert.deepEqual(args, [...PREFIX, '--permission-mode', 'plan']);
+    });
+
+    it('accepts every allowlisted mode', function () {
+      const bridge = new ClaudeBridge();
+      for (const mode of ['plan', 'acceptEdits', 'default', 'bypassPermissions']) {
+        assert.deepEqual(bridge.buildArgs({ permissionMode: mode }), [...PREFIX, '--permission-mode', mode]);
+      }
+    });
+
+    it('permissionMode supersedes the legacy dangerous flag (github-router drops it)', function () {
+      const bridge = new ClaudeBridge();
+      const args = bridge.buildArgs({ permissionMode: 'plan', dangerouslySkipPermissions: true });
+      assert.deepEqual(args, [...PREFIX, '--permission-mode', 'plan']);
+      assert.ok(!args.includes('--dangerously-skip-permissions'));
+    });
+
+    it('appends caller agentArgs after the permission flag', function () {
+      const bridge = new ClaudeBridge();
+      const args = bridge.buildArgs({ permissionMode: 'acceptEdits', agentArgs: ['--model', 'opus'] });
+      assert.deepEqual(args, [...PREFIX, '--permission-mode', 'acceptEdits', '--model', 'opus']);
+    });
+
+    it('rejects an unknown permissionMode with INVALID_ARGUMENT', function () {
+      const bridge = new ClaudeBridge();
+      assert.throws(
+        () => bridge.buildArgs({ permissionMode: 'yolo' }),
+        (e) => e.code === 'INVALID_ARGUMENT'
+      );
+    });
+
+    it('rejects agentArgs carrying --permission-mode (conflict) with INVALID_ARGUMENT', function () {
+      const bridge = new ClaudeBridge();
+      assert.throws(
+        () => bridge.buildArgs({ agentArgs: ['--permission-mode', 'plan'] }),
+        (e) => e.code === 'INVALID_ARGUMENT'
+      );
+      assert.throws(
+        () => bridge.buildArgs({ agentArgs: ['--permission-mode=plan'] }),
+        (e) => e.code === 'INVALID_ARGUMENT'
+      );
+    });
+
+    it('rejects agentArgs carrying --dangerously-skip-permissions (conflict) with INVALID_ARGUMENT', function () {
+      const bridge = new ClaudeBridge();
+      assert.throws(
+        () => bridge.buildArgs({ permissionMode: 'plan', agentArgs: ['--dangerously-skip-permissions'] }),
+        (e) => e.code === 'INVALID_ARGUMENT'
+      );
+    });
+
+    it('rejects a non-array agentArgs with INVALID_ARGUMENT', function () {
+      const bridge = new ClaudeBridge();
+      assert.throws(
+        () => bridge.buildArgs({ agentArgs: '--model opus' }),
+        (e) => e.code === 'INVALID_ARGUMENT'
+      );
+    });
+
+    it('no permissionMode + no dangerous flag → bare prefix (back-compat)', function () {
+      const bridge = new ClaudeBridge();
+      assert.deepEqual(bridge.buildArgs(), [...PREFIX]);
+    });
+
+    it('terminal agent ignores permissionMode/agentArgs (no flags, no throw)', function () {
+      const TerminalBridge = require('../src/terminal-bridge');
+      const bridge = new TerminalBridge();
+      assert.deepEqual(bridge.buildArgs({ permissionMode: 'plan', agentArgs: ['--permission-mode', 'x'] }), []);
+    });
+  });
 });

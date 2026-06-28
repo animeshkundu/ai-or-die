@@ -28,21 +28,101 @@ middleware in `src/server.js` (so every route is token-gated), built from inject
   `{ lifecycle, interactionState, canAcceptInput, confidence, blockReason?, awaiting?, lastTurnEndedAt }`.
   Reliability is agent-dependent and surfaced via `confidence`: **high** when read from the claude JSONL
   transcript (ADR-0026 binding), **medium** from a busy-footer regex over the rendered terminal, **low**
-  otherwise. We never fake certainty.
+  otherwise. We never fake certainty. Two cross-checks tighten the busy/idle call:
+  - **F8 (bound footer cross-check):** the polled JSONL transcript LAGS the rendered screen, so a
+    just-submitted message can momentarily look settled (`endsOnAssistant`, not `growing`) while claude is
+    already mid-turn. Before returning idle on a bound session, the live busy footer (`esc to interrupt` /
+    spinner gerund) is cross-checked; if it shows a running turn the state is **busy** at **medium**
+    confidence (screen disagrees with JSONL). The footer may only RAISE busy — it is never an authoritative
+    idle gate and never the sole signal that blocks a send (deadlock risk); JSONL turn state stays
+    authoritative.
+  - **F12 (coarse unbound recency):** for an active session with NO JSONL binding (e.g. claude launched
+    inside a `terminal` PTY), busy/idle is derived from PTY-output recency (`lastOutputAt` within a LARGE
+    quiet window → busy, else idle) at **low** confidence, and the server emits coarse `became_busy` /
+    `became_idle` edges (debounced on the session) so `await_turn` returns SOMETHING. This is a courtesy,
+    not a turn oracle: it NEVER emits `turn_ended` and is never presented as real turn completion — the
+    supported path for real turn detection is `agent:"claude"` (bound), and an unbound driver should be
+    surfaced as `NO_TURN_BINDING`.
 - `src/control/event-bus.js` — an in-process bounded monotonic event ring (the network-safe generalization of
   firstmate's durable wake-queue). It is **epoch-aware** (an instance restart mints a new epoch so a stale
-  cursor gets a `restart` gap, not a silent reset) and reports an explicit `overflow` gap when the ring rolls
-  past a consumer's cursor. Cursor = `{ epoch, seq }`.
+  cursor gets a `restart` gap, not a silent reset) and reports an explicit `overflow` gap when retention rolls
+  past a consumer's cursor. Cursor = `{ epoch, seq }`. **Retention is PER SESSION (F15):** each session keeps
+  its own bounded ring (default 256 events), so one chatty session evicts only its own old events and can
+  never roll another session's last `turn_ended` out of the buffer. A global monotonic `seq` still orders
+  events across sessions, and `_maxEvictedSeq` (the highest seq dropped from any ring, incl. whole-bucket LRU
+  eviction past the session cap) drives overflow detection — a drop is never silent. Cursors are **per-watcher
+  (F22):** `since()`/`waitFor()` are pure reads parameterised by the caller's cursor with no shared global
+  position, so many concurrent watchers each resume from their own `{epoch,seq}` independently.
 - `src/control/jsonl-awaiting.js` — detects a pending user-facing tool_use (`ExitPlanMode` → plan_approval,
   `AskUserQuestion` → choice_question, a permission prompt → tool_approval) so the client knows it must
   `respond` rather than `send_message`.
 - `src/control/routes.js` — `GET /sessions`, `/sessions/:id/{status,read}`, `POST /sessions/{create,:id/stop,
-  :id/message,:id/keys,:id/respond}`, `GET /events` (long-poll). Steering: `send_message` (multiline via
+  :id/message,:id/keys,:id/respond}`, `GET /events` (long-poll), **`GET /snapshot`** and **`GET /capabilities`**
+  (below). Steering: `send_message` (multiline via
   bracketed paste + Enter, idempotent, awaits a `turn_ended` for honest confirmation, LOUD failure on
-  unconfirmed delivery rather than a buried flag), `send_keys` (named-key table), `respond` (server-side
-  best-effort keystroke map for the agent + a `keys` override). All mutations take an `idempotencyKey`; the
+  unconfirmed delivery rather than a buried flag; the cold-boot dropped-Enter reaper re-sends only when no
+  NEW user entry (bound, F18) / no NEW activity edge after the pre-send cursor (unbound, F13) is observed,
+  so a lingering prior-turn busy never suppresses a genuinely dropped submit, and the per-session writeQueue
+  + idempotency make the retry duplicate-safe), `send_keys` (named-key table incl. Shift+Tab → CSI Z), `respond` (server-side
+  best-effort keystroke map for the agent + a `keys` override). All steering ops on one session also pass
+  through a **per-session steering mutex (F16)** — a logical-command queue distinct from the byte-level
+  writeQueue — so two concurrent DISTINCT ops can't interleave bytes (the mutex wraps delivery+submission and
+  releases before any long turn-await, so it never blocks a `respond` behind a slow `send_message`). All
+  mutations take an `idempotencyKey`; the
   instance caches last-N outcomes and returns the prior result with `duplicated:true` on a retry. The control
-  routes are rate-limited per token.
+  routes are rate-limited per token; a throttled call returns a **classifiable 429 (F21)** — stable
+  `error.code='RATE_LIMITED'` + `retryAfterMs`/`retryAfterSec` body + standard `Retry-After` header — so the
+  client backs off precisely instead of hammering.
+
+### Scale endpoints (Cluster 4)
+
+**`GET /api/control/snapshot` (F15)** — atomic O(1) reconnect after a cursor gap. Returns every session's
+derived status PLUS the event cursor, captured atomically (cursor FIRST, then statuses), so the controller
+resyncs in ONE call and resumes the long-poll from the returned cursor with **zero lost events** (a boundary
+event already reflected in a status may be redelivered on resume — harmless/idempotent — but is never
+dropped). Shape:
+
+```json
+{
+  "sessions": [
+    {
+      "sessionId": "…", "name": "…", "agent": "claude|terminal|…", "workingDir": "…",
+      "lifecycle": "created|starting|running|exited|crashed",
+      "interactionState": "busy|idle|waiting_input|exited|unknown",
+      "canAcceptInput": true,
+      "confidence": "high|medium|low",
+      "lastTurnEndedAt": 1719500000000,
+      "awaiting": { "kind": "next_message|plan_approval|tool_approval|choice_question|trust_prompt" },
+      "sessionStateSeq": 7,
+      "bound": true,
+      "lastActivity": "2026-06-27T…"
+    }
+  ],
+  "cursor": "<epoch>:<seq>",
+  "capturedAt": 1719500000000
+}
+```
+
+**Reconnect protocol:** on a `gap` (`overflow`/`restart`) marker from `GET /events`, call `GET /snapshot`,
+reconcile each session from `sessions[]`, then resume the long-poll from `snapshot.cursor`.
+
+**`GET /api/control/capabilities` (F19)** — cross-repo capability negotiation, read ONCE per instance; the
+client fails closed (or degrades explicitly) on a missing capability, so a newer client never silently
+assumes an older instance supports a field/event. Shape:
+
+```json
+{
+  "contractVersion": 1,
+  "capabilities": {
+    "permissionMode": true, "agentArgs": true, "turnBinding": true, "snapshot": true,
+    "perSessionRetention": true, "structuredConfirmation": true, "steeringMutex": true,
+    "coarseUnboundStatus": true, "rateLimitClassification": true
+  },
+  "permissionModes": ["plan", "acceptEdits", "default", "bypassPermissions"],
+  "events": ["turn_ended","became_idle","became_busy","waiting_input","exited","crashed","session_created","session_deleted"],
+  "limits": { "eventsPerSession": 256, "maxReadLines": 2000, "eventsLongPollMaxMs": 60000 }
+}
+```
 
 The primitives map 1:1 to firstmate (`fm-spawn`→create, `fm-send`→send_message/send_keys, `fm-peek`→read,
 `fm-watch`→events); the additions (idempotency, epoch/gap cursor, honest confidence) are exactly the cost of
