@@ -165,4 +165,15 @@ describe('artifact-panel.js (DOM: iframe + SSE + postMessage bridge)', function 
     panel.notifyActiveSessionChanged('sid-1');
     assert.equal(panel.el.hidden, false);
   });
+
+  it('reloadReview() cache-busts the active iframe and ignores other/inactive sessions', function () {
+    const panel = new ArtifactPanel(app);
+    panel.notifyActiveSessionChanged('sid-1');
+    panel.open({ sessionId: 'sid-1', viewUrl: '/api/artifact/sid-1/view' });
+    const before = panel._iframe.src;
+    panel.reloadReview({ sessionId: 'sid-2' }); // foreign session: no-op
+    assert.equal(panel._iframe.src, before);
+    panel.reloadReview({ sessionId: 'sid-1' }); // active: cache-busted
+    assert.ok(panel._iframe.src.includes('_r='), 'iframe src should be cache-busted');
+  });
 });

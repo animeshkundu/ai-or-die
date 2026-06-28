@@ -5159,6 +5159,19 @@ class ClaudeCodeWebServer {
         if (sidecarPath) terminalExtraEnv.AIORDIE_CLAUDE_BIND = sidecarPath;
       }
 
+      // Artifact-review parity for the manual (non-fleet) claude tab: a normally
+      // started claude tab gets the same env trio that _controlStartAgent injects,
+      // so the in-tab agent's artifact_* tools activate standalone — no control
+      // plane required. Always-on when auth is set; never injected without auth
+      // (so the artifact routes stay non-public). Token leak to nested children
+      // is blocked by github-router's STRIPPED_PARENT_ENV_KEYS.
+      const claudeArtifactEnv = {};
+      if (toolName === 'claude' && this.auth) {
+        claudeArtifactEnv.AIORDIE_BASE_URL = `${this.useHttps ? 'https' : 'http'}://127.0.0.1:${this.port}`;
+        claudeArtifactEnv.AIORDIE_TOKEN = this.auth;
+        claudeArtifactEnv.AIORDIE_SESSION_ID = sessionId;
+      }
+
       const osc7Hooks = (toolName === 'terminal') ? {
         validatePath: (p) => this.validatePath(p),
         onCwdChange: (cwd, prev) => {
@@ -5238,12 +5251,11 @@ class ClaudeCodeWebServer {
           this.broadcastSessionActivity(sessionId, 'session_error');
         },
         ...options,
-        extraEnv: toolName === 'terminal'
-          ? {
-              ...((options.extraEnv && typeof options.extraEnv === 'object') ? options.extraEnv : {}),
-              ...terminalExtraEnv,
-            }
-          : options.extraEnv
+        extraEnv: {
+          ...((options.extraEnv && typeof options.extraEnv === 'object') ? options.extraEnv : {}),
+          ...terminalExtraEnv,
+          ...claudeArtifactEnv,
+        }
       });
 
       session.lastActivity = new Date();

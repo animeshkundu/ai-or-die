@@ -2738,6 +2738,10 @@ class ClaudeCodeWebInterface {
                 if (this._artifactPanel) this._artifactPanel.endReview(message);
                 break;
 
+            case 'artifact_review_reload':
+                if (this._artifactPanel) this._artifactPanel.reloadReview(message);
+                break;
+
             case 'artifact_agent_reply':
                 if (this._artifactPanel) this._artifactPanel.agentReply(message);
                 break;
