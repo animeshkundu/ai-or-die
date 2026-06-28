@@ -137,4 +137,78 @@ describe('F14 headless turn detection (un-gated from UI expand)', function () {
     await proto._controlEmitInteractionTransition.call(srv, sessionId); // idle → became_idle
     assert.deepEqual(events, ['became_busy', 'became_idle']);
   });
+
+  it('PROMOTE: emits turn_ended for the FIRST turn after a pending bind promotes (turnOffset from 0)', async function () {
+    const sessionId = 's-promote';
+    const tp = path.join(dir, 'proj', 'late.jsonl');
+    const events = [];
+    const session = { id: sessionId, active: true, agent: 'claude', _sidecarSeen: false, claudeBindSidecar: 'sc' };
+    const fake = {
+      _stickyJsonl: new Map(),
+      claudeSessions: new Map([[sessionId, session]]),
+      _claudeOffsets: new Map(),
+      _claudeNotes: new Map(),
+      controlEventBus: null,
+      sessionStore: { markDirty: () => {} },
+      stickyNoteSummarizer: { feedTurns: () => {}, onRebind: () => {} },
+      broadcastToSession: () => {},
+      _ownedClaudeSessions: proto._ownedClaudeSessions,
+      _bindStickyJsonl: proto._bindStickyJsonl,
+      _readClaudeBindSidecar: async () => ({ claudeSessionId: 'cs-1', transcriptPath: tp, event: 'start' }),
+      _statQuiet: async (f) => { try { const st = fs.statSync(f); return { size: st.size, mtimeMs: st.mtimeMs }; } catch { return null; } },
+      _isStickyExpandedActive: () => false,
+      _controlAppendStateEvent: (id, kind) => events.push({ id, kind }),
+      _controlEmitInteractionTransition: async () => {},
+      _applyAiTitle: () => {},
+    };
+    // Tick 1: transcript absent → pending identity bind; no turn events.
+    await proto._pumpStickyJsonl.call(fake, sessionId, dir);
+    const b1 = fake._stickyJsonl.get(sessionId);
+    assert.ok(b1 && b1.transcriptPending === true, 'pending after tick 1');
+    assert.equal(events.length, 0, 'no turn events while pending');
+    // The first turn completes and the transcript appears ALL AT ONCE (a fast turn
+    // landing within one poll interval). Promotion must tail from byte 0 so this
+    // already-complete first turn still emits turn_ended (not skipped "from now").
+    fs.mkdirSync(path.dirname(tp), { recursive: true });
+    fs.writeFileSync(tp, userLine('do it') + assistantLine('done'));
+    await proto._pumpStickyJsonl.call(fake, sessionId, dir);
+    const b2 = fake._stickyJsonl.get(sessionId);
+    assert.equal(b2.transcriptPending, false, 'promoted to a full tail');
+    assert.equal(b2.file, tp);
+    assert.equal(events.filter((e) => e.kind === 'turn_ended').length, 1, 'first turn emits turn_ended (turnOffset started at 0)');
+  });
+
+  it('PROMOTE: a >24KB first turn promotes with offset 0 (tails the whole new file, not a 24KB window)', async function () {
+    const sessionId = 's-bigturn';
+    const tp = path.join(dir, 'big', 'late.jsonl');
+    const events = [];
+    const session = { id: sessionId, active: true, agent: 'claude', _sidecarSeen: false, claudeBindSidecar: 'sc' };
+    const fake = {
+      _stickyJsonl: new Map(),
+      claudeSessions: new Map([[sessionId, session]]),
+      _claudeOffsets: new Map(),
+      _claudeNotes: new Map(),
+      controlEventBus: null,
+      sessionStore: { markDirty: () => {} },
+      stickyNoteSummarizer: { feedTurns: () => {}, onRebind: () => {} },
+      broadcastToSession: () => {},
+      _ownedClaudeSessions: proto._ownedClaudeSessions,
+      _bindStickyJsonl: proto._bindStickyJsonl,
+      _readClaudeBindSidecar: async () => ({ claudeSessionId: 'cs-big', transcriptPath: tp, event: 'start' }),
+      _statQuiet: async (f) => { try { const st = fs.statSync(f); return { size: st.size, mtimeMs: st.mtimeMs }; } catch { return null; } },
+      _isStickyExpandedActive: () => false,
+      _controlAppendStateEvent: (id, kind) => events.push({ id, kind }),
+      _controlEmitInteractionTransition: async () => {},
+      _applyAiTitle: () => {},
+    };
+    await proto._pumpStickyJsonl.call(fake, sessionId, dir); // tick 1 → pending
+    // First turn is large (> the 24KB INITIAL_WINDOW) and lands all at once.
+    fs.mkdirSync(path.dirname(tp), { recursive: true });
+    fs.writeFileSync(tp, userLine('do it') + assistantLine('x'.repeat(30000)));
+    await proto._pumpStickyJsonl.call(fake, sessionId, dir); // tick 2 → promote
+    const b = fake._stickyJsonl.get(sessionId);
+    assert.equal(b.transcriptPending, false, 'promoted');
+    assert.equal(b.offset, 0, 'note offset starts at 0 for a brand-new transcript (not size-24KB)');
+    assert.equal(events.filter((e) => e.kind === 'turn_ended').length, 1, 'the large first turn still emits turn_ended');
+  });
 });

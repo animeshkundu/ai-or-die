@@ -4974,9 +4974,11 @@ class ClaudeCodeWebServer {
       left: '\x1b[D',
       space: ' ',
       backspace: '\x7f',
-      // Shift+Tab (CSI Z, back-tab) — claude's permission-mode cycle.
+      // Shift+Tab (CSI Z, back-tab) — claude's permission-mode cycle. A driver
+      // reads the current mode from claude's status-line and cycles to plan mode.
       'shift-tab': '\x1b[Z',
       's-tab': '\x1b[Z',
+      backtab: '\x1b[Z',
       home: '\x1b[H',
       end: '\x1b[F',
       pageup: '\x1b[5~',
@@ -5418,20 +5420,26 @@ class ClaudeCodeWebServer {
   _maybeStartStickyNotes(sessionId, toolName, cols, rows) {
     const session = this.claudeSessions.get(sessionId);
     if (!session) return;
-    if (!this.stickyNoteEngine._enabled) return;
-    if (session.stickyNotesEnabled === false) return;
     if (!this._isStickyEligible(toolName)) return;
-    // Start buffering output now — this is cheap (a pure-JS headless terminal),
-    // never inference. The engine model is already being pulled at startup; this
-    // ensures it (idempotent) in case startup init failed transiently. The
-    // summariser buffers in the meantime and produces its first note once ready.
-    this.stickyNoteSummarizer.enable(sessionId, {
-      cols: cols || 80,
-      rows: rows || 24,
-      note: session.stickyNote || null,
-      rev: (session.stickyNote && session.stickyNote.rev) || 0,
-    });
-    this._ensureStickyNoteEngine();
+    // A control/fleet claude session with a bind sidecar ALWAYS needs the model-free
+    // JSONL turn-binding pump (fleet await_turn / readiness depend on it) — even if
+    // this tab opted out of sticky-note summarisation or the engine is unavailable.
+    const bindingNeeded = toolName === 'claude' && !!session.claudeBindSidecar;
+    if (session.stickyNotesEnabled === false && !bindingNeeded) return;
+    // The model-free binding/turn pump is a CONTROL-PLANE invariant and runs
+    // independently of the OPTIONAL summariser. Enable the LLM summariser only when
+    // it is wanted (not opted out) AND its engine is available; always start the poll.
+    if (session.stickyNotesEnabled !== false && this.stickyNoteEngine._enabled) {
+      // Start buffering output now — cheap (a pure-JS headless terminal), never
+      // inference. The summariser buffers and produces its first note once ready.
+      this.stickyNoteSummarizer.enable(sessionId, {
+        cols: cols || 80,
+        rows: rows || 24,
+        note: session.stickyNote || null,
+        rev: (session.stickyNote && session.stickyNote.rev) || 0,
+      });
+      this._ensureStickyNoteEngine();
+    }
     this._startStickyJsonlPoll();
   }
 
@@ -5449,16 +5457,26 @@ class ClaudeCodeWebServer {
   }
 
   async _pollStickyJsonl() {
-    if (!this._stickyNotesEnabledGlobally || !this.stickyNoteEngine._enabled) return;
+    // NOT gated on the sticky-note engine: the model-free binding + turn detection
+    // below must run for control/fleet claude sessions even when the summariser is
+    // disabled (--no-sticky-notes) or its model is unavailable. The LLM note
+    // inference inside _pumpStickyJsonl stays independently gated.
     // Lock so a slow sweep (many old session files) can't overlap the next tick
     // and double-feed the same turns into pendingText.
     if (this._pollingStickyJsonl) return;
     this._pollingStickyJsonl = true;
     try {
       for (const [sessionId, session] of this.claudeSessions) {
-        if (!session.active || session.stickyNotesEnabled === false) continue;
+        if (!session.active) continue;
         if (!this._isStickyEligible(session.agent)) continue;
-        if (!this.stickyNoteSummarizer.isEnabled(sessionId)) continue;
+        // Pump when summarising (UI note cards) OR when this is a claude session
+        // with a bind sidecar (control/fleet turn-binding) — the latter needs
+        // binding + turn events regardless of the summariser, and a per-tab
+        // summarisation opt-out must NOT defeat control-plane turn-binding.
+        const bindingNeeded = session.agent === 'claude' && !!session.claudeBindSidecar;
+        if (session.stickyNotesEnabled === false && !bindingNeeded) continue;
+        const summarising = this.stickyNoteSummarizer.isEnabled(sessionId);
+        if (!summarising && !bindingNeeded) continue;
         const cwd = session.liveCwd || session.workingDir;
         if (!cwd) continue;
         try {
@@ -5503,21 +5521,31 @@ class ClaudeCodeWebServer {
         sidecar.event !== 'end' &&
         sidecar.claudeSessionId &&
         sidecar.transcriptPath &&
-        (!binding || binding.claudeSessionId !== sidecar.claudeSessionId)
+        (!binding ||
+          binding.claudeSessionId !== sidecar.claudeSessionId ||
+          // While still pending, follow a transcriptPath that drifts under the same
+          // session id (e.g. a corrected path) so a wrong initial path can't strand
+          // the binding forever. A promoted binding's path is stable, so this never
+          // churns it.
+          (binding.transcriptPending && binding.pendingTranscriptPath !== sidecar.transcriptPath))
       ) {
         const stp = await this._statQuiet(sidecar.transcriptPath);
-        if (stp) {
-          this._bindStickyJsonl(sessionId, {
-            file: sidecar.transcriptPath,
-            sessionId: sidecar.claudeSessionId,
-            mtimeMs: stp.mtimeMs,
-            size: stp.size,
-          });
-          binding = this._stickyJsonl.get(sessionId);
-          session.claudePinnedSessionId = sidecar.claudeSessionId;
-          this.sessionStore.markDirty();
-        }
-        // transcript not created yet → wait for a later tick (never inference).
+        // Bind on the sidecar's IDENTITY immediately — even before the transcript
+        // file exists. Claude Code does not create the .jsonl until the session's
+        // FIRST turn, so a fresh idle fleet session has a sidecar (claudeSessionId
+        // known) but no transcript yet. Binding now makes the session report
+        // bound:true (the F17 readiness barrier and session_status key off presence
+        // in _stickyJsonl); the tail below promotes to the real file once it lands.
+        this._bindStickyJsonl(sessionId, {
+          file: stp ? sidecar.transcriptPath : null,
+          pendingTranscriptPath: sidecar.transcriptPath,
+          sessionId: sidecar.claudeSessionId,
+          mtimeMs: stp ? stp.mtimeMs : 0,
+          size: stp ? stp.size : 0,
+        });
+        binding = this._stickyJsonl.get(sessionId);
+        session.claudePinnedSessionId = sidecar.claudeSessionId;
+        this.sessionStore.markDirty();
       }
       // Pinned tabs never run the mtime inference / resume-follow below.
     } else if (session && session._sidecarSeen) {
@@ -5577,6 +5605,25 @@ class ClaudeCodeWebServer {
       }
     }
     if (!binding) return;
+
+    // Promote a pending (identity-only) sidecar binding to a full tail once the
+    // transcript file appears (claude writes the .jsonl on its first turn). Until
+    // then the session stays bound (bound:true for readiness/status) but has nothing
+    // to tail — do NOT unbind for the missing file.
+    if (binding.transcriptPending || !binding.file) {
+      const ptp = binding.pendingTranscriptPath;
+      const pst = ptp ? await this._statQuiet(ptp) : null;
+      if (!pst) { await emitTransition(); return; } // transcript still absent → stay identity-bound
+      // The transcript is brand-new (claude created it AFTER we bound), so ALL of it
+      // is post-bind content. Tail AND turn-detect from byte 0 so the very first turn
+      // is never skipped — there is no pre-bind history to skip here (unlike a normal
+      // bind to a pre-existing transcript, which deliberately starts "from now").
+      binding.file = ptp;
+      binding.transcriptPending = false;
+      binding.boundMtimeMs = pst.mtimeMs || 0;
+      binding.offset = 0;
+      binding.turnOffset = 0;
+    }
 
     const st = await this._statQuiet(binding.file);
     if (!st) { this._stickyJsonl.delete(sessionId); return; } // file gone → unbind (note kept)
@@ -5646,6 +5693,10 @@ class ClaudeCodeWebServer {
     // next poll resumes from there in a single bounded catch-up read. Turn
     // detection above already ran unconditionally, so collapsing a tab no longer
     // blinds the control plane to turn boundaries. ---
+    // NOTE INFERENCE — ONLY while a viewer has the card EXPANDED. A control/fleet
+    // session pumped purely for binding + turn detection has no expanded viewer and
+    // stops here; even if it didn't, feedTurns() no-ops for a session the summariser
+    // never enabled, so the model is never fed for a non-summarised session.
     if (!this._isStickyExpandedActive(sessionId)) {
       await emitTransition();
       return;
@@ -5796,15 +5847,22 @@ class ClaudeCodeWebServer {
   _bindStickyJsonl(sessionId, chosen) {
     const claudeSessionId = chosen.sessionId;
     const INITIAL_WINDOW = 24 * 1024;
+    // A pending (identity-only) bind has no transcript file yet — claude creates
+    // the .jsonl on its first turn. Stay bound; the pump promotes it (computing the
+    // real offset) once the file appears.
+    const transcriptPending = !chosen.file;
     // Resume from the last consumed offset if we've seen this session before
     // (avoids re-summarising the recent window); else start near the end.
     const cached = this._claudeOffsets.get(claudeSessionId);
-    const offset =
-      typeof cached === 'number' && cached <= (chosen.size || 0)
+    const offset = transcriptPending
+      ? 0
+      : (typeof cached === 'number' && cached <= (chosen.size || 0)
         ? cached
-        : Math.max(0, (chosen.size || 0) - INITIAL_WINDOW);
+        : Math.max(0, (chosen.size || 0) - INITIAL_WINDOW));
     this._stickyJsonl.set(sessionId, {
-      file: chosen.file,
+      file: chosen.file || null,
+      pendingTranscriptPath: chosen.pendingTranscriptPath || chosen.file || null,
+      transcriptPending,
       offset,
       titleOffset: 0, // ai-title tail walks the whole file from the start
       lastTitle: null,

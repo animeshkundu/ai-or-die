@@ -52,6 +52,8 @@ describe('control steering helpers', function () {
       assert.equal(keyBytes('shift-tab', false), '\x1b[Z'); // case-insensitive
       assert.equal(keyBytes('SHIFT-TAB', false), '\x1b[Z');
       assert.equal(keyBytes('S-Tab', false), '\x1b[Z');      // alias
+      assert.equal(keyBytes('backtab', false), '\x1b[Z');    // alias
+      assert.equal(keyBytes('BackTab', false), '\x1b[Z');    // case-insensitive alias
     });
 
     it('F3: maps the other added navigation/editing keys', function () {

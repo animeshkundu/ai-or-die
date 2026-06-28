@@ -213,6 +213,46 @@ describe('sticky-note server wiring', function () {
     assert.strictEqual(self._summarizerCalls[1][0], 'enable');
   });
 
+  it('DECOUPLE: _maybeStartStickyNotes starts the JSONL poll even with the engine OFF, without enabling the summariser', function () {
+    let pollStarted = 0;
+    const self = makeStub({
+      stickyNoteEngine: { _enabled: false, getStatus: () => 'unavailable', getDownloadProgress: () => null },
+      _startStickyJsonlPoll: () => { pollStarted++; },
+    });
+    self.claudeSessions.set('ctl', { stickyNotesEnabled: true, stickyNote: null });
+    ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'ctl', 'claude', 80, 24);
+    // The model-free binding + turn-detection pump must run for control/fleet claude
+    // sessions regardless of the optional summariser engine.
+    assert.strictEqual(pollStarted, 1, 'JSONL poll started so binding/turn detection runs');
+    assert.strictEqual(
+      self._summarizerCalls.filter((c) => c[0] === 'enable').length, 0,
+      'summariser NOT enabled when the engine is off',
+    );
+  });
+
+  it('DECOUPLE: _maybeStartStickyNotes still binds a sidecar-bound claude session that opted OUT of sticky notes (engine off)', function () {
+    let pollStarted = 0;
+    const self = makeStub({
+      stickyNoteEngine: { _enabled: false, getStatus: () => 'unavailable', getDownloadProgress: () => null },
+      _startStickyJsonlPoll: () => { pollStarted++; },
+    });
+    // stickyNotesEnabled:false (e.g. AIORDIE_DISABLE_STICKY_NOTES=1) + a bind sidecar:
+    // turn-binding is a control-plane need and must not be defeated by the opt-out.
+    self.claudeSessions.set('ctl', { stickyNotesEnabled: false, claudeBindSidecar: '/x/ctl.json', stickyNote: null });
+    ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'ctl', 'claude', 80, 24);
+    assert.strictEqual(pollStarted, 1, 'poll started for control-plane binding despite opt-out + engine off');
+    assert.strictEqual(self._summarizerCalls.filter((c) => c[0] === 'enable').length, 0, 'summariser NOT enabled');
+  });
+
+  it('_maybeStartStickyNotes skips an opted-out tab with NO bind sidecar', function () {
+    let pollStarted = 0;
+    const self = makeStub({ _startStickyJsonlPoll: () => { pollStarted++; } });
+    self.claudeSessions.set('off', { stickyNotesEnabled: false, stickyNote: null }); // opted out, no sidecar
+    ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'off', 'claude', 80, 24);
+    assert.strictEqual(pollStarted, 0, 'no binding need + opted out → nothing started');
+    assert.strictEqual(self._summarizerCalls.filter((c) => c[0] === 'enable').length, 0);
+  });
+
   it('_onStickyNoteResult mirrors the note into _claudeNotes by claude sessionId', function () {
     const self = makeStub();
     self._claudeNotes = new Map();
@@ -342,17 +382,98 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
     assert.strictEqual(self._stickyJsonl.get('tab1').file, bfile);
   });
 
-  it('SIDECAR: waits (no inference) when the transcript file does not exist yet', async function () {
+  it('SIDECAR: identity-binds (pending) when the transcript file does not exist yet — never the stranger', async function () {
     const cwd = '/Users/x/proj';
-    writeSession(cwd, 'stranger.jsonl', null, 1); // a stranger session that inference would grab
+    const stranger = writeSession(cwd, 'stranger.jsonl', null, 1); // inference would grab this
     const self = makeBindStub();
     const sidecar = path.join(dir, 'tab1.json');
+    const nope = path.join(dir, 'nope', 'pending.jsonl');
     fs.writeFileSync(sidecar, JSON.stringify({
-      schema: 1, claudeSessionId: 'pending', transcriptPath: path.join(dir, 'nope', 'pending.jsonl'), cwd, event: 'start', at: Date.now(),
+      schema: 1, claudeSessionId: 'pending', transcriptPath: nope, cwd, event: 'start', at: Date.now(),
     }));
     self.claudeSessions.set('tab1', { nameIsUserSet: false, claudeBindSidecar: sidecar });
     await self._pumpStickyJsonl('tab1', cwd);
-    assert.strictEqual(self._stickyJsonl.get('tab1'), undefined, 'does NOT bind to the stranger session while waiting');
+    const b = self._stickyJsonl.get('tab1');
+    // Claude Code creates the .jsonl only on the FIRST turn, so a fresh idle fleet
+    // session has a sidecar but no transcript yet. Bind on the sidecar IDENTITY
+    // immediately (so it reports bound:true for the readiness barrier), pending the
+    // transcript — and crucially bound to its OWN session, never the stranger.
+    assert.ok(b, 'identity-bound even though the transcript does not exist yet');
+    assert.strictEqual(b.claudeSessionId, 'pending', 'binds the sidecar session, not the stranger');
+    assert.strictEqual(b.file, null, 'no transcript file yet');
+    assert.strictEqual(b.transcriptPending, true, 'marked transcript-pending');
+    assert.strictEqual(b.pendingTranscriptPath, nope);
+    assert.notStrictEqual(b.file, stranger, 'never adopts the stranger transcript');
+    assert.strictEqual(self.claudeSessions.get('tab1').claudePinnedSessionId, 'pending', 'reserved so other tabs cannot steal it');
+  });
+
+  it('SIDECAR: promotes a pending bind to a full tail once the transcript appears', async function () {
+    const cwd = '/Users/x/proj';
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'tab1.json');
+    const tp = path.join(dir, 'late', 'appears.jsonl');
+    fs.writeFileSync(sidecar, JSON.stringify({
+      schema: 1, claudeSessionId: 'late', transcriptPath: tp, cwd, event: 'start', at: Date.now(),
+    }));
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, claudeBindSidecar: sidecar });
+    // Tick 1: transcript absent → pending identity bind (stays bound, nothing to tail).
+    await self._pumpStickyJsonl('tab1', cwd);
+    let b = self._stickyJsonl.get('tab1');
+    assert.ok(b && b.transcriptPending === true && b.file === null, 'pending after tick 1');
+    // Claude's first turn creates the .jsonl.
+    fs.mkdirSync(path.dirname(tp), { recursive: true });
+    fs.writeFileSync(tp, JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }) + '\n');
+    // Tick 2: the same binding promotes to a full tail (same identity, real file).
+    await self._pumpStickyJsonl('tab1', cwd);
+    b = self._stickyJsonl.get('tab1');
+    assert.ok(b, 'still bound after promotion');
+    assert.strictEqual(b.transcriptPending, false, 'no longer pending');
+    assert.strictEqual(b.file, tp, 'promoted to the real transcript file');
+    assert.strictEqual(b.claudeSessionId, 'late', 'same identity across promotion');
+  });
+
+  it('SIDECAR: a pending bind follows a transcriptPath that drifts under the same session id (never stranded)', async function () {
+    const cwd = '/Users/x/proj';
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'tab1.json');
+    const wrong = path.join(dir, 'wrong', 'a.jsonl'); // never created
+    const right = path.join(dir, 'right', 'a.jsonl');
+    fs.writeFileSync(sidecar, JSON.stringify({ schema: 1, claudeSessionId: 'cs', transcriptPath: wrong, cwd, event: 'start', at: Date.now() }));
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, claudeBindSidecar: sidecar });
+    await self._pumpStickyJsonl('tab1', cwd);
+    let b = self._stickyJsonl.get('tab1');
+    assert.ok(b && b.transcriptPending && b.pendingTranscriptPath === wrong, 'pending on the first (wrong) path');
+    // The sidecar is rewritten with a corrected transcriptPath (SAME session id).
+    fs.writeFileSync(sidecar, JSON.stringify({ schema: 1, claudeSessionId: 'cs', transcriptPath: right, cwd, event: 'start', at: Date.now() }));
+    const t = Date.now() / 1000 + 5; fs.utimesSync(sidecar, t, t);
+    await self._pumpStickyJsonl('tab1', cwd);
+    b = self._stickyJsonl.get('tab1');
+    assert.strictEqual(b.pendingTranscriptPath, right, 'followed the corrected path, not stranded on the wrong one');
+  });
+
+  it('DECOUPLE: _pollStickyJsonl pumps a sidecar-bound claude session even when the summariser is OFF and the tab opted out', async function () {
+    const pumped = [];
+    const srv = {
+      _pollingStickyJsonl: false,
+      dev: false,
+      claudeSessions: new Map([
+        // claude + sidecar + EXPLICITLY opted out (e.g. AIORDIE_DISABLE_STICKY_NOTES=1)
+        // → STILL pumped: turn-binding is a control-plane invariant, not a UI feature.
+        ['ctl', { active: true, agent: 'claude', claudeBindSidecar: '/x/ctl.json', workingDir: '/proj', stickyNotesEnabled: false }],
+        ['ui', { active: true, agent: 'claude', workingDir: '/proj' }],            // claude, no sidecar
+        ['term', { active: true, agent: 'terminal', claudeBindSidecar: '/x/t.json', workingDir: '/proj' }],
+      ]),
+      // summariser disabled for everyone (e.g. --no-sticky-notes / node-llama-cpp missing)
+      stickyNoteSummarizer: { isEnabled: () => false },
+      _isAiAgent: ClaudeCodeWebServer.prototype._isAiAgent,
+      _isStickyEligible: ClaudeCodeWebServer.prototype._isStickyEligible,
+      _pumpStickyJsonl: async (id) => { pumped.push(id); },
+    };
+    await ClaudeCodeWebServer.prototype._pollStickyJsonl.call(srv);
+    // Only the sidecar-bound CLAUDE session is pumped for binding/turn events even
+    // with the summariser off and the tab opted out; a no-sidecar claude and a
+    // terminal (no claude binding) are skipped.
+    assert.deepStrictEqual(pumped.sort(), ['ctl']);
   });
 
   it('SIDECAR: _ownedClaudeSessions reserves a tab pinned via sidecar', function () {
