@@ -84,7 +84,10 @@ class MeshManager {
   _spawn() {
     return new Promise((resolve) => {
       const args = ['--port', String(this.port), '--hostname', this.hostname, '--statedir', this.stateDir];
-      this.proc = spawn(this.sidecar, args, { stdio: ['ignore', 'pipe', 'pipe'], env: this._childEnv });
+      // Pass the key to the sidecar via TS_AUTHKEY (enroll only); it's already
+      // stripped from this process + base child env, so it reaches only this child.
+      const env = this._authKey ? { ...this._childEnv, TS_AUTHKEY: this._authKey } : this._childEnv;
+      this.proc = spawn(this.sidecar, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
       let done = false;
       const timer = setTimeout(() => { if (!done) { done = true; console.warn('  \x1b[33mMesh: no URL within 60s — check key/connectivity.\x1b[0m'); resolve(); } }, URL_TIMEOUT_MS);
       this.proc.stdout.on('data', (d) => {
