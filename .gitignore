@@ -24,3 +24,5 @@ docs/factory/state/
 # upload endpoint runs against a fixture.
 test-results/
 e2e/.claude-attachments/
+# e2e artifact-panel test fixtures (created under repo root for validateArtifactPath)
+.tmp-e2e-artifact-*/

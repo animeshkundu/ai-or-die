@@ -267,6 +267,91 @@ function safeJson(value) {
   return JSON.stringify(value).replace(/<\//g, '<\\/');
 }
 
+function isMarkdownFile(file) {
+  const lower = String(file || '').toLowerCase();
+  return lower.endsWith('.md') || lower.endsWith('.markdown');
+}
+
+// Build a self-contained HTML shell that renders markdown SOURCE through the
+// existing client renderer (window.markdownRender.renderInto). This is the
+// fallback path for /view when an artifact is markdown rather than HTML — most
+// plans arrive already-HTML, but a markdown plan must NEVER be shown as raw
+// bytes. The shell is later passed through injectLavishSdk so the annotation
+// SDK loads on top.
+//
+// Absolute script paths are load-bearing: injectLavishSdk inserts a
+// <base href="/api/artifact/:id/asset/..."> and a path-relative
+// "markdown-render.js" would resolve against that asset base (404). The renderer
+// itself lazy-loads /vendor/marked.min.js + /vendor/purify.min.js with absolute
+// paths too, so they survive the base. All three are served by the pre-auth
+// express.static mount, so the sandboxed iframe loads them same-origin without a
+// token.
+function markdownArtifactShell(source, options) {
+  options = options || {};
+  const title = options.title ? String(options.title) : 'Markdown artifact';
+  const src = source == null ? '' : String(source);
+  return [
+    '<!doctype html>',
+    '<html lang="en">',
+    '<head>',
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width, initial-scale=1">',
+    '<title>' + escapeAttr(title) + '</title>',
+    '<style>',
+    ':root{color-scheme:light}',
+    'html,body{margin:0;padding:0;background:#fbfbfa;color:#1f2328}',
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Serif",Georgia,serif;',
+    'font-size:16px;line-height:1.65;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}',
+    '.md-reading-column{max-width:760px;margin:0 auto;padding:40px 28px 96px;box-sizing:border-box}',
+    '.fb-markdown-rendered,.fb-md-fallback{overflow-wrap:break-word;word-break:break-word}',
+    '.fb-markdown-rendered h1,.fb-markdown-rendered h2,.fb-markdown-rendered h3{line-height:1.25;font-weight:650;margin:1.6em 0 .6em}',
+    '.fb-markdown-rendered h1{font-size:1.9em;border-bottom:1px solid #e2e2df;padding-bottom:.3em}',
+    '.fb-markdown-rendered h2{font-size:1.45em;border-bottom:1px solid #e8e8e5;padding-bottom:.25em}',
+    '.fb-markdown-rendered h3{font-size:1.2em}',
+    '.fb-markdown-rendered p,.fb-markdown-rendered ul,.fb-markdown-rendered ol{margin:.7em 0}',
+    '.fb-markdown-rendered code,.fb-markdown-rendered pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}',
+    '.fb-markdown-rendered code{background:#f1f1ef;border-radius:4px;padding:.15em .35em;font-size:.88em}',
+    '.fb-markdown-rendered pre{background:#f6f6f4;border:1px solid #e6e6e3;border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.5}',
+    '.fb-markdown-rendered pre code{background:none;padding:0;font-size:.86em}',
+    '.fb-markdown-rendered blockquote{margin:.8em 0;padding:.1em 1em;border-left:3px solid #d7d7d3;color:#56595f}',
+    '.fb-markdown-rendered table{border-collapse:collapse;margin:1em 0;display:block;overflow:auto}',
+    '.fb-markdown-rendered th,.fb-markdown-rendered td{border:1px solid #e2e2df;padding:6px 12px}',
+    '.fb-markdown-rendered img{max-width:100%}',
+    '.fb-markdown-rendered a{color:#0b66c3}',
+    '.fb-md-loading{color:#8a8d92;font-size:14px}',
+    '.fb-md-feature-unavailable{color:#9a6b00;background:#fff7e0;border:1px solid #f0dca0;border-radius:6px;padding:8px 10px;font-size:13px;margin:0 0 10px}',
+    '.fb-md-fallback pre{white-space:pre-wrap;word-break:break-word;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;background:#f6f6f4;border:1px solid #e6e6e3;border-radius:8px;padding:14px 16px;margin:0}',
+    '</style>',
+    '</head>',
+    '<body>',
+    '<main class="md-reading-column"><div id="md-artifact-root" class="fb-md-loading">Rendering markdown...</div></main>',
+    '<script type="application/json" id="md-artifact-source">' + safeJson(src) + '</script>',
+    '<script src="/markdown-render.js"></script>',
+    '<script>(function(){',
+    'function boot(){',
+    'var root=document.getElementById("md-artifact-root");',
+    'var raw=document.getElementById("md-artifact-source");',
+    'var source="";try{source=JSON.parse(raw.textContent||\'""\');}catch(e){source=raw.textContent||"";}',
+    'if(!root)return;',
+    'if(window.markdownRender&&typeof window.markdownRender.renderInto==="function"){',
+    'window.markdownRender.renderInto(root,source,{enableMermaid:true,enableKatex:true}).catch(function(){renderRaw(root,source);});',
+    '}else{renderRaw(root,source);}',
+    '}',
+    'function renderRaw(root,source){',
+    'while(root.firstChild)root.removeChild(root.firstChild);',
+    'root.className="fb-md-fallback";',
+    'var note=document.createElement("div");note.className="fb-md-feature-unavailable";',
+    'note.textContent="Markdown renderer unavailable; showing source.";',
+    'var pre=document.createElement("pre");pre.textContent=source;',
+    'root.appendChild(note);root.appendChild(pre);',
+    '}',
+    'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",boot,{once:true});}else{boot();}',
+    '})();</script>',
+    '</body>',
+    '</html>',
+  ].join('\n');
+}
+
 function injectLavishSdk(html, options) {
   options = options || {};
   const sessionId = options.sessionId;
@@ -574,8 +659,14 @@ function createArtifactReviewRouter(options) {
     try {
       const stat = fs.statSync(validation.path);
       if (!stat.isFile()) return res.status(400).json({ error: 'file must be a regular file' });
-      html = fs.readFileSync(validation.path, 'utf8');
+      const raw = fs.readFileSync(validation.path, 'utf8');
       review.file = validation.path;
+      // Markdown FALLBACK: a .md/.markdown artifact is wrapped in a self-contained
+      // renderer shell (never shown as raw bytes). HTML and everything else keep
+      // the raw path. Both then flow through injectLavishSdk so annotation works.
+      html = isMarkdownFile(validation.path)
+        ? markdownArtifactShell(raw, { title: path.basename(validation.path) })
+        : raw;
     } catch (err) {
       if (err && err.code === 'ENOENT') return res.status(404).json({ error: 'file not found' });
       return res.status(500).json({ error: 'read failed', message: err.message });
@@ -834,5 +925,7 @@ module.exports = {
   createArtifactReviewRouter,
   feedbackHasData,
   injectLavishSdk,
+  isMarkdownFile,
+  markdownArtifactShell,
   resolveArtifactAsset,
 };

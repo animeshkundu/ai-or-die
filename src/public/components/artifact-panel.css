@@ -1,5 +1,7 @@
-/* Artifact-review panel (Track A / ADR-0033). Per-tab overlay anchored bottom-right
-   of the terminal wrapper, mirroring the sticky-note card's placement language. */
+/* Artifact-review panel (Track A / ADR-0033). A floating window inside the
+   terminal wrapper: drag the header to move, drag the corner to resize, minimize
+   to the header bar. Position/size/minimized persist in localStorage. Default
+   placement is bottom-right (overridden once the user moves it). */
 .artifact-panel {
   position: absolute;
   right: 16px;
@@ -7,7 +9,9 @@
   width: 420px;
   max-width: calc(100% - 32px);
   height: 60%;
-  max-height: 70vh;
+  max-height: 80vh;
+  min-width: 320px;
+  min-height: 240px;
   display: flex;
   flex-direction: column;
   background: var(--panel-bg, #1b1d23);
@@ -21,6 +25,13 @@
 }
 .artifact-panel[hidden] { display: none; }
 
+/* Minimized: collapse to just the header bar. */
+.artifact-panel--minimized {
+  height: auto !important;
+  min-height: 0;
+  resize: none;
+}
+
 .artifact-panel__header {
   display: flex;
   align-items: center;
@@ -28,9 +39,18 @@
   padding: 8px 10px;
   background: var(--panel-header-bg, #232630);
   border-bottom: 1px solid var(--panel-border, #33363f);
+  cursor: move;
+  user-select: none;
+  flex: 0 0 auto;
 }
+.artifact-panel--minimized .artifact-panel__header { border-bottom: none; }
 .artifact-panel__title { font-weight: 600; }
-.artifact-panel__presence { color: #4ade80; font-size: 11px; }
+.artifact-panel__presence {
+  font-size: 11px;
+  color: var(--text-muted, #9aa0aa);
+}
+.artifact-panel__presence[data-state="listening"] { color: #4ade80; }
+.artifact-panel__presence[data-state="working"] { color: #fbbf24; }
 .artifact-panel__spacer { flex: 1; }
 .artifact-panel__btn {
   background: transparent;
@@ -43,13 +63,77 @@
   border-radius: 6px;
 }
 .artifact-panel__btn:hover { background: rgba(255, 255, 255, 0.08); }
+.artifact-panel__btn:focus-visible { outline: 2px solid var(--accent-default, #2563eb); outline-offset: 1px; }
+
+/* The body holds everything below the header; hidden when minimized. */
+.artifact-panel__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.artifact-panel__body[hidden] { display: none; }
 
 .artifact-panel__frame {
   flex: 1;
   width: 100%;
   border: none;
   background: #fff;
+  min-height: 0;
 }
+
+/* Queued-annotation pills + Send. */
+.artifact-panel__pillbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--panel-border, #33363f);
+  background: var(--panel-bg, #1b1d23);
+}
+.artifact-panel__pillbar[hidden] { display: none; }
+.artifact-panel__pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  max-height: 84px;
+  overflow-y: auto;
+}
+.artifact-panel__pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  border: 1px solid var(--border-hover, #484f58);
+  border-radius: 999px;
+  background: var(--surface-elevated, #21262d);
+  color: var(--panel-fg, #e6e6e6);
+  padding: 4px 6px 4px 10px;
+  font-size: 12px;
+}
+.artifact-panel__pill-text {
+  display: block;
+  max-width: 180px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.artifact-panel__pill-x {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  padding: 0;
+  background: var(--panel-border, #33363f);
+  color: var(--panel-fg, #e6e6e6);
+  line-height: 18px;
+  font-size: 13px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.artifact-panel__pill-x:hover { background: rgba(255, 255, 255, 0.16); }
 
 .artifact-panel__chat {
   max-height: 30%;
@@ -57,6 +141,7 @@
   padding: 6px 10px;
   border-top: 1px solid var(--panel-border, #33363f);
   background: var(--panel-bg, #1b1d23);
+  flex: 0 0 auto;
 }
 .artifact-panel__msg { margin: 3px 0; display: flex; gap: 6px; align-items: baseline; }
 .artifact-panel__role {
@@ -75,6 +160,7 @@
   gap: 6px;
   padding: 8px 10px;
   border-top: 1px solid var(--panel-border, #33363f);
+  flex: 0 0 auto;
 }
 .artifact-panel__input {
   flex: 1;
@@ -86,11 +172,29 @@
   font-size: 13px;
 }
 .artifact-panel__send {
-  background: var(--accent, #2563eb);
+  background: var(--accent-default, #2563eb);
   color: #fff;
   border: none;
   border-radius: 6px;
   padding: 6px 12px;
   cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
 }
-.artifact-panel__send:hover { filter: brightness(1.1); }
+.artifact-panel__send:hover:not(:disabled) { filter: brightness(1.1); }
+.artifact-panel__send:disabled { opacity: 0.5; cursor: not-allowed; }
+.artifact-panel__send--note { font-weight: 500; }
+
+/* Resize handle, bottom-right corner. */
+.artifact-panel__resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  z-index: 2;
+  background:
+    linear-gradient(135deg, transparent 0 50%, var(--border-hover, #484f58) 50% 60%, transparent 60% 70%, var(--border-hover, #484f58) 70% 80%, transparent 80%);
+}
+.artifact-panel__resize[hidden] { display: none; }
