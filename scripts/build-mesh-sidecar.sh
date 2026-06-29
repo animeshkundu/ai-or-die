@@ -1,22 +1,36 @@
 #!/usr/bin/env bash
-# Build the aiordie-mesh tsnet sidecar for all platforms and self-sign on
-# Windows. Output: dist/mesh/<os>-<arch>/aiordie-mesh[.exe]. ai-or-die fetches
-# the matching binary into %LOCALAPPDATA%/ai-or-die/bin and supervises it.
+# Cross-build the aiordie-mesh tsnet sidecar for all supported platforms and
+# emit SHA-256 checksums. Go cross-compiles from one runner, so this produces
+# every target binary plus a checksums manifest the client verifies against.
+#
+# Output (uploaded to the GitHub release by release-on-main.yml):
+#   dist/mesh/aiordie-mesh-<plat>-<arch>[.exe]
+#   dist/mesh/aiordie-mesh-checksums.txt   ("<sha256>  <assetname>" per line)
 set -euo pipefail
-cd "$(dirname "$0")/../mesh"
-out="../dist/mesh"; mkdir -p "$out"
-build() { GOOS=$1 GOARCH=$2 go build -ldflags='-s -w' -o "$out/$1-$2/aiordie-mesh$3" .; echo "built $1-$2"; }
-build windows amd64 .exe
-build windows arm64 .exe
-build linux   amd64 ""
-build linux   arm64 ""
-build darwin  amd64 ""
-build darwin  arm64 ""
-# Self-sign Windows binaries for fleet reputation (cert imported on enroll).
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root/mesh"
+out="$root/dist/mesh"; rm -rf "$out"; mkdir -p "$out"
+
+go mod tidy   # generate go.sum for a reproducible build
+
+emit() {  # <goos> <goarch> <plat> <arch> <ext>
+  local name="aiordie-mesh-$3-$4$5"
+  GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$out/$name" .
+  echo "built $name"
+}
+emit windows amd64 windows amd64 .exe
+emit windows arm64 windows arm64 .exe
+emit linux   amd64 linux   amd64 ""
+emit linux   arm64 linux   arm64 ""
+emit darwin  amd64 darwin  amd64 ""
+emit darwin  arm64 darwin  arm64 ""
+
+# Self-sign Windows binaries when a cert is provided (fleet reputation).
 if command -v signtool >/dev/null 2>&1 && [ -n "${AIORDIE_SIGN_PFX:-}" ]; then
-  for b in "$out"/windows-*/aiordie-mesh.exe; do
+  for b in "$out"/aiordie-mesh-windows-*; do
     signtool sign /f "$AIORDIE_SIGN_PFX" /p "${AIORDIE_SIGN_PW:-}" /fd sha256 "$b" && echo "signed $b"
   done
-else
-  echo "signtool/cert absent — shipping unsigned (runs, but no SmartScreen reputation)"
 fi
+
+( cd "$out" && sha256sum aiordie-mesh-* > aiordie-mesh-checksums.txt )
+echo "checksums:"; cat "$out/aiordie-mesh-checksums.txt"
