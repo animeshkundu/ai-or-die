@@ -36,6 +36,7 @@ program
   .option('--terminal-alias <name>', 'display alias for Terminal (default: env TERMINAL_ALIAS or "Terminal")')
   .option('--tunnel', 'enable dev tunnel (requires devtunnel CLI installed)')
   .option('--tunnel-allow-anonymous', 'allow anonymous access to dev tunnel')
+  .option('--mesh', 'expose this instance over a permanent Tailscale mesh (userspace; requires tailscale installed; set AIORDIE_TS_AUTHKEY to enroll)')
   .option('--no-stt', 'disable local speech-to-text (on by default; downloads ~670MB Parakeet V3 model on first use)')
   .option('--stt-endpoint <url>', 'use external STT endpoint (OpenAI-compatible)')
   .option('--stt-model-dir <path>', 'custom directory for STT model files')
@@ -88,9 +89,10 @@ async function main() {
     }
 
     // Handle authentication logic
-    // Tunnel mode disables auth — the tunnel itself controls access
+    // Tunnel mode disables auth — the tunnel controls access. Mesh KEEPS auth
+    // on (ACL + Bearer layered); --mesh wins over --tunnel here.
     let authToken = null;
-    let noAuth = options.disableAuth === true || options.tunnel === true;
+    let noAuth = options.disableAuth === true || (options.tunnel === true && !options.mesh);
 
     if (!noAuth) {
       if (options.auth) {
@@ -131,6 +133,9 @@ async function main() {
       // the display on.
       keepalive: options.keepalive !== false && process.env.AIORDIE_DISABLE_KEEPALIVE !== '1',
       keepaliveDisplay: options.keepaliveDisplay === true || process.env.AIORDIE_KEEPALIVE_DISPLAY === '1',
+      // Mesh binds loopback-only always: the tailnet `serve` proxy reaches the
+      // port, the LAN never does (even with --https). Other modes: all interfaces.
+      bindHost: options.mesh ? '127.0.0.1' : undefined,
     };
 
     console.log('Starting ai-or-die...');
@@ -191,6 +196,22 @@ async function main() {
       try { if (open) await open(url); } catch (error) {
         console.warn('  Could not automatically open browser:', error.message);
       }
+    }
+
+    // Mesh: permanent Tailscale reachability. Coexists with --tunnel (mesh for
+    // owned devices, tunnel fallback for borrowed ones). Auth token stays ON.
+    if (options.mesh) {
+      const { MeshManager } = require('../src/mesh-manager');
+      const mesh = new MeshManager({
+        port,
+        dev: options.dev,
+        onUrl: (meshUrl) => {
+          const t = authToken ? `${meshUrl}?token=${authToken}` : meshUrl;
+          console.log(`\n  \x1b[1m\x1b[32mMesh ready:\x1b[0m \x1b[1m\x1b[4m${t}\x1b[0m\n`);
+        },
+      });
+      app.setMeshManager(mesh);
+      await mesh.start();
     }
 
     console.log('\nPress Ctrl+C to stop the server\n');
