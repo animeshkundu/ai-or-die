@@ -139,6 +139,18 @@ class ClaudeCodeWebServer {
     let _baseFolder = process.cwd();
     try { _baseFolder = fs.realpathSync(_baseFolder); } catch (_) { /* keep cwd on failure */ }
     this.baseFolder = _baseFolder;
+    // Extra roots the ARTIFACT review routes (open/view only) may read, beyond
+    // baseFolder. Plan files live under ~/.claude/plans (outside the workspace),
+    // and an agent that can open them already has terminal/Read access to them —
+    // so the workspace sandbox would only block a legitimate review, not a real
+    // exfil path. General file-browser validatePath stays strict; this is
+    // artifact-scoped. Extend via AIORDIE_ARTIFACT_EXTRA_ROOTS (path-sep list).
+    this.artifactExtraRoots = (() => {
+      const roots = [path.join(os.homedir(), '.claude', 'plans')];
+      const extra = (process.env.AIORDIE_ARTIFACT_EXTRA_ROOTS || '').split(path.delimiter);
+      for (const r of extra) { if (r && r.trim()) roots.push(r.trim()); }
+      return roots.map((r) => { try { return fs.realpathSync(r); } catch (_) { return path.resolve(r); } });
+    })();
     // Session duration in hours (default to 5 hours from first message)
     this.sessionDurationHours = parseFloat(process.env.CLAUDE_SESSION_HOURS || options.sessionHours || 5);
     
@@ -723,6 +735,47 @@ class ClaudeCodeWebServer {
     return { valid: true, path: canonicalPath };
   }
 
+  /** True when targetPath (canonicalized) is within `root` (canonicalized). */
+  isPathWithinRoot(targetPath, root) {
+    try {
+      const resolvedTarget = this._canonicalizePathSync(targetPath);
+      const resolvedRoot = this._canonicalizePathSync(root);
+      const relative = path.relative(resolvedRoot, resolvedTarget);
+      return !relative.startsWith('..') && !path.isAbsolute(relative);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * Path validator for the ARTIFACT review routes (open/view): allows baseFolder
+   * (like validatePath) OR any configured artifactExtraRoots (plan dir etc.), so
+   * a plan stored outside the workspace can be reviewed. Same symlink
+   * canonicalization as validatePath; the general file sandbox is unchanged.
+   */
+  validateArtifactPath(targetPath) {
+    const base = this.validatePath(targetPath);
+    if (base.valid) return base;
+    // baseFolder rejected it — retry against the extra roots using the same
+    // canonicalization validatePath applied.
+    if (!targetPath) return base;
+    let canonicalPath = path.resolve(targetPath);
+    try {
+      if (fs.existsSync(canonicalPath)) {
+        canonicalPath = fs.realpathSync(canonicalPath);
+      } else {
+        const parent = path.dirname(canonicalPath);
+        if (parent && parent !== canonicalPath && fs.existsSync(parent)) {
+          canonicalPath = path.join(fs.realpathSync(parent), path.basename(canonicalPath));
+        }
+      }
+    } catch (_) { /* keep lexical form */ }
+    for (const root of this.artifactExtraRoots || []) {
+      if (this.isPathWithinRoot(canonicalPath, root)) return { valid: true, path: canonicalPath };
+    }
+    return { valid: false, error: 'Access denied: Path is outside the allowed directory' };
+  }
+
   /**
    * Walk up from a file path looking for a `.git` entry (directory in a
    * regular repo, file in a worktree). Returns the absolute path of the
@@ -1202,7 +1255,7 @@ class ClaudeCodeWebServer {
     this.app.use('/api/control', createControlRouter(this._buildControlDeps()));
     this.app.use('/api/artifact', createArtifactReviewRouter({
       store: this.artifactReviews,
-      validatePath: (p) => this.validatePath(p),
+      validatePath: (p) => this.validateArtifactPath(p),
       mintAssetToken: (sid) => this._artifactAssetSigner.mint(sid),
       broadcastToSession: (sessionId, obj) => this.broadcastToSession(sessionId, obj),
       pollHoldMs: this.artifactPollHoldMs,
