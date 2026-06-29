@@ -5201,13 +5201,18 @@ class ClaudeCodeWebServer {
         if (sidecarPath) terminalExtraEnv.AIORDIE_CLAUDE_BIND = sidecarPath;
       }
 
-      // Artifact-review parity for the manual (non-fleet) claude tab: a normally
-      // started claude tab gets the same env trio that _controlStartAgent injects,
-      // so the in-tab agent's artifact_* tools activate standalone — no control
-      // plane required. Injected when auth is set OR --disable-auth (routes are
-      // public then), so the viewer works standalone. Token leak to nested
-      // children is blocked by github-router's STRIPPED_PARENT_ENV_KEYS.
-      const claudeArtifactEnv = toolName === 'claude' ? this._artifactEnvForSession(sessionId) : {};
+      // Artifact-review parity for the manual (non-fleet) claude tab AND a
+      // terminal tab where the user runs `github-router claude` themselves: both
+      // get the env trio _controlStartAgent injects, so the in-tab agent's
+      // artifact_* tools activate standalone — no control plane required. For a
+      // terminal tab the trio rides the shell env and the github-router PROXY
+      // (which serves the artifact_* MCP tools) inherits it; the proxy strips
+      // AIORDIE_TOKEN only from the claude CHILD it spawns, so a nested re-invoke
+      // still can't hijack. Per-tab sessionId keeps multiple terminal claudes
+      // isolated. Injected when auth is set OR --disable-auth (routes are public
+      // then), so the viewer works standalone.
+      const claudeArtifactEnv = (toolName === 'claude' || toolName === 'terminal')
+        ? this._artifactEnvForSession(sessionId) : {};
 
       // Rendered-screen buffer so a refresh/reconnect can repaint the last
       // screen even when the session is idle and the raw outputBuffer is empty
