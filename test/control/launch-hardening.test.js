@@ -30,6 +30,7 @@ describe('F6 control-spawned pager/prompt hardening', function () {
       _maybeStartStickyNotes: () => {},
       _controlReapTrustPrompt: () => {},
       _controlError: proto._controlError,
+      _artifactEnvForSession: proto._artifactEnvForSession,
     };
     await proto._controlStartAgent.call(fakeThis, sid, agent, {});
     return captured.extraEnv;
