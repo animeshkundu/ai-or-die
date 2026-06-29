@@ -172,6 +172,14 @@
       this._iframe.src = review.viewUrl + sep + '_r=' + Date.now();
     }
 
+    // Server-driven auto live-reload: file changed under review. Only the active
+    // tab's iframe is cache-busted; the chat/feedback box is untouched.
+    reloadReview(message) {
+      const sessionId = message && message.sessionId ? String(message.sessionId) : this.activeSessionId;
+      if (!sessionId || sessionId !== this.activeSessionId || !this.reviews.has(sessionId)) return;
+      this.reload();
+    }
+
     // ---- iframe <-> server bridge ----------------------------------------
     _handleIframeMessage(event) {
       const data = event && event.data;

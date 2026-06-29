@@ -487,7 +487,45 @@ function createArtifactReviewRouter(options) {
   if (typeof validatePath !== 'function') throw new TypeError('validatePath is required');
   if (typeof mintAssetToken !== 'function') throw new TypeError('mintAssetToken is required');
 
+  // Auto live-reload: one chokidar watcher per session, scoped to the canonical
+  // artifact file. On a settled write we broadcast a reload SIGNAL (the panel
+  // cache-busts the iframe; the feedback box lives outside it and survives).
+  // Capped, replaced on re-open, and torn down on /end. Best-effort: chokidar
+  // is loaded lazily so tests/headless runs without it degrade to no reload.
+  const MAX_WATCHERS = 64;
+  const watchers = new Map(); // sessionId -> { watcher, file }
+  function stopWatch(sessionId) {
+    const w = watchers.get(sessionId);
+    if (!w) return;
+    watchers.delete(sessionId);
+    try { w.watcher.close(); } catch (_) { /* already closed */ }
+  }
+  function startWatch(sessionId, file) {
+    const existing = watchers.get(sessionId);
+    if (existing) { if (existing.file === file) return; stopWatch(sessionId); }
+    if (watchers.size >= MAX_WATCHERS) { const first = watchers.keys().next().value; if (first) stopWatch(first); }
+    let chokidar;
+    try { chokidar = require('chokidar'); } catch (_) { return; }
+    let watcher;
+    try {
+      watcher = chokidar.watch(file, {
+        ignoreInitial: true,
+        depth: 0,
+        awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 30 },
+      });
+    } catch (_) { return; }
+    const onChange = () => {
+      if (!store.get(sessionId)) { stopWatch(sessionId); return; }
+      broadcastToSession(sessionId, { type: 'artifact_review_reload', sessionId });
+    };
+    watcher.on('change', onChange);
+    watcher.on('add', onChange);
+    watcher.on('error', () => stopWatch(sessionId));
+    watchers.set(sessionId, { watcher, file });
+  }
+
   const router = express.Router();
+
 
   router.post('/:sessionId/open', (req, res) => {
     const sessionId = req.params.sessionId;
@@ -510,6 +548,7 @@ function createArtifactReviewRouter(options) {
     }
 
     const review = store.open(sessionId, validation.path);
+    startWatch(sessionId, validation.path);
     const viewUrl = artifactPath(sessionId, '/view', req);
     broadcastToSession(sessionId, {
       type: 'artifact_review_opened',
@@ -688,6 +727,7 @@ function createArtifactReviewRouter(options) {
   router.post('/:sessionId/end', (req, res) => {
     const sessionId = req.params.sessionId;
     const review = store.end(sessionId);
+    stopWatch(sessionId);
     if (!review) return res.status(404).json({ error: 'artifact review not found' });
     broadcastToSession(sessionId, { type: 'artifact_review_ended', sessionId });
     res.json({ ok: true, status: review.status });
