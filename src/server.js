@@ -4481,6 +4481,9 @@ class ClaudeCodeWebServer {
       AIORDIE_BASE_URL: `${this.useHttps ? 'https' : 'http'}://127.0.0.1:${this.port}`,
       AIORDIE_TOKEN: this.auth || 'noauth',
       AIORDIE_SESSION_ID: sessionId,
+      // Loopback self-signed cert: tell github-router's artifact client to relax
+      // TLS verification for this instance (it fails-closed for non-loopback).
+      AIORDIE_INSECURE_TLS: this.useHttps ? '1' : '0',
     };
   }
 
