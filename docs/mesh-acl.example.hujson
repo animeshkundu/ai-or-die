@@ -1,0 +1,18 @@
+// ai-or-die mesh ACL (Tailscale) — default-deny, least-privilege.
+// Apply at https://login.tailscale.com/admin/acls. ai-or-die instances enroll
+// with a tagged auth key (tag:aiordie). Only your own devices (tag:owner) may
+// reach them, only on the served port. Instances cannot reach each other.
+{
+  "tagOwners": {
+    "tag:aiordie": ["autogroup:admin"],
+    "tag:owner":   ["autogroup:admin"]
+  },
+  "acls": [
+    // Your laptops/phones → ai-or-die instances, app port only.
+    { "action": "accept", "src": ["tag:owner"], "dst": ["tag:aiordie:7777", "tag:aiordie:443"] }
+    // No instance→instance rule: ai-or-die nodes are isolated from each other.
+  ],
+  // Create keys as reusable + tagged: tag:aiordie. NOT ephemeral (those vanish
+  // on restart and the MagicDNS name churns). Set AIORDIE_TS_AUTHKEY=<key>.
+  "ssh": []
+}

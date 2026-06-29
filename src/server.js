@@ -117,6 +117,9 @@ const BACKPRESSURE_LIMIT_BG = 128 * 1024;
 class ClaudeCodeWebServer {
   constructor(options = {}) {
     this.port = options.port != null ? options.port : 7777;
+    // Bind host: null = all interfaces (default; devtunnel/LAN). Mesh mode pins
+    // '127.0.0.1' so only the tailnet `serve` proxy reaches the port, not the LAN.
+    this.bindHost = options.bindHost || null;
     this.auth = options.auth;
     this.noAuth = options.noAuth || false;
     this.dev = options.dev || false;
@@ -168,6 +171,7 @@ class ClaudeCodeWebServer {
       onEvent: (sessionId, event) => this.handleVSCodeTunnelEvent(sessionId, event),
     });
     this.tunnelManager = null; // Set via setTunnelManager() from CLI entry point
+    this.meshManager = null;   // Set via setMeshManager() from CLI entry point
     this.installAdvisor = new InstallAdvisor();
     // Pure test-runner detection — keeps heavy native/local-model subsystems
     // (STT, sticky-notes) inert in the suite so it never downloads models or
@@ -450,6 +454,10 @@ class ClaudeCodeWebServer {
     this.tunnelManager = tm;
   }
 
+  setMeshManager(mm) {
+    this.meshManager = mm;
+  }
+
   async saveSessionsToDisk(force = false) {
     if (force) {
       this.sessionStore.markDirty();
@@ -560,6 +568,7 @@ class ClaudeCodeWebServer {
       Promise.resolve().then(() => this.stickyNoteEngine.shutdown()),
       Promise.resolve().then(() => this.sttEngine.shutdown()),
       Promise.resolve().then(() => (this.tunnelManager ? this.tunnelManager.stop() : undefined)),
+      Promise.resolve().then(() => (this.meshManager ? this.meshManager.stop() : undefined)),
     ]);
     await this.close();
     clearTimeout(forceExitTimer);
@@ -3420,8 +3429,18 @@ class ClaudeCodeWebServer {
       this.handleWebSocketConnection(ws, req);
     });
 
+    // WS keepalive: DERP relays (mesh mode) drop idle sockets; a server ping
+    // every 15s keeps long-lived terminal connections alive and reaps dead ones.
+    this._wsKeepalive = setInterval(() => {
+      for (const ws of this.wss.clients) {
+        if (ws.readyState === WebSocket.OPEN) { try { ws.ping(); } catch (_) {} }
+      }
+    }, 15000);
+    if (this._wsKeepalive.unref) this._wsKeepalive.unref();
+    this.wss.on('close', () => clearInterval(this._wsKeepalive));
+
     return new Promise((resolve, reject) => {
-      server.listen(this.port, (err) => {
+      const onListen = (err) => {
         if (err) {
           reject(err);
         } else {
@@ -3431,7 +3450,10 @@ class ClaudeCodeWebServer {
           this.keepaliveManager.start();
           resolve(server);
         }
-      });
+      };
+      // bindHost null → all interfaces (default). Mesh pins 127.0.0.1.
+      if (this.bindHost) server.listen(this.port, this.bindHost, onListen);
+      else server.listen(this.port, onListen);
     });
   }
 
