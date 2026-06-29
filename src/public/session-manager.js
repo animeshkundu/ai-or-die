@@ -737,6 +737,7 @@ class SessionTabManager {
         tab.classList.add('active');
         tab.setAttribute('aria-selected', 'true');
         this.activeTabId = sessionId;
+        try { localStorage.setItem('cc-active-session', sessionId); } catch (_) { /* private mode */ }
         this.ensureTabVisible(sessionId);
 
         // Update last accessed timestamp and clear unread indicator

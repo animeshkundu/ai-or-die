@@ -3944,7 +3944,12 @@ class ClaudeCodeWebServer {
     this._pushEvictionEntry(claudeSessionId); // PROC-04
     session.lastAccessed = Date.now();
 
-    // Send session info and replay buffer
+    // Send session info and replay buffer. Prefer a live rendered tail, but
+    // never block the join on a slow drain — fall back to the stored snapshot.
+    let renderedSnapshot = session.renderedSnapshot || null;
+    if (session._ctlTranscript) {
+      renderedSnapshot = (await this._peekWithTimeout(session._ctlTranscript, 200, 300)) || renderedSnapshot;
+    }
     this.sendToWebSocket(wsInfo.ws, {
       type: 'session_joined',
       sessionId: claudeSessionId,
@@ -3954,6 +3959,7 @@ class ClaudeCodeWebServer {
       wasActive: session.wasActive || false,
       agent: session.agent || null,
       outputBuffer: session.outputBuffer.slice(-200), // Send last 200 lines
+      renderedSnapshot, // rendered last screen so idle/empty-buffer joins repaint
       stickyNote: session.stickyNote || null,
       autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
       stickyNotesEnabled: session.stickyNotesEnabled !== false,
@@ -4462,6 +4468,43 @@ class ClaudeCodeWebServer {
     setTimeout(tick, 1500);
   }
 
+  // Artifact-review env trio for a spawned claude session. Injected whenever the
+  // server can serve /api/artifact — that's when auth is set OR auth is disabled
+  // (noAuth leaves the routes public, server.js:1179). Without it the in-tab
+  // agent's artifact_* tools stay dark and the viewer never opens. Token is the
+  // real bearer, or a 'noauth' sentinel under --disable-auth (the routes ignore
+  // it). Returns {} when the server is closed (auth required but unset), so a
+  // misconfigured instance never points the agent at routes it can't reach.
+  _artifactEnvForSession(sessionId) {
+    if (!this.auth && !this.noAuth) return {};
+    return {
+      AIORDIE_BASE_URL: `${this.useHttps ? 'https' : 'http'}://127.0.0.1:${this.port}`,
+      AIORDIE_TOKEN: this.auth || 'noauth',
+      AIORDIE_SESSION_ID: sessionId,
+    };
+  }
+
+  // Read a transcript's rendered tail, but never block longer than `ms` — a
+  // wedged xterm drain must not stall a join or strand a dispose. Resolves null
+  // on timeout/error so callers fall back to the stored snapshot.
+  _peekWithTimeout(t, lines, ms) {
+    return Promise.race([
+      Promise.resolve().then(() => t.peek(lines)).catch(() => null),
+      new Promise((r) => setTimeout(() => r(null), ms)),
+    ]);
+  }
+
+  // Capture the last rendered screen, then ALWAYS dispose — so a refresh
+  // repaints an exited session, without leaking the buffer if peek hangs.
+  _persistSnapshotAndDispose(s) {
+    const t = s._ctlTranscript;
+    if (!t) return;
+    s._ctlTranscript = null;
+    this._peekWithTimeout(t, 200, 1000)
+      .then((snap) => { if (snap) s.renderedSnapshot = snap; })
+      .finally(() => { try { t.dispose(); } catch (_) { /* already disposed */ } });
+  }
+
   // Headless agent spawn (no WebSocket): reuses the same bridge.startSession +
   async _controlStartAgent(sessionId, toolName, opts = {}) {
     const session = this.claudeSessions.get(sessionId);
@@ -4500,12 +4543,9 @@ class ClaudeCodeWebServer {
       const sidecar = this._prepareClaudeBindSidecar(sessionId, session);
       if (sidecar) extraEnv.AIORDIE_CLAUDE_BIND = sidecar; // deterministic JSONL turn detection (ADR-0026)
     } catch (_) { /* sidecar best-effort */ }
-    if (this.auth) {
-      // So a github-router-claude spawned here can drive the artifact-review loop.
-      extraEnv.AIORDIE_BASE_URL = `${this.useHttps ? 'https' : 'http'}://127.0.0.1:${this.port}`;
-      extraEnv.AIORDIE_TOKEN = this.auth;
-      extraEnv.AIORDIE_SESSION_ID = sessionId;
-    }
+    // So a github-router-claude spawned here can drive the artifact-review loop
+    // (works standalone and under --disable-auth; see _artifactEnvForSession).
+    Object.assign(extraEnv, this._artifactEnvForSession(sessionId));
 
     try { session._ctlTranscript = new TranscriptBuffer({ cols, rows }); } catch (_) { session._ctlTranscript = null; }
     session.active = true;
@@ -4540,7 +4580,9 @@ class ClaudeCodeWebServer {
             s.agent = null;
             s._lastExit = { code, signal };
             this.sessionStore.markDirty();
-            try { if (s._ctlTranscript) { s._ctlTranscript.dispose(); s._ctlTranscript = null; } } catch (_) { /* isolate */ }
+            // Persist the last rendered screen before disposing so a refresh
+            // repaints an idle/exited session instead of blank (always disposes).
+            this._persistSnapshotAndDispose(s);
             // F12: stop the coarse idle-debounce timer for unbound sessions.
             try { if (s._ctlIdleTimer) { clearTimeout(s._ctlIdleTimer); s._ctlIdleTimer = null; } } catch (_) { /* isolate */ }
           }
@@ -5162,15 +5204,15 @@ class ClaudeCodeWebServer {
       // Artifact-review parity for the manual (non-fleet) claude tab: a normally
       // started claude tab gets the same env trio that _controlStartAgent injects,
       // so the in-tab agent's artifact_* tools activate standalone — no control
-      // plane required. Always-on when auth is set; never injected without auth
-      // (so the artifact routes stay non-public). Token leak to nested children
-      // is blocked by github-router's STRIPPED_PARENT_ENV_KEYS.
-      const claudeArtifactEnv = {};
-      if (toolName === 'claude' && this.auth) {
-        claudeArtifactEnv.AIORDIE_BASE_URL = `${this.useHttps ? 'https' : 'http'}://127.0.0.1:${this.port}`;
-        claudeArtifactEnv.AIORDIE_TOKEN = this.auth;
-        claudeArtifactEnv.AIORDIE_SESSION_ID = sessionId;
-      }
+      // plane required. Injected when auth is set OR --disable-auth (routes are
+      // public then), so the viewer works standalone. Token leak to nested
+      // children is blocked by github-router's STRIPPED_PARENT_ENV_KEYS.
+      const claudeArtifactEnv = toolName === 'claude' ? this._artifactEnvForSession(sessionId) : {};
+
+      // Rendered-screen buffer so a refresh/reconnect can repaint the last
+      // screen even when the session is idle and the raw outputBuffer is empty
+      // (manual-tab parity with the control path; mirrors 4523).
+      try { session._ctlTranscript = new TranscriptBuffer({ cols: cols || 80, rows: rows || 24 }); } catch (_) { session._ctlTranscript = null; }
 
       const osc7Hooks = (toolName === 'terminal') ? {
         validatePath: (p) => this.validatePath(p),
@@ -5202,6 +5244,7 @@ class ClaudeCodeWebServer {
           const currentSession = this.claudeSessions.get(sessionId);
           if (!currentSession) return;
           currentSession.outputBuffer.push(data);
+          try { if (currentSession._ctlTranscript) currentSession._ctlTranscript.write(data); } catch (_) { /* isolate */ }
           this.sessionStore.markDirty();
           this._throttledOutputBroadcast(sessionId, data);
           // Tap for the local-LLM summariser (off the hot path: this only
@@ -5231,6 +5274,9 @@ class ClaudeCodeWebServer {
             currentSession.agent = null;
             currentSession._lastExit = { code, signal };
             this.sessionStore.markDirty();
+            // Persist the last rendered screen before disposing so a later
+            // refresh/join repaints an idle session instead of going blank.
+            this._persistSnapshotAndDispose(currentSession);
           }
           // Final sticky-note flush to capture the "done" state, then stop.
           this.stickyNoteSummarizer.flushExit(sessionId);

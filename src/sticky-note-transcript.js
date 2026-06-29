@@ -99,6 +99,31 @@ class TranscriptBuffer {
     return result;
   }
 
+  /**
+   * Like snapshot() but does NOT reset the new-output counters — a read-only
+   * view of the rendered tail for repaint-on-join, so it never steals delta
+   * lines from the sticky-note volume trigger.
+   * @param {number} [maxLines]
+   * @returns {Promise<string>}
+   */
+  async peek(maxLines) {
+    const limit = maxLines || this._maxDeltaLines;
+    await this._drain();
+    const buf = this._term.buffer.active;
+    const cursorRow = buf.baseY + buf.cursorY;
+    const rowText = (i) => {
+      const line = buf.getLine(i);
+      return line ? line.translateToString(true) : '';
+    };
+    let lastNonEmpty = cursorRow;
+    while (lastNonEmpty >= 0 && rowText(lastNonEmpty) === '') lastNonEmpty--;
+    if (lastNonEmpty < 0) return '';
+    const start = Math.max(0, lastNonEmpty - limit + 1);
+    const lines = [];
+    for (let i = start; i <= lastNonEmpty; i++) lines.push(rowText(i));
+    return lines.join('\n');
+  }
+
   /** Resolve once xterm has parsed everything written so far. */
   _drain() {
     return new Promise((resolve) => this._term.write('', resolve));

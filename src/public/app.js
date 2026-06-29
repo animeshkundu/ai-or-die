@@ -286,8 +286,13 @@ class ClaudeCodeWebInterface {
         console.log('[Init] Checking sessions, tabs.size:', this.sessionTabManager.tabs.size);
         if (this.sessionTabManager.tabs.size > 0) {
             console.log('[Init] Found sessions, switching to first tab...');
-            // Sessions exist - switch to the first one (this will handle connecting)
-            const firstTabId = this.sessionTabManager.tabs.keys().next().value;
+            // Sessions exist - switch to the last-active one (persisted across
+            // reloads) so a refresh returns to the tab you were on, not tab #1.
+            let restoreId = null;
+            try { restoreId = localStorage.getItem('cc-active-session'); } catch (_) { /* private mode */ }
+            const firstTabId = (restoreId && this.sessionTabManager.tabs.has(restoreId))
+                ? restoreId
+                : this.sessionTabManager.tabs.keys().next().value;
             console.log('[Init] Switching to tab:', firstTabId);
             await this.sessionTabManager.switchToTab(firstTabId);
             // The session_joined handler decides the overlay state:
@@ -2524,8 +2529,13 @@ class ClaudeCodeWebInterface {
                     this.pendingJoinSessionId = null;
                 }
                 
-                // Replay output buffer if available
-                if (message.outputBuffer && message.outputBuffer.length > 0) {
+                // Repaint: prefer the rendered snapshot (clean last screen) so a
+                // refresh doesn't blank or show broken control sequences; fall
+                // back to raw outputBuffer replay when there's no snapshot.
+                if (message.renderedSnapshot) {
+                    this.terminal.clear();
+                    this.terminal.write(message.renderedSnapshot.replace(/\n/g, '\r\n'));
+                } else if (message.outputBuffer && message.outputBuffer.length > 0) {
                     this.terminal.clear();
                     message.outputBuffer.forEach(data => {
                         // Filter out focus tracking sequences (^[[I and ^[[O)
