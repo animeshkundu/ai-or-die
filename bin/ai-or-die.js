@@ -89,10 +89,10 @@ async function main() {
     }
 
     // Handle authentication logic
-    // Tunnel mode disables auth — the tunnel controls access. Mesh KEEPS auth
-    // on (ACL + Bearer layered); --mesh wins over --tunnel here.
+    // Tunnel mode disables auth — the tunnel controls access — even with --mesh.
+    // (--mesh alone keeps the Bearer token on; --tunnel always wins.)
     let authToken = null;
-    let noAuth = options.disableAuth === true || (options.tunnel === true && !options.mesh);
+    let noAuth = options.disableAuth === true || options.tunnel === true;
 
     if (!noAuth) {
       if (options.auth) {
@@ -144,7 +144,8 @@ async function main() {
     console.log(`Plan: ${options.plan}`);
     console.log(`Aliases: Claude → "${serverOptions.claudeAlias}", Codex → "${serverOptions.codexAlias}", Copilot → "${serverOptions.copilotAlias}", Gemini → "${serverOptions.geminiAlias}", Terminal → "${serverOptions.terminalAlias}"`);
 
-    // Display authentication status
+    // Display authentication status. --tunnel disables auth (tunnel controls
+    // access) even with --mesh; --mesh alone keeps the Bearer token on.
     if (options.tunnel) {
       console.log('\n🌍 TUNNEL MODE — authentication disabled (tunnel controls access)');
     } else if (noAuth) {

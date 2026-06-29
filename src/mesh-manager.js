@@ -53,10 +53,27 @@ class MeshManager {
   async start() {
     console.log('\n  Connecting mesh (Tailscale userspace)...');
     this.stopping = false;
-    if (!fs.existsSync(this.sidecar)) { this._printMissing(); return; }
+    if (!fs.existsSync(this.sidecar)) {
+      if (!(await this._ensureSidecar())) { this._printMissing(); return; }
+    }
     if (!this._authKey && !this._enrolled()) { this._printNotEnrolled(); return; }
     try { fs.mkdirSync(this.stateDir, { recursive: true }); } catch (_) {}
     await this._spawn();
+  }
+
+  /** Download + verify the sidecar from the matching release. Best-effort. */
+  async _ensureSidecar() {
+    try {
+      const { ensureSidecar } = require('./utils/sidecar-installer');
+      let version = '0.0.0';
+      try { version = require('../package.json').version; } catch (_) {}
+      console.log('  [mesh] fetching sidecar binary...');
+      await ensureSidecar(version, this.sidecar);
+      return fs.existsSync(this.sidecar);
+    } catch (e) {
+      if (this.dev) console.error('  [mesh] sidecar fetch failed:', e.message);
+      return false;
+    }
   }
 
   getStatus() {

@@ -205,3 +205,31 @@ jobs:
           files: dist/${{ matrix.artifact }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-mesh-sidecar:
+    name: Build mesh sidecar (all platforms)
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.release.outputs.version }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Cross-build sidecar + checksums
+        run: bash scripts/build-mesh-sidecar.sh
+
+      - name: Upload sidecar binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.release.outputs.version }}
+          files: |
+            dist/mesh/aiordie-mesh-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
