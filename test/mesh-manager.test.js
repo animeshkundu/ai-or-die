@@ -1,6 +1,9 @@
 const assert = require('assert');
+const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const testApi = global.describe ? { describe: global.describe, it: global.it } : require('node:test');
+const { describe, it } = testApi;
 const { MeshManager } = require('../src/mesh-manager');
 
 describe('MeshManager', function() {
@@ -45,19 +48,90 @@ describe('MeshManager', function() {
       assert.strictEqual(process.env.AIORDIE_TS_AUTHKEY, undefined);
       assert.strictEqual(m._childEnv.AIORDIE_TS_AUTHKEY, undefined);
     });
+
+    it('captures the app bearer for the sidecar and scrubs inherited env', function() {
+      process.env.AIORDIE_PROXY_BEARER = 'env-token';
+      const m = new MeshManager({ authToken: 'app-token' });
+      assert.strictEqual(m._proxyBearer, 'app-token');
+      assert.strictEqual(process.env.AIORDIE_PROXY_BEARER, undefined);
+      assert.strictEqual(m._childEnv.AIORDIE_PROXY_BEARER, undefined);
+    });
   });
 
   describe('getStatus', function() {
     it('not running until a name binds', function() {
-      assert.deepStrictEqual(new MeshManager().getStatus(), { running: false, publicUrl: null });
+      assert.deepStrictEqual(new MeshManager().getStatus(), { running: false, publicUrl: null, peers: [] });
     });
     it('reports https url once up', function() {
       const m = new MeshManager(); m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'https';
-      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'https://h.tail.ts.net' });
+      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'https://h.tail.ts.net', peers: [] });
     });
     it('reports the http url when the edge degraded (no certs)', function() {
       const m = new MeshManager(); m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'http';
-      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'http://h.tail.ts.net' });
+      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'http://h.tail.ts.net', peers: [] });
+    });
+    it('includes cached mesh peers', function() {
+      const m = new MeshManager();
+      m.peers = { self: { hostname: 'self', dnsName: 'self.tail' }, peers: [{ hostname: 'p', dnsName: 'p.tail', online: true }] };
+      assert.deepStrictEqual(m.getStatus().peers, [{ hostname: 'p', dnsName: 'p.tail', online: true }]);
+    });
+  });
+
+  describe('peer discovery cache', function() {
+    function tempManager() {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-manager-'));
+      const m = new MeshManager({ stateDir: path.join(dir, 'ts-state'), sidecar: path.join(dir, 'aiordie-mesh') });
+      m._appBase = dir;
+      return { m, dir };
+    }
+
+    it('parses MESH-PEERS, caches peers, and writes peers.json atomically', function() {
+      const { m, dir } = tempManager();
+      try {
+        const line = 'MESH-PEERS {"self":{"hostname":"self","dnsName":"self.tail"},"peers":[{"hostname":"p1","dnsName":"p1.tail","online":true},{"hostname":"bad","dnsName":"bad.tail","online":"yes"}]}\n';
+        m._handleStdoutData(Buffer.from(line));
+        assert.deepStrictEqual(m.peers, {
+          self: { hostname: 'self', dnsName: 'self.tail' },
+          peers: [{ hostname: 'p1', dnsName: 'p1.tail', online: true }],
+        });
+        const file = m.peersFilePath();
+        const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+        assert.strictEqual(written.version, 1);
+        assert.strictEqual(typeof written.updatedAt, 'number');
+        assert.deepStrictEqual(written.self, m.peers.self);
+        assert.deepStrictEqual(written.peers, m.peers.peers);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps the last-good peers cache on malformed or oversized MESH-PEERS', function() {
+      const { m, dir } = tempManager();
+      try {
+        m._handleStdoutData(Buffer.from('MESH-PEERS {"self":{"hostname":"self","dnsName":"self.tail"},"peers":[]}\n'));
+        const lastGood = m.peers;
+        m._handleStdoutData(Buffer.from('MESH-PEERS {not json}\n'));
+        assert.strictEqual(m.peers, lastGood);
+        m._handleStdoutData(Buffer.from('MESH-PEERS {"self":{"hostname":"self"},"peers":[]}\n'));
+        assert.strictEqual(m.peers, lastGood);
+        m._handleStdoutData(Buffer.from(`MESH-PEERS ${'x'.repeat(256 * 1024 + 1)}\n`));
+        assert.strictEqual(m.peers, lastGood);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('deletes peers.json and clears memory on mesh shutdown markers', function() {
+      const { m, dir } = tempManager();
+      try {
+        m._handleStdoutData(Buffer.from('MESH-PEERS {"self":{"hostname":"self","dnsName":"self.tail"},"peers":[]}\n'));
+        assert.ok(fs.existsSync(m.peersFilePath()));
+        m._handleStdoutData(Buffer.from('MESH-NEEDLOGIN https://login.tailscale.com/admin/settings/keys\n'), () => {});
+        assert.strictEqual(m.peers, null);
+        assert.strictEqual(fs.existsSync(m.peersFilePath()), false);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

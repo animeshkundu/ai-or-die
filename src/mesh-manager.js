@@ -17,28 +17,32 @@ const STABILITY_THRESHOLD_MS = 60000;  // 60s up = reset retry budget
 const MIN_RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30000;
 const MAX_RETRIES = 10;
+const MESH_PEERS_JSON_MAX = 256 * 1024;
 
 class MeshManager {
   constructor(options = {}) {
     this.port = options.port || 7777;          // the ai-or-die port to expose
     this.dev = options.dev || false;
     this.onUrl = options.onUrl || (() => {});
-    // Consume the key once and scrub it everywhere it could leak.
+    this._proxyBearer = options.authToken || null;
+    // Consume the key once and scrub secrets everywhere they could leak.
     this._authKey = options.authKey || process.env.AIORDIE_TS_AUTHKEY || null;
     delete process.env.AIORDIE_TS_AUTHKEY;
+    delete process.env.AIORDIE_PROXY_BEARER;
     this._childEnv = { ...process.env };
     delete this._childEnv.AIORDIE_TS_AUTHKEY;
+    delete this._childEnv.AIORDIE_PROXY_BEARER;
 
     const localApp = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-    const base = process.platform === 'win32'
+    this._appBase = process.platform === 'win32'
       ? path.join(localApp, 'ai-or-die')
       : path.join(os.homedir(), '.ai-or-die');
-    this.stateDir = options.stateDir || path.join(base, 'ts-state');
+    this.stateDir = options.stateDir || path.join(this._appBase, 'ts-state');
     // The sidecar binary is content-addressed: its path embeds the lock's
     // contentHash so a new build installs alongside the old one (no overwrite of
     // a running .exe). Derived from the installer's lock + path helpers.
     this._installer = options._installer || require('./utils/sidecar-installer');
-    this.sidecar = options.sidecar || this._sidecarPathFromLock(base);
+    this.sidecar = options.sidecar || this._sidecarPathFromLock(this._appBase);
     this.hostname = (options.hostname || `aiordie-${os.hostname()}`).toLowerCase().replace(/[^a-z0-9-]/g, '');
 
     this.proc = null;
@@ -53,6 +57,8 @@ class MeshManager {
     this._restartDelayTimer = null;
     this._restartDelayResolve = null;
     this._stabilityThresholdMs = options._stabilityThresholdMs || STABILITY_THRESHOLD_MS;
+    this._stdoutBuffer = '';
+    this.peers = null;
   }
 
   /** Never throws — degrades to localhost/devtunnel on any failure. */
@@ -93,11 +99,20 @@ class MeshManager {
   }
 
   getStatus() {
-    return { running: this.proc !== null && !this.stopping && !!this.dnsName, publicUrl: this.dnsName ? `${this.scheme || 'https'}://${this.dnsName}` : null };
+    return {
+      running: this.proc !== null && !this.stopping && !!this.dnsName,
+      publicUrl: this.dnsName ? `${this.scheme || 'https'}://${this.dnsName}` : null,
+      peers: this.peers ? this.peers.peers : [],
+    };
+  }
+
+  peersFilePath() {
+    return path.join(this._appBase, 'mesh', 'peers.json');
   }
 
   async stop() {
     this.stopping = true;
+    this._deletePeersFile();
     this._clearStabilityTimer();
     clearTimeout(this._restartDelayTimer);
     if (this._restartDelayResolve) { this._restartDelayResolve(); this._restartDelayResolve = null; }
@@ -117,34 +132,121 @@ class MeshManager {
   _spawn() {
     return new Promise((resolve) => {
       const args = ['--port', String(this.port), '--backend', this.backend, '--hostname', this.hostname, '--statedir', this.stateDir];
-      // Pass the key to the sidecar via TS_AUTHKEY (enroll only); it's already
-      // stripped from this process + base child env, so it reaches only this child.
-      const env = this._authKey ? { ...this._childEnv, TS_AUTHKEY: this._authKey } : this._childEnv;
+      // Pass secrets only to the sidecar child; both are stripped from this
+      // process + base child env before spawning.
+      const env = { ...this._childEnv };
+      if (this._authKey) env.TS_AUTHKEY = this._authKey;
+      if (this._proxyBearer) env.AIORDIE_PROXY_BEARER = this._proxyBearer;
+      this._stdoutBuffer = '';
       this.proc = spawn(this.sidecar, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
       let done = false;
       const timer = setTimeout(() => { if (!done) { done = true; console.warn('  \x1b[33mMesh: no URL within 60s — check key/connectivity.\x1b[0m'); resolve(); } }, URL_TIMEOUT_MS);
       this.proc.stdout.on('data', (d) => {
-        const out = d.toString();
-        if (this.dev) process.stdout.write(`  [mesh] ${out}`);
-        if (/MESH-NOCERT/.test(out)) this._printNoCert();
-        const url = out.match(/MESH-URL (https?):\/\/(\S+)/);
-        if (url && !this.dnsName) {
-          this.scheme = url[1];
-          this.dnsName = url[2];
-          this._authKey = null;
-          this._startStabilityTimer();
-          this.onUrl(`${this.scheme}://${this.dnsName}`);
-          if (!done) { done = true; clearTimeout(timer); resolve(); }
-        }
-        if (/MESH-NEEDLOGIN/.test(out)) { this._printNotEnrolled(); if (!done) { done = true; clearTimeout(timer); resolve(); } }
+        if (this.dev) process.stdout.write(`  [mesh] ${d}`);
+        this._handleStdoutData(d, (line) => {
+          if (/^MESH-NOCERT\b/.test(line)) this._printNoCert();
+          const url = line.match(/^MESH-URL (https?):\/\/(\S+)/);
+          if (url && !this.dnsName) {
+            this.scheme = url[1];
+            this.dnsName = url[2];
+            this._authKey = null;
+            this._startStabilityTimer();
+            this.onUrl(`${this.scheme}://${this.dnsName}`);
+            if (!done) { done = true; clearTimeout(timer); resolve(); }
+          }
+          if (/^MESH-NEEDLOGIN\b/.test(line)) {
+            this._deletePeersFile();
+            this._printNotEnrolled();
+            if (!done) { done = true; clearTimeout(timer); resolve(); }
+          }
+        });
       });
       this.proc.stderr.on('data', (d) => { if (this.dev) process.stderr.write(`  [mesh] ${d}`); });
       this.proc.on('error', (e) => { console.error(`  \x1b[31mmesh sidecar failed: ${e.message}\x1b[0m`); this.proc = null; if (!done) { done = true; clearTimeout(timer); resolve(); } });
       this.proc.on('exit', (code) => {
-        this._clearStabilityTimer(); this.proc = null; this.dnsName = null;
+        this._clearStabilityTimer(); this.proc = null; this.dnsName = null; this._deletePeersFile();
         if (!this.stopping && code !== 0) this._restart();
       });
     });
+  }
+
+  _handleStdoutData(chunk, onLine) {
+    try {
+      this._stdoutBuffer += chunk.toString();
+      const lines = this._stdoutBuffer.split('\n');
+      this._stdoutBuffer = lines.pop() || '';
+      // Bound the carry-over: a newline-less run longer than any legitimate line
+      // (MESH-PEERS is capped well under this) is junk/log-spam — drop it so a
+      // misbehaving child can't grow the buffer without limit.
+      if (this._stdoutBuffer.length > MESH_PEERS_JSON_MAX) this._stdoutBuffer = '';
+      for (const rawLine of lines) {
+        const line = rawLine.replace(/\r$/, '');
+        this._handleStdoutLine(line);
+        if (onLine) onLine(line);
+      }
+    } catch (_) {}
+  }
+
+  _handleStdoutLine(line) {
+    try {
+      if (/^MESH-NEEDLOGIN\b/.test(line)) this._deletePeersFile();
+      const match = /^MESH-PEERS\s+(.+)$/.exec(line);
+      if (!match) return;
+      const raw = match[1];
+      if (Buffer.byteLength(raw, 'utf8') > MESH_PEERS_JSON_MAX) {
+        if (this.dev) console.debug('  [mesh] ignoring oversized MESH-PEERS payload');
+        return;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (_) {
+        return;
+      }
+      const normalized = this._validatePeersPayload(parsed);
+      if (!normalized) return;
+      this.peers = normalized;
+      this._writePeersFile(normalized);
+    } catch (_) {}
+  }
+
+  _validatePeersPayload(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const self = payload.self;
+    if (!self || typeof self !== 'object' || Array.isArray(self)) return null;
+    if (typeof self.hostname !== 'string' || typeof self.dnsName !== 'string') return null;
+    if (!Array.isArray(payload.peers)) return null;
+    const peers = [];
+    for (const p of payload.peers) {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) continue;
+      if (typeof p.hostname !== 'string' || typeof p.dnsName !== 'string' || typeof p.online !== 'boolean') continue;
+      peers.push({ hostname: p.hostname, dnsName: p.dnsName, online: p.online });
+    }
+    return { self: { hostname: self.hostname, dnsName: self.dnsName }, peers };
+  }
+
+  _writePeersFile(snapshot) {
+    const file = this.peersFilePath();
+    const dir = path.dirname(file);
+    const tmp = path.join(dir, `peers.json.${process.pid}.tmp`);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify({
+        version: 1,
+        updatedAt: Date.now(),
+        self: snapshot.self,
+        peers: snapshot.peers,
+      }), { mode: 0o600 });
+      fs.chmodSync(tmp, 0o600);
+      fs.renameSync(tmp, file);
+    } catch (_) {
+      try { fs.rmSync(tmp, { force: true }); } catch (_) {}
+    }
+  }
+
+  _deletePeersFile() {
+    this.peers = null;
+    try { fs.rmSync(this.peersFilePath(), { force: true }); } catch (_) {}
   }
 
   _printMissing(err) {

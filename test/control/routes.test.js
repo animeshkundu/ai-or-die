@@ -3,6 +3,8 @@
 const assert = require('assert');
 const http = require('http');
 const express = require('express');
+const testApi = global.describe ? { describe: global.describe, it: global.it } : require('node:test');
+const { describe, it } = testApi;
 const { createControlRouter, parseCursor, encodeCursor } = require('../../src/control/routes');
 const { ControlEventBus } = require('../../src/control/event-bus');
 
@@ -83,6 +85,27 @@ describe('control/routes /api/control', function () {
       assert.equal(s2.lifecycle, 'exited');
     } finally {
       server.close();
+    }
+  });
+
+  it('GET /mesh/peers returns injected mesh peers and defaults to empty', async function () {
+    const peer = { hostname: 'p1', dnsName: 'p1.tail', online: true };
+    const { server, port } = await listen(buildServer(fakeDeps({ getMeshPeers: () => [peer] })));
+    try {
+      const { status, body } = await getJson(port, '/api/control/mesh/peers');
+      assert.equal(status, 200);
+      assert.deepEqual(body, { peers: [peer] });
+    } finally {
+      server.close();
+    }
+
+    const fallback = await listen(buildServer(fakeDeps()));
+    try {
+      const { status, body } = await getJson(fallback.port, '/api/control/mesh/peers');
+      assert.equal(status, 200);
+      assert.deepEqual(body, { peers: [] });
+    } finally {
+      fallback.server.close();
     }
   });
 
