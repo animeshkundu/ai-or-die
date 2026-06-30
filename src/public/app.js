@@ -284,6 +284,15 @@ class ClaudeCodeWebInterface {
         
         // Check if there are existing sessions
         console.log('[Init] Checking sessions, tabs.size:', this.sessionTabManager.tabs.size);
+        // Clean up cached snapshots for sessions that no longer exist (deleted
+        // while away). Deferred so the IndexedDB hydrate has completed; reads the
+        // live tab set AT prune time (not now) so a tab created during the delay
+        // isn't mistaken for an orphan. Best-effort; LRU bounds growth regardless.
+        setTimeout(() => {
+            try {
+                this.snapshotCache?.pruneOrphans(Array.from(this.sessionTabManager.tabs.keys()));
+            } catch (_) { /* best-effort */ }
+        }, 3000);
         if (this.sessionTabManager.tabs.size > 0) {
             console.log('[Init] Found sessions, switching to first tab...');
             // Sessions exist - switch to the last-active one (persisted across
@@ -670,6 +679,30 @@ class ClaudeCodeWebInterface {
         }
 
         this.terminal.open(document.getElementById('terminal'));
+
+        // Faithful per-tab snapshot cache for instant tab-switch repaint.
+        // Guarded: if the serialize addon or the cache class failed to load
+        // (e.g. CDN blocked), snapshotCache stays null and every call site is
+        // ?.-guarded, degrading cleanly to server-only repaint (today's path).
+        this.snapshotCache = null;
+        if (typeof SerializeAddon !== 'undefined' && typeof TerminalSnapshotCache !== 'undefined') {
+            try {
+                this._serializeAddon = new SerializeAddon.SerializeAddon();
+                this.terminal.loadAddon(this._serializeAddon);
+                const snapLines = parseInt((this.loadSettings() || {}).tabSnapshotLines, 10);
+                this.snapshotCache = new TerminalSnapshotCache({
+                    terminal: this.terminal,
+                    serializeAddon: this._serializeAddon,
+                    maxLines: Number.isFinite(snapLines) ? snapLines : 500,
+                });
+                // Fire-and-forget: in-memory tier works immediately; the disk
+                // hydrate (for reload-restore) completes asynchronously.
+                this.snapshotCache.init();
+            } catch (e) {
+                this.snapshotCache = null;
+                try { console.warn('[snapshot-cache] init failed:', e && e.message); } catch (_) {}
+            }
+        }
 
         // WebGL renderer: 3-10x faster than DOM (0.7ms vs 5-10ms per frame)
         this._loadGpuRenderer();
@@ -2327,6 +2360,16 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    // True iff the shared terminal is stably displaying this session — no switch
+    // in flight, and the active tab, the joined session, and `sid` all agree.
+    // Capturing a snapshot is only correctly attributed when this holds.
+    _terminalStablyShowsSession(sid) {
+        if (!sid || this.pendingJoinSessionId) return false;
+        if (this.currentClaudeSessionId !== sid) return false;
+        if (this.sessionTabManager && this.sessionTabManager.activeTabId !== sid) return false;
+        return true;
+    }
+
     handleBinaryOutput(data) {
         const chunk = new Uint8Array(data);
 
@@ -2348,6 +2391,20 @@ class ClaudeCodeWebInterface {
             this._planDetectChunks.push(chunk);
             if (this._planDetectTimer) clearTimeout(this._planDetectTimer);
             this._planDetectTimer = setTimeout(() => this._flushPlanDetection(), 100);
+        }
+
+        // 4. Keep the active tab's snapshot fresh after output settles (never
+        // per frame). Debounced so a burst captures once when it quiets. Only
+        // captures while the terminal STABLY shows this session (no switch in
+        // flight; active tab + joined session agree), so a switch can never
+        // store one tab's screen under another tab's id.
+        if (this.snapshotCache && this._terminalStablyShowsSession(this.currentClaudeSessionId)) {
+            const sid = this.currentClaudeSessionId;
+            if (this._snapCaptureTimer) clearTimeout(this._snapCaptureTimer);
+            this._snapCaptureTimer = setTimeout(() => {
+                this._snapCaptureTimer = null;
+                if (this._terminalStablyShowsSession(sid)) this.snapshotCache?.capture(sid);
+            }, 400);
         }
     }
 
@@ -2529,21 +2586,60 @@ class ClaudeCodeWebInterface {
                     this.pendingJoinSessionId = null;
                 }
                 
-                // Repaint: prefer the rendered snapshot (clean last screen) so a
-                // refresh doesn't blank or show broken control sequences; fall
-                // back to raw outputBuffer replay when there's no snapshot.
-                if (message.renderedSnapshot) {
-                    this.terminal.clear();
-                    this.terminal.write(message.renderedSnapshot.replace(/\n/g, '\r\n'));
-                } else if (message.outputBuffer && message.outputBuffer.length > 0) {
-                    this.terminal.clear();
-                    message.outputBuffer.forEach(data => {
-                        // Filter out focus tracking sequences (^[[I and ^[[O)
-                        const filteredData = data.replace(/\x1b\[\[?[IO]/g, '');
-                        this.terminal.write(filteredData);
-                    });
+                // Repaint on (re)join — but only if this join is still the tab
+                // the user has selected. A rapid A→B→C switch can deliver a stale
+                // join (in EITHER arrival order); repainting it would paint the
+                // wrong tab. activeTabId is the user's selection and is immune to
+                // the join ordering/timeout races that make pendingJoinSessionId
+                // unreliable here.
+                const targetTabId = this.sessionTabManager ? this.sessionTabManager.activeTabId : message.sessionId;
+                const isStaleJoin = targetTabId && targetTabId !== message.sessionId;
+                if (!isStaleJoin) {
+                    // For a LIVE session, replay the raw outputBuffer (real ANSI +
+                    // cursor codes) so the agent's live TUI redraw aligns. The
+                    // server's renderedSnapshot is rendered PLAIN TEXT (no cursor/
+                    // SGR/scroll-region state); writing it under a live TUI leaves
+                    // the cursor on the wrong row and the next redraw collides
+                    // with stale content (the #131 regression). So the plain-text
+                    // snapshot is used ONLY for non-live (exited/idle) sessions.
+                    // See join-repaint.js for the decision matrix.
+                    const replayBuffer = () => {
+                        this.terminal.clear();
+                        message.outputBuffer.forEach(data => {
+                            // Filter out focus tracking sequences (^[[I and ^[[O)
+                            this.terminal.write(data.replace(/\x1b\[\[?[IO]/g, ''));
+                        });
+                    };
+                    const action = chooseJoinRepaint(message);
+                    // Did the instant cache paint already show THIS session for
+                    // this switch? If so, a 'clear' verdict (the server has nothing
+                    // to replay) must NOT blank the good cached view.
+                    const cacheAlreadyPainted = this._cachePaintedForSession === message.sessionId;
+                    if (action === 'buffer') {
+                        replayBuffer();
+                    } else if (action === 'snapshot') {
+                        this.terminal.clear();
+                        this.terminal.write(message.renderedSnapshot.replace(/\n/g, '\r\n'));
+                    } else if (!cacheAlreadyPainted) {
+                        // Empty-state guard: clear so a cold join never leaves the
+                        // previous tab's content lingering on the shared terminal.
+                        this.terminal.clear();
+                    }
+
+                    // Refresh the cache from the authoritative repaint, but only
+                    // AFTER xterm has drained the writes above. terminal.write('',
+                    // cb) fires its callback once all prior writes are parsed — a
+                    // reliable drain barrier (a single rAF is not). Guard against a
+                    // re-switch landing before the drain completes.
+                    if (this.snapshotCache && message.sessionId && action !== 'clear') {
+                        const sid = message.sessionId;
+                        this.terminal.write('', () => {
+                            if (this._terminalStablyShowsSession(sid)) this.snapshotCache?.capture(sid);
+                        });
+                    }
+                    this._cachePaintedForSession = null;
                 }
-                
+
                 // Show appropriate UI based on session state
                 console.log('[session_joined] Checking if should show overlay. Active:', message.active, 'toolStartPending:', !!this._toolStartPending);
                 if (this._toolStartPending) {
@@ -2579,7 +2675,17 @@ class ClaudeCodeWebInterface {
                 this.currentClaudeSessionId = null;
                 this.currentClaudeSessionName = null;
                 this.updateSessionButton('Sessions');
-                this.terminal.clear();
+                // During a tab switch the server emits session_left (for the
+                // outgoing session) immediately before session_joined (for the
+                // incoming one). Skip the clear ONLY when we already painted the
+                // incoming tab from cache — clearing would wipe that instant
+                // repaint. If there was NO cache paint, the shared terminal is
+                // still showing the OUTGOING session, so we MUST clear it;
+                // otherwise its content lingers into the incoming tab
+                // (cross-session bleed). session_joined repaints authoritatively.
+                if (!this._cachePaintedForSession) {
+                    this.terminal.clear();
+                }
                 
                 // Update tab status
                 if (this.sessionTabManager && message.sessionId) {
@@ -4035,6 +4141,8 @@ class ClaudeCodeWebInterface {
         if (cursorBlink) cursorBlink.checked = settings.cursorBlink ?? true;
         const scrollback = document.getElementById('scrollback');
         if (scrollback) scrollback.value = String(settings.scrollback || 1000);
+        const tabSnapshotLines = document.getElementById('tabSnapshotLines');
+        if (tabSnapshotLines) tabSnapshotLines.value = String(settings.tabSnapshotLines ?? 500);
         const terminalPadding = document.getElementById('terminalPadding');
         if (terminalPadding) terminalPadding.value = String(settings.terminalPadding ?? 8);
         const terminalPaddingValue = document.getElementById('terminalPaddingValue');
@@ -4375,7 +4483,8 @@ class ClaudeCodeWebInterface {
             notifSound: true,
             notifVolume: 30,
             notifDesktop: true,
-            enableSessionStickyNotes: true
+            enableSessionStickyNotes: true,
+            tabSnapshotLines: 500
         };
     }
 
@@ -4417,7 +4526,8 @@ class ClaudeCodeWebInterface {
             notifSound: document.getElementById('notifSound')?.checked ?? true,
             notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
             notifDesktop: document.getElementById('notifDesktop')?.checked ?? true,
-            enableSessionStickyNotes: document.getElementById('enableSessionStickyNotes')?.checked ?? true
+            enableSessionStickyNotes: document.getElementById('enableSessionStickyNotes')?.checked ?? true,
+            tabSnapshotLines: parseInt(document.getElementById('tabSnapshotLines')?.value || '500', 10)
         };
 
         try {
@@ -4465,6 +4575,11 @@ class ClaudeCodeWebInterface {
         if (settings.cursorStyle) this.terminal.options.cursorStyle = settings.cursorStyle;
         this.terminal.options.cursorBlink = settings.cursorBlink ?? true;
         if (settings.scrollback) this.terminal.options.scrollback = settings.scrollback;
+
+        // Push the instant-snapshot line cap to the cache (0 disables capture+paint).
+        if (this.snapshotCache && settings.tabSnapshotLines !== undefined) {
+            this.snapshotCache.setMaxLines(settings.tabSnapshotLines);
+        }
 
         // Apply terminal padding
         const terminalEl = document.getElementById('terminal');
@@ -5460,11 +5575,15 @@ class ClaudeCodeWebInterface {
             
             // Set a timeout in case the response never comes
             setTimeout(() => {
-                if (this.pendingJoinResolve) {
+                // Only clear if THIS join is still the pending one. A newer
+                // joinSession() may have replaced it; nulling the newer join's
+                // pending state would corrupt the cache/repaint guards that rely
+                // on it. resolve() is idempotent, so always settle this promise.
+                if (this.pendingJoinResolve === resolve) {
                     this.pendingJoinResolve = null;
                     this.pendingJoinSessionId = null;
-                    resolve(); // Resolve anyway after timeout
                 }
+                resolve(); // Resolve anyway after timeout
             }, 2000);
         });
     }
