@@ -22,6 +22,8 @@
     "test:longevity": "npm run test:longevity:server && npm run test:longevity:browser",
     "build:bundle": "node scripts/build-sea.js bundle",
     "build:sea": "node scripts/build-sea.js",
+    "mesh:lock": "node scripts/mesh-lock.js",
+    "mesh:lock:check": "node scripts/mesh-lock.js --check",
     "release:pr": "bash scripts/release-pr.sh"
   },
   "keywords": [

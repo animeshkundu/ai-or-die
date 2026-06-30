@@ -15,6 +15,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Compile-check the Go mesh sidecar on PRs (the release workflow only builds it
+  # on push to main, so without this a Go break would not surface until release).
+  mesh-sidecar-build:
+    name: mesh-sidecar-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: go mod tidy + vet + test + build
+        working-directory: mesh
+        run: |
+          go mod tidy
+          go vet ./...
+          go test ./...
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=ci" -o /tmp/aiordie-mesh .
+          echo "mesh sidecar built OK"
+
   test:
     # Explicit name so branch protection can reliably reference the check
     # context as "CI / test (ubuntu-latest)" etc. (See
@@ -34,6 +54,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
       - run: npm ci
+      # The mesh sidecar's contentHash must match its committed lock. This is the
+      # deterministic, un-bypassable build-signal: change mesh/ source without
+      # regenerating the lock and CI fails here (run `npm run mesh:lock`).
+      - name: Verify mesh sidecar lock is current
+        run: node scripts/mesh-lock.js --check
       # Verify the @vscode/ripgrep postinstall succeeded — fail CI fast
       # with an actionable message instead of letting 50 spec failures
       # downstream obscure the root cause (corp proxy blocked the

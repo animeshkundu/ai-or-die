@@ -14,8 +14,96 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Build + publish the content-addressed mesh sidecar BEFORE the npm release, so
+  # npm never advertises a package whose pinned `mesh-<hash>` release is missing
+  # or incomplete. Idempotent: skips the Go build when the release already exists
+  # with ALL expected assets matching the lock; otherwise builds, uploads to a
+  # DRAFT release, verifies, then finalizes (the atomic "ready" marker).
+  mesh-sidecar:
+    name: Mesh sidecar (content-addressed)
+    if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      hash: ${{ steps.hash.outputs.hash }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Compute content hash + verify lock is current
+        id: hash
+        run: |
+          node scripts/mesh-lock.js --check
+          HASH=$(node scripts/mesh-lock.js --print-hash)
+          echo "hash=${HASH}" >> "$GITHUB_OUTPUT"
+          echo "tag=mesh-${HASH}" >> "$GITHUB_OUTPUT"
+
+      # The workflow-level `concurrency: release-on-main` group (cancel-in-progress:
+      # false) serializes ALL release-on-main runs, so the feature-push run and
+      # the auto-bump-push run never execute this job concurrently — no two runs
+      # race on the same mesh-<hash> tag/release/assets.
+      - name: Check existing release completeness
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="mesh-${{ steps.hash.outputs.hash }}"
+          # Expected asset names are the fixed platform matrix (NOT the committed
+          # lock, whose hashes may be empty in-repo), plus the checksums file.
+          mapfile -t WANT < <(node -e "console.log(require('./scripts/mesh-lock.js').ASSET_NAMES.join('\n'))")
+          WANT+=("aiordie-mesh-checksums.txt")
+          if ! gh release view "$TAG" --json assets,isDraft > /tmp/rel.json 2>/dev/null; then
+            echo "complete=false" >> "$GITHUB_OUTPUT"; echo "release $TAG absent — build required"; exit 0
+          fi
+          # A draft is not publicly downloadable (installer + embed both fail), so
+          # treat a leftover draft from a crashed run as incomplete → recreate.
+          if [ "$(jq -r '.isDraft' /tmp/rel.json)" = "true" ]; then
+            echo "complete=false" >> "$GITHUB_OUTPUT"; echo "release $TAG is a draft — recreating"; exit 0
+          fi
+          jq -r '.assets[].name' /tmp/rel.json > /tmp/have.txt
+          MISSING=0
+          for a in "${WANT[@]}"; do
+            grep -qx "$a" /tmp/have.txt || { echo "missing asset: $a"; MISSING=1; }
+          done
+          if [ "$MISSING" -eq 0 ]; then echo "complete=true" >> "$GITHUB_OUTPUT"; echo "release $TAG complete — skipping build"; else echo "complete=false" >> "$GITHUB_OUTPUT"; fi
+
+      - uses: actions/setup-go@v5
+        if: steps.check.outputs.complete != 'true'
+        with:
+          go-version: '1.23'
+
+      - name: Cross-build sidecar + checksums
+        if: steps.check.outputs.complete != 'true'
+        run: bash scripts/build-mesh-sidecar.sh
+
+      - name: Publish sidecar release (draft → verify → finalize)
+        if: steps.check.outputs.complete != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="mesh-${{ steps.hash.outputs.hash }}"
+          # Only reached when the release is absent / draft / incomplete (a
+          # complete one is skipped above), so delete+recreate never destroys a
+          # healthy published release; the brief tag-absent window is harmless
+          # because npm publish is gated behind this job (needs: mesh-sidecar).
+          gh release delete "$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" --draft --title "$TAG" --notes "aiordie-mesh sidecar ${{ steps.hash.outputs.hash }}"
+          gh release upload "$TAG" dist/mesh/aiordie-mesh-* --clobber
+          # Verify every expected asset is present on the draft before finalizing.
+          gh release view "$TAG" --json assets -q '.assets[].name' > /tmp/have.txt
+          for a in $(node -e "console.log(require('./scripts/mesh-lock.js').ASSET_NAMES.join(' '))") aiordie-mesh-checksums.txt; do
+            grep -qx "$a" /tmp/have.txt || { echo "::error::asset $a missing from draft $TAG"; exit 1; }
+          done
+          gh release edit "$TAG" --draft=false
+          echo "finalized $TAG"
+
   release:
     name: Tag, Release, and Publish
+    needs: mesh-sidecar
     if: "!startsWith(github.event.head_commit.message, 'chore: bump version')"
     runs-on: ubuntu-latest
     permissions:
@@ -121,6 +209,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Embed sidecar checksums into the lock (ships in the npm tarball)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="mesh-${{ needs.mesh-sidecar.outputs.hash }}"
+          gh release download "$TAG" --pattern aiordie-mesh-checksums.txt --dir /tmp --clobber
+          node scripts/mesh-lock.js --embed /tmp/aiordie-mesh-checksums.txt
+          # Gate publish on a fully-valid lock: all 6 platform checksums present,
+          # each a real sha256, and contentHash still current.
+          node scripts/mesh-lock.js --assert-complete
+
       - name: Publish to npm
         run: |
           # Unset token auth so npm v11 uses OIDC trusted publishing.
@@ -206,30 +305,3 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  build-mesh-sidecar:
-    name: Build mesh sidecar (all platforms)
-    needs: release
-    if: needs.release.outputs.released == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: v${{ needs.release.outputs.version }}
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-
-      - name: Cross-build sidecar + checksums
-        run: bash scripts/build-mesh-sidecar.sh
-
-      - name: Upload sidecar binaries to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ needs.release.outputs.version }}
-          files: |
-            dist/mesh/aiordie-mesh-*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

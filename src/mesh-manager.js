@@ -34,12 +34,18 @@ class MeshManager {
       ? path.join(localApp, 'ai-or-die')
       : path.join(os.homedir(), '.ai-or-die');
     this.stateDir = options.stateDir || path.join(base, 'ts-state');
-    const exe = process.platform === 'win32' ? 'aiordie-mesh.exe' : 'aiordie-mesh';
-    this.sidecar = options.sidecar || path.join(base, 'bin', exe);
+    // The sidecar binary is content-addressed: its path embeds the lock's
+    // contentHash so a new build installs alongside the old one (no overwrite of
+    // a running .exe). Derived from the installer's lock + path helpers.
+    this._installer = options._installer || require('./utils/sidecar-installer');
+    this.sidecar = options.sidecar || this._sidecarPathFromLock(base);
     this.hostname = (options.hostname || `aiordie-${os.hostname()}`).toLowerCase().replace(/[^a-z0-9-]/g, '');
 
     this.proc = null;
     this.dnsName = null;
+    this.scheme = null;          // 'https' (edge TLS) or 'http' (degraded)
+    this.backend = options.backend || `http://127.0.0.1:${this.port}`;  // mesh serves plaintext loopback
+    this._lastError = null;
     this.stopping = false;
     this.retryCount = 0;
     this._totalRestarts = 0;
@@ -54,30 +60,40 @@ class MeshManager {
     console.log('\n  Connecting mesh (Tailscale userspace)...');
     this.stopping = false;
     if (!fs.existsSync(this.sidecar)) {
-      if (!(await this._ensureSidecar())) { this._printMissing(); return; }
+      if (!(await this._ensureSidecar())) { this._printMissing(this._lastError); return; }
     }
     if (!this._authKey && !this._enrolled()) { this._printNotEnrolled(); return; }
     try { fs.mkdirSync(this.stateDir, { recursive: true }); } catch (_) {}
     await this._spawn();
   }
 
+  /** Content-addressed sidecar path from the committed lock; safe fallback. */
+  _sidecarPathFromLock(base) {
+    try {
+      const lock = this._installer.loadLock();
+      return this._installer.sidecarPath(lock.contentHash);
+    } catch (_) {
+      const exe = process.platform === 'win32' ? 'aiordie-mesh.exe' : 'aiordie-mesh';
+      return path.join(base, 'bin', exe);
+    }
+  }
+
   /** Download + verify the sidecar from the matching release. Best-effort. */
   async _ensureSidecar() {
     try {
-      const { ensureSidecar } = require('./utils/sidecar-installer');
-      let version = '0.0.0';
-      try { version = require('../package.json').version; } catch (_) {}
       console.log('  [mesh] fetching sidecar binary...');
-      await ensureSidecar(version, this.sidecar);
+      await this._installer.ensureSidecar(this.sidecar);
+      this._lastError = null;
       return fs.existsSync(this.sidecar);
     } catch (e) {
+      this._lastError = e;
       if (this.dev) console.error('  [mesh] sidecar fetch failed:', e.message);
       return false;
     }
   }
 
   getStatus() {
-    return { running: this.proc !== null && !this.stopping && !!this.dnsName, publicUrl: this.dnsName ? `https://${this.dnsName}` : null };
+    return { running: this.proc !== null && !this.stopping && !!this.dnsName, publicUrl: this.dnsName ? `${this.scheme || 'https'}://${this.dnsName}` : null };
   }
 
   async stop() {
@@ -100,7 +116,7 @@ class MeshManager {
 
   _spawn() {
     return new Promise((resolve) => {
-      const args = ['--port', String(this.port), '--hostname', this.hostname, '--statedir', this.stateDir];
+      const args = ['--port', String(this.port), '--backend', this.backend, '--hostname', this.hostname, '--statedir', this.stateDir];
       // Pass the key to the sidecar via TS_AUTHKEY (enroll only); it's already
       // stripped from this process + base child env, so it reaches only this child.
       const env = this._authKey ? { ...this._childEnv, TS_AUTHKEY: this._authKey } : this._childEnv;
@@ -110,12 +126,14 @@ class MeshManager {
       this.proc.stdout.on('data', (d) => {
         const out = d.toString();
         if (this.dev) process.stdout.write(`  [mesh] ${out}`);
-        const url = out.match(/MESH-URL (https:\/\/\S+)/);
+        if (/MESH-NOCERT/.test(out)) this._printNoCert();
+        const url = out.match(/MESH-URL (https?):\/\/(\S+)/);
         if (url && !this.dnsName) {
-          this.dnsName = url[1].replace(/^https:\/\//, '');
+          this.scheme = url[1];
+          this.dnsName = url[2];
           this._authKey = null;
           this._startStabilityTimer();
-          this.onUrl(`https://${this.dnsName}`);
+          this.onUrl(`${this.scheme}://${this.dnsName}`);
           if (!done) { done = true; clearTimeout(timer); resolve(); }
         }
         if (/MESH-NEEDLOGIN/.test(out)) { this._printNotEnrolled(); if (!done) { done = true; clearTimeout(timer); resolve(); } }
@@ -129,9 +147,25 @@ class MeshManager {
     });
   }
 
-  _printMissing() {
-    console.log('\n  \x1b[33mMesh: sidecar not installed.\x1b[0m  Fetched on next release build; see docs/specs/mesh.md.');
+  _printMissing(err) {
+    const code = err && err.code;
+    const map = {
+      'unsupported-platform': `Mesh: no sidecar build for this platform (${err && err.message}).`,
+      'lock-unfinalized': 'Mesh: sidecar checksum missing from this build — upgrade ai-or-die.',
+      'assets-missing': 'Mesh: sidecar binaries for this build are not published yet — try again shortly.',
+      'network': `Mesh: could not download the sidecar — ${err && err.message}.`,
+      'checksum-mismatch': 'Mesh: sidecar checksum mismatch — refusing to run an unverified binary.',
+      'locked-binary': `Mesh: ${err && err.message} — stop any running ai-or-die mesh and retry.`,
+    };
+    const line = (code && map[code]) || 'Mesh: sidecar not installed.';
+    console.log(`\n  \x1b[33m${line}\x1b[0m  See docs/specs/mesh.md.`);
     console.log('  Continuing on localhost/devtunnel.\n');
+  }
+
+  _printNoCert() {
+    console.log('\n  \x1b[33mMesh: tailnet HTTPS certificates are not enabled — serving plain http.\x1b[0m');
+    console.log('    Remote microphone (voice) and PWA install need a secure context (https).');
+    console.log('    Enable it once: \x1b[1mhttps://login.tailscale.com/admin/dns\x1b[0m → HTTPS Certificates.');
   }
 
   _printNotEnrolled() {

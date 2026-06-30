@@ -8,6 +8,12 @@
 #   dist/mesh/aiordie-mesh-checksums.txt   ("<sha256>  <assetname>" per line)
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Content hash (Go-free) identifies this sidecar build; stamp it into the binary
+# so `aiordie-mesh --version` is traceable and the release tag is mesh-<hash>.
+version="$(node "$root/scripts/mesh-lock.js" --print-hash)"
+echo "mesh content hash: $version"
+
 cd "$root/mesh"
 out="$root/dist/mesh"; rm -rf "$out"; mkdir -p "$out"
 
@@ -15,7 +21,7 @@ go mod tidy   # generate go.sum for a reproducible build
 
 emit() {  # <goos> <goarch> <plat> <arch> <ext>
   local name="aiordie-mesh-$3-$4$5"
-  GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "$out/$name" .
+  GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$version" -o "$out/$name" .
   echo "built $name"
 }
 emit windows amd64 windows amd64 .exe
@@ -34,3 +40,7 @@ fi
 
 ( cd "$out" && sha256sum aiordie-mesh-* > aiordie-mesh-checksums.txt )
 echo "checksums:"; cat "$out/aiordie-mesh-checksums.txt"
+
+# Finalize the lock with the freshly-built per-asset checksums (the installer
+# verifies downloads against these; they ship inside the npm tarball).
+node "$root/scripts/mesh-lock.js" --assets "$out"
