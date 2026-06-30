@@ -101,6 +101,7 @@
     <script src="https://unpkg.com/xterm-addon-unicode11@0.6.0/lib/xterm-addon-unicode11.js"></script>
     <script src="https://unpkg.com/xterm-addon-webgl@0.16.0/lib/xterm-addon-webgl.js"></script>
     <script src="https://unpkg.com/xterm-addon-canvas@0.5.0/lib/xterm-addon-canvas.js"></script>
+    <script src="https://unpkg.com/xterm-addon-serialize@0.11.0/lib/xterm-addon-serialize.js"></script>
     <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
     <!-- Monaco editor is loaded lazily on first file preview/editor open via
          file-viewer-monaco.js (see ADR-0016). Preconnect above warms the
@@ -459,6 +460,15 @@
                                         <option value="5000">5,000 lines</option>
                                         <option value="10000">10,000 lines</option>
                                         <option value="50000">50,000 lines</option>
+                                    </select>
+                                </div>
+                                <div class="setting-group">
+                                    <label for="tabSnapshotLines">Instant tab snapshot</label>
+                                    <select id="tabSnapshotLines">
+                                        <option value="0">Off</option>
+                                        <option value="200">200 lines</option>
+                                        <option value="500">500 lines</option>
+                                        <option value="2000">2,000 lines</option>
                                     </select>
                                 </div>
                                 <div class="setting-group">
@@ -844,6 +854,8 @@
     <script src="command-palette.js"></script>
     <script src="extra-keys.js"></script>
     <script src="input-overlay.js"></script>
+    <script src="join-repaint.js"></script>
+    <script src="terminal-snapshot-cache.js"></script>
     <script src="app.js"></script>
     <ninja-keys class="dark" id="commandPalette" hideBreadcrumbs></ninja-keys>
     

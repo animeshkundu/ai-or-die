@@ -725,6 +725,24 @@ class SessionTabManager {
 
         const { skipHistoryUpdate = false } = options;
 
+        // Cancel any pending capture-on-settle: the shared terminal is about to
+        // repaint to the incoming tab, so a stale timer must not serialize it
+        // under the outgoing tab's id.
+        if (this.claudeInterface._snapCaptureTimer) {
+            clearTimeout(this.claudeInterface._snapCaptureTimer);
+            this.claudeInterface._snapCaptureTimer = null;
+        }
+
+        // Snapshot the OUTGOING tab's rendered screen so a later switch back can
+        // repaint it instantly — but only when no switch is already in flight,
+        // since otherwise the shared terminal may be showing a tab other than
+        // activeTabId and we'd cache the wrong content under previousTabId.
+        const previousTabId = this.activeTabId;
+        if (previousTabId && previousTabId !== sessionId &&
+            !this.claudeInterface.pendingJoinSessionId) {
+            this.claudeInterface.snapshotCache?.capture(previousTabId);
+        }
+
         // Remove active class from all tabs
         this.tabs.forEach(t => {
             t.classList.remove('active');
@@ -759,6 +777,20 @@ class SessionTabManager {
         this.updateOverflowMenu();
 
         // If tile view is enabled, tabs target the active pane (VS Code-style)
+        // Instant paint from the cache (faithful serialize snapshot) BEFORE the
+        // join round-trip, so the switch shows the target tab's last view
+        // immediately instead of lingering the previous tab's content. Record
+        // that we painted so session_joined's reconcile won't blank it on a
+        // 'clear' verdict (see app.js). session_joined repaints authoritatively.
+        const cachePainted = this.claudeInterface.snapshotCache?.paintCached(sessionId);
+        this.claudeInterface._cachePaintedForSession = cachePainted ? sessionId : null;
+        // When we painted the incoming tab from cache, drop any output frames
+        // still queued from the OUTGOING session so they can't flush on top of
+        // the instant repaint. They belong to the previous session, whose
+        // server-side buffer replays them on its next visit.
+        if (cachePainted && Array.isArray(this.claudeInterface._pendingWrites)) {
+            this.claudeInterface._pendingWrites.length = 0;
+        }
         await this.claudeInterface.joinSession(sessionId);
         this.updateHeaderInfo(sessionId);
 
@@ -846,6 +878,7 @@ class SessionTabManager {
         tab.remove();
         this.tabs.delete(sessionId);
         this.activeSessions.delete(sessionId);
+        this.claudeInterface.snapshotCache?.evict(sessionId);
         this.tabOrder = orderedIds.filter(id => id !== sessionId);
         this.removeFromHistory(sessionId);
 
