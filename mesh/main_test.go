@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+)
 
 func TestResolveBackend(t *testing.T) {
 	cases := []struct {
@@ -56,5 +63,57 @@ func TestIsLoopbackHost(t *testing.T) {
 		if isLoopbackHost(h) {
 			t.Errorf("isLoopbackHost(%q) = true, want false", h)
 		}
+	}
+}
+
+// End-to-end through the actual reverse proxy (no tailnet): a real loopback
+// backend must receive the X-Forwarded-Proto/Host the edge stamps, and the
+// pointer-captured proto must reflect the post-TLS decision.
+func TestEdgeProxyForwardsProtoAndHost(t *testing.T) {
+	var gotProto, gotHost, gotBody string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotProto = r.Header.Get("X-Forwarded-Proto")
+		gotHost = r.Header.Get("X-Forwarded-Host")
+		io.WriteString(w, "backend-ok")
+	}))
+	defer backend.Close()
+
+	target, _ := url.Parse(backend.URL) // 127.0.0.1 loopback
+	proto := "http"                      // default before the TLS decision
+	rp := newEdgeProxy(target, "node.tailnet.ts.net", &proto)
+	proto = "https" // edge decided real TLS AFTER constructing the proxy
+
+	front := httptest.NewServer(rp)
+	defer front.Close()
+
+	res, err := http.Get(front.URL + "/app")
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	gotBody = string(b)
+
+	if gotProto != "https" {
+		t.Errorf("backend saw X-Forwarded-Proto=%q, want https (pointer-captured decision)", gotProto)
+	}
+	if gotHost != "node.tailnet.ts.net" {
+		t.Errorf("backend saw X-Forwarded-Host=%q, want node.tailnet.ts.net", gotHost)
+	}
+	if gotBody != "backend-ok" {
+		t.Errorf("proxy body=%q, want backend-ok", gotBody)
+	}
+}
+
+func TestRedirectToHTTPS(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "http://anything/path?q=1", nil)
+	redirectToHTTPS("node.tailnet.ts.net")(rec, req)
+	if rec.Code != http.StatusPermanentRedirect {
+		t.Fatalf("status=%d, want 308", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "https://node.tailnet.ts.net/path") || !strings.Contains(loc, "q=1") {
+		t.Fatalf("Location=%q, want https://node.tailnet.ts.net/path?q=1", loc)
 	}
 }

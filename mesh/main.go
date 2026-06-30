@@ -86,24 +86,12 @@ func main() {
 	}
 
 	// One reverse proxy; the edge scheme it advertises to the backend is decided
-	// just below and captured by reference so the X-Forwarded-Proto header is
+	// just below and captured by pointer so the X-Forwarded-Proto header is
 	// always accurate. The terminal client derives ws/wss from window.location,
 	// so wss works regardless; this header is hygiene for any absolute-URL or
 	// redirect the app generates (no mixed content).
 	edgeProto := "http"
-	rp := httputil.NewSingleHostReverseProxy(target)
-	origDirector := rp.Director
-	rp.Director = func(r *http.Request) {
-		origDirector(r)
-		r.Header.Set("X-Forwarded-Proto", edgeProto)
-		r.Header.Set("X-Forwarded-Host", name)
-	}
-	// Only relevant if a future caller points --backend at an https loopback
-	// origin (e.g. a self-signed local listener). The host is already validated
-	// as loopback, so skipping verification is not a trust boundary.
-	if target.Scheme == "https" {
-		rp.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	}
+	rp := newEdgeProxy(target, name, &edgeProto)
 
 	// Decide the scheme BEFORE advertising. tsnet's ListenTLS returns a listener
 	// without provisioning the cert; the ACME work (and any failure) happens
@@ -219,4 +207,23 @@ func redirectToHTTPS(name string) http.HandlerFunc {
 		u := "https://" + name + r.URL.RequestURI()
 		http.Redirect(w, r, u, http.StatusPermanentRedirect)
 	}
+}
+
+// newEdgeProxy builds the reverse proxy to the loopback backend. It stamps
+// X-Forwarded-Proto (read through *proto, set after the TLS decision) and
+// X-Forwarded-Host so the app never emits mixed-content links. For an https
+// loopback backend (a future self-signed local listener) it skips verification —
+// the host is already validated as loopback, so this is not a trust boundary.
+func newEdgeProxy(target *url.URL, name string, proto *string) *httputil.ReverseProxy {
+	rp := httputil.NewSingleHostReverseProxy(target)
+	orig := rp.Director
+	rp.Director = func(r *http.Request) {
+		orig(r)
+		r.Header.Set("X-Forwarded-Proto", *proto)
+		r.Header.Set("X-Forwarded-Host", name)
+	}
+	if target.Scheme == "https" {
+		rp.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	}
+	return rp
 }
