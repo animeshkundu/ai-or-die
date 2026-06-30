@@ -162,6 +162,32 @@ test.describe('Artifact panel chrome: move / resize / minimize / persistence', (
       return Math.round(b.height);
     }, { timeout: 5000 }).toBeGreaterThan(Math.round(fullHeight) - 40);
 
+    // ---- (c2) MAXIMIZE fills the wrapper; restore returns to the prior size -
+    const preMax = await panel.boundingBox();
+    const wrapperBox = await page.evaluate(() => {
+      const r = document.getElementById('artifactPanel').parentElement.getBoundingClientRect();
+      return { width: r.width, height: r.height };
+    });
+    await page.locator('#artifactPanel .artifact-panel__btn[aria-label="Maximize panel"]').click();
+    await expect(panel).toHaveClass(/artifact-panel--maximized/);
+    await expect.poll(async () => {
+      const b = await panel.boundingBox();
+      return Math.round(b.width);
+    }, { timeout: 5000 }).toBeGreaterThan(Math.round(wrapperBox.width) - 60);
+    const maxBox = await panel.boundingBox();
+    expect(maxBox.width).toBeGreaterThan(preMax.width + 120);
+    expect(maxBox.height).toBeGreaterThan(wrapperBox.height - 60);
+
+    await page.locator('#artifactPanel .artifact-panel__btn[aria-label="Restore panel size"]').click();
+    await expect(panel).not.toHaveClass(/artifact-panel--maximized/);
+    await expect.poll(async () => {
+      const b = await panel.boundingBox();
+      return Math.round(b.width);
+    }, { timeout: 5000 }).toBeLessThan(Math.round(maxBox.width) - 60);
+    const restoredBox = await panel.boundingBox();
+    expect(Math.abs(restoredBox.width - preMax.width)).toBeLessThan(6);
+    expect(Math.abs(restoredBox.height - preMax.height)).toBeLessThan(6);
+
     // ---- (d) geometry PERSISTS across a page reload -----------------------
     const persistedBox = await panel.boundingBox();
     const storedRaw = await page.evaluate((key) => window.localStorage.getItem(key), LAYOUT_KEY);

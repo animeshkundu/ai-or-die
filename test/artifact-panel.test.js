@@ -457,6 +457,37 @@ describe('artifact-panel.js (DOM: iframe + SSE + postMessage bridge)', function 
       assert.equal(panel._body.hidden, false);
     });
 
+    it('maximize fills the wrapper and is mutually exclusive with minimize', function () {
+      if (!hasStorage()) { this.skip(); return; }
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
+
+      // Maximize toggles the class + button affordance.
+      panel.toggleMaximize();
+      assert.equal(panel._maximized, true);
+      assert.ok(panel.el.classList.contains('artifact-panel--maximized'));
+      assert.equal(panel._maxBtn.getAttribute('aria-label'), 'Restore panel size');
+
+      // Minimizing while maximized clears maximized (mutually exclusive).
+      panel.toggleMinimize();
+      assert.equal(panel._minimized, true);
+      assert.equal(panel._maximized, false);
+      assert.ok(!panel.el.classList.contains('artifact-panel--maximized'));
+
+      // Maximizing while minimized clears minimized.
+      panel.toggleMaximize();
+      assert.equal(panel._maximized, true);
+      assert.equal(panel._minimized, false);
+      assert.equal(panel._body.hidden, false);
+
+      // Restore.
+      panel.toggleMaximize();
+      assert.equal(panel._maximized, false);
+      assert.ok(!panel.el.classList.contains('artifact-panel--maximized'));
+      assert.equal(panel._maxBtn.getAttribute('aria-label'), 'Maximize panel');
+    });
+
     it('restores persisted position + size + minimized on construction', function () {
       if (!hasStorage()) { this.skip(); return; }
       window.localStorage.setItem('ai-or-die:artifact-panel:layout', JSON.stringify({

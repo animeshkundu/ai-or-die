@@ -32,6 +32,20 @@
   resize: none;
 }
 
+/* Maximized: fill the wrapper for a focused, full-area review. Overrides the
+   inline left/top/width/height set by drag/resize, so restoring (removing the
+   class) brings the prior geometry back with no manual save/restore. */
+.artifact-panel--maximized {
+  left: 8px !important;
+  top: 8px !important;
+  right: 8px !important;
+  bottom: 8px !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+}
+
 .artifact-panel__header {
   display: flex;
   align-items: center;

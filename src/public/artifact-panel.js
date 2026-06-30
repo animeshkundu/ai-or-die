@@ -52,6 +52,7 @@
       this._sseSessionId = null;
       this._collapsed = false;   // session-show gate (switched-away / closed)
       this._minimized = false;   // window minimized to header bar
+      this._maximized = false;   // window expanded to fill the wrapper
       this._queue = [];          // queued annotations (the pills); panel-owned
       this._presence = 'waiting';
       this.onStateChange = null;
@@ -98,12 +99,14 @@
       const presence = el('span', { class: 'artifact-panel__presence', id: 'artifactPresence', text: '' });
       const spacer = el('span', { class: 'artifact-panel__spacer' });
       const reloadBtn = el('button', { class: 'artifact-panel__btn', title: 'Reload artifact', 'aria-label': 'Reload artifact', type: 'button', text: '↻' });
+      this._maxBtn = el('button', { class: 'artifact-panel__btn', title: 'Maximize', 'aria-label': 'Maximize panel', type: 'button', text: '⤢' });
       this._minBtn = el('button', { class: 'artifact-panel__btn', title: 'Minimize', 'aria-label': 'Minimize panel', type: 'button', text: '–' });
       const closeBtn = el('button', { class: 'artifact-panel__btn', title: 'Close panel', 'aria-label': 'Close panel', type: 'button', text: '×' });
       reloadBtn.addEventListener('click', () => this.reload());
+      this._maxBtn.addEventListener('click', () => this.toggleMaximize());
       this._minBtn.addEventListener('click', () => this.toggleMinimize());
       closeBtn.addEventListener('click', () => this.collapse());
-      this._header = el('div', { class: 'artifact-panel__header' }, [title, presence, spacer, reloadBtn, this._minBtn, closeBtn]);
+      this._header = el('div', { class: 'artifact-panel__header' }, [title, presence, spacer, reloadBtn, this._maxBtn, this._minBtn, closeBtn]);
       this._wireDrag(this._header);
 
       this._iframe = el('iframe', {
@@ -294,6 +297,8 @@
     // ---- minimize ---------------------------------------------------------
     toggleMinimize() {
       this._minimized = !this._minimized;
+      // Minimize and maximize are mutually exclusive.
+      if (this._minimized && this._maximized) { this._maximized = false; this._applyMaximized(); }
       this._applyMinimized();
       this._saveLayout();
       this._emitState();
@@ -301,11 +306,32 @@
     _applyMinimized() {
       this.el.classList.toggle('artifact-panel--minimized', this._minimized);
       if (this._body) this._body.hidden = this._minimized;
-      if (this._resizeHandle) this._resizeHandle.hidden = this._minimized;
+      if (this._resizeHandle) this._resizeHandle.hidden = this._minimized || this._maximized;
       if (this._minBtn) {
         this._minBtn.textContent = this._minimized ? '□' : '–';
         this._minBtn.setAttribute('title', this._minimized ? 'Restore' : 'Minimize');
         this._minBtn.setAttribute('aria-label', this._minimized ? 'Restore panel' : 'Minimize panel');
+      }
+    }
+
+    // ---- maximize ---------------------------------------------------------
+    // Expand the panel to fill the wrapper for a focused, lavish-style full view;
+    // toggle back to the prior size. The CSS class overrides the inline
+    // left/top/width/height with !important, so restoring just removes the class
+    // and the previous geometry reappears — no manual save/restore needed.
+    toggleMaximize() {
+      this._maximized = !this._maximized;
+      if (this._maximized && this._minimized) { this._minimized = false; this._applyMinimized(); }
+      this._applyMaximized();
+      this._emitState();
+    }
+    _applyMaximized() {
+      this.el.classList.toggle('artifact-panel--maximized', this._maximized);
+      if (this._resizeHandle) this._resizeHandle.hidden = this._maximized || this._minimized;
+      if (this._maxBtn) {
+        this._maxBtn.textContent = this._maximized ? '❐' : '⤢';
+        this._maxBtn.setAttribute('title', this._maximized ? 'Restore size' : 'Maximize');
+        this._maxBtn.setAttribute('aria-label', this._maximized ? 'Restore panel size' : 'Maximize panel');
       }
     }
 
