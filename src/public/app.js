@@ -2677,11 +2677,13 @@ class ClaudeCodeWebInterface {
                 this.updateSessionButton('Sessions');
                 // During a tab switch the server emits session_left (for the
                 // outgoing session) immediately before session_joined (for the
-                // incoming one). Clearing here would wipe the instant cache
-                // repaint and flash the terminal blank for the whole round-trip.
-                // Skip the clear when a join is already pending — session_joined
-                // repaints authoritatively.
-                if (!this.pendingJoinSessionId) {
+                // incoming one). Skip the clear ONLY when we already painted the
+                // incoming tab from cache — clearing would wipe that instant
+                // repaint. If there was NO cache paint, the shared terminal is
+                // still showing the OUTGOING session, so we MUST clear it;
+                // otherwise its content lingers into the incoming tab
+                // (cross-session bleed). session_joined repaints authoritatively.
+                if (!this._cachePaintedForSession) {
                     this.terminal.clear();
                 }
                 
