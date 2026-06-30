@@ -320,6 +320,10 @@ class BaseBridge {
         workingDir,
         created: new Date(),
         active: true,
+        // Epoch ms of the most recent PTY output, updated in the onData handler.
+        // Used by the artifact-push idle gate (msSinceLastOutput) to avoid
+        // injecting input while the CLI is actively rendering. Seeded at spawn.
+        lastOutputAt: Date.now(),
         killTimeout: null,
         writeQueue: Promise.resolve(),
         // PTY listener handles registered against ptyProcess.{onData,onExit,on('error')}.
@@ -382,6 +386,7 @@ class BaseBridge {
           receivedLifeSign = true;
           clearTimeout(spawnWatchdog);
         }
+        session.lastOutputAt = Date.now();
 
         if (process.env.DEBUG) {
           console.log(`${this.toolName} session ${sessionId} output:`, data);
@@ -556,6 +561,19 @@ class BaseBridge {
     });
 
     return session.writeQueue;
+  }
+
+  /**
+   * Milliseconds since this session's PTY last emitted output, or null if there
+   * is no active session. Used by the artifact-push idle gate to skip injecting
+   * input while the CLI is actively rendering (a proxy for "not mid-turn").
+   * @param {string} sessionId
+   * @returns {number|null}
+   */
+  msSinceLastOutput(sessionId) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.active) return null;
+    return Date.now() - (session.lastOutputAt || 0);
   }
 
   /**
