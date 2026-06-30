@@ -120,6 +120,10 @@ test.describe('Artifact panel chrome: move / resize / minimize / persistence', (
 
     // ---- (b) DRAG the resize handle changes size --------------------------
     const sizeBefore = await panel.boundingBox();
+    // The iframe content area must grow WITH the panel (flex:1/width:100%) so the
+    // artifact reflows into the larger space — capture it before resizing.
+    const frame = page.locator('#artifactPanel .artifact-panel__frame');
+    const frameBefore = await frame.boundingBox();
     const handleBox = await resizeHandle.boundingBox();
     const hx = handleBox.x + handleBox.width / 2;
     const hy = handleBox.y + handleBox.height / 2;
@@ -134,6 +138,10 @@ test.describe('Artifact panel chrome: move / resize / minimize / persistence', (
     }, { timeout: 5000 }).toBeGreaterThan(Math.round(sizeBefore.width) + 40);
     const afterResize = await panel.boundingBox();
     expect(afterResize.height).toBeGreaterThan(sizeBefore.height + 40);
+    // The iframe (artifact content viewport) grew with the panel, so content reflows.
+    const frameAfter = await frame.boundingBox();
+    expect(frameAfter.width).toBeGreaterThan(frameBefore.width + 30);
+    expect(frameAfter.height).toBeGreaterThan(frameBefore.height + 30);
 
     // ---- (c) MINIMIZE collapses to the header bar; restore brings it back -
     const fullHeight = (await panel.boundingBox()).height;
