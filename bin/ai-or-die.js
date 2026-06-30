@@ -106,7 +106,12 @@ async function main() {
       port,
       auth: authToken,
       noAuth: noAuth,
-      https: options.https,
+      // Mesh terminates real TLS at the tailnet edge (the sidecar serves the
+      // <host>.ts.net cert) and reverse-proxies to a loopback backend, so in
+      // mesh mode the local server stays plain HTTP on 127.0.0.1 regardless of
+      // --https. (Mesh forces a loopback-only bind anyway, so --https's LAN
+      // secure-context role does not apply.) --https WITHOUT --mesh is unchanged.
+      https: options.mesh ? false : options.https,
       cert: options.cert,
       key: options.key,
       dev: options.dev,
@@ -158,7 +163,7 @@ async function main() {
     const app = new ClaudeCodeWebServer(serverOptions);
     await app.start();
 
-    const protocol = options.https ? 'https' : 'http';
+    const protocol = serverOptions.https ? 'https' : 'http';
     const baseUrl = `${protocol}://localhost:${port}`;
     // For localhost with auth, embed token in URL so user can just click it
     const url = authToken ? `${baseUrl}?token=${authToken}` : baseUrl;
@@ -168,8 +173,10 @@ async function main() {
       console.log(`   Auth token: \x1b[1m\x1b[33m${authToken}\x1b[0m`);
     }
 
-    // Warn if STT is enabled without HTTPS or tunnel
-    if ((serverOptions.stt || serverOptions.sttEndpoint) && !options.https && !options.tunnel) {
+    // Warn if STT is enabled without HTTPS or tunnel. Skip in mesh mode: it
+    // binds loopback-only (no LAN), the mic works on http://localhost locally,
+    // and remotely via the mesh edge's real TLS.
+    if ((serverOptions.stt || serverOptions.sttEndpoint) && !options.https && !options.tunnel && !options.mesh) {
       console.log('\n\x1b[33m⚠  STT enabled over plain HTTP \u2014 microphone only works on localhost.\x1b[0m');
       console.log('   For LAN access, restart with \x1b[1m--https\x1b[0m or \x1b[1m--tunnel\x1b[0m.');
     }
@@ -202,6 +209,9 @@ async function main() {
     // Mesh: permanent Tailscale reachability. Coexists with --tunnel (mesh for
     // owned devices, tunnel fallback for borrowed ones). Auth token stays ON.
     if (options.mesh) {
+      if (options.https) {
+        console.log('\n  \x1b[33mNote: --https is handled by the mesh edge (real .ts.net TLS); the local server stays HTTP on loopback.\x1b[0m');
+      }
       const { MeshManager } = require('../src/mesh-manager');
       const mesh = new MeshManager({
         port,
