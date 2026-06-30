@@ -48,4 +48,9 @@ describe('mesh-lock', function () {
     assert.strictEqual(parsed['aiordie-mesh-linux-amd64'], 'abc123');
     assert.strictEqual(parsed['aiordie-mesh-darwin-arm64'], 'def456');
   });
+
+  it('parseChecksums strips the binary-mode "*" prefix (Git Bash sha256sum)', function () {
+    const parsed = meshLock.parseChecksums('abc123 *aiordie-mesh-windows-amd64.exe\n');
+    assert.strictEqual(parsed['aiordie-mesh-windows-amd64.exe'], 'abc123');
+  });
 });

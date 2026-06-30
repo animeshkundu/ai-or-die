@@ -111,13 +111,15 @@ function writeLock(lock) {
 }
 
 function parseChecksums(text) {
-  // "<sha256>  <assetname>" per line (sha256sum output).
+  // "<sha256>  <assetname>" per line (sha256sum output). GNU coreutils prefixes
+  // the name with `*` in binary mode (Git Bash on Windows does this), so strip a
+  // leading `*` from the filename column.
   const out = {};
   for (const line of text.split('\n')) {
     const t = line.trim();
     if (!t) continue;
     const parts = t.split(/\s+/);
-    if (parts.length >= 2) out[parts[1]] = parts[0].toLowerCase();
+    if (parts.length >= 2) out[parts[1].replace(/^\*/, '')] = parts[0].toLowerCase();
   }
   return out;
 }
