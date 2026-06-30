@@ -46,7 +46,12 @@ jobs:
     # "Longevity Smoke (PR-blocking) / smoke (ubuntu-latest)" etc.
     name: smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    # 18 (was 12): on Windows runners this job legitimately approaches 12 min
+    # (npm ci + `playwright install chromium` + longevity regression + a fixed
+    # 5-min soak), so a 12-min cap had zero headroom and intermittently canceled
+    # mid-soak. Linux/macOS finish in ~7.5 min; the extra headroom is Windows-only
+    # insurance, not a slower test.
+    timeout-minutes: 18
     strategy:
       fail-fast: false
       matrix:

@@ -164,6 +164,60 @@ describe('artifact review routes', function () {
     }
   });
 
+  it('markdown artifact view renders a shell (not raw markdown) with the SDK injected', async function () {
+    const mdFile = path.join(tmpDir, 'plan.md');
+    fs.writeFileSync(mdFile, '# My Plan\n\nFix the **footer** alignment.\n');
+    const { app } = buildApp({ baseDir: tmpDir });
+    const { server, port } = await listen(app);
+    try {
+      const opened = await postJson(port, '/api/artifact/md1/open', { file: mdFile });
+      assert.equal(opened.status, 200);
+
+      const r = await fetch(`http://127.0.0.1:${port}${opened.body.viewUrl}`);
+      const html = await r.text();
+      assert.equal(r.status, 200);
+      assert.match(r.headers.get('content-type') || '', /text\/html/);
+
+      // It is a rendered HTML shell, NOT the raw markdown bytes.
+      assert.match(html, /<!doctype html>/i);
+      assert.match(html, /md-artifact-root/);
+      // The renderer is loaded by ABSOLUTE path so the injected <base> can't
+      // redirect it through the asset route.
+      assert.match(html, /<script src="\/markdown-render\.js">/);
+      // Raw markdown must not be served unprocessed: the heading is carried as
+      // an escaped JSON string for the client renderer, not as a top-level
+      // markdown line in the document body.
+      assert.ok(!/^# My Plan$/m.test(html), 'raw markdown heading must not appear unprocessed');
+      assert.ok(html.includes('My Plan'), 'source is embedded for client rendering');
+
+      // The annotation SDK + config are injected on top of the shell.
+      assert.match(html, /data-ai-or-die-artifact-sdk/);
+      assert.match(html, /__AI_OR_DIE_ARTIFACT_REVIEW__/);
+      assert.match(html, /\/api\/artifact\/md1\/sdk\.js/);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('a non-markdown (.html) artifact keeps the raw passthrough path', async function () {
+    const { app } = buildApp({ baseDir: tmpDir });
+    const { server, port } = await listen(app);
+    try {
+      await postJson(port, '/api/artifact/h1/open', { file: artifactFile });
+      const r = await fetch(`http://127.0.0.1:${port}/api/artifact/h1/view`);
+      const html = await r.text();
+      assert.equal(r.status, 200);
+      // The original HTML body survives verbatim (only the SDK head injection is added).
+      assert.match(html, /<title>A<\/title>/);
+      assert.match(html, /<img src="img\.png">/);
+      // No markdown shell artifacts.
+      assert.ok(!html.includes('md-artifact-root'), 'html artifact must not be wrapped in the markdown shell');
+      assert.ok(!html.includes('/markdown-render.js'), 'html artifact must not load the markdown renderer');
+    } finally {
+      server.close();
+    }
+  });
+
   it('POST prompts then GET poll returns the feedback once', async function () {
     const { app, store } = buildApp({ baseDir: tmpDir });
     const { server, port } = await listen(app);
