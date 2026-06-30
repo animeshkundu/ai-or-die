@@ -60,6 +60,7 @@ function sourceFiles() {
       const abs = path.join(dir, ent.name);
       if (ent.isDirectory()) { walk(abs); continue; }
       if (ent.isFile() && (ent.name.endsWith('.go') || ent.name === 'go.mod')) {
+        if (ent.name.endsWith('_test.go')) continue; // tests aren't in the binary
         out.push(path.relative(ROOT, abs).split(path.sep).join('/'));
       }
     }
