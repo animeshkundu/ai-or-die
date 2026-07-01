@@ -37,7 +37,7 @@ const KeepaliveManager = require('./keepalive-manager');
 const { ControlEventBus, EVENT_KINDS: CONTROL_EVENT_KINDS } = require('./control/event-bus');
 const TranscriptBuffer = require('./sticky-note-transcript');
 const { createControlRouter } = require('./control/routes');
-const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, buildArtifactPushPayload } = require('./artifact-review');
+const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, buildArtifactPushPayload, artifactPushEnabledFromEnv } = require('./artifact-review');
 const { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen, TRUST_PROMPT_REGEX, DEFAULT_UNBOUND_QUIET_MS } = require('./control/session-status');
 const { detectAwaiting } = require('./control/jsonl-awaiting');
 
@@ -166,13 +166,12 @@ class ClaudeCodeWebServer {
     this.artifactPollHoldMs = options.artifactPollHoldMs || 25000;
     this.artifactPollHeartbeatMs = options.artifactPollHeartbeatMs || 5000;
     this.artifactSseHeartbeatMs = options.artifactSseHeartbeatMs || 15000;
-    // Artifact push (default OFF): when AIORDIE_ARTIFACT_PUSH is enabled, panel
-    // feedback that arrives while the agent is idle (no in-flight poll) is
-    // injected into the CLI as a new turn. Opt-in because PTY injection can race
-    // the TUI; see docs/adrs for the idle-gate + residual-risk record.
-    this._artifactPushEnabled = /^(1|true|yes|on)$/i.test(
-      String(process.env.AIORDIE_ARTIFACT_PUSH || '').trim()
-    );
+    // Artifact push (default ON): panel feedback that arrives while the agent is
+    // idle (no in-flight poll + PTY quiet) is injected into the CLI as a new turn,
+    // so the composer works without the human switching to the terminal or the
+    // agent having to poll. Opt OUT with AIORDIE_ARTIFACT_PUSH=0 (or false/off/no).
+    // The idle-gate + residual TUI-timing risk are recorded in docs/adrs/0035.
+    this._artifactPushEnabled = artifactPushEnabledFromEnv(process.env.AIORDIE_ARTIFACT_PUSH);
     const quietRaw = Number(process.env.AIORDIE_ARTIFACT_PUSH_QUIET_MS);
     this._artifactPushQuietMs = Number.isFinite(quietRaw) && quietRaw > 0 ? quietRaw : 1500;
     // PROC-04: min-heap of {id, lastActivity} pairs keyed by lastActivity.

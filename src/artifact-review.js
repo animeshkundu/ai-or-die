@@ -136,6 +136,13 @@ function buildArtifactPushPayload(text) {
   return '\x1b[200~' + safe + '\x1b[201~\r';
 }
 
+// Whether the artifact-push feature is enabled from its env var. Default ON:
+// only an explicit falsy value (0 / false / off / no) disables it. Pure +
+// exported so the default-on / opt-out contract is unit-tested.
+function artifactPushEnabledFromEnv(raw) {
+  return !/^(0|false|off|no)$/i.test(String(raw == null ? '' : raw).trim());
+}
+
 class ArtifactReviewStore extends EventEmitter {
   constructor() {
     super();
@@ -1073,6 +1080,7 @@ module.exports = {
   feedbackHasData,
   formatFeedbackForAgent,
   buildArtifactPushPayload,
+  artifactPushEnabledFromEnv,
   injectLavishSdk,
   isMarkdownFile,
   markdownArtifactShell,

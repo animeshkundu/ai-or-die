@@ -6,7 +6,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, formatFeedbackForAgent, buildArtifactPushPayload } = require('../../src/artifact-review');
+const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, formatFeedbackForAgent, buildArtifactPushPayload, artifactPushEnabledFromEnv } = require('../../src/artifact-review');
 
 let ClaudeCodeWebServer;
 try {
@@ -312,6 +312,17 @@ describe('artifact review routes', function () {
       assert.match(out, /artifact_reply/);
       assert.match(out, /1\. \[line 12\] \(re: "the goal section"\) tighten this/);
       assert.match(out, /2\. also fix the title/);
+    });
+
+    it('artifactPushEnabledFromEnv defaults ON and only an explicit falsy value disables it', function () {
+      // Default on: unset / empty / whitespace / any non-falsy value.
+      for (const on of [undefined, null, '', '  ', '1', 'true', 'anything']) {
+        assert.equal(artifactPushEnabledFromEnv(on), true, JSON.stringify(on) + ' should enable');
+      }
+      // Opt out: only explicit falsy tokens (case/space-insensitive).
+      for (const off of ['0', 'false', ' OFF ', 'No']) {
+        assert.equal(artifactPushEnabledFromEnv(off), false, JSON.stringify(off) + ' should disable');
+      }
     });
 
     it('buildArtifactPushPayload strips ESC/control bytes and cannot break out of the paste envelope', function () {

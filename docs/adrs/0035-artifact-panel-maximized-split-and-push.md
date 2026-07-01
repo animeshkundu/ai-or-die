@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Extends ADR-0033 (remote artifact-review loop). Push injection ships
-**default OFF** behind `AIORDIE_ARTIFACT_PUSH`.
+**default ON**; opt out with `AIORDIE_ARTIFACT_PUSH=0` (or `false`/`off`/`no`).
+(It was initially default-off; flipped to on because with it off the panel composer
+appears broken to the user: an idle agent never reacts to a sent note.)
 
 ## Context
 
@@ -63,14 +65,17 @@ size-capped so the text cannot break out of the paste envelope.
   terminal: bidirectional push for the common case, with poll retained as the
   fallback for the busy/mid-turn case, for non-ai-or-die agents (curl/poll), and
   as the durable source of truth.
-- **Residual risk (why default off):** the idle gate is a heuristic. "No active
-  poll" plus "PTY quiet for N ms" does not prove the agent is idle at the prompt;
-  an agent that is mid-turn but silent (thinking) could still receive an injection
-  that races its TUI input. The conservative gate makes this unlikely, not
-  impossible, so the feature is opt-in. The robust signal is the transcript
+- **Residual risk (accepted; mitigated by the idle gate):** the idle gate is a
+  heuristic. "No active poll" plus "PTY quiet for N ms" does not prove the agent is
+  idle at the prompt; an agent that is mid-turn but silent (thinking) could still
+  receive an injection that races its TUI input. Claude Code buffers stdin during a
+  turn, so the likely worst case is a deferred (not corrupted) message, and the
+  conservative gate makes a bad interleave unlikely; combined with the strong
+  usability win (the composer is dead weight without push) this is shipped default
+  on, opt-out via `AIORDIE_ARTIFACT_PUSH=0`. The robust hardening is the transcript
   "awaiting user input" state (ai-or-die already binds the tab to the Claude
   transcript via the `AIORDIE_CLAUDE_BIND` sidecar); wiring that as the primary
-  idle gate is the follow-up that would let this default on.
+  idle gate is the follow-up that tightens the default-on guarantee.
 - PTY injection itself is not unit-testable; the router gate, the consume-on-push
   behaviour, and the formatter are covered in `test/control/artifact-routes.test.js`
   with a mocked `pushToAgent`. Real injection needs manual / e2e verification.
