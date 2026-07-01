@@ -4105,6 +4105,7 @@ class ClaudeCodeWebServer {
     return {
       sessions: this.claudeSessions,
       eventBus: this.controlEventBus,
+      getMeshPeers: () => this.meshManager ? this.meshManager.getStatus().peers : [],
       getStatusSignal: (id) => this._controlStatusSignal(id),
       readTail: async (id, lines) => this._controlReadTail(id, lines),
       createSession: async (opts) => this._controlCreateSession(opts),

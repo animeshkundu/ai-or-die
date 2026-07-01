@@ -17,6 +17,7 @@
 //   MESH-URL https://<name>      node is up, serving real TLS at the edge
 //   MESH-URL http://<name>       node is up, but TLS certs unavailable (degraded)
 //   MESH-NOCERT                  hint: enable HTTPS Certificates in the tailnet
+//   MESH-PEERS {"self":...,"peers":[...]} tagged fleet peers snapshot
 //   MESH-NEEDLOGIN <url>         no/!valid key — operator must enroll
 //   MESH-ERR <msg>               fatal
 package main
@@ -24,6 +25,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -31,16 +33,23 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/tsnet"
 )
 
 // version is stamped at build time via -ldflags "-X main.version=<contentHash>".
 var version = "dev"
 
-const certWaitTimeout = 20 * time.Second
+const (
+	certWaitTimeout   = 20 * time.Second
+	meshPeersInterval = 20 * time.Second
+	meshPeersMaxPeers = 512
+	meshPeerTag       = "tag:aiordie"
+)
 
 func main() {
 	port := flag.String("port", "7777", "local ai-or-die port to expose (loopback)")
@@ -54,6 +63,8 @@ func main() {
 		fmt.Println(version)
 		return
 	}
+
+	proxyBearer := os.Getenv("AIORDIE_PROXY_BEARER")
 
 	// Resolve + validate the backend target. It MUST be loopback: the sidecar is
 	// a tailnet-facing reverse proxy, and pointing it off-host would expose an
@@ -80,6 +91,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	if lc, err := s.LocalClient(); err == nil {
+		go emitMeshPeersLoop(context.Background(), lc)
+	}
+
 	name := *host
 	if st != nil && st.Self != nil && st.Self.DNSName != "" {
 		name = strings.TrimSuffix(st.Self.DNSName, ".")
@@ -91,7 +106,7 @@ func main() {
 	// so wss works regardless; this header is hygiene for any absolute-URL or
 	// redirect the app generates (no mixed content).
 	edgeProto := "http"
-	rp := newEdgeProxy(target, name, &edgeProto)
+	rp := newEdgeProxy(target, name, &edgeProto, proxyBearer)
 
 	// Decide the scheme BEFORE advertising. tsnet's ListenTLS returns a listener
 	// without provisioning the cert; the ACME work (and any failure) happens
@@ -163,6 +178,94 @@ func isLoopbackHost(h string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+type statusClient interface {
+	Status(context.Context) (*ipnstate.Status, error)
+}
+
+type meshPeersSnapshot struct {
+	Self  meshPeerSelf `json:"self"`
+	Peers []meshPeer   `json:"peers"`
+}
+
+type meshPeerSelf struct {
+	Hostname string `json:"hostname"`
+	DNSName  string `json:"dnsName"`
+}
+
+type meshPeer struct {
+	Hostname string `json:"hostname"`
+	DNSName  string `json:"dnsName"`
+	Online   bool   `json:"online"`
+}
+
+func emitMeshPeersLoop(ctx context.Context, lc statusClient) {
+	emitMeshPeers(ctx, lc)
+	ticker := time.NewTicker(meshPeersInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			emitMeshPeers(ctx, lc)
+		}
+	}
+}
+
+func emitMeshPeers(ctx context.Context, lc statusClient) {
+	status, err := lc.Status(ctx)
+	if err != nil || status == nil {
+		return
+	}
+	line := meshPeersFromStatus(status)
+	b, err := json.Marshal(line)
+	if err != nil {
+		return
+	}
+	fmt.Printf("MESH-PEERS %s\n", b)
+}
+
+func meshPeersFromStatus(status *ipnstate.Status) meshPeersSnapshot {
+	var self meshPeerSelf
+	if status.Self != nil {
+		self = meshPeerSelf{Hostname: status.Self.HostName, DNSName: normalizeDNSName(status.Self.DNSName)}
+	}
+
+	peers := make([]meshPeer, 0)
+	for _, ps := range status.Peer {
+		if ps == nil || !peerHasTag(ps, meshPeerTag) {
+			continue
+		}
+		peers = append(peers, meshPeer{Hostname: ps.HostName, DNSName: normalizeDNSName(ps.DNSName), Online: ps.Online})
+	}
+	sort.Slice(peers, func(i, j int) bool {
+		if peers[i].DNSName != peers[j].DNSName {
+			return peers[i].DNSName < peers[j].DNSName
+		}
+		return peers[i].Hostname < peers[j].Hostname
+	})
+	if len(peers) > meshPeersMaxPeers {
+		peers = peers[:meshPeersMaxPeers]
+	}
+	return meshPeersSnapshot{Self: self, Peers: peers}
+}
+
+func peerHasTag(ps *ipnstate.PeerStatus, tag string) bool {
+	if ps.Tags == nil {
+		return false
+	}
+	for i := 0; i < ps.Tags.Len(); i++ {
+		if ps.Tags.At(i) == tag {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeDNSName(s string) string {
+	return strings.ToLower(strings.TrimSuffix(s, "."))
+}
+
 // tryListenTLS returns a TLS listener on :443 only when a cert for `name` looks
 // obtainable; otherwise nil. It first checks the tailnet's advertised cert
 // domains, then proactively warms the cert with a bounded timeout so a failure
@@ -214,13 +317,22 @@ func redirectToHTTPS(name string) http.HandlerFunc {
 // X-Forwarded-Host so the app never emits mixed-content links. For an https
 // loopback backend (a future self-signed local listener) it skips verification —
 // the host is already validated as loopback, so this is not a trust boundary.
-func newEdgeProxy(target *url.URL, name string, proto *string) *httputil.ReverseProxy {
+func newEdgeProxy(target *url.URL, name string, proto *string, proxyBearer string) *httputil.ReverseProxy {
 	rp := httputil.NewSingleHostReverseProxy(target)
 	orig := rp.Director
 	rp.Director = func(r *http.Request) {
 		orig(r)
 		r.Header.Set("X-Forwarded-Proto", *proto)
 		r.Header.Set("X-Forwarded-Host", name)
+		// Authenticate tailnet->loopback traffic to the app's bearer middleware.
+		// Set REPLACES any client-supplied Authorization (no spoofing). When no
+		// token is configured, DELETE a client-supplied Authorization so a tailnet
+		// caller can never smuggle one through to the loopback app.
+		if proxyBearer != "" {
+			r.Header.Set("Authorization", "Bearer "+proxyBearer)
+		} else {
+			r.Header.Del("Authorization")
+		}
 	}
 	if target.Scheme == "https" {
 		rp.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}

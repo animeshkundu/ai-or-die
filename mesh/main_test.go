@@ -67,20 +67,21 @@ func TestIsLoopbackHost(t *testing.T) {
 }
 
 // End-to-end through the actual reverse proxy (no tailnet): a real loopback
-// backend must receive the X-Forwarded-Proto/Host the edge stamps, and the
-// pointer-captured proto must reflect the post-TLS decision.
-func TestEdgeProxyForwardsProtoAndHost(t *testing.T) {
-	var gotProto, gotHost, gotBody string
+// backend must receive the X-Forwarded-Proto/Host the edge stamps, the app
+// bearer, and the pointer-captured proto must reflect the post-TLS decision.
+func TestEdgeProxyForwardsProtoHostAndAuth(t *testing.T) {
+	var gotProto, gotHost, gotAuth, gotBody string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotProto = r.Header.Get("X-Forwarded-Proto")
 		gotHost = r.Header.Get("X-Forwarded-Host")
+		gotAuth = r.Header.Get("Authorization")
 		io.WriteString(w, "backend-ok")
 	}))
 	defer backend.Close()
 
 	target, _ := url.Parse(backend.URL) // 127.0.0.1 loopback
 	proto := "http"                      // default before the TLS decision
-	rp := newEdgeProxy(target, "node.tailnet.ts.net", &proto)
+	rp := newEdgeProxy(target, "node.tailnet.ts.net", &proto, "app-token")
 	proto = "https" // edge decided real TLS AFTER constructing the proxy
 
 	front := httptest.NewServer(rp)
@@ -99,6 +100,9 @@ func TestEdgeProxyForwardsProtoAndHost(t *testing.T) {
 	}
 	if gotHost != "node.tailnet.ts.net" {
 		t.Errorf("backend saw X-Forwarded-Host=%q, want node.tailnet.ts.net", gotHost)
+	}
+	if gotAuth != "Bearer app-token" {
+		t.Errorf("backend saw Authorization=%q, want Bearer app-token", gotAuth)
 	}
 	if gotBody != "backend-ok" {
 		t.Errorf("proxy body=%q, want backend-ok", gotBody)

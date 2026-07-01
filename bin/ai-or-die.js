@@ -216,6 +216,7 @@ async function main() {
       const mesh = new MeshManager({
         port,
         dev: options.dev,
+        authToken,
         onUrl: (meshUrl) => {
           const t = authToken ? `${meshUrl}?token=${authToken}` : meshUrl;
           console.log(`\n  \x1b[1m\x1b[32mMesh ready:\x1b[0m \x1b[1m\x1b[4m${t}\x1b[0m\n`);

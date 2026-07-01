@@ -187,6 +187,10 @@ function createControlRouter(deps) {
     }
   });
 
+  router.get('/mesh/peers', (req, res) => {
+    res.json({ peers: deps.getMeshPeers ? deps.getMeshPeers() : [] });
+  });
+
   // GET /snapshot — F15 atomic batch resync. Returns every session's derived
   // status PLUS the event cursor, captured atomically (cursor first, then
   // statuses), so after a gap/overflow the controller resyncs in ONE call and
