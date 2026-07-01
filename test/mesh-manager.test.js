@@ -26,15 +26,17 @@ describe('MeshManager', function() {
 
     it('points sidecar + state under the app dir', function() {
       const m = new MeshManager();
-      assert.ok(/aiordie-mesh(-[0-9a-f]+)?(\.exe)?$/.test(m.sidecar), m.sidecar);
+      assert.ok(/ai-or-die-mesh(-[0-9a-f]+)?(\.exe)?$/.test(m.sidecar), m.sidecar);
       assert.ok(m.sidecar.includes(path.join('ai-or-die', 'bin')) || m.sidecar.includes(path.join('.ai-or-die', 'bin')));
       assert.ok(/ts-state$/.test(m.stateDir));
     });
 
-    it('content-addresses the sidecar path from the lock hash', function() {
+    it('launches a stable, hash-free sidecar path (single-file allow-list match)', function() {
       const m = new MeshManager();
-      // The committed lock has a 64-hex contentHash → the path embeds it.
-      assert.ok(/aiordie-mesh-[0-9a-f]{64}(\.exe)?$/.test(m.sidecar), m.sidecar);
+      // The manager LAUNCHES the stable path so a WDAC/AppLocker path rule matches
+      // the executed image across versions — no embedded content hash (ADR-0036).
+      assert.ok(/[/\\]ai-or-die-mesh(\.exe)?$/.test(m.sidecar), m.sidecar);
+      assert.ok(!/-[0-9a-f]{16,}/.test(path.basename(m.sidecar)), m.sidecar);
     });
 
     it('defaults the backend to plaintext loopback on the app port', function() {
@@ -80,7 +82,7 @@ describe('MeshManager', function() {
   describe('peer discovery cache', function() {
     function tempManager() {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-manager-'));
-      const m = new MeshManager({ stateDir: path.join(dir, 'ts-state'), sidecar: path.join(dir, 'aiordie-mesh') });
+      const m = new MeshManager({ stateDir: path.join(dir, 'ts-state'), sidecar: path.join(dir, 'ai-or-die-mesh') });
       m._appBase = dir;
       return { m, dir };
     }
@@ -132,6 +134,74 @@ describe('MeshManager', function() {
       } finally {
         fs.rmSync(dir, { recursive: true, force: true });
       }
+    });
+  });
+
+  describe('mesh egress file', function() {
+    function tempManager() {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-egress-'));
+      const m = new MeshManager({ stateDir: path.join(dir, 'ts-state'), sidecar: path.join(dir, 'ai-or-die-mesh') });
+      m._appBase = dir;
+      return { m, dir };
+    }
+
+    it('writes egress.json (0600, with pid) from a valid loopback MESH-EGRESS line', function() {
+      const { m, dir } = tempManager();
+      try {
+        m.proc = { pid: 4242 };
+        m._handleStdoutData(Buffer.from('MESH-EGRESS http://127.0.0.1:54321 deadbeefcafe\n'));
+        const file = m.egressFilePath();
+        assert.ok(fs.existsSync(file), 'egress.json must be written');
+        const written = JSON.parse(fs.readFileSync(file, 'utf8'));
+        assert.strictEqual(written.version, 1);
+        assert.strictEqual(written.pid, 4242);
+        assert.strictEqual(written.url, 'http://127.0.0.1:54321');
+        assert.strictEqual(written.token, 'deadbeefcafe');
+        assert.strictEqual(typeof written.updatedAt, 'number');
+        if (process.platform !== 'win32') {
+          assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600, 'egress.json must be 0600');
+        }
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('rejects a non-http / non-loopback / localhost / token-less egress line', function() {
+      const { m, dir } = tempManager();
+      try {
+        m.proc = { pid: 1 };
+        for (const bad of [
+          'MESH-EGRESS https://127.0.0.1:5 tok',   // not http
+          'MESH-EGRESS http://10.0.0.5:5 tok',     // not loopback
+          'MESH-EGRESS http://localhost:5 tok',    // localhost — DNS-rebinding risk
+          'MESH-EGRESS http://127.0.0.1:5 ',       // no token (regex needs two fields)
+          'MESH-EGRESS notaurl tok',               // unparseable url
+        ]) {
+          m._handleStdoutData(Buffer.from(bad + '\n'));
+          assert.strictEqual(fs.existsSync(m.egressFilePath()), false, `must reject: ${bad}`);
+        }
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('deletes egress.json on a MESH-NEEDLOGIN marker', function() {
+      const { m, dir } = tempManager();
+      try {
+        m.proc = { pid: 7 };
+        m._handleStdoutData(Buffer.from('MESH-EGRESS http://127.0.0.1:9 tok9\n'));
+        assert.ok(fs.existsSync(m.egressFilePath()));
+        m._handleStdoutData(Buffer.from('MESH-NEEDLOGIN https://login.tailscale.com/admin/settings/keys\n'), () => {});
+        assert.strictEqual(fs.existsSync(m.egressFilePath()), false);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('prints the MESH-UNTAGGED hint exactly once', function() {
+      const { m, dir } = tempManager();
+      const lines = []; const orig = console.log; console.log = (...a) => lines.push(a.join(' '));
+      try {
+        m._handleStdoutData(Buffer.from('MESH-UNTAGGED false 3 0\n'));
+        m._handleStdoutData(Buffer.from('MESH-UNTAGGED false 3 0\n')); // suppressed (one-shot)
+      } finally { console.log = orig; fs.rmSync(dir, { recursive: true, force: true }); }
+      const out = lines.join('\n');
+      assert.ok(/tag:aiordie/.test(out) && /discovery stays EMPTY/i.test(out), out);
+      assert.strictEqual((out.match(/tailnet device\(s\) visible/g) || []).length, 1, 'hint must print once');
     });
   });
 

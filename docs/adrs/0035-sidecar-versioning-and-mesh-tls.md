@@ -41,7 +41,7 @@ verifies all six assets, then finalizes (atomic ready marker). `release` /
 `npm publish` `needs: mesh-sidecar`, and embeds the freshly-built checksums into
 the published lock — so npm never advertises a version whose sidecar is missing.
 
-**Versioned local path.** Installs land at `aiordie-mesh-<hash>[.exe]`, never
+**Versioned local path.** Installs land at `ai-or-die-mesh-<hash>[.exe]`, never
 overwriting a running binary (Windows `EPERM`).
 
 **Edge TLS, plaintext loopback backend.** The sidecar terminates real

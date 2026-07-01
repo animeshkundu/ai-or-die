@@ -1,6 +1,6 @@
 'use strict';
 
-// Sidecar installer — fetches the prebuilt aiordie-mesh tsnet binary for the
+// Sidecar installer — fetches the prebuilt ai-or-die-mesh tsnet binary for the
 // current platform and verifies it against a SHA-256 that ships INSIDE this npm
 // package (mesh-sidecar.lock.json). Trust is therefore anchored by the signed
 // npm artifact, not by a checksums file fetched from the same mutable GitHub
@@ -12,7 +12,7 @@
 // CI only rebuilds when the source — and thus the hash — changes.
 //
 // Asset convention (published by .github/workflows/release-on-main.yml):
-//   aiordie-mesh-<plat>-<arch>[.exe]   plat: windows|linux|darwin  arch: amd64|arm64
+//   ai-or-die-mesh-<plat>-<arch>[.exe]   plat: windows|linux|darwin  arch: amd64|arm64
 
 const fs = require('fs');
 const fsp = require('fs').promises;
@@ -44,7 +44,7 @@ function assetName() {
   const plat = PLAT[process.platform];
   const arch = ARCH[process.arch];
   if (!plat || !arch) return null;
-  return `aiordie-mesh-${plat}-${arch}${process.platform === 'win32' ? '.exe' : ''}`;
+  return `ai-or-die-mesh-${plat}-${arch}${process.platform === 'win32' ? '.exe' : ''}`;
 }
 
 function baseDir() {
@@ -52,11 +52,32 @@ function baseDir() {
   return process.platform === 'win32' ? path.join(localApp, 'ai-or-die') : path.join(os.homedir(), '.ai-or-die');
 }
 
-// Versioned path: a new contentHash installs alongside the old one, so we never
-// rename over a binary that a running sidecar still has open (Windows EPERM).
-function sidecarPath(contentHash) {
+// Stable runnable path (NO content hash): the manager LAUNCHES this path, so a
+// single-file WDAC/AppLocker allow-list rule matches the executed image across
+// every version. This trades ADR-0035's install-alongside for that match; it is
+// safe because the stable file is free at process start (the prior ai-or-die and
+// its sidecar have exited), and the MOTW/quarantine mark is stripped after the
+// SHA-256 verify so a re-download is not re-gated. See ADR-0036.
+function stableSidecarPath() {
   const ext = process.platform === 'win32' ? '.exe' : '';
-  return path.join(baseDir(), 'bin', `aiordie-mesh-${contentHash}${ext}`);
+  return path.join(baseDir(), 'bin', `ai-or-die-mesh${ext}`);
+}
+
+// Best-effort provenance strip AFTER the SHA-256 verify: remove Windows
+// mark-of-the-web (Zone.Identifier ADS) / macOS Gatekeeper quarantine so the
+// freshly-verified binary is not re-gated by SmartScreen/Gatekeeper on each new
+// version. We verified the bytes against the checksum shipped in the signed npm
+// package, so this de-gates only a binary we already trust. Never throws.
+function stripProvenance(file) {
+  try {
+    if (process.platform === 'win32') {
+      fs.rmSync(`${file}:Zone.Identifier`, { force: true });
+    } else if (process.platform === 'darwin') {
+      try {
+        require('child_process').execFileSync('xattr', ['-d', 'com.apple.quarantine', file], { stdio: 'ignore' });
+      } catch (_) { /* xattr absent or attribute not set */ }
+    }
+  } catch (_) { /* best-effort */ }
 }
 
 // The release ref to fetch from. Defaults to mesh-<contentHash>; an explicit
@@ -127,11 +148,11 @@ async function ensureSidecar(dest, opts = {}) {
     throw new SidecarError('lock-unfinalized', `mesh-sidecar.lock.json has no checksum for ${name} (built without the mesh asset pipeline?)`);
   }
 
-  dest = dest || sidecarPath(lock.contentHash);
+  dest = dest || stableSidecarPath();
 
   // Existing file: trust only if it matches; otherwise replace it.
   if (fs.existsSync(dest)) {
-    if ((await _sha256(dest)).toLowerCase() === want) return dest;
+    if ((await _sha256(dest)).toLowerCase() === want) { stripProvenance(dest); return dest; }
     try { await fsp.unlink(dest); }
     catch (e) {
       if (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES') {
@@ -157,7 +178,7 @@ async function ensureSidecar(dest, opts = {}) {
     } catch (e) {
       // Lost a race to a concurrent installer (or the file is locked). If the
       // destination is now present and valid, accept it; otherwise surface it.
-      if (fs.existsSync(dest) && (await _sha256(dest)).toLowerCase() === want) return dest;
+      if (fs.existsSync(dest) && (await _sha256(dest)).toLowerCase() === want) { stripProvenance(dest); return dest; }
       if (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES') {
         throw new SidecarError('locked-binary', `cannot install sidecar at ${dest} (${e.code})`);
       }
@@ -166,7 +187,8 @@ async function ensureSidecar(dest, opts = {}) {
   } finally {
     try { await fsp.unlink(tmp); } catch (_) {}
   }
+  stripProvenance(dest);
   return dest;
 }
 
-module.exports = { ensureSidecar, sidecarPath, assetName, loadLock, SidecarError };
+module.exports = { ensureSidecar, stableSidecarPath, assetName, loadLock, SidecarError };
