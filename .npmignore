@@ -12,6 +12,7 @@ test/
 tests/
 *.test.js
 *.spec.js
+*_test.go
 test-results/
 e2e/
 poc/
