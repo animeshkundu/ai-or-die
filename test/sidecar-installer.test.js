@@ -7,7 +7,7 @@ const path = require('path');
 const crypto = require('crypto');
 const installer = require('../src/utils/sidecar-installer');
 
-const { ensureSidecar, sidecarPath, assetName, SidecarError } = installer;
+const { ensureSidecar, stableSidecarPath, assetName, SidecarError } = installer;
 
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
@@ -43,7 +43,7 @@ describe('sidecar-installer', function () {
 
   beforeEach(function () {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aiordie-sidecar-'));
-    dest = path.join(tmpDir, `aiordie-mesh${process.platform === 'win32' ? '.exe' : ''}`);
+    dest = path.join(tmpDir, `ai-or-die-mesh${process.platform === 'win32' ? '.exe' : ''}`);
     origFetch = global.fetch;
   });
   afterEach(function () {
@@ -54,17 +54,17 @@ describe('sidecar-installer', function () {
   describe('assetName', function () {
     it('maps the current platform/arch to an asset name', function () {
       const n = assetName();
-      if (process.platform === 'win32') assert.ok(/^aiordie-mesh-windows-(amd64|arm64)\.exe$/.test(n), n);
-      else if (process.platform === 'darwin') assert.ok(/^aiordie-mesh-darwin-(amd64|arm64)$/.test(n), n);
-      else if (process.platform === 'linux') assert.ok(/^aiordie-mesh-linux-(amd64|arm64)$/.test(n), n);
+      if (process.platform === 'win32') assert.ok(/^ai-or-die-mesh-windows-(amd64|arm64)\.exe$/.test(n), n);
+      else if (process.platform === 'darwin') assert.ok(/^ai-or-die-mesh-darwin-(amd64|arm64)$/.test(n), n);
+      else if (process.platform === 'linux') assert.ok(/^ai-or-die-mesh-linux-(amd64|arm64)$/.test(n), n);
     });
   });
 
-  describe('sidecarPath', function () {
-    it('embeds the content hash so installs never collide / overwrite a running exe', function () {
-      const p = sidecarPath('abc123');
-      assert.ok(p.includes('abc123'), p);
-      assert.ok(/aiordie-mesh-abc123(\.exe)?$/.test(p), p);
+  describe('stableSidecarPath', function () {
+    it('is a stable hash-free path so a single-file allow-list rule matches the launched image', function () {
+      const p = stableSidecarPath();
+      assert.ok(/ai-or-die-mesh(\.exe)?$/.test(p), p);
+      assert.ok(!/-[0-9a-f]{6,}/.test(path.basename(p)), `must not embed a content hash: ${p}`);
       assert.ok(p.includes(path.join('ai-or-die', 'bin')) || p.includes(path.join('.ai-or-die', 'bin')), p);
     });
   });

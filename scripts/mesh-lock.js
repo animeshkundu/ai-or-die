@@ -35,12 +35,12 @@ const LOCK_PATH = path.join(ROOT, 'mesh-sidecar.lock.json');
 // The full platform matrix. MUST stay in lock-step with assetName() in
 // src/utils/sidecar-installer.js and the emit() calls in build-mesh-sidecar.sh.
 const ASSET_NAMES = [
-  'aiordie-mesh-windows-amd64.exe',
-  'aiordie-mesh-windows-arm64.exe',
-  'aiordie-mesh-linux-amd64',
-  'aiordie-mesh-linux-arm64',
-  'aiordie-mesh-darwin-amd64',
-  'aiordie-mesh-darwin-arm64',
+  'ai-or-die-mesh-windows-amd64.exe',
+  'ai-or-die-mesh-windows-arm64.exe',
+  'ai-or-die-mesh-linux-amd64',
+  'ai-or-die-mesh-linux-arm64',
+  'ai-or-die-mesh-darwin-amd64',
+  'ai-or-die-mesh-darwin-arm64',
 ];
 
 // Source files whose content defines the sidecar binary. A change to any of

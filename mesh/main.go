@@ -1,4 +1,4 @@
-// Command aiordie-mesh is the userspace mesh sidecar for ai-or-die. It joins a
+// Command ai-or-die-mesh is the userspace mesh sidecar for ai-or-die. It joins a
 // Tailscale tailnet entirely in userspace via tsnet (no kernel TUN, no admin,
 // no system service) and reverse-proxies the tailnet listener to ai-or-die's
 // local HTTP/WebSocket port. Only this one port is exposed on the mesh; the
@@ -18,16 +18,24 @@
 //   MESH-URL http://<name>       node is up, but TLS certs unavailable (degraded)
 //   MESH-NOCERT                  hint: enable HTTPS Certificates in the tailnet
 //   MESH-PEERS {"self":...,"peers":[...]} tagged fleet peers snapshot
+//   MESH-EGRESS http://127.0.0.1:<port> <token>  loopback CONNECT proxy for a
+//                                same-box conductor to reach tagged tailnet peers
+//   MESH-UNTAGGED <selfTagged> <total> <tagged>  tailnet peers exist but none are
+//                                tagged tag:aiordie — discovery will stay empty
 //   MESH-NEEDLOGIN <url>         no/!valid key — operator must enroll
 //   MESH-ERR <msg>               fatal
 package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -35,6 +43,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"tailscale.com/ipn/ipnstate"
@@ -93,6 +102,10 @@ func main() {
 
 	if lc, err := s.LocalClient(); err == nil {
 		go emitMeshPeersLoop(context.Background(), lc)
+		// Loopback egress: lets a same-box conductor (github-router) reach tagged
+		// tailnet peers over WireGuard without the host OS joining the tailnet.
+		// Best-effort — a failure here never blocks serving.
+		startEgressProxy(s, lc)
 	}
 
 	name := *host
@@ -223,6 +236,29 @@ func emitMeshPeers(ctx context.Context, lc statusClient) {
 		return
 	}
 	fmt.Printf("MESH-PEERS %s\n", b)
+
+	// Diagnostic: tailnet peers exist but none are tagged tag:aiordie, so the
+	// snapshot above is empty and fleet discovery will surface nothing. Emit a
+	// machine-parseable line the manager turns into an actionable hint — the
+	// silent-empty-peers state is the exact failure this whole path guards against.
+	total, tagged := peerCounts(status)
+	if total > 0 && tagged == 0 {
+		selfTagged := status.Self != nil && peerHasTag(status.Self, meshPeerTag)
+		fmt.Printf("MESH-UNTAGGED %t %d %d\n", selfTagged, total, tagged)
+	}
+}
+
+func peerCounts(status *ipnstate.Status) (total, tagged int) {
+	for _, ps := range status.Peer {
+		if ps == nil {
+			continue
+		}
+		total++
+		if peerHasTag(ps, meshPeerTag) {
+			tagged++
+		}
+	}
+	return total, tagged
 }
 
 func meshPeersFromStatus(status *ipnstate.Status) meshPeersSnapshot {
@@ -338,4 +374,136 @@ func newEdgeProxy(target *url.URL, name string, proto *string, proxyBearer strin
 		rp.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	}
 	return rp
+}
+
+// startEgressProxy stands up a loopback HTTP CONNECT proxy so a same-box conductor
+// process (github-router) can reach TAGGED tailnet peers over the sidecar's
+// in-process WireGuard — the host OS never joins the tailnet. It is bound to
+// loopback, gated by a random per-process bearer, and restricted to tagged
+// .ts.net peers on the served ports, so a stray local process can neither turn it
+// into a generic tailnet egress nor learn the token off the wire. The endpoint +
+// token are announced via MESH-EGRESS for the manager to persist (0600).
+// Best-effort: any failure here never blocks serving.
+func startEgressProxy(s *tsnet.Server, lc statusClient) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return
+	}
+	token, err := randToken()
+	if err != nil {
+		_ = ln.Close()
+		return
+	}
+	fmt.Printf("MESH-EGRESS http://%s %s\n", ln.Addr().String(), token)
+	srv := &http.Server{Handler: egressHandler(s.Dial, lc, token)}
+	go func() { _ = srv.Serve(ln) }()
+}
+
+// dialFunc dials a tailnet address (tsnet.Server.Dial); injectable for tests.
+type dialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+func egressHandler(dial dialFunc, lc statusClient, token string) http.Handler {
+	want := "Bearer " + token
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "only CONNECT is supported", http.StatusMethodNotAllowed)
+			return
+		}
+		// Constant-time bearer check on the proxy hop so a stray local process
+		// cannot use the tailnet egress without the per-process token.
+		got := r.Header.Get("Proxy-Authorization")
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			w.Header().Set("Proxy-Authenticate", "Bearer")
+			http.Error(w, "proxy authorization required", http.StatusProxyAuthRequired)
+			return
+		}
+		host, port, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			http.Error(w, "bad CONNECT target", http.StatusBadRequest)
+			return
+		}
+		if !egressTargetAllowed(lc, host, port) {
+			http.Error(w, "forbidden CONNECT target", http.StatusForbidden)
+			return
+		}
+		upstream, err := dial(r.Context(), "tcp", net.JoinHostPort(host, port))
+		if err != nil {
+			http.Error(w, "upstream dial failed", http.StatusBadGateway)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			_ = upstream.Close()
+			http.Error(w, "hijack unsupported", http.StatusInternalServerError)
+			return
+		}
+		clientConn, _, err := hj.Hijack()
+		if err != nil {
+			_ = upstream.Close()
+			return
+		}
+		_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		// Splice both directions. Half-close each write end on its own EOF (so a
+		// one-way FIN — e.g. an HTTP/1.1 request with Connection: close — does not
+		// truncate the reply mid-flight), then fully close once BOTH directions
+		// have drained. net.Pipe and other non-TCP conns lack CloseWrite; the type
+		// assertion simply skips the half-close for them.
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _ = io.Copy(upstream, clientConn)
+			if cw, ok := upstream.(interface{ CloseWrite() error }); ok {
+				_ = cw.CloseWrite()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			_, _ = io.Copy(clientConn, upstream)
+			if cw, ok := clientConn.(interface{ CloseWrite() error }); ok {
+				_ = cw.CloseWrite()
+			}
+		}()
+		wg.Wait()
+		_ = clientConn.Close()
+		_ = upstream.Close()
+	})
+}
+
+// egressTargetAllowed permits CONNECT only to a TAGGED same-tailnet .ts.net peer
+// (exact DNSName match, never a suffix) on a served port, and rejects IP-literal
+// targets — so the loopback proxy can never be turned into a generic tailnet
+// egress, preserving the ACL's instance-isolation posture.
+func egressTargetAllowed(lc statusClient, host, port string) bool {
+	if port != "443" && port != "7777" {
+		return false
+	}
+	if net.ParseIP(host) != nil {
+		return false // no raw IPs — only MagicDNS names bound to a known tagged peer
+	}
+	want := normalizeDNSName(host)
+	if want == "" {
+		return false
+	}
+	status, err := lc.Status(context.Background())
+	if err != nil || status == nil {
+		return false
+	}
+	for _, ps := range status.Peer {
+		if ps == nil || !peerHasTag(ps, meshPeerTag) {
+			continue
+		}
+		if normalizeDNSName(ps.DNSName) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func randToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

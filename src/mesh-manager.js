@@ -1,7 +1,7 @@
 'use strict';
 
 // MeshManager — permanent reachability over a Tailscale tailnet via the
-// aiordie-mesh sidecar (tsnet in USERSPACE: no kernel TUN, no admin, no system
+// ai-or-die-mesh sidecar (tsnet in USERSPACE: no kernel TUN, no admin, no system
 // service). Only ai-or-die's own port joins the mesh; the rest of the machine
 // stays off it. Mirrors TunnelManager's lifecycle (detect → start → backoff →
 // stop) so bin/ai-or-die.js supervises it like the dev tunnel. Verified E2E:
@@ -11,6 +11,7 @@ const { spawn } = require('child_process');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 
 const URL_TIMEOUT_MS = 60000;          // enroll + name can take ~30s on first run
 const STABILITY_THRESHOLD_MS = 60000;  // 60s up = reset retry budget
@@ -38,11 +39,11 @@ class MeshManager {
       ? path.join(localApp, 'ai-or-die')
       : path.join(os.homedir(), '.ai-or-die');
     this.stateDir = options.stateDir || path.join(this._appBase, 'ts-state');
-    // The sidecar binary is content-addressed: its path embeds the lock's
-    // contentHash so a new build installs alongside the old one (no overwrite of
-    // a running .exe). Derived from the installer's lock + path helpers.
+    // The sidecar is LAUNCHED from a stable, hash-free path (ai-or-die-mesh[.exe])
+    // so a single-file WDAC/AppLocker allow-list rule matches the executed image
+    // across versions (ADR-0036). The installer verifies + replaces it in place.
     this._installer = options._installer || require('./utils/sidecar-installer');
-    this.sidecar = options.sidecar || this._sidecarPathFromLock(this._appBase);
+    this.sidecar = options.sidecar || this._stableSidecarPath(this._appBase);
     this.hostname = (options.hostname || `aiordie-${os.hostname()}`).toLowerCase().replace(/[^a-z0-9-]/g, '');
 
     this.proc = null;
@@ -59,12 +60,16 @@ class MeshManager {
     this._stabilityThresholdMs = options._stabilityThresholdMs || STABILITY_THRESHOLD_MS;
     this._stdoutBuffer = '';
     this.peers = null;
+    this._untaggedWarned = false;
   }
 
   /** Never throws — degrades to localhost/devtunnel on any failure. */
   async start() {
     console.log('\n  Connecting mesh (Tailscale userspace)...');
     this.stopping = false;
+    // Clear any egress.json left by a crashed/kill -9'd prior run BEFORE (re)spawn,
+    // so a consumer can't route to a freed loopback port a local process squatted.
+    this._deleteEgressFile();
     if (!fs.existsSync(this.sidecar)) {
       if (!(await this._ensureSidecar())) { this._printMissing(this._lastError); return; }
     }
@@ -73,13 +78,12 @@ class MeshManager {
     await this._spawn();
   }
 
-  /** Content-addressed sidecar path from the committed lock; safe fallback. */
-  _sidecarPathFromLock(base) {
+  /** Stable, hash-free sidecar path from the installer; safe fallback. */
+  _stableSidecarPath(base) {
     try {
-      const lock = this._installer.loadLock();
-      return this._installer.sidecarPath(lock.contentHash);
+      return this._installer.stableSidecarPath();
     } catch (_) {
-      const exe = process.platform === 'win32' ? 'aiordie-mesh.exe' : 'aiordie-mesh';
+      const exe = process.platform === 'win32' ? 'ai-or-die-mesh.exe' : 'ai-or-die-mesh';
       return path.join(base, 'bin', exe);
     }
   }
@@ -113,6 +117,7 @@ class MeshManager {
   async stop() {
     this.stopping = true;
     this._deletePeersFile();
+    this._deleteEgressFile();
     this._clearStabilityTimer();
     clearTimeout(this._restartDelayTimer);
     if (this._restartDelayResolve) { this._restartDelayResolve(); this._restartDelayResolve = null; }
@@ -156,6 +161,7 @@ class MeshManager {
           }
           if (/^MESH-NEEDLOGIN\b/.test(line)) {
             this._deletePeersFile();
+            this._deleteEgressFile();
             this._printNotEnrolled();
             if (!done) { done = true; clearTimeout(timer); resolve(); }
           }
@@ -164,7 +170,7 @@ class MeshManager {
       this.proc.stderr.on('data', (d) => { if (this.dev) process.stderr.write(`  [mesh] ${d}`); });
       this.proc.on('error', (e) => { console.error(`  \x1b[31mmesh sidecar failed: ${e.message}\x1b[0m`); this.proc = null; if (!done) { done = true; clearTimeout(timer); resolve(); } });
       this.proc.on('exit', (code) => {
-        this._clearStabilityTimer(); this.proc = null; this.dnsName = null; this._deletePeersFile();
+        this._clearStabilityTimer(); this.proc = null; this.dnsName = null; this._deletePeersFile(); this._deleteEgressFile();
         if (!this.stopping && code !== 0) this._restart();
       });
     });
@@ -189,7 +195,9 @@ class MeshManager {
 
   _handleStdoutLine(line) {
     try {
-      if (/^MESH-NEEDLOGIN\b/.test(line)) this._deletePeersFile();
+      if (/^MESH-NEEDLOGIN\b/.test(line)) { this._deletePeersFile(); this._deleteEgressFile(); return; }
+      if (/^MESH-EGRESS\b/.test(line)) { this._handleEgressLine(line); return; }
+      if (/^MESH-UNTAGGED\b/.test(line)) { this._handleUntaggedLine(line); return; }
       const match = /^MESH-PEERS\s+(.+)$/.exec(line);
       if (!match) return;
       const raw = match[1];
@@ -206,6 +214,8 @@ class MeshManager {
       const normalized = this._validatePeersPayload(parsed);
       if (!normalized) return;
       this.peers = normalized;
+      // Recovered: tagged peers are visible again, so re-arm the untagged warning.
+      if (normalized.peers.length > 0) this._untaggedWarned = false;
       this._writePeersFile(normalized);
     } catch (_) {}
   }
@@ -247,6 +257,70 @@ class MeshManager {
   _deletePeersFile() {
     this.peers = null;
     try { fs.rmSync(this.peersFilePath(), { force: true }); } catch (_) {}
+  }
+
+  egressFilePath() {
+    return path.join(this._appBase, 'mesh', 'egress.json');
+  }
+
+  // Parse `MESH-EGRESS <url> <token>` and persist the loopback CONNECT-proxy
+  // endpoint + local secret for a same-box conductor (github-router) to consume.
+  // Only a loopback http URL is ever accepted; the token is a local credential.
+  _handleEgressLine(line) {
+    const m = /^MESH-EGRESS\s+(\S+)\s+(\S+)\s*$/.exec(line);
+    if (!m) return;
+    const url = m[1];
+    const token = m[2];
+    let u;
+    try { u = new URL(url); } catch (_) { return; }
+    if (u.protocol !== 'http:') return;
+    const host = u.hostname.replace(/^\[/, '').replace(/\]$/, '');
+    // Only a numeric loopback literal — never `localhost`, whose resolution a
+    // consumer's DNS/hosts config could rebind off-host.
+    if (host !== '127.0.0.1' && host !== '::1') return;
+    if (!token || /\s/.test(token)) return;
+    this._writeEgressFile(url, token);
+  }
+
+  _writeEgressFile(url, token) {
+    const file = this.egressFilePath();
+    const dir = path.dirname(file);
+    // Random, exclusive-create tmp so a pre-planted symlink at a predictable path
+    // can't redirect the write (TOCTOU / symlink clobber).
+    const tmp = path.join(dir, `egress.json.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify({
+        version: 1,
+        pid: this.proc ? this.proc.pid : process.pid,
+        updatedAt: Date.now(),
+        url,
+        token,
+      }), { mode: 0o600, flag: 'wx' });
+      fs.chmodSync(tmp, 0o600);
+      fs.renameSync(tmp, file);
+    } catch (_) {
+      try { fs.rmSync(tmp, { force: true }); } catch (_) {}
+    }
+  }
+
+  _deleteEgressFile() {
+    try { fs.rmSync(this.egressFilePath(), { force: true }); } catch (_) {}
+  }
+
+  // Actionable one-shot hint: tailnet peers exist but none carry tag:aiordie, so
+  // fleet discovery will surface nothing until they are tagged. The exact failure
+  // this whole path guards against — surfaced, not silent.
+  _handleUntaggedLine(line) {
+    if (this._untaggedWarned) return;
+    const m = /^MESH-UNTAGGED\s+(\S+)\s+(\d+)\s+(\d+)\s*$/.exec(line);
+    if (!m) return;
+    this._untaggedWarned = true;
+    const total = m[2];
+    console.log(`\n  \x1b[33mMesh: ${total} tailnet device(s) visible but \x1b[1m0 tagged tag:aiordie\x1b[0m\x1b[33m.\x1b[0m`);
+    console.log('    Fleet discovery stays EMPTY until instances carry the tag:');
+    console.log('    • enroll with a REUSABLE + TAGGED key (tag:aiordie), or retag each device in the admin console;');
+    console.log('    • ensure the ACL allows your conductor → tag:aiordie on the served ports (docs/mesh-acl.example.hujson).');
   }
 
   _printMissing(err) {

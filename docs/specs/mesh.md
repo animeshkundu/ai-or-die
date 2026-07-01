@@ -7,7 +7,7 @@ See ADR-0034 for rationale and the alternatives that were tested and rejected.
 
 ## Components
 
-- **`mesh/main.go`** — the `aiordie-mesh` sidecar. A `tsnet` node (in-process
+- **`mesh/main.go`** — the `ai-or-die-mesh` sidecar. A `tsnet` node (in-process
   userspace WireGuard) that enrolls via `TS_AUTHKEY` and reverse-proxies the
   tailnet listener to the loopback backend (`--backend http://127.0.0.1:<port>`,
   validated loopback-only). When the tailnet has HTTPS certificates enabled it
@@ -30,10 +30,10 @@ See ADR-0034 for rationale and the alternatives that were tested and rejected.
 
 ## Install flow (zero manual steps)
 
-1. `ai-or-die --mesh` checks `%LOCALAPPDATA%\ai-or-die\bin\aiordie-mesh-<hash>.exe`
-   (`~/.ai-or-die/bin/aiordie-mesh-<hash>` on POSIX). The path is content-addressed,
+1. `ai-or-die --mesh` checks `%LOCALAPPDATA%\ai-or-die\bin\ai-or-die-mesh-<hash>.exe`
+   (`~/.ai-or-die/bin/ai-or-die-mesh-<hash>` on POSIX). The path is content-addressed,
    so a new build installs alongside the old one (never overwrites a running `.exe`).
-2. If missing, it fetches `aiordie-mesh-<plat>-<arch>[.exe]` from
+2. If missing, it fetches `ai-or-die-mesh-<plat>-<arch>[.exe]` from
    `https://github.com/animeshkundu/ai-or-die/releases/download/mesh-<contentHash>/`
    and verifies its SHA-256 against the checksum embedded in `mesh-sidecar.lock.json`.
 3. If `AIORDIE_TS_AUTHKEY` is set (reusable + tagged), it enrolls; otherwise it
@@ -112,8 +112,51 @@ anonymous default of `--tunnel`. With both flags the tunnel URL carries
 `?token=` so it still works. Ship the default-deny `tag:aiordie` ACL from
 `docs/mesh-acl.example.hujson`.
 
+## Egress (conductor → peers) — ADR-0036
+
+A userspace `tsnet` node serves **inbound** only; it does not put the host OS on
+the tailnet. So a same-box conductor process (github-router driving the fleet)
+cannot reach `.ts.net` peers directly. The sidecar therefore runs a **loopback
+HTTP CONNECT proxy** (`127.0.0.1:0`) backed by `tsnet.Server.Dial`:
+
+- **Gated:** every `CONNECT` needs `Proxy-Authorization: Bearer <token>` (a random
+  per-process token), and the target must be a `tag:aiordie` peer whose `DNSName`
+  EXACTLY matches `Status().Peer` on port 443 or 7777 — IP literals and
+  suffix-style spoofs are rejected. So a stray local process can neither use the
+  proxy nor turn it into a generic tailnet egress.
+- **Advertised:** `MESH-EGRESS http://127.0.0.1:<port> <token>` on stdout; the
+  manager persists it to `~/.ai-or-die/mesh/egress.json` (mode 0600,
+  `{version,pid,updatedAt,url,token}`), rewritten each spawn. This is a SEPARATE
+  file from `peers.json` (which stays credential-free); the consumer treats it
+  stale on a dead pid / expired TTL.
+- Runs on every `--mesh` box, but only a same-box conductor consumes it.
+
+The peer's OWN sidecar still injects the app bearer on the tailnet→loopback hop,
+so the conductor sends no `Authorization` on the wire. That injection is
+identity-blind, so the tailnet ACL (deny instance→instance; allow your conductor
+→ `tag:aiordie`) is a REQUIRED precondition — see `docs/mesh-acl.example.hujson`.
+
+## Trust: stable path + strip (ADR-0036)
+
+The manager LAUNCHES a stable, hash-free path (`bin/ai-or-die-mesh[.exe]`) so a
+single-file WDAC/AppLocker rule matches the executed image across versions; the
+installer verifies the download's SHA-256 (vs the signed-npm checksum) and
+replaces the stable file in place (the file is free at process start, so an
+upgrade lands on the next launch). After the verify it strips the Windows MOTW /
+macOS quarantine mark so a re-download is not re-gated. This does NOT satisfy an
+enforced-WDAC unsigned-binary block — signing stays the durable fix. A directory
+allow-list (`%LOCALAPPDATA%\ai-or-die\bin\*`) also works where permitted.
+
+## Untagged diagnostic
+
+When tailnet peers exist but none carry `tag:aiordie`, the sidecar emits
+`MESH-UNTAGGED <selfTagged> <total> <tagged>` and the manager prints a one-shot
+hint: fleet discovery stays empty until instances are tagged (enroll with a
+reusable+tagged key, or retag in the admin console).
+
 ## Verified
 
 Built + run on Windows with no admin/driver; an internet-tagged (MOTW) binary
 executed unblocked; two userspace nodes enrolled and a remote node fetched the
-live app E2E over WireGuard.
+live app E2E over WireGuard. The egress proxy's auth gating, exact-DNSName
+allowlist, and CONNECT tunnel are unit-tested (`mesh/egress_test.go`).
