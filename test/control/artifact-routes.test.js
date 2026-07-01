@@ -6,7 +6,7 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
-const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner } = require('../../src/artifact-review');
+const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, formatFeedbackForAgent, buildArtifactPushPayload, artifactPushEnabledFromEnv } = require('../../src/artifact-review');
 
 let ClaudeCodeWebServer;
 try {
@@ -103,6 +103,8 @@ function buildApp(opts) {
     pollHoldMs: opts.pollHoldMs == null ? 80 : opts.pollHoldMs,
     pollHeartbeatMs: opts.pollHeartbeatMs == null ? 20 : opts.pollHeartbeatMs,
     sseHeartbeatMs: opts.sseHeartbeatMs == null ? 50 : opts.sseHeartbeatMs,
+    pushToAgent: opts.pushToAgent || null,
+    pushTimeoutMs: opts.pushTimeoutMs,
   }));
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     res.status(500).json({ error: err.message });
@@ -297,5 +299,168 @@ describe('artifact review routes', function () {
     } finally {
       server.close();
     }
+  });
+
+  describe('artifact push (idle-gated injection)', function () {
+    it('formatFeedbackForAgent renders object + string prompts; empty when nothing actionable', function () {
+      assert.equal(formatFeedbackForAgent([]), '');
+      assert.equal(formatFeedbackForAgent(['   ', { text: 'x' }]), '');
+      const out = formatFeedbackForAgent([
+        { prompt: 'tighten this', text: 'the goal section', sourceLine: 12 },
+        'also fix the title',
+      ]);
+      assert.match(out, /artifact_reply/);
+      assert.match(out, /1\. \[line 12\] \(re: "the goal section"\) tighten this/);
+      assert.match(out, /2\. also fix the title/);
+    });
+
+    it('artifactPushEnabledFromEnv defaults ON and only an explicit falsy value disables it', function () {
+      // Default on: unset / empty / whitespace / any non-falsy value.
+      for (const on of [undefined, null, '', '  ', '1', 'true', 'anything']) {
+        assert.equal(artifactPushEnabledFromEnv(on), true, JSON.stringify(on) + ' should enable');
+      }
+      // Opt out: only explicit falsy tokens (case/space-insensitive).
+      for (const off of ['0', 'false', ' OFF ', 'No']) {
+        assert.equal(artifactPushEnabledFromEnv(off), false, JSON.stringify(off) + ' should disable');
+      }
+    });
+
+    it('buildArtifactPushPayload strips ESC/control bytes and cannot break out of the paste envelope', function () {
+      assert.equal(buildArtifactPushPayload(''), '');
+      assert.equal(buildArtifactPushPayload(null), '');
+      // A hostile string: an injected paste-end marker, a bare CR, a CSI sequence,
+      // a NUL and a BEL. None may survive as control bytes in the payload.
+      const hostile = 'hi\x1b[201~\rmalicious\x1b[2J\x00\x07 end';
+      const payload = buildArtifactPushPayload(hostile);
+      // Exactly one leading paste-start, one paste-end, one trailing CR (ours).
+      assert.equal(payload.indexOf('\x1b[200~'), 0);
+      assert.equal((payload.match(/\x1b\[200~/g) || []).length, 1);
+      assert.equal((payload.match(/\x1b\[201~/g) || []).length, 1);
+      assert.ok(payload.endsWith('\x1b[201~\r'));
+      // Between the markers there are NO ESC bytes and NO CR (only our wrapper).
+      const inner = payload.slice('\x1b[200~'.length, payload.length - '\x1b[201~\r'.length);
+      assert.ok(!/[\x00-\x08\x0b-\x1f\x7f]/.test(inner), 'inner text must be free of C0/DEL controls');
+      assert.match(inner, /hi.*malicious.*end/);
+    });
+
+    it('pushes to the agent and consumes the queue when no poll is in flight', async function () {
+      const calls = [];
+      const pushToAgent = async (sessionId, text) => { calls.push({ sessionId, text }); return true; };
+      const { app, store } = buildApp({ baseDir: tmpDir, pushToAgent });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        const r = await postJson(port, '/api/artifact/s1/prompts', {
+          prompts: [{ prompt: 'please tighten the plan', text: 'goal' }],
+        });
+        assert.equal(r.status, 200);
+        assert.equal(r.body.pushed, true);
+        assert.equal(r.body.queued, 0);
+        assert.equal(calls.length, 1);
+        assert.equal(calls[0].sessionId, 's1');
+        assert.match(calls[0].text, /please tighten the plan/);
+        // Consumed: a later poll has nothing to deliver.
+        assert.deepEqual(store.peekFeedback('s1').prompts, []);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('does NOT push when a poll is already in flight (the poll delivers it)', async function () {
+      const calls = [];
+      const pushToAgent = async (sessionId, text) => { calls.push({ sessionId, text }); return true; };
+      const { app } = buildApp({ baseDir: tmpDir, pushToAgent, pollHoldMs: 500, pollHeartbeatMs: 20 });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        const pending = getJson(port, '/api/artifact/s1/poll');
+        await new Promise((resolve) => setTimeout(resolve, 60)); // let the poll register
+        const r = await postJson(port, '/api/artifact/s1/prompts', { prompts: ['delivered by poll'] });
+        const out = await pending;
+
+        assert.equal(out.status, 200);
+        assert.deepEqual(out.body.prompts, ['delivered by poll']);
+        assert.equal(calls.length, 0, 'must not inject while a poll is in flight');
+        assert.equal(r.body.pushed, false);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('leaves the queue intact when the push hook declines (returns falsy)', async function () {
+      const pushToAgent = async () => false; // e.g. PTY not idle / no live session
+      const { app, store } = buildApp({ baseDir: tmpDir, pushToAgent });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        const r = await postJson(port, '/api/artifact/s1/prompts', { prompts: ['still queued'] });
+        assert.equal(r.body.pushed, false);
+        assert.equal(r.body.queued, 1);
+        // Not consumed: the poll path still works.
+        const poll = await getJson(port, '/api/artifact/s1/poll');
+        assert.deepEqual(poll.body.prompts, ['still queued']);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('without a push hook, behaviour is unchanged (queued for the poll)', async function () {
+      const { app } = buildApp({ baseDir: tmpDir }); // no pushToAgent
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        const r = await postJson(port, '/api/artifact/s1/prompts', { prompts: ['queued only'] });
+        assert.equal(r.body.pushed, false);
+        assert.equal(r.body.queued, 1);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('treats a hung push as failed (timeout) and restores the queue', async function () {
+      let resolveLate;
+      const pushToAgent = () => new Promise((resolve) => { resolveLate = resolve; }); // never resolves in time
+      const { app, store } = buildApp({ baseDir: tmpDir, pushToAgent, pushTimeoutMs: 60 });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        const r = await postJson(port, '/api/artifact/s1/prompts', { prompts: ['hung push'] });
+        assert.equal(r.body.pushed, false, 'a push that exceeds the timeout is reported as not pushed');
+        assert.equal(r.body.queued, 1, 'the claimed feedback is restored to the queue on timeout');
+        assert.deepEqual(store.peekFeedback('s1').prompts, ['hung push']);
+        if (resolveLate) resolveLate(true); // let the dangling push settle
+      } finally {
+        server.close();
+      }
+    });
+
+    it('claims feedback before the push await so a poll arriving mid-push cannot double-deliver', async function () {
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      const calls = [];
+      const pushToAgent = async (sessionId, text) => { calls.push(text); await gate; return true; };
+      const { app } = buildApp({ baseDir: tmpDir, pushToAgent, pollHoldMs: 250, pollHeartbeatMs: 20 });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        // No active poll: /prompts claims the feedback, then blocks on the gated push.
+        const promptsP = postJson(port, '/api/artifact/s1/prompts', { prompts: ['only once'] });
+        await new Promise((r) => setTimeout(r, 40)); // let the claim + push start
+        // A poll now arrives DURING the push window; the feedback was already
+        // claimed, so this poll must hold and return empty (no double-delivery).
+        const pollP = getJson(port, '/api/artifact/s1/poll');
+        await new Promise((r) => setTimeout(r, 40));
+        release();
+        const prompts = await promptsP;
+        const poll = await pollP;
+
+        assert.equal(calls.length, 1);
+        assert.equal(prompts.body.pushed, true);
+        assert.equal(poll.body.next_step, 'poll', 'poll should time out empty, not deliver claimed feedback');
+        assert.ok(!poll.body.prompts || poll.body.prompts.length === 0);
+      } finally {
+        server.close();
+      }
+    });
   });
 });

@@ -37,7 +37,7 @@ const KeepaliveManager = require('./keepalive-manager');
 const { ControlEventBus, EVENT_KINDS: CONTROL_EVENT_KINDS } = require('./control/event-bus');
 const TranscriptBuffer = require('./sticky-note-transcript');
 const { createControlRouter } = require('./control/routes');
-const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner } = require('./artifact-review');
+const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, buildArtifactPushPayload, artifactPushEnabledFromEnv } = require('./artifact-review');
 const { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen, TRUST_PROMPT_REGEX, DEFAULT_UNBOUND_QUIET_MS } = require('./control/session-status');
 const { detectAwaiting } = require('./control/jsonl-awaiting');
 
@@ -166,6 +166,14 @@ class ClaudeCodeWebServer {
     this.artifactPollHoldMs = options.artifactPollHoldMs || 25000;
     this.artifactPollHeartbeatMs = options.artifactPollHeartbeatMs || 5000;
     this.artifactSseHeartbeatMs = options.artifactSseHeartbeatMs || 15000;
+    // Artifact push (default ON): panel feedback that arrives while the agent is
+    // idle (no in-flight poll + PTY quiet) is injected into the CLI as a new turn,
+    // so the composer works without the human switching to the terminal or the
+    // agent having to poll. Opt OUT with AIORDIE_ARTIFACT_PUSH=0 (or false/off/no).
+    // The idle-gate + residual TUI-timing risk are recorded in docs/adrs/0035.
+    this._artifactPushEnabled = artifactPushEnabledFromEnv(process.env.AIORDIE_ARTIFACT_PUSH);
+    const quietRaw = Number(process.env.AIORDIE_ARTIFACT_PUSH_QUIET_MS);
+    this._artifactPushQuietMs = Number.isFinite(quietRaw) && quietRaw > 0 ? quietRaw : 1500;
     // PROC-04: min-heap of {id, lastActivity} pairs keyed by lastActivity.
     // Used by _evictStaleSessions to find the oldest session in O(log n)
     // rather than scanning the full Map every 5 min. Lazy-tombstone protocol
@@ -1270,6 +1278,9 @@ class ClaudeCodeWebServer {
       pollHoldMs: this.artifactPollHoldMs,
       pollHeartbeatMs: this.artifactPollHeartbeatMs,
       sseHeartbeatMs: this.artifactSseHeartbeatMs,
+      pushToAgent: this._artifactPushEnabled
+        ? (sessionId, text) => this._pushArtifactFeedbackToAgent(sessionId, text)
+        : null,
     }));
 
     // Commands API removed
@@ -4099,6 +4110,48 @@ class ClaudeCodeWebServer {
       terminal: this.terminalBridge
     };
     return bridges[agentType] || null;
+  }
+
+  // Return the bridge that currently owns a live PTY for `sessionId`, or null.
+  // Uses msSinceLastOutput (null when the session is absent/inactive) so we
+  // don't reach into a bridge's private session map.
+  _bridgeForSession(sessionId) {
+    const bridges = [
+      this.claudeBridge, this.terminalBridge,
+      this.codexBridge, this.copilotBridge, this.geminiBridge,
+    ];
+    for (const bridge of bridges) {
+      if (bridge && typeof bridge.msSinceLastOutput === 'function'
+          && bridge.msSinceLastOutput(sessionId) !== null) {
+        return bridge;
+      }
+    }
+    return null;
+  }
+
+  // Artifact-push hook (wired only when AIORDIE_ARTIFACT_PUSH is enabled). Inject
+  // panel feedback into the idle CLI as a NEW turn. Returns true only if it
+  // actually wrote to the PTY (the caller then consumes the queued prompts).
+  // Idle gate: decline when the session's PTY emitted output within the quiet
+  // window (likely mid-render / mid-turn), a heuristic, hence opt-in. Bracketed
+  // paste keeps multi-line feedback atomic; a trailing CR submits the turn.
+  async _pushArtifactFeedbackToAgent(sessionId, text) {
+    if (!text || typeof text !== 'string') return false;
+    const bridge = this._bridgeForSession(sessionId);
+    if (!bridge) return false;
+    const quietMs = bridge.msSinceLastOutput(sessionId);
+    if (quietMs === null || quietMs < this._artifactPushQuietMs) return false;
+    // Sanitize + bracketed-paste-wrap the human text (pure helper, unit-tested in
+    // artifact-review): strips ESC/control bytes so nothing can break out of the
+    // paste envelope, and a trailing CR submits the turn.
+    const payload = buildArtifactPushPayload(text);
+    if (!payload) return false;
+    try {
+      await bridge.sendInput(sessionId, payload);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   _buildControlDeps() {

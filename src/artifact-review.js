@@ -9,6 +9,9 @@ const { EventEmitter } = require('events');
 const DEFAULT_POLL_HOLD_MS = 25000;
 const DEFAULT_POLL_HEARTBEAT_MS = 5000;
 const DEFAULT_SSE_HEARTBEAT_MS = 15000;
+// Bound the artifact-push await so a stalled PTY write can't hold the /prompts
+// HTTP response open. On timeout we treat the push as failed and re-queue.
+const PUSH_TIMEOUT_MS = 4000;
 
 function realpathOrResolve(file) {
   let resolved = path.resolve(file);
@@ -79,6 +82,65 @@ function feedbackHasData(snapshot) {
     (Array.isArray(snapshot.prompts) && snapshot.prompts.length > 0) ||
     (Array.isArray(snapshot.layout_warnings) && snapshot.layout_warnings.length > 0)
   );
+}
+
+// Render queued human prompts into a single message suitable for injecting into
+// the CLI as a new user turn (the artifact-push path). Pure + exported so the
+// gate decision and wording are unit-testable without a live PTY. Accepts both
+// the panel's prompt objects ({prompt, text, sourceLine}) and bare-string prompts
+// (curl/legacy). Returns '' when there is nothing actionable to push (caller
+// skips injection on empty).
+function normalizeFeedbackPrompt(p) {
+  if (typeof p === 'string') {
+    return p.trim() ? { prompt: p.trim() } : null;
+  }
+  if (p && typeof p.prompt === 'string' && p.prompt.trim()) {
+    return {
+      prompt: p.prompt.trim(),
+      text: typeof p.text === 'string' ? p.text : '',
+      sourceLine: typeof p.sourceLine === 'number' ? p.sourceLine : undefined,
+    };
+  }
+  return null;
+}
+function formatFeedbackForAgent(prompts) {
+  const items = (Array.isArray(prompts) ? prompts : [])
+    .map(normalizeFeedbackPrompt)
+    .filter(Boolean);
+  if (items.length === 0) return '';
+  const lines = items.map((p, i) => {
+    const quoted = p.text && p.text.trim()
+      ? ' (re: "' + p.text.trim().slice(0, 160) + '")'
+      : '';
+    const where = typeof p.sourceLine === 'number' ? ' [line ' + p.sourceLine + ']' : '';
+    return (i + 1) + '.' + where + quoted + ' ' + p.prompt;
+  });
+  return (
+    'Human review feedback from the artifact panel (you were idle, so this was '
+    + 'delivered as a new turn instead of through artifact_poll). Address these in '
+    + 'the open artifact, then reply with the artifact_reply tool:\n'
+    + lines.join('\n')
+  );
+}
+
+// Build the raw bytes to inject into the CLI PTY for an artifact push. Pure +
+// exported so the security-sensitive sanitization is unit-testable. Strips ALL
+// C0 control bytes and DEL except TAB and LF (this removes ESC, so the bracketed-
+// paste markers and any other escape/CSI sequence in the human text cannot
+// survive), which also drops CR so the only submit is the trailing CR we add.
+// Wraps in a bracketed paste so multi-line feedback enters the composer
+// atomically; size-capped to bound a single injection.
+function buildArtifactPushPayload(text) {
+  if (!text || typeof text !== 'string') return '';
+  const safe = text.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').slice(0, 4000);
+  return '\x1b[200~' + safe + '\x1b[201~\r';
+}
+
+// Whether the artifact-push feature is enabled from its env var. Default ON:
+// only an explicit falsy value (0 / false / off / no) disables it. Pure +
+// exported so the default-on / opt-out contract is unit-tested.
+function artifactPushEnabledFromEnv(raw) {
+  return !/^(0|false|off|no)$/i.test(String(raw == null ? '' : raw).trim());
 }
 
 class ArtifactReviewStore extends EventEmitter {
@@ -211,6 +273,25 @@ class ArtifactReviewStore extends EventEmitter {
     }
 
     review.updatedAt = nowIso();
+    return review;
+  }
+
+  // Restore prompts that were claimed (acked) for a push that then failed, back to
+  // the FRONT of the queue so order is preserved (FIFO) ahead of any prompts that
+  // arrived during the push window. Re-emits 'feedback' so an in-flight poll picks
+  // them up. Used only by the artifact-push re-queue path.
+  restoreClaimedFeedback(aiSessionId, snapshot) {
+    const review = this._reviews.get(aiSessionId);
+    if (!review || !snapshot) return null;
+    const prompts = cloneArray(snapshot.prompts);
+    if (prompts.length > 0) {
+      review.queuedPrompts.unshift(...prompts);
+      if (snapshot.dom_snapshot !== undefined && review.domSnapshot == null) {
+        review.domSnapshot = snapshot.dom_snapshot;
+      }
+      review.updatedAt = nowIso();
+      this.emit('feedback', { aiSessionId, kind: 'prompts', review });
+    }
     return review;
   }
 
@@ -567,6 +648,27 @@ function createArtifactReviewRouter(options) {
   const sseHeartbeatMs = typeof options.sseHeartbeatMs === 'number'
     ? options.sseHeartbeatMs
     : DEFAULT_SSE_HEARTBEAT_MS;
+  // Optional artifact-push hook (default off). When provided, panel feedback that
+  // arrives while NO agent poll is in flight is pushed into the CLI as a new turn
+  // (so an idle agent reacts without the human switching to the terminal). The
+  // server supplies this only when AIORDIE_ARTIFACT_PUSH is enabled; it returns a
+  // truthy value when it actually injected, so we can consume the queued prompts.
+  const pushToAgent = typeof options.pushToAgent === 'function'
+    ? options.pushToAgent
+    : null;
+  const pushTimeoutMs = typeof options.pushTimeoutMs === 'number' && options.pushTimeoutMs > 0
+    ? options.pushTimeoutMs
+    : PUSH_TIMEOUT_MS;
+
+  // Count of in-flight long-poll requests per session. Non-zero means the agent
+  // is actively waiting on artifact_poll, so a queued prompt is delivered by that
+  // poll and must NOT be injected (injecting mid-turn would race the CLI's TUI).
+  const activePolls = new Map();
+  function pollDelta(sessionId, delta) {
+    const next = (activePolls.get(sessionId) || 0) + delta;
+    if (next > 0) activePolls.set(sessionId, next);
+    else activePolls.delete(sessionId);
+  }
 
   if (!store) throw new TypeError('Artifact review store is required');
   if (typeof validatePath !== 'function') throw new TypeError('validatePath is required');
@@ -731,15 +833,60 @@ function createArtifactReviewRouter(options) {
     res.sendFile(resolved.path);
   });
 
-  router.post('/:sessionId/prompts', (req, res) => {
+  router.post('/:sessionId/prompts', async (req, res) => {
     const sessionId = req.params.sessionId;
     if (!store.get(sessionId)) return res.status(404).json({ error: 'artifact review not found' });
 
     const prompts = req.body && req.body.prompts;
     if (!Array.isArray(prompts)) return res.status(400).json({ error: 'prompts must be an array' });
 
+    // Snapshot whether a poll is in flight BEFORE queuing: queuePrompts emits
+    // 'feedback' synchronously, which makes an in-flight poll deliver + tear down
+    // (decrementing the count to 0) before we could observe it. Reading the count
+    // first is the correct "was the agent waiting when this arrived?" signal.
+    const hadActivePoll = (activePolls.get(sessionId) || 0) > 0;
+
     const review = store.queuePrompts(sessionId, prompts, req.body ? req.body.domSnapshot : undefined);
-    res.json({ ok: true, queued: review ? review.queuedPrompts.length : 0 });
+
+    // Artifact push (default off; pushToAgent is null unless enabled). If the
+    // agent was NOT waiting on a poll, the queued feedback would otherwise sit
+    // until the agent next polls. Push it into the CLI as a new turn so an idle
+    // agent reacts. When a poll WAS in flight the queue path already delivers it,
+    // so we never inject then (injecting mid-turn would race the TUI).
+    //
+    // We CLAIM the feedback (ackFeedback) synchronously BEFORE the await, so a
+    // poll that arrives during the push window sees an empty queue and cannot
+    // also deliver the same feedback (no double-delivery). If the push then fails
+    // or times out we re-queue exactly what we claimed, so feedback is never lost
+    // and the poll path still works. The server hook applies its own PTY-quiet
+    // idle check and may decline.
+    let pushed = false;
+    if (pushToAgent && !hadActivePoll) {
+      const snapshot = store.peekFeedback(sessionId);
+      const text = feedbackHasData(snapshot) ? formatFeedbackForAgent(snapshot.prompts) : '';
+      if (text) {
+        store.ackFeedback(sessionId, snapshot); // claim before await
+        try {
+          pushed = !!(await Promise.race([
+            Promise.resolve(pushToAgent(sessionId, text)),
+            new Promise((resolve) => setTimeout(() => resolve(false), pushTimeoutMs)),
+          ]));
+        } catch (_) {
+          pushed = false;
+        }
+        if (!pushed) {
+          // Re-queue what we claimed (to the FRONT, preserving order) so the poll
+          // path still delivers it.
+          store.restoreClaimedFeedback(sessionId, snapshot);
+        }
+      }
+    }
+
+    res.json({
+      ok: true,
+      pushed,
+      queued: pushed ? 0 : (review ? review.queuedPrompts.length : 0),
+    });
   });
 
   router.post('/:sessionId/layout-warnings', (req, res) => {
@@ -849,11 +996,18 @@ function createArtifactReviewRouter(options) {
     res.setHeader('X-Accel-Buffering', 'no');
     if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
+    // This request is now an in-flight poll; mark the agent as actively waiting
+    // so concurrent /prompts feedback is delivered HERE (not injected into the
+    // PTY). Decremented exactly once on teardown.
+    let pollCounted = true;
+    pollDelta(sessionId, 1);
+
     let done = false;
     let snapshotToAck = null;
     let timeout = null;
     let heartbeat = null;
     function cleanup() {
+      if (pollCounted) { pollCounted = false; pollDelta(sessionId, -1); }
       if (timeout) clearTimeout(timeout);
       if (heartbeat) clearInterval(heartbeat);
       store.removeListener('feedback', onFeedback);
@@ -924,6 +1078,9 @@ module.exports = {
   createAssetTokenSigner,
   createArtifactReviewRouter,
   feedbackHasData,
+  formatFeedbackForAgent,
+  buildArtifactPushPayload,
+  artifactPushEnabledFromEnv,
   injectLavishSdk,
   isMarkdownFile,
   markdownArtifactShell,
