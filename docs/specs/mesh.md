@@ -126,7 +126,9 @@ HTTP CONNECT proxy** (`127.0.0.1:0`) backed by `tsnet.Server.Dial`:
   proxy nor turn it into a generic tailnet egress.
 - **Advertised:** `MESH-EGRESS http://127.0.0.1:<port> <token>` on stdout; the
   manager persists it to `~/.ai-or-die/mesh/egress.json` (mode 0600,
-  `{version,pid,updatedAt,url,token}`), rewritten each spawn. This is a SEPARATE
+  `{version,pid,updatedAt,url,token}`), rewritten each spawn and re-stamped every
+  30s while the sidecar lives (so a consumer's freshness TTL never expires a live
+  egress). This is a SEPARATE
   file from `peers.json` (which stays credential-free); the consumer treats it
   stale on a dead pid / expired TTL.
 - Runs on every `--mesh` box, but only a same-box conductor consumes it.

@@ -203,6 +203,47 @@ describe('MeshManager', function() {
       assert.ok(/tag:aiordie/.test(out) && /discovery stays EMPTY/i.test(out), out);
       assert.strictEqual((out.match(/tailnet device\(s\) visible/g) || []).length, 1, 'hint must print once');
     });
+
+    it('caches egress + starts a refresh timer, and clears both on shutdown', function() {
+      const { m, dir } = tempManager();
+      try {
+        m.proc = { pid: 55 };
+        m._handleStdoutData(Buffer.from('MESH-EGRESS http://127.0.0.1:5 tok5\n'));
+        assert.deepStrictEqual(m._egress, { url: 'http://127.0.0.1:5', token: 'tok5' });
+        assert.ok(m._egressRefreshTimer, 'refresh timer must be armed');
+        m._handleStdoutData(Buffer.from('MESH-NEEDLOGIN https://login.tailscale.com/admin/settings/keys\n'), () => {});
+        assert.strictEqual(m._egress, null);
+        assert.strictEqual(m._egressRefreshTimer, null, 'refresh timer must be cleared');
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('re-stamps a fresher updatedAt on a refresh tick while the sidecar is alive', function() {
+      const { m, dir } = tempManager();
+      try {
+        m.proc = { pid: 66 };
+        m._handleStdoutData(Buffer.from('MESH-EGRESS http://127.0.0.1:6 tok6\n'));
+        const first = JSON.parse(fs.readFileSync(m.egressFilePath(), 'utf8')).updatedAt;
+        // Force a distinct wall-clock, then tick the refresh directly.
+        const realNow = Date.now; let t = first + 1000; Date.now = () => t;
+        try { m._refreshEgressTick(); } finally { Date.now = realNow; }
+        const second = JSON.parse(fs.readFileSync(m.egressFilePath(), 'utf8'));
+        assert.ok(second.updatedAt > first, `updatedAt must advance (${first} -> ${second.updatedAt})`);
+        assert.strictEqual(second.url, 'http://127.0.0.1:6');
+        assert.strictEqual(second.token, 'tok6');
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it('a refresh tick after the sidecar exits stops the timer (no dead re-stamp)', function() {
+      const { m, dir } = tempManager();
+      try {
+        m.proc = { pid: 77 };
+        m._handleStdoutData(Buffer.from('MESH-EGRESS http://127.0.0.1:7 tok7\n'));
+        assert.ok(m._egressRefreshTimer);
+        m.proc = null; // sidecar gone
+        m._refreshEgressTick();
+        assert.strictEqual(m._egressRefreshTimer, null, 'timer must stop once the sidecar is gone');
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
   });
 
   describe('diagnostics', function() {

@@ -30,7 +30,9 @@ authority bounded only by the tailnet ACL.
 `tag:aiordie`-tagged peer whose `DNSName` exactly matches `Status().Peer` on ports 443/7777 (IP
 literals rejected). The endpoint + token are announced on stdout (`MESH-EGRESS <url> <token>`) and
 persisted by the manager to a **separate 0600 file** `~/.ai-or-die/mesh/egress.json`
-(`{version,pid,updatedAt,url,token}`), rewritten each spawn (fresh port/pid — no stale-port hole);
+(`{version,pid,updatedAt,url,token}`), rewritten each spawn (fresh port/pid — no stale-port hole)
+and re-stamped every 30s while the sidecar lives (the write-once file would otherwise be rejected by
+the consumer's ~120s freshness TTL after ~2 min of uptime — a bug the live drive caught);
 `peers.json` stays credential-free. github-router reads it, treats it stale on a dead pid / expired
 TTL, and routes mesh requests through an undici `ProxyAgent` with the token in the
 `Proxy-Authorization` header only. Origin-pinning + `redirect:"error"` are unchanged.

@@ -19,6 +19,10 @@ const MIN_RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30000;
 const MAX_RETRIES = 10;
 const MESH_PEERS_JSON_MAX = 256 * 1024;
+// The sidecar announces MESH-EGRESS once at spawn, but a consumer treats
+// egress.json stale past a short TTL (~120s). Re-stamp its updatedAt on this
+// cadence while the sidecar lives so a healthy egress never looks stale.
+const MESH_EGRESS_REFRESH_MS = 30000;
 
 class MeshManager {
   constructor(options = {}) {
@@ -61,6 +65,8 @@ class MeshManager {
     this._stdoutBuffer = '';
     this.peers = null;
     this._untaggedWarned = false;
+    this._egress = null;
+    this._egressRefreshTimer = null;
   }
 
   /** Never throws — degrades to localhost/devtunnel on any failure. */
@@ -279,7 +285,9 @@ class MeshManager {
     // consumer's DNS/hosts config could rebind off-host.
     if (host !== '127.0.0.1' && host !== '::1') return;
     if (!token || /\s/.test(token)) return;
+    this._egress = { url, token };
     this._writeEgressFile(url, token);
+    this._startEgressRefresh();
   }
 
   _writeEgressFile(url, token) {
@@ -304,7 +312,27 @@ class MeshManager {
     }
   }
 
+  // Keep egress.json's updatedAt fresh while the sidecar is alive. Without this a
+  // consumer's freshness TTL rejects the (write-once) egress after ~2 min of
+  // uptime and the mesh silently fails closed. Stops itself once the sidecar exits.
+  _startEgressRefresh() {
+    if (this._egressRefreshTimer) return;
+    this._egressRefreshTimer = setInterval(() => this._refreshEgressTick(), MESH_EGRESS_REFRESH_MS);
+    if (this._egressRefreshTimer.unref) this._egressRefreshTimer.unref();
+  }
+
+  _refreshEgressTick() {
+    if (this.proc && this._egress) this._writeEgressFile(this._egress.url, this._egress.token);
+    else this._stopEgressRefresh();
+  }
+
+  _stopEgressRefresh() {
+    if (this._egressRefreshTimer) { clearInterval(this._egressRefreshTimer); this._egressRefreshTimer = null; }
+  }
+
   _deleteEgressFile() {
+    this._egress = null;
+    this._stopEgressRefresh();
     try { fs.rmSync(this.egressFilePath(), { force: true }); } catch (_) {}
   }
 
