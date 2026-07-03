@@ -39,7 +39,7 @@ const TranscriptBuffer = require('./sticky-note-transcript');
 const { createControlRouter } = require('./control/routes');
 const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, buildArtifactPushPayload, artifactPushEnabledFromEnv } = require('./artifact-review');
 const { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen, TRUST_PROMPT_REGEX, DEFAULT_UNBOUND_QUIET_MS } = require('./control/session-status');
-const { detectAwaiting } = require('./control/jsonl-awaiting');
+const { detectAwaiting, detectTurnState } = require('./control/jsonl-awaiting');
 
 // HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
 // large frame can't block the event loop for tens-to-hundreds of ms.
@@ -1281,6 +1281,7 @@ class ClaudeCodeWebServer {
       pushToAgent: this._artifactPushEnabled
         ? (sessionId, text) => this._pushArtifactFeedbackToAgent(sessionId, text)
         : null,
+      routeApprovalAction: (sessionId, action) => this._routeArtifactApproval(sessionId, action),
     }));
 
     // Commands API removed
@@ -4132,18 +4133,42 @@ class ClaudeCodeWebServer {
   // Artifact-push hook (wired only when AIORDIE_ARTIFACT_PUSH is enabled). Inject
   // panel feedback into the idle CLI as a NEW turn. Returns true only if it
   // actually wrote to the PTY (the caller then consumes the queued prompts).
-  // Idle gate: decline when the session's PTY emitted output within the quiet
-  // window (likely mid-render / mid-turn), a heuristic, hence opt-in. Bracketed
-  // paste keeps multi-line feedback atomic; a trailing CR submits the turn.
+  //
+  // Idle gate (ADR-0035 hardening / C-P0-6): the transcript turn-state is the
+  // PRIMARY gate — a quiet PTY is exactly the pending-menu case, so PTY-quiet
+  // alone is unsafe. When a JSONL binding EXISTS, the transcript is authoritative:
+  // inject ONLY on idle_at_prompt; decline on awaiting_input / working AND on
+  // unknown (a transient read failure on a bound session must NOT fall back to the
+  // unsafe PTY-quiet heuristic — that is exactly the menu-injection race this gate
+  // closes). Only when there is NO binding (raw claude.exe whose slug doesn't
+  // resolve) do we degrade to the original PTY-quiet-only behavior. Read fresh
+  // per push (human-paced, so the cost is negligible) to avoid stale-state
+  // injection.
   async _pushArtifactFeedbackToAgent(sessionId, text) {
     if (!text || typeof text !== 'string') return false;
     const bridge = this._bridgeForSession(sessionId);
     if (!bridge) return false;
+
+    const binding = this._stickyJsonl && this._stickyJsonl.get(sessionId);
+    if (binding && binding.file) {
+      const turn = await this._artifactTurnState(binding);
+      // Bound session: transcript is the sole authority. Anything but a proven
+      // idle-at-prompt declines (awaiting_input / working / unknown).
+      return (turn && turn.state === 'idle_at_prompt')
+        ? this._writeArtifactPush(bridge, sessionId, text)
+        : false;
+    }
+
+    // No JSONL binding: degrade to the original PTY-quiet-only heuristic — decline
+    // while the PTY emitted output within the quiet window (likely mid-render).
     const quietMs = bridge.msSinceLastOutput(sessionId);
     if (quietMs === null || quietMs < this._artifactPushQuietMs) return false;
-    // Sanitize + bracketed-paste-wrap the human text (pure helper, unit-tested in
-    // artifact-review): strips ESC/control bytes so nothing can break out of the
-    // paste envelope, and a trailing CR submits the turn.
+    return this._writeArtifactPush(bridge, sessionId, text);
+  }
+
+  // Sanitize + bracketed-paste-wrap the human text and write it to the PTY. Pure
+  // helper split out so both idle-gate branches share it. Returns true on write.
+  async _writeArtifactPush(bridge, sessionId, text) {
     const payload = buildArtifactPushPayload(text);
     if (!payload) return false;
     try {
@@ -4151,6 +4176,40 @@ class ClaudeCodeWebServer {
       return true;
     } catch (_) {
       return false;
+    }
+  }
+
+  // Structured-approval routing (contract §5 / C-P1-4): when a panel action is an
+  // approve/reject/choose that answers a pending user-facing menu (ExitPlanMode /
+  // AskUserQuestion / permission), deliver it through the control-plane respond
+  // path instead of the drain. _controlRespond itself checks detectAwaiting and
+  // returns PRECONDITION_FAILED when nothing is pending, so we route only when a
+  // menu is genuinely up; otherwise the action falls back to the /await drain.
+  async _routeArtifactApproval(sessionId, action) {
+    if (!this.claudeSessions || !this.claudeSessions.has(sessionId)) return false;
+    const verb = action && action.action;
+    const opts = { sessionId };
+    if (verb === 'approve') opts.choice = 'accept';
+    else if (verb === 'reject') opts.choice = 'reject';
+    else if (verb === 'choose') { if (action.value == null) return false; opts.optionValue = action.value; }
+    else return false;
+    try {
+      const result = await this._controlRespond(opts);
+      return !!(result && result.delivered && !result.error);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Fresh transcript turn-state for the artifact push gate. Never cached: a safety
+  // gate must not act on a stale idle_at_prompt (an intervening turn could have
+  // started). The bounded tail read is cheap and only runs on a human-paced push.
+  async _artifactTurnState(binding) {
+    if (!binding || !binding.file) return { state: 'unknown' };
+    try {
+      return (await detectTurnState(binding.file)) || { state: 'unknown' };
+    } catch (_) {
+      return { state: 'unknown' };
     }
   }
 

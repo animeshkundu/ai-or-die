@@ -220,6 +220,66 @@
     return !annotationMode || isAnnotationUi(target) || isInteractiveControl(target);
   }
 
+  // ---- declarative interactive controls (data-aod-*; contract §4) ------------
+  // The producer renders buttons/plan-steps with data-aod-action / data-aod-id
+  // (+ optional data-aod-value / data-aod-group). The SDK captures activation and
+  // posts a structured 'artifact-action' to the panel — it does NOT open the
+  // annotation card. Native controls WITHOUT data-aod-action are untouched.
+
+  function aodActionEl(target) {
+    return target && target.closest ? target.closest('[data-aod-action]') : null;
+  }
+
+  // The currently-checked members of a multi-select group, as [{elementId,value?}].
+  function aodGroupChecked(group) {
+    var out = [];
+    if (!group) return out;
+    var boxes;
+    try {
+      boxes = document.querySelectorAll('[data-aod-action="check"][data-aod-group="' + cssEscape(group) + '"]');
+    } catch (_) {
+      boxes = [];
+    }
+    for (var i = 0; i < boxes.length; i++) {
+      var b = boxes[i];
+      if (!b.checked) continue;
+      var id = b.getAttribute('data-aod-id');
+      if (!id) continue;
+      var item = { elementId: id };
+      var v = b.getAttribute('data-aod-value');
+      if (v != null) item.value = v;
+      out.push(item);
+    }
+    return out;
+  }
+
+  // Emit a structured action for a data-aod element. Requires data-aod-action +
+  // data-aod-id (and data-aod-group for check/submit); missing → ignored. `check`
+  // toggles are UI-local and emit nothing (the group's submit harvests the set).
+  function emitAodAction(el) {
+    if (!el) return false;
+    var action = el.getAttribute('data-aod-action');
+    var elementId = el.getAttribute('data-aod-id');
+    if (!action || !elementId) return false;
+    if (action === 'check') return false; // UI-local only
+    var payload = { action: action, elementId: elementId };
+    var value = el.getAttribute('data-aod-value');
+    if (value != null) payload.value = value;
+    if (action === 'submit') {
+      var group = el.getAttribute('data-aod-group');
+      if (!group) return false; // submit requires a group
+      payload.group = group;
+      payload.selected = aodGroupChecked(group);
+    }
+    var ctx = { selector: selector(el), text: (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 240) };
+    var line = sourceLineOf(el);
+    if (line !== undefined) ctx.sourceLine = line;
+    payload.context = ctx;
+    payload.domSnapshot = readDomSnapshot();
+    post('artifact-action', payload);
+    return true;
+  }
+
   // ---- highlighting ----------------------------------------------------------
 
   function highlightElement(el) {
@@ -459,6 +519,25 @@
     if (data.type === 'presence') {
       window.dispatchEvent(new CustomEvent('ai-or-die-artifact-presence', { detail: data.payload || {} }));
     }
+    if (data.type === 'plan-state') {
+      // Reflect step/selection state onto the declared controls (contract §8) so
+      // the producer can style them via [data-aod-state]; also dispatch an event.
+      var steps = (data.payload && data.payload.steps) || [];
+      for (var i = 0; i < steps.length; i++) {
+        var s = steps[i];
+        if (!s || !s.elementId) continue;
+        var nodes;
+        try {
+          nodes = document.querySelectorAll('[data-aod-id="' + cssEscape(String(s.elementId)) + '"]');
+        } catch (_) {
+          nodes = [];
+        }
+        for (var j = 0; j < nodes.length; j++) {
+          if (s.state) nodes[j].setAttribute('data-aod-state', String(s.state));
+        }
+      }
+      window.dispatchEvent(new CustomEvent('ai-or-die-artifact-plan-state', { detail: data.payload || {} }));
+    }
   }
 
   window.addEventListener('message', handleHostMessage);
@@ -492,6 +571,7 @@
   }, true);
 
   document.addEventListener('mouseup', function (event) {
+    if (aodActionEl(event.target)) return; // interactive control, not an annotation target
     if (shouldIgnore(event.target)) return;
     var ctx = textSelectionContext(document.getSelection());
     if (!ctx) return;
@@ -500,6 +580,20 @@
   }, true);
 
   document.addEventListener('click', function (event) {
+    // Declarative interactive control: emit a structured action, not an annotation.
+    var aod = aodActionEl(event.target);
+    if (aod) {
+      var action = aod.getAttribute('data-aod-action');
+      var tag = (aod.tagName || '').toLowerCase();
+      if (action === 'check') return; // let the checkbox toggle natively; no emit
+      if (tag === 'select') return;   // <select> emits via 'change' only (no double-emit)
+      // Suppress native navigation/submit for anchors + submit-style controls.
+      if (tag === 'a' || action === 'submit' || (tag === 'button' && aod.type === 'submit')) {
+        event.preventDefault();
+      }
+      emitAodAction(aod);
+      return;
+    }
     if (shouldIgnore(event.target)) return;
     event.preventDefault();
     event.stopPropagation();
@@ -508,6 +602,20 @@
       return;
     }
     showAnnotationCard(event.target);
+  }, true);
+
+  // A data-aod <select> signals via 'change' (its click already returned above, so
+  // there is no double-emit). `check` changes stay UI-local (harvested by submit);
+  // any other data-aod change on a non-select control also emits here as a fallback
+  // for controls that only fire 'change'.
+  document.addEventListener('change', function (event) {
+    var aod = aodActionEl(event.target);
+    if (!aod) return;
+    var action = aod.getAttribute('data-aod-action');
+    if (action === 'check') return; // UI-local
+    var tag = (aod.tagName || '').toLowerCase();
+    if (tag !== 'select') return;   // non-selects already emitted on click
+    emitAodAction(aod);
   }, true);
 
   // ---- legacy API (backward-compat) -----------------------------------------

@@ -2858,9 +2858,13 @@ class ClaudeCodeWebInterface {
                 if (this._artifactPanel) this._artifactPanel.reloadReview(message);
                 break;
 
-            case 'artifact_agent_reply':
-                if (this._artifactPanel) this._artifactPanel.agentReply(message);
+            case 'artifact_review_dismissed':
+                if (this._artifactPanel) this._artifactPanel.dismissedByServer(message);
                 break;
+
+            // NOTE: artifact_agent_reply WS render was removed (C-P0-1). Agent
+            // replies render via the SSE /events stream only, so they can never
+            // double-render. The server no longer broadcasts that message.
 
             case 'sticky_notes_model_progress': {
                 const banner = document.getElementById('stickyNotesDownloadBanner');

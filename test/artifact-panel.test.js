@@ -260,7 +260,8 @@ describe('artifact-panel.js (DOM: iframe + SSE + postMessage bridge)', function 
     panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
     panel._setPresence('working');
     assert.equal(panel._presence, 'working');
-    panel.agentReply({ sessionId: 'sid-1', text: 'on it' });
+    // Agent replies now arrive ONLY via SSE (C-P0-1); no WS agentReply method.
+    sseInstances[0].emit('agent-reply', JSON.stringify({ id: '1', text: 'on it' }));
     assert.equal(panel._presence, 'listening', 'agent reply clears working');
   });
 
@@ -431,6 +432,183 @@ describe('artifact-panel.js (DOM: iframe + SSE + postMessage bridge)', function 
     assert.equal(panel._iframe.src, before);
     panel.reloadReview({ sessionId: 'sid-1' }); // active: cache-busted
     assert.ok(panel._iframe.src.includes('_r='), 'iframe src should be cache-busted');
+  });
+
+  describe('v2 P0: per-session state, dismiss/re-open, SSE id-dedupe, note recovery', function () {
+    function queueAnnotation(panel, sessionId, prompt) {
+      window.dispatchEvent(new window.MessageEvent('message', {
+        source: panel._iframe.contentWindow,
+        data: { source: 'ai-or-die-artifact-sdk', type: 'artifact-annotation-queued', sessionId, payload: { annotation: { prompt, selector: 'p' } } },
+      }));
+    }
+
+    it('C-P0-2: switching tabs preserves each session\'s queued pills (no drop)', async function () {
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
+      queueAnnotation(panel, 'sid-1', 'fix sid-1');
+      await Promise.resolve();
+      assert.equal(document.querySelectorAll('#artifactPills .artifact-panel__pill').length, 1);
+
+      // Switch away and back — the pill must survive (was cleared before P0).
+      panel.open({ sessionId: 'sid-2', viewUrl: 'x' });
+      panel.notifyActiveSessionChanged('sid-2');
+      assert.equal(document.querySelectorAll('#artifactPills .artifact-panel__pill').length, 0, 'sid-2 has its own empty queue');
+      panel.notifyActiveSessionChanged('sid-1');
+      assert.equal(document.querySelectorAll('#artifactPills .artifact-panel__pill').length, 1, 'sid-1 queue restored');
+      assert.ok(document.getElementById('artifactPills').textContent.includes('fix sid-1'));
+    });
+
+    it('C-P0-2: switching tabs preserves chat history (no wipe)', function () {
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
+      sseInstances[0].emit('agent-reply', JSON.stringify({ id: '1', text: 'reply-A' }));
+      assert.ok(document.getElementById('artifactChat').textContent.includes('reply-A'));
+
+      panel.open({ sessionId: 'sid-2', viewUrl: 'x' });
+      panel.notifyActiveSessionChanged('sid-2');
+      assert.ok(!document.getElementById('artifactChat').textContent.includes('reply-A'), 'sid-2 chat is its own');
+      panel.notifyActiveSessionChanged('sid-1');
+      assert.ok(document.getElementById('artifactChat').textContent.includes('reply-A'), 'sid-1 chat restored on return');
+    });
+
+    it('C-P0-1/4: an SSE agent-reply with a repeated id renders only once', function () {
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
+      sseInstances[0].emit('agent-reply', JSON.stringify({ id: '5', text: 'once only' }));
+      // Native EventSource replay after a reconnect can resend the same id.
+      sseInstances[0].emit('agent-reply', JSON.stringify({ id: '5', text: 'once only' }));
+      const occurrences = document.getElementById('artifactChat').textContent.split('once only').length - 1;
+      assert.equal(occurrences, 1, 'duplicate id rendered exactly once');
+    });
+
+    it('C-P0-3: × dismiss POSTs /dismiss, hides, and shows a re-open badge; re-open restores', function () {
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
+      assert.equal(panel.el.hidden, false);
+
+      panel.collapse(); // the × button
+      assert.equal(panel.el.hidden, true, 'panel hidden on dismiss');
+      assert.equal(panel._reopenBadge.hidden, false, 're-open badge shown');
+      const dismiss = posted.find((p) => String(p.url).includes('/dismiss'));
+      assert.ok(dismiss, 'POSTed /dismiss');
+      assert.equal(JSON.parse(dismiss.opts.body).dismissed, true);
+
+      panel.expand(); // the badge
+      assert.equal(panel.el.hidden, false, 'panel reshown on re-open');
+      assert.equal(panel._reopenBadge.hidden, true, 'badge hidden after re-open');
+      const undismiss = posted.filter((p) => String(p.url).includes('/dismiss'));
+      assert.equal(JSON.parse(undismiss[undismiss.length - 1].opts.body).dismissed, false, 're-open sends dismissed:false');
+    });
+
+    it('C-P0-3: chat survives a dismiss -> re-open cycle', function () {
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
+      sseInstances[0].emit('agent-reply', JSON.stringify({ id: '1', text: 'keep me' }));
+      panel.collapse();
+      panel.expand();
+      assert.ok(document.getElementById('artifactChat').textContent.includes('keep me'), 'chat intact after re-open');
+    });
+
+    it('C-P0-7: a failed note is restored to the composer for retry', async function () {
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
+      const failFetch = (url, opts) => { posted.push({ url, opts }); return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) }); };
+      global.fetch = failFetch; global.window.fetch = failFetch;
+
+      document.getElementById('artifactInput').value = 'note that fails';
+      panel._submitNote();
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      assert.equal(document.getElementById('artifactInput').value, 'note that fails', 'note restored to composer');
+      assert.ok(document.getElementById('artifactChat').textContent.includes('restored'), 'a retry notice is shown');
+    });
+
+    it('C-P0-4: _loadHistory rehydrates chat on a first empty render', async function () {
+      const histFetch = (url, opts) => {
+        posted.push({ url, opts });
+        if (String(url).includes('/history')) {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({
+            chat: [{ id: '1', role: 'you', text: 'earlier note' }, { id: '2', role: 'agent', text: 'earlier reply' }],
+            events: [], status: 'open', cursor: '2', visibility: 'shown',
+          }) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true }) });
+      };
+      global.fetch = histFetch; global.window.fetch = histFetch;
+
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' }); // _show -> _loadHistory
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      const chat = document.getElementById('artifactChat').textContent;
+      assert.ok(chat.includes('earlier note') && chat.includes('earlier reply'), 'history repainted');
+      // The cursor advanced past the agent reply so a later SSE frame for id 2 is ignored.
+      sseInstances[0].emit('agent-reply', JSON.stringify({ id: '2', text: 'earlier reply' }));
+      const occurrences = document.getElementById('artifactChat').textContent.split('earlier reply').length - 1;
+      assert.equal(occurrences, 1, 'history+SSE do not double-render the same id');
+    });
+
+    it('C-P1-3: an artifact-action forwards to /actions and reflects plan-state to the iframe', async function () {
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
+      const planStates = [];
+      const origPost = panel._postToIframe.bind(panel);
+      panel._postToIframe = (type, pl) => { if (type === 'plan-state') planStates.push(pl); return origPost(type, pl); };
+
+      window.dispatchEvent(new window.MessageEvent('message', {
+        source: panel._iframe.contentWindow,
+        data: {
+          source: 'ai-or-die-artifact-sdk', type: 'artifact-action', sessionId: 'sid-1',
+          payload: { action: 'approve', elementId: 'plan-step-3', context: { selector: 'li', sourceLine: 42 } },
+        },
+      }));
+      await Promise.resolve();
+
+      const call = posted.find((p) => String(p.url).includes('/actions'));
+      assert.ok(call, 'POSTed to /actions');
+      const body = JSON.parse(call.opts.body);
+      assert.equal(body.actions[0].action, 'approve');
+      assert.equal(body.actions[0].elementId, 'plan-step-3');
+      assert.equal(body.actions[0].sourceLine, 42);
+      assert.ok(planStates.length >= 1, 'plan-state reflected to the iframe');
+      assert.deepEqual(planStates[0].steps[0], { elementId: 'plan-step-3', state: 'approved' });
+      assert.ok(document.getElementById('artifactChat').textContent.includes('approve: plan-step-3'));
+    });
+
+    it('C-P1-3: a multi-select submit action reflects each selected member as done', async function () {
+      const panel = new ArtifactPanel(app);
+      panel.notifyActiveSessionChanged('sid-1');
+      panel.open({ sessionId: 'sid-1', viewUrl: 'x' });
+      const planStates = [];
+      const origPost = panel._postToIframe.bind(panel);
+      panel._postToIframe = (type, pl) => { if (type === 'plan-state') planStates.push(pl); return origPost(type, pl); };
+
+      window.dispatchEvent(new window.MessageEvent('message', {
+        source: panel._iframe.contentWindow,
+        data: {
+          source: 'ai-or-die-artifact-sdk', type: 'artifact-action', sessionId: 'sid-1',
+          payload: { action: 'submit', elementId: 'tasks-go', group: 'tasks', selected: [{ elementId: 'task-7', value: 'retry' }] },
+        },
+      }));
+      await Promise.resolve();
+
+      const call = posted.find((p) => String(p.url).includes('/actions'));
+      assert.ok(call);
+      const body = JSON.parse(call.opts.body);
+      assert.equal(body.actions[0].action, 'submit');
+      assert.deepEqual(body.actions[0].selected, [{ elementId: 'task-7', value: 'retry' }]);
+      const states = planStates[0].steps.reduce((m, s) => { m[s.elementId] = s.state; return m; }, {});
+      assert.equal(states['task-7'], 'done');
+      assert.equal(states['tasks-go'], 'done');
+    });
   });
 
   describe('floating-window chrome', function () {
