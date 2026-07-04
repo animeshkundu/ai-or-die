@@ -105,6 +105,7 @@ function buildApp(opts) {
     sseHeartbeatMs: opts.sseHeartbeatMs == null ? 50 : opts.sseHeartbeatMs,
     pushToAgent: opts.pushToAgent || null,
     pushTimeoutMs: opts.pushTimeoutMs,
+    routeApprovalAction: opts.routeApprovalAction || null,
   }));
   app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
     res.status(500).json({ error: err.message });
@@ -462,5 +463,328 @@ describe('artifact review routes', function () {
         server.close();
       }
     });
+  });
+
+  describe('v2 P0: dismiss / history / typed await / SSE replay', function () {
+    it('POST /dismiss toggles server-authoritative visibility, reflected in /history', async function () {
+      const { app } = buildApp({ baseDir: tmpDir });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        let hist = await getJson(port, '/api/artifact/s1/history');
+        assert.equal(hist.body.visibility, 'shown');
+
+        const d = await postJson(port, '/api/artifact/s1/dismiss', {});
+        assert.equal(d.body.visibility, 'dismissed');
+        hist = await getJson(port, '/api/artifact/s1/history');
+        assert.equal(hist.body.visibility, 'dismissed');
+
+        const u = await postJson(port, '/api/artifact/s1/dismiss', { dismissed: false });
+        assert.equal(u.body.visibility, 'shown');
+        hist = await getJson(port, '/api/artifact/s1/history');
+        assert.equal(hist.body.visibility, 'shown');
+      } finally {
+        server.close();
+      }
+    });
+
+    it('GET /history returns derived chat (you + agent) with ids and a cursor', async function () {
+      const { app } = buildApp({ baseDir: tmpDir });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        await postJson(port, '/api/artifact/s1/prompts', { prompts: ['human note'] });
+        await postJson(port, '/api/artifact/s1/agent-reply', { text: 'agent answer' });
+
+        const hist = await getJson(port, '/api/artifact/s1/history');
+        assert.equal(hist.status, 200);
+        const roles = hist.body.chat.map((c) => c.role + ':' + c.text);
+        assert.ok(roles.includes('you:human note'), 'human note in chat');
+        assert.ok(roles.includes('agent:agent answer'), 'agent reply in chat');
+        assert.ok(hist.body.chat.every((c) => c.id), 'every chat entry has an id');
+        assert.equal(hist.body.cursor, '2', 'cursor is the high-water event id');
+        assert.equal(hist.body.status, 'open');
+      } finally {
+        server.close();
+      }
+    });
+
+    it('GET /await returns typed comment events with ids; a later cursor drains empty', async function () {
+      const { app } = buildApp({ baseDir: tmpDir, pollHoldMs: 60 });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        await postJson(port, '/api/artifact/s1/prompts', {
+          prompts: [{ prompt: 'tighten the plan', text: 'goal', sourceLine: 3 }],
+        });
+
+        const first = await getJson(port, '/api/artifact/s1/await?cursor=0');
+        assert.equal(first.status, 200);
+        assert.equal(first.body.events.length, 1);
+        assert.equal(first.body.events[0].kind, 'comment');
+        assert.equal(first.body.events[0].prompt, 'tighten the plan');
+        assert.equal(first.body.events[0].sourceLine, 3);
+        assert.ok(first.body.events[0].id, 'event carries an id');
+        const cursor = first.body.cursor;
+
+        // Draining again from the returned cursor yields nothing (single-delivery),
+        // and the long-hold times out with an empty typed payload.
+        const second = await getJson(port, `/api/artifact/s1/await?cursor=${cursor}`);
+        assert.deepEqual(second.body.events, []);
+        assert.equal(second.body.status, 'open');
+      } finally {
+        server.close();
+      }
+    });
+
+    it('GET /await long-holds then resolves when a prompt arrives (with ended terminal)', async function () {
+      const { app } = buildApp({ baseDir: tmpDir, pollHoldMs: 500, pollHeartbeatMs: 20 });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        const pending = getJson(port, '/api/artifact/s1/await?cursor=0');
+        await new Promise((r) => setTimeout(r, 40));
+        await postJson(port, '/api/artifact/s1/prompts', { prompts: ['wake the drain'] });
+        const out = await pending;
+        assert.equal(out.body.events.length, 1);
+        assert.equal(out.body.events[0].prompt, 'wake the drain');
+
+        // End emits a terminal ended event visible to a fresh await.
+        await postJson(port, '/api/artifact/s1/end', {});
+        const after = await getJson(port, `/api/artifact/s1/await?cursor=${out.body.cursor}`);
+        assert.ok(after.body.events.some((e) => e.kind === 'ended'), 'ended event delivered');
+        assert.equal(after.body.status, 'ended');
+      } finally {
+        server.close();
+      }
+    });
+
+    it('SSE frames carry event ids and Last-Event-ID replays exactly the gap', async function () {
+      const { app } = buildApp({ baseDir: tmpDir, sseHeartbeatMs: 1000 });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        // Two replies land while the browser is "disconnected".
+        await postJson(port, '/api/artifact/s1/agent-reply', { text: 'reply one' });
+        await postJson(port, '/api/artifact/s1/agent-reply', { text: 'reply two' });
+
+        // Reconnect with Last-Event-ID: 1 → only reply two (id 2) is replayed.
+        const frames = await collectSse(port, '/api/artifact/s1/events', { 'Last-Event-ID': '1' }, 150);
+        assert.ok(frames.includes('id: 2'), 'replays the id past the cursor');
+        assert.ok(frames.includes('reply two'), 'replays the missed reply');
+        assert.ok(!frames.includes('reply one'), 'does NOT replay an already-seen reply');
+      } finally {
+        server.close();
+      }
+    });
+  });
+
+  describe('v2 P1: typed actions, approval routing, update', function () {
+    it('POST /actions enqueues typed action events; /await returns the comment+action union once', async function () {
+      const { app } = buildApp({ baseDir: tmpDir, pollHoldMs: 60 });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        await postJson(port, '/api/artifact/s1/prompts', { prompts: ['a free-text note'] });
+        const r = await postJson(port, '/api/artifact/s1/actions', {
+          actions: [
+            { action: 'approve', elementId: 'plan-step-3' },
+            { action: 'submit', elementId: 'tasks-go', group: 'tasks', selected: [{ elementId: 'task-7', value: 'retry' }] },
+          ],
+        });
+        assert.equal(r.status, 200);
+        assert.equal(r.body.pushed, false, 'no approval routing hook wired → drains');
+        assert.equal(r.body.queued, 2);
+
+        const drain = await getJson(port, '/api/artifact/s1/await?cursor=0');
+        const kinds = drain.body.events.map((e) => e.kind);
+        assert.deepEqual(kinds, ['comment', 'action', 'action'], 'typed union in id order');
+        const submit = drain.body.events.find((e) => e.action === 'submit');
+        assert.equal(submit.group, 'tasks');
+        assert.deepEqual(submit.selected, [{ elementId: 'task-7', value: 'retry' }]);
+
+        // Single-delivery by cursor: a fresh drain from the high-water is empty.
+        const again = await getJson(port, `/api/artifact/s1/await?cursor=${drain.body.cursor}`);
+        assert.deepEqual(again.body.events, []);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('legacy /poll projects comment feedback (back-compat) and NEVER returns actions', async function () {
+      const { app } = buildApp({ baseDir: tmpDir });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        await postJson(port, '/api/artifact/s1/prompts', { prompts: ['legacy note'] });
+        await postJson(port, '/api/artifact/s1/actions', { actions: [{ action: 'approve', elementId: 'x' }] });
+
+        const poll = await getJson(port, '/api/artifact/s1/poll');
+        assert.deepEqual(poll.body.prompts, ['legacy note'], 'comment lane visible to old /poll');
+        assert.ok(!('events' in poll.body), 'no typed events leak into the legacy shape');
+        assert.ok(JSON.stringify(poll.body).indexOf('approve') === -1, 'actions never appear in /poll');
+      } finally {
+        server.close();
+      }
+    });
+
+    it('approval-verb actions route via routeApprovalAction and are NOT queued when handled', async function () {
+      const calls = [];
+      const routeApprovalAction = async (sessionId, action) => { calls.push({ sessionId, action }); return action.action === 'approve'; };
+      const { app } = buildApp({ baseDir: tmpDir, routeApprovalAction, pollHoldMs: 60 });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        const r = await postJson(port, '/api/artifact/s1/actions', {
+          actions: [
+            { action: 'approve', elementId: 'p1' }, // handled → routed, not queued
+            { action: 'submit', elementId: 'g', group: 'tasks', selected: [] }, // non-approval → queued
+          ],
+        });
+        assert.equal(r.body.pushed, true, 'at least one action was routed');
+        assert.equal(r.body.queued, 1, 'only the non-routed action is queued');
+        assert.equal(calls.length, 1, 'route hook consulted only for the approval verb');
+
+        const drain = await getJson(port, '/api/artifact/s1/await?cursor=0');
+        assert.equal(drain.body.events.length, 1);
+        assert.equal(drain.body.events[0].action, 'submit', 'routed approval is absent from the drain');
+      } finally {
+        server.close();
+      }
+    });
+
+    it('POST /update {file} re-reads via validatePath and reloads', async function () {
+      const other = path.join(tmpDir, 'other.html');
+      fs.writeFileSync(other, '<!doctype html><html><body><h2>Updated</h2></body></html>');
+      const { app } = buildApp({ baseDir: tmpDir });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        const r = await postJson(port, '/api/artifact/s1/update', { file: other });
+        assert.equal(r.status, 200);
+        assert.equal(r.body.ok, true);
+        const view = await fetch(`http://127.0.0.1:${port}/api/artifact/s1/view`);
+        const html = await view.text();
+        assert.match(html, /Updated/, 'view now serves the updated file');
+      } finally {
+        server.close();
+      }
+    });
+
+    it('POST /update {html} writes to the sandboxed review file and reloads', async function () {
+      const { app } = buildApp({ baseDir: tmpDir });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+        const r = await postJson(port, '/api/artifact/s1/update', { html: '<!doctype html><html><body><h3>Inline HTML</h3></body></html>' });
+        assert.equal(r.status, 200);
+        // Written to the review's sandboxed file on disk (not an unsandboxed blob).
+        assert.match(fs.readFileSync(artifactFile, 'utf8'), /Inline HTML/);
+        const view = await fetch(`http://127.0.0.1:${port}/api/artifact/s1/view`);
+        assert.match(await view.text(), /Inline HTML/);
+      } finally {
+        server.close();
+      }
+    });
+
+    it('POST /update returns tagged-400 INVALID_REQUEST for both / neither / out-of-base', async function () {
+      const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-update-outside-'));
+      const outsideFile = path.join(outsideDir, 'evil.html');
+      fs.writeFileSync(outsideFile, '<html></html>');
+      const { app } = buildApp({ baseDir: tmpDir });
+      const { server, port } = await listen(app);
+      try {
+        await postJson(port, '/api/artifact/s1/open', { file: artifactFile });
+
+        const both = await postJson(port, '/api/artifact/s1/update', { file: artifactFile, html: '<html></html>' });
+        assert.equal(both.status, 400);
+        assert.equal(both.body.error.code, 'INVALID_REQUEST');
+
+        const neither = await postJson(port, '/api/artifact/s1/update', {});
+        assert.equal(neither.status, 400);
+        assert.equal(neither.body.error.code, 'INVALID_REQUEST');
+
+        const outOfBase = await postJson(port, '/api/artifact/s1/update', { file: outsideFile });
+        assert.equal(outOfBase.status, 400);
+        assert.equal(outOfBase.body.error.code, 'INVALID_REQUEST');
+      } finally {
+        server.close();
+        fs.rmSync(outsideDir, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+// Collect raw SSE bytes from an endpoint for `ms`, then abort. Used to assert the
+// id: frames + Last-Event-ID replay without a browser EventSource.
+function collectSse(port, pathname, headers, ms) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port, path: pathname, headers }, (res) => {
+      let buf = '';
+      res.on('data', (c) => { buf += c.toString(); });
+      setTimeout(() => { try { req.destroy(); } catch (_) { /* ignore */ } resolve(buf); }, ms);
+    });
+    req.on('error', () => resolve(''));
+  });
+}
+
+// Focused wiring test for the hardened idle gate (C-P0-6): the transcript
+// turn-state is the PRIMARY gate. Exercises the real _pushArtifactFeedbackToAgent
+// with stubbed bridge/turn-state so no PTY or JSONL file is needed.
+describe('artifact push idle gate (C-P0-6, transcript-primary)', function () {
+  if (!ClaudeCodeWebServer) {
+    it('skipped — server module unavailable', function () { this.skip(); });
+    return;
+  }
+  const push = ClaudeCodeWebServer.prototype._pushArtifactFeedbackToAgent;
+
+  function fakeServer(opts) {
+    const wrote = [];
+    const self = {
+      _artifactPushQuietMs: 1500,
+      _bridgeForSession: () => (opts.bridge === null ? null : { msSinceLastOutput: () => opts.quietMs }),
+      _stickyJsonl: new Map(opts.binding ? [['s1', { file: 'x.jsonl' }]] : []),
+      _artifactTurnState: async () => ({ state: opts.state }),
+      _writeArtifactPush: ClaudeCodeWebServer.prototype._writeArtifactPush,
+    };
+    // Stub the low-level write so we observe intent without a PTY.
+    self._writeArtifactPush = async (_b, _sid, text) => { wrote.push(text); return true; };
+    return { self, wrote };
+  }
+
+  it('DECLINES a free-text push when a user-facing tool is pending (awaiting_input)', async function () {
+    const { self, wrote } = fakeServer({ binding: true, state: 'awaiting_input', quietMs: 9999 });
+    assert.equal(await push.call(self, 's1', 'note'), false);
+    assert.equal(wrote.length, 0, 'never inject into a live menu even when PTY is quiet');
+  });
+
+  it('DECLINES while the agent is mid-tool (working)', async function () {
+    const { self, wrote } = fakeServer({ binding: true, state: 'working', quietMs: 9999 });
+    assert.equal(await push.call(self, 's1', 'note'), false);
+    assert.equal(wrote.length, 0);
+  });
+
+  it('DECLINES on a bound-but-unknown transcript (no unsafe PTY-quiet fallback when bound)', async function () {
+    const { self, wrote } = fakeServer({ binding: true, state: 'unknown', quietMs: 9999 });
+    assert.equal(await push.call(self, 's1', 'note'), false, 'a bound session reading unknown must not inject');
+    assert.equal(wrote.length, 0);
+  });
+
+  it('INJECTS when the transcript shows idle_at_prompt', async function () {
+    const { self, wrote } = fakeServer({ binding: true, state: 'idle_at_prompt', quietMs: 0 });
+    assert.equal(await push.call(self, 's1', 'note'), true);
+    assert.deepEqual(wrote, ['note']);
+  });
+
+  it('with NO binding, falls back to PTY-quiet: injects when quiet, declines when noisy', async function () {
+    const quiet = fakeServer({ binding: false, state: 'unknown', quietMs: 2000 });
+    assert.equal(await push.call(quiet.self, 's1', 'note'), true, 'quiet PTY → inject (fallback)');
+    const noisy = fakeServer({ binding: false, state: 'unknown', quietMs: 500 });
+    assert.equal(await push.call(noisy.self, 's1', 'note'), false, 'noisy PTY → decline (fallback)');
+  });
+
+  it('returns false when there is no live bridge for the session', async function () {
+    const { self } = fakeServer({ bridge: null, binding: true, state: 'idle_at_prompt', quietMs: 0 });
+    assert.equal(await push.call(self, 's1', 'note'), false);
   });
 });

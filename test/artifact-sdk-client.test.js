@@ -125,6 +125,78 @@ describe('artifact-sdk-client.js (annotation payload shape)', function () {
     assert.ok(!card, 'no card opened for a native control click');
   });
 
+  it('C-P1-2: a data-aod choose control emits ONE structured action, not an annotation', function () {
+    const btn = win.document.createElement('button');
+    btn.setAttribute('data-aod-action', 'choose');
+    btn.setAttribute('data-aod-id', 'decision-1');
+    btn.setAttribute('data-aod-value', 'option-b');
+    btn.textContent = 'Option B';
+    win.document.body.appendChild(btn);
+    posted.length = 0;
+    btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }));
+    const acts = posted.filter((m) => m && m.type === 'artifact-action');
+    assert.equal(acts.length, 1, 'one action emitted');
+    assert.equal(acts[0].payload.action, 'choose');
+    assert.equal(acts[0].payload.elementId, 'decision-1');
+    assert.equal(acts[0].payload.value, 'option-b');
+    assert.equal(posted.filter((m) => m && m.type === 'artifact-annotation-queued').length, 0, 'no annotation queued');
+  });
+
+  it('C-P1-2: check toggles are UI-local; a submit harvests the checked group set once', function () {
+    const mkCheck = (id, val) => {
+      const c = win.document.createElement('input');
+      c.type = 'checkbox';
+      c.setAttribute('data-aod-action', 'check');
+      c.setAttribute('data-aod-group', 'tasks');
+      c.setAttribute('data-aod-id', id);
+      c.setAttribute('data-aod-value', val);
+      win.document.body.appendChild(c);
+      return c;
+    };
+    const c1 = mkCheck('task-7', 'retry');
+    mkCheck('task-9', 'cache'); // left unchecked
+    const submit = win.document.createElement('button');
+    submit.setAttribute('data-aod-action', 'submit');
+    submit.setAttribute('data-aod-group', 'tasks');
+    submit.setAttribute('data-aod-id', 'tasks-go');
+    win.document.body.appendChild(submit);
+
+    posted.length = 0;
+    c1.checked = true;
+    c1.dispatchEvent(new win.Event('change', { bubbles: true }));
+    assert.equal(posted.filter((m) => m && m.type === 'artifact-action').length, 0, 'a check change emits nothing');
+
+    submit.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }));
+    const acts = posted.filter((m) => m && m.type === 'artifact-action');
+    assert.equal(acts.length, 1, 'submit emits exactly one action');
+    assert.equal(acts[0].payload.action, 'submit');
+    assert.equal(acts[0].payload.group, 'tasks');
+    assert.deepEqual(acts[0].payload.selected, [{ elementId: 'task-7', value: 'retry' }]);
+  });
+
+  it('C-P1-2: a data-aod control missing data-aod-id is ignored', function () {
+    const btn = win.document.createElement('button');
+    btn.setAttribute('data-aod-action', 'approve'); // no data-aod-id
+    win.document.body.appendChild(btn);
+    posted.length = 0;
+    btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true, cancelable: true }));
+    assert.equal(posted.filter((m) => m && m.type === 'artifact-action').length, 0, 'ignored without an id');
+  });
+
+  it('C-P1-2: an inbound plan-state marks matching data-aod-id elements with data-aod-state', function () {
+    const li = win.document.createElement('li');
+    li.setAttribute('data-aod-id', 'plan-step-3');
+    win.document.body.appendChild(li);
+    win.postMessage = win.postMessage; // no-op (kept intercepted)
+    // Deliver a host plan-state message (source must be the parent window).
+    const evt = new win.MessageEvent('message', {
+      data: { source: 'ai-or-die-artifact-host', type: 'plan-state', sessionId: 'sid-9', payload: { steps: [{ elementId: 'plan-step-3', state: 'approved' }] } },
+    });
+    Object.defineProperty(evt, 'source', { value: win });
+    win.dispatchEvent(evt);
+    assert.equal(li.getAttribute('data-aod-state'), 'approved');
+  });
+
   it('a text selection yields a text-range target annotation', function () {
     const para = win.document.getElementById('para');
     const sel = win.document.getSelection();

@@ -12,6 +12,10 @@ const DEFAULT_SSE_HEARTBEAT_MS = 15000;
 // Bound the artifact-push await so a stalled PTY write can't hold the /prompts
 // HTTP response open. On timeout we treat the push as failed and re-queue.
 const PUSH_TIMEOUT_MS = 4000;
+// Bounded per-session event replay buffer (contract §2 / C-P0-4). Backs SSE
+// Last-Event-ID reconnect replay, GET /history rehydrate, and the typed
+// GET /await drain. Old events roll off once past the cap.
+const MAX_REPLAY_EVENTS = 200;
 
 function realpathOrResolve(file) {
   let resolved = path.resolve(file);
@@ -143,6 +147,43 @@ function artifactPushEnabledFromEnv(raw) {
   return !/^(0|false|off|no)$/i.test(String(raw == null ? '' : raw).trim());
 }
 
+// Normalize an inbound structured action (contract §2/§4) into a stored `action`
+// ArtifactEvent payload (id/at added by _appendEvent). Requires action+elementId.
+// Carries value/group/selected/selector/sourceLine when present. Returns null for
+// anything malformed so a bad item can't poison the event log.
+function normalizeActionPayload(a) {
+  if (!a || typeof a !== 'object') return null;
+  const action = typeof a.action === 'string' ? a.action.trim() : '';
+  const elementId = typeof a.elementId === 'string' ? a.elementId.trim() : '';
+  if (!action || !elementId) return null;
+  const payload = { kind: 'action', action, elementId };
+  if (typeof a.value === 'string') payload.value = a.value;
+  if (typeof a.group === 'string' && a.group) payload.group = a.group;
+  if (Array.isArray(a.selected)) {
+    payload.selected = a.selected
+      .map((s) => {
+        if (!s || typeof s !== 'object') return null;
+        const id = typeof s.elementId === 'string' ? s.elementId : '';
+        if (!id) return null;
+        const item = { elementId: id };
+        if (typeof s.value === 'string') item.value = s.value;
+        return item;
+      })
+      .filter(Boolean);
+  }
+  if (typeof a.selector === 'string') payload.selector = a.selector;
+  if (typeof a.sourceLine === 'number') payload.sourceLine = a.sourceLine;
+  return payload;
+}
+
+// Whether an action verb corresponds to a menu-style approval that should route
+// to the structured control-plane respond path (contract §5) rather than the
+// drain — approve / reject / choose. Multi-select (check/submit) and custom verbs
+// always drain.
+function isApprovalActionVerb(verb) {
+  return verb === 'approve' || verb === 'reject' || verb === 'choose';
+}
+
 class ArtifactReviewStore extends EventEmitter {
   constructor() {
     super();
@@ -168,6 +209,15 @@ class ArtifactReviewStore extends EventEmitter {
       layoutWarnings: [],
       domSnapshot: null,
       chat: [],
+      // Typed, monotonically-id'd event log (contract §2). Holds agent-reply /
+      // comment / ended events for SSE reconnect replay, /history rehydrate, and
+      // the /await drain. Bounded to MAX_REPLAY_EVENTS.
+      events: [],
+      _seq: 0,
+      // Panel visibility (contract §9). 'dismissed' hides the panel while the
+      // review stays alive; server-authoritative so a reconnecting panel + the
+      // artifact_dismiss tool agree.
+      visibility: 'shown',
       presence: { connected: false, lastSeen: null },
       updatedAt: nowIso(),
     };
@@ -179,12 +229,92 @@ class ArtifactReviewStore extends EventEmitter {
     if (!Array.isArray(review.queuedPrompts)) review.queuedPrompts = [];
     if (!Array.isArray(review.layoutWarnings)) review.layoutWarnings = [];
     if (!Array.isArray(review.chat)) review.chat = [];
+    if (!Array.isArray(review.events)) review.events = [];
+    if (typeof review._seq !== 'number') review._seq = 0;
+    if (review.visibility !== 'dismissed') review.visibility = 'shown';
     if (!review.presence || typeof review.presence !== 'object') {
       review.presence = { connected: false, lastSeen: null };
     }
     review.updatedAt = nowIso();
 
     this._reviews.set(aiSessionId, review);
+    return review;
+  }
+
+  // Append a typed event to the review's replay buffer, assigning the next
+  // per-session monotonic id (contract §2). Bounded: oldest events roll off past
+  // MAX_REPLAY_EVENTS. Returns the stored event (with id + at).
+  _appendEvent(review, evt) {
+    review._seq = (typeof review._seq === 'number' ? review._seq : 0) + 1;
+    const stored = Object.assign({ id: String(review._seq), at: nowIso() }, evt);
+    review.events.push(stored);
+    if (review.events.length > MAX_REPLAY_EVENTS) {
+      review.events.splice(0, review.events.length - MAX_REPLAY_EVENTS);
+    }
+    return stored;
+  }
+
+  // Derive the human-readable chat log from the typed event stream: agent-reply
+  // -> {role:'agent'}, comment -> {role:'you'}. Single source of truth so a
+  // reconnecting panel repaints exactly what happened.
+  _deriveChat(review) {
+    const out = [];
+    for (const e of review.events) {
+      if (e.kind === 'agent-reply') {
+        out.push({ id: e.id, role: 'agent', text: e.text == null ? '' : String(e.text), at: e.at });
+      } else if (e.kind === 'comment') {
+        out.push({ id: e.id, role: 'you', text: String(e.prompt || e.text || ''), at: e.at });
+      }
+    }
+    return out;
+  }
+
+  // Map a queued prompt (panel object or bare string) into a comment ArtifactEvent
+  // payload (id/at added by _appendEvent).
+  _commentPayloadFromPrompt(p) {
+    if (typeof p === 'string') return { kind: 'comment', prompt: p, text: '', selector: '' };
+    if (!p || typeof p !== 'object') return null;
+    const payload = {
+      kind: 'comment',
+      prompt: typeof p.prompt === 'string' ? p.prompt : '',
+      text: typeof p.text === 'string' ? p.text : '',
+      selector: typeof p.selector === 'string' ? p.selector : '',
+    };
+    if (typeof p.sourceLine === 'number') payload.sourceLine = p.sourceLine;
+    if (p.target && typeof p.target === 'object') payload.target = p.target;
+    return payload;
+  }
+
+  // Snapshot for GET /history (browser reconnect/rehydrate) — contract §3.3.
+  historySnapshot(aiSessionId) {
+    const review = this._reviews.get(aiSessionId);
+    if (!review) return null;
+    return {
+      chat: this._deriveChat(review),
+      events: cloneArray(review.events),
+      status: review.status,
+      cursor: String(review._seq || 0),
+      visibility: review.visibility === 'dismissed' ? 'dismissed' : 'shown',
+    };
+  }
+
+  // Typed events with id > cursor, filtered to the kinds a channel consumes.
+  eventsSince(aiSessionId, cursor, kinds) {
+    const review = this._reviews.get(aiSessionId);
+    if (!review) return [];
+    const after = Number(cursor) || 0;
+    const want = Array.isArray(kinds) ? kinds : null;
+    return review.events.filter((e) => {
+      if ((Number(e.id) || 0) <= after) return false;
+      return !want || want.includes(e.kind);
+    });
+  }
+
+  setVisibility(aiSessionId, visibility) {
+    const review = this._reviews.get(aiSessionId);
+    if (!review) return null;
+    review.visibility = visibility === 'dismissed' ? 'dismissed' : 'shown';
+    review.updatedAt = nowIso();
     return review;
   }
 
@@ -195,6 +325,12 @@ class ArtifactReviewStore extends EventEmitter {
     const queued = cloneArray(prompts);
     if (queued.length > 0) {
       review.queuedPrompts.push(...queued);
+      // Record each as a typed comment event for /history + /await (non-destructive;
+      // independent of the destructive queuedPrompts/poll path).
+      for (const p of queued) {
+        const payload = this._commentPayloadFromPrompt(p);
+        if (payload) this._appendEvent(review, payload);
+      }
     }
     if (domSnapshot !== undefined) {
       review.domSnapshot = domSnapshot;
@@ -205,6 +341,26 @@ class ArtifactReviewStore extends EventEmitter {
       this.emit('feedback', { aiSessionId, kind: 'prompts', review });
     }
     return review;
+  }
+
+  // Enqueue structured action events (contract §2/§4). Actions live ONLY in the
+  // typed event log (drain via /await + /history); they are NOT in the legacy
+  // destructive queue, so /poll never sees them (new typed lane). Returns the
+  // stored events (with ids). Emits 'feedback' so an in-flight /await resolves.
+  enqueueAction(aiSessionId, actions) {
+    const review = this._reviews.get(aiSessionId);
+    if (!review) return null;
+    const list = Array.isArray(actions) ? actions : [actions];
+    const stored = [];
+    for (const a of list) {
+      const payload = normalizeActionPayload(a);
+      if (payload) stored.push(this._appendEvent(review, payload));
+    }
+    if (stored.length > 0) {
+      review.updatedAt = nowIso();
+      this.emit('feedback', { aiSessionId, kind: 'actions', review });
+    }
+    return stored;
   }
 
   recordLayoutWarnings(aiSessionId, warnings) {
@@ -299,15 +455,15 @@ class ArtifactReviewStore extends EventEmitter {
     const review = this._reviews.get(aiSessionId);
     if (!review) return null;
 
-    const reply = {
-      role: 'agent',
+    const event = this._appendEvent(review, {
+      kind: 'agent-reply',
       text: text == null ? '' : String(text),
-      at: nowIso(),
-    };
+    });
+    const reply = { role: 'agent', text: event.text, at: event.at, id: event.id };
     review.chat.push(reply);
     review.updatedAt = nowIso();
 
-    this.emit('agent-reply', { aiSessionId, text: reply.text, reply, review });
+    this.emit('agent-reply', { aiSessionId, id: event.id, text: reply.text, reply, review });
     return reply;
   }
 
@@ -327,7 +483,8 @@ class ArtifactReviewStore extends EventEmitter {
 
     review.status = 'ended';
     review.updatedAt = nowIso();
-    this.emit('ended', { aiSessionId, review });
+    const event = this._appendEvent(review, { kind: 'ended' });
+    this.emit('ended', { aiSessionId, id: event.id, review });
     return review;
   }
 
@@ -659,6 +816,14 @@ function createArtifactReviewRouter(options) {
   const pushTimeoutMs = typeof options.pushTimeoutMs === 'number' && options.pushTimeoutMs > 0
     ? options.pushTimeoutMs
     : PUSH_TIMEOUT_MS;
+  // Optional structured-approval routing hook (contract §5 / C-P1-4). Given an
+  // approval-style action (approve/reject/choose) it attempts to deliver it via
+  // the control-plane respond path (answering a pending ExitPlanMode/AskUser/
+  // permission menu). Returns truthy when it actually responded; then the action
+  // is NOT enqueued for the drain (no double-apply). Absent → all actions drain.
+  const routeApprovalAction = typeof options.routeApprovalAction === 'function'
+    ? options.routeApprovalAction
+    : null;
 
   // Count of in-flight long-poll requests per session. Non-zero means the agent
   // is actively waiting on artifact_poll, so a queued prompt is delivered by that
@@ -900,6 +1065,88 @@ function createArtifactReviewRouter(options) {
     res.json({ ok: true, changed: !!(result && result.changed) });
   });
 
+  // Structured action feedback (human→agent) — contract §3/§4. Actions are a typed
+  // lane distinct from free-text /prompts: they are NEVER bracketed-paste-injected.
+  // Approval-style actions (approve/reject/choose) route to the control-plane
+  // respond path when a menu is pending (contract §5); everything else is enqueued
+  // as a typed `action` event for the /await drain. Returns { ok, pushed, queued }.
+  router.post('/:sessionId/actions', async (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!store.get(sessionId)) return res.status(404).json({ error: 'artifact review not found' });
+
+    const actions = req.body && req.body.actions;
+    if (!Array.isArray(actions)) return res.status(400).json({ error: 'actions must be an array' });
+
+    let routed = 0;
+    const toQueue = [];
+    for (const raw of actions) {
+      const norm = normalizeActionPayload(raw);
+      if (!norm) continue;
+      let handled = false;
+      if (routeApprovalAction && isApprovalActionVerb(norm.action)) {
+        try {
+          handled = !!(await routeApprovalAction(sessionId, norm));
+        } catch (_) {
+          handled = false;
+        }
+      }
+      if (handled) routed += 1;
+      else toQueue.push(norm); // not routed (no live menu) → deliver via the drain so
+                               // the human's intent is never lost. routed and drained
+                               // are mutually exclusive per action, so no double-apply.
+    }
+    if (toQueue.length > 0) store.enqueueAction(sessionId, toQueue);
+
+    res.json({ ok: true, pushed: routed > 0, queued: toQueue.length });
+  });
+
+  // Agent replaces the review's content (contract §1.1/§3.2). `file` (validatePath)
+  // is re-read; `html` is written to the review's EXISTING sandboxed file, then a
+  // reload is broadcast (never render an unsandboxed over-the-wire blob). Exactly
+  // one of file|html; violations return the tagged-400 INVALID_REQUEST wire signal.
+  router.post('/:sessionId/update', (req, res) => {
+    const sessionId = req.params.sessionId;
+    const review = store.get(sessionId);
+    if (!review) return res.status(404).json({ error: 'artifact review not found' });
+
+    const file = req.body && req.body.file;
+    const html = req.body && req.body.html;
+    const hasFile = typeof file === 'string' && file.length > 0;
+    const hasHtml = typeof html === 'string';
+    if (hasFile === hasHtml) {
+      return res.status(400).json({ error: { code: 'INVALID_REQUEST', message: 'exactly one of file|html is required' } });
+    }
+
+    let targetPath;
+    if (hasFile) {
+      const validation = validatePath(file);
+      if (!validation || !validation.valid) {
+        return res.status(400).json({ error: { code: 'INVALID_REQUEST', message: (validation && validation.error) || 'file escapes the sandbox' } });
+      }
+      targetPath = validation.path;
+    } else {
+      // Write html to the review's existing (already-sandboxed) file.
+      if (!review.file) {
+        return res.status(400).json({ error: { code: 'INVALID_REQUEST', message: 'html requires an existing review file' } });
+      }
+      const validation = validatePath(review.file);
+      if (!validation || !validation.valid) {
+        return res.status(400).json({ error: { code: 'INVALID_REQUEST', message: (validation && validation.error) || 'review file escapes the sandbox' } });
+      }
+      try {
+        fs.writeFileSync(validation.path, html, 'utf8');
+      } catch (err) {
+        return res.status(500).json({ error: 'write failed', message: err.message });
+      }
+      targetPath = validation.path;
+    }
+
+    review.file = targetPath;
+    startWatch(sessionId, targetPath);
+    broadcastToSession(sessionId, { type: 'artifact_review_reload', sessionId });
+    res.json({ ok: true, viewUrl: artifactPath(sessionId, '/view', req) });
+  });
+
   router.get('/:sessionId/events', (req, res) => {
     const sessionId = req.params.sessionId;
     if (!store.get(sessionId)) return res.status(404).json({ error: 'artifact review not found' });
@@ -913,9 +1160,10 @@ function createArtifactReviewRouter(options) {
     if (typeof res.flushHeaders === 'function') res.flushHeaders();
 
     let closed = false;
-    function send(event, obj) {
+    function send(event, obj, id) {
       if (closed) return;
       try {
+        if (id != null) res.write('id: ' + id + '\n');
         res.write('event: ' + event + '\n');
         res.write('data: ' + JSON.stringify(obj) + '\n\n');
       } catch (_) {
@@ -924,7 +1172,7 @@ function createArtifactReviewRouter(options) {
     }
     function onAgentReply(evt) {
       if (!evt || evt.aiSessionId !== sessionId) return;
-      send('agent-reply', { type: 'agent-reply', text: evt.text, reply: evt.reply });
+      send('agent-reply', { type: 'agent-reply', id: evt.id, text: evt.text, reply: evt.reply }, evt.id);
     }
     function onPresence(evt) {
       if (!evt || evt.aiSessionId !== sessionId) return;
@@ -932,7 +1180,7 @@ function createArtifactReviewRouter(options) {
     }
     function onEnded(evt) {
       if (!evt || evt.aiSessionId !== sessionId) return;
-      send('ended', { type: 'ended', status: 'ended' });
+      send('ended', { type: 'ended', status: 'ended', id: evt.id }, evt.id);
       cleanup();
       try { res.end(); } catch (_) { /* ignore */ }
     }
@@ -953,6 +1201,22 @@ function createArtifactReviewRouter(options) {
     }, sseHeartbeatMs);
     if (typeof heartbeat.unref === 'function') heartbeat.unref();
 
+    // Reconnect replay (C-P0-4): the browser's EventSource resends the last id it
+    // saw via Last-Event-ID; replay exactly the gap (agent-reply / ended events
+    // with a higher id) so a dropped SSE never loses a delivered reply. A fresh
+    // connection (no header) replays nothing; the panel rehydrates via /history.
+    const lastEventId = req.headers['last-event-id'];
+    if (lastEventId != null && String(lastEventId).trim() !== '') {
+      const missed = store.eventsSince(sessionId, lastEventId, ['agent-reply', 'ended']);
+      for (const e of missed) {
+        if (e.kind === 'agent-reply') {
+          send('agent-reply', { type: 'agent-reply', id: e.id, text: e.text, reply: { role: 'agent', text: e.text, at: e.at, id: e.id } }, e.id);
+        } else if (e.kind === 'ended') {
+          send('ended', { type: 'ended', status: 'ended', id: e.id }, e.id);
+        }
+      }
+    }
+
     const presence = store.setPresence(sessionId, { connected: true, lastSeen: nowIso() });
     send('presence', { type: 'presence', presence });
 
@@ -969,6 +1233,103 @@ function createArtifactReviewRouter(options) {
     if (!review) return res.status(404).json({ error: 'artifact review not found' });
     broadcastToSession(sessionId, { type: 'artifact_review_ended', sessionId });
     res.json({ ok: true, status: review.status });
+  });
+
+  // Hide/show the panel without ending the review (contract §9). Server-authoritative
+  // visibility so a reconnecting panel and the artifact_dismiss tool agree. Body
+  // { dismissed?: boolean } defaults true; the panel sends dismissed:false to
+  // re-open. The review stays alive and the feedback channel stays open.
+  router.post('/:sessionId/dismiss', (req, res) => {
+    const sessionId = req.params.sessionId;
+    if (!store.get(sessionId)) return res.status(404).json({ error: 'artifact review not found' });
+    const dismissed = !(req.body && req.body.dismissed === false);
+    store.setVisibility(sessionId, dismissed ? 'dismissed' : 'shown');
+    broadcastToSession(sessionId, { type: 'artifact_review_dismissed', sessionId, dismissed });
+    res.json({ ok: true, visibility: dismissed ? 'dismissed' : 'shown' });
+  });
+
+  // Browser-only rehydrate/replay (contract §3.3). Returns the derived chat, the
+  // typed event buffer, status, high-water cursor, and panel visibility.
+  router.get('/:sessionId/history', (req, res) => {
+    const sessionId = req.params.sessionId;
+    const snapshot = store.historySnapshot(sessionId);
+    if (!snapshot) return res.status(404).json({ error: 'artifact review not found' });
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.json(snapshot);
+  });
+
+  // Typed drain (contract §1/§2). Long-polls like /poll, but returns
+  // { events: ArtifactEvent[], status, cursor } — comment + ended events with
+  // id > cursor. Single-delivery is by cursor (the agent passes the returned
+  // cursor next call), so this is non-destructive w.r.t. the legacy /poll queue.
+  // Counts as an active poll so concurrent /prompts feedback is delivered here,
+  // never injected into the PTY.
+  router.get('/:sessionId/await', (req, res) => {
+    const sessionId = req.params.sessionId;
+    const review = store.get(sessionId);
+    if (!review) return res.status(404).json({ error: 'artifact review not found' });
+
+    const cursor = req.query && req.query.cursor != null ? String(req.query.cursor) : '0';
+    const requestedHold = Number(req.query && req.query.timeoutMs);
+    const holdMs = Number.isFinite(requestedHold) && requestedHold > 0
+      ? Math.min(requestedHold, pollHoldMs)
+      : pollHoldMs;
+
+    function awaitPayload() {
+      const current = store.get(sessionId) || review;
+      const events = store.eventsSince(sessionId, cursor, ['comment', 'action', 'ended']);
+      const highWater = events.reduce((m, e) => Math.max(m, Number(e.id) || 0), Number(cursor) || 0);
+      return { events, status: current ? current.status : 'missing', cursor: String(highWater) };
+    }
+
+    const immediate = awaitPayload();
+    if (immediate.events.length > 0 || review.status === 'ended') {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-cache, no-transform');
+      return res.end(JSON.stringify(immediate));
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+    let pollCounted = true;
+    pollDelta(sessionId, 1);
+    let done = false;
+    let timeout = null;
+    let heartbeat = null;
+    function cleanup() {
+      if (pollCounted) { pollCounted = false; pollDelta(sessionId, -1); }
+      if (timeout) clearTimeout(timeout);
+      if (heartbeat) clearInterval(heartbeat);
+      store.removeListener('feedback', onFeedback);
+      store.removeListener('agent-reply', onAny);
+      store.removeListener('ended', onAny);
+    }
+    function finish(payload) {
+      if (done) return;
+      done = true;
+      cleanup();
+      try { res.end(JSON.stringify(payload)); } catch (_) { /* client gone */ }
+    }
+    function tick() {
+      const payload = awaitPayload();
+      if (payload.events.length > 0) finish(payload);
+    }
+    function onFeedback(evt) { if (evt && evt.aiSessionId === sessionId) tick(); }
+    function onAny(evt) { if (evt && evt.aiSessionId === sessionId) tick(); }
+
+    req.once('close', () => { if (!done) cleanup(); });
+    timeout = setTimeout(() => finish(awaitPayload()), holdMs);
+    heartbeat = setInterval(() => { try { res.write(' '); } catch (_) { cleanup(); } }, pollHeartbeatMs);
+    if (typeof timeout.unref === 'function') timeout.unref();
+    if (typeof heartbeat.unref === 'function') heartbeat.unref();
+
+    store.on('feedback', onFeedback);
+    store.on('agent-reply', onAny);
+    store.on('ended', onAny);
   });
 
   router.get('/:sessionId/poll', (req, res) => {
@@ -1064,8 +1425,10 @@ function createArtifactReviewRouter(options) {
     const text = req.body && req.body.text;
     if (typeof text !== 'string') return res.status(400).json({ error: 'text is required' });
 
+    // Render is SSE-only (contract §5 / C-P0-1): addAgentReply emits 'agent-reply'
+    // which the /events stream delivers. We deliberately do NOT also broadcast a WS
+    // artifact_agent_reply — that second path double-rendered the chat bubble.
     const reply = store.addAgentReply(sessionId, text);
-    broadcastToSession(sessionId, { type: 'artifact_agent_reply', sessionId, text });
     res.json({ ok: true, reply });
   });
 
@@ -1081,6 +1444,8 @@ module.exports = {
   formatFeedbackForAgent,
   buildArtifactPushPayload,
   artifactPushEnabledFromEnv,
+  normalizeActionPayload,
+  isApprovalActionVerb,
   injectLavishSdk,
   isMarkdownFile,
   markdownArtifactShell,

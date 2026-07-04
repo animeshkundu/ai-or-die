@@ -12,32 +12,93 @@ const DEFAULT_MAX_BYTES = 256 * 1024;
 async function detectAwaiting(file, opts = {}) {
   try {
     const lines = await readTailJsonLines(file, opts.maxBytes || DEFAULT_MAX_BYTES);
-    if (!lines.length) return null;
-
-    let latest = null;
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-      const obj = lines[lineIndex];
-      if (!obj || obj.type !== 'assistant' || obj.isSidechain) continue;
-      const content = obj.message && obj.message.content;
-      if (!Array.isArray(content)) continue;
-      for (const block of content) {
-        if (!block || block.type !== 'tool_use') continue;
-        const mapped = mapUserFacingTool(block.name);
-        if (!mapped) continue;
-        latest = {
-          lineIndex,
-          id: block.id,
-          tool: mapped,
-          input: block.input || {},
-        };
-      }
-    }
-
-    if (!latest || !latest.id) return null;
-    if (hasMatchingToolResult(lines.slice(latest.lineIndex + 1), latest.id)) return null;
-    return awaitingFromTool(latest.tool, latest.input);
+    return awaitingFromLines(lines);
   } catch {
     return null;
+  }
+}
+
+// Pure classifier over already-parsed JSONL lines: the newest user-facing
+// tool_use left without a matching tool_result, or null. Extracted so both
+// detectAwaiting (file path) and detectTurnState can share it without a second
+// file read. detectAwaiting's external contract is unchanged.
+function awaitingFromLines(lines) {
+  if (!Array.isArray(lines) || !lines.length) return null;
+
+  let latest = null;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const obj = lines[lineIndex];
+    if (!obj || obj.type !== 'assistant' || obj.isSidechain) continue;
+    const content = obj.message && obj.message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || block.type !== 'tool_use') continue;
+      const mapped = mapUserFacingTool(block.name);
+      if (!mapped) continue;
+      latest = {
+        lineIndex,
+        id: block.id,
+        tool: mapped,
+        input: block.input || {},
+      };
+    }
+  }
+
+  if (!latest || !latest.id) return null;
+  if (hasMatchingToolResult(lines.slice(latest.lineIndex + 1), latest.id)) return null;
+  return awaitingFromTool(latest.tool, latest.input);
+}
+
+// Turn-state classifier for the artifact-push idle gate (ADR-0035 hardening).
+// PRIMARY gate signal: the transcript reflects semantic turn state, unlike the
+// PTY-quiet heuristic (a quiet PTY is exactly the pending-menu case). Returns:
+//   - 'awaiting_input'  : a user-facing tool (ExitPlanMode/AskUserQuestion/
+//                         permission) is pending — NEVER inject free text here,
+//                         it would answer the live menu.
+//   - 'idle_at_prompt'  : the last assistant turn is complete with no unresolved
+//                         tool_use and no trailing tool_result — safe to push.
+//   - 'working'         : a non-user-facing tool_use is pending, or a tool_result
+//                         is queued for the agent to continue — do not push.
+//   - 'unknown'         : no readable binding — caller falls back to the PTY-quiet
+//                         secondary guard.
+// Never throws; an unreadable/absent file is 'unknown'. Shape is additive: the
+// control-plane turn_ended/waiting_input event contracts are untouched.
+async function detectTurnState(file, opts = {}) {
+  try {
+    const lines = await readTailJsonLines(file, opts.maxBytes || DEFAULT_MAX_BYTES);
+    if (!lines.length) return { state: 'unknown' };
+
+    const awaiting = awaitingFromLines(lines);
+    if (awaiting) {
+      return { state: 'awaiting_input', pendingUserFacingTool: awaiting.pendingUserFacingTool };
+    }
+
+    let lastAssistantIdx = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const o = lines[i];
+      if (o && o.type === 'assistant' && !o.isSidechain) { lastAssistantIdx = i; break; }
+    }
+    if (lastAssistantIdx === -1) return { state: 'unknown' };
+
+    const after = lines.slice(lastAssistantIdx + 1);
+    // A trailing tool_result means the agent has tool output to keep processing.
+    const hasTrailingToolResult = after.some((o) => {
+      if (!o || o.type !== 'user' || o.isSidechain) return false;
+      const content = o.message && o.message.content;
+      return Array.isArray(content) && content.some((b) => b && b.type === 'tool_result');
+    });
+    if (hasTrailingToolResult) return { state: 'working' };
+
+    // Any unresolved tool_use in the last assistant message → mid-tool (working).
+    const content = lines[lastAssistantIdx].message && lines[lastAssistantIdx].message.content;
+    const toolUses = Array.isArray(content) ? content.filter((b) => b && b.type === 'tool_use') : [];
+    const unresolved = toolUses.some((tu) => tu.id && !hasMatchingToolResult(after, tu.id));
+    if (unresolved) return { state: 'working' };
+
+    // Last assistant turn is complete with nothing pending → idle at the prompt.
+    return { state: 'idle_at_prompt' };
+  } catch {
+    return { state: 'unknown' };
   }
 }
 
@@ -170,4 +231,4 @@ function shortString(value, maxLen) {
   return s.length > maxLen ? s.slice(0, maxLen) : s;
 }
 
-module.exports = { detectAwaiting };
+module.exports = { detectAwaiting, detectTurnState };

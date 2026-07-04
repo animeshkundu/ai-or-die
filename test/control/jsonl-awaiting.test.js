@@ -4,7 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { detectAwaiting } = require('../../src/control/jsonl-awaiting');
+const { detectAwaiting, detectTurnState } = require('../../src/control/jsonl-awaiting');
 
 function tmpFile(contents) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aiod-jsonl-awaiting-'));
@@ -85,5 +85,54 @@ describe('control/jsonl-awaiting detectAwaiting', function () {
     }));
 
     assert.equal(await detectAwaiting(file), null);
+  });
+});
+
+describe('control/jsonl-awaiting detectTurnState (artifact idle gate)', function () {
+  it('awaiting_input when a user-facing tool is pending (never push free text)', async function () {
+    const file = tmpFile(line({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'toolu_a', name: 'ExitPlanMode', input: { plan: 'P' } }] },
+    }));
+    const turn = await detectTurnState(file);
+    assert.equal(turn.state, 'awaiting_input');
+    assert.equal(turn.pendingUserFacingTool, 'ExitPlanMode');
+  });
+
+  it('idle_at_prompt when the last assistant turn is a completed text turn', async function () {
+    const file = tmpFile(line({
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: 'All done.' }] },
+    }));
+    assert.equal((await detectTurnState(file)).state, 'idle_at_prompt');
+  });
+
+  it('working when the last assistant has an unresolved (non-user-facing) tool_use', async function () {
+    const file = tmpFile(line({
+      type: 'assistant',
+      message: { content: [{ type: 'tool_use', id: 'toolu_b', name: 'Bash', input: { command: 'ls' } }] },
+    }));
+    assert.equal((await detectTurnState(file)).state, 'working');
+  });
+
+  it('working when a trailing tool_result is queued for the agent to continue', async function () {
+    const file = tmpFile(
+      line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_c', name: 'Bash', input: {} }] } }) +
+      line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_c', content: 'ok' }] } })
+    );
+    assert.equal((await detectTurnState(file)).state, 'working');
+  });
+
+  it('idle_at_prompt after a tool_use is resolved AND the assistant speaks again', async function () {
+    const file = tmpFile(
+      line({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_d', name: 'Bash', input: {} }] } }) +
+      line({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_d', content: 'ok' }] } }) +
+      line({ type: 'assistant', message: { content: [{ type: 'text', text: 'Finished.' }] } })
+    );
+    assert.equal((await detectTurnState(file)).state, 'idle_at_prompt');
+  });
+
+  it('unknown for a missing/unreadable binding (caller falls back to PTY-quiet)', async function () {
+    assert.equal((await detectTurnState('/no/such/file.jsonl')).state, 'unknown');
   });
 });

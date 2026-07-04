@@ -25,6 +25,30 @@
 }
 .artifact-panel[hidden] { display: none; }
 
+/* Re-open badge (C-P0-3): shown when the panel is dismissed so × is not a
+   dead-end. Anchored bottom-right where the panel sits. */
+.artifact-panel__reopen {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 41;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--panel-border, #33363f);
+  border-radius: 999px;
+  background: var(--panel-header-bg, #232630);
+  color: var(--panel-fg, #e6e6e6);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+.artifact-panel__reopen:hover { filter: brightness(1.12); }
+.artifact-panel__reopen:focus-visible { outline: 2px solid var(--accent-default, #2563eb); outline-offset: 1px; }
+.artifact-panel__reopen[hidden] { display: none; }
+
 /* Minimized: collapse to just the header bar. */
 .artifact-panel--minimized {
   height: auto !important;

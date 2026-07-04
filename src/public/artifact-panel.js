@@ -53,7 +53,8 @@
       this._collapsed = false;   // session-show gate (switched-away / closed)
       this._minimized = false;   // window minimized to header bar
       this._maximized = false;   // window expanded to fill the wrapper
-      this._queue = [];          // queued annotations (the pills); panel-owned
+      // Annotation queue + chat are per-session (see reviews Map / C-P0-2), not
+      // a single shared array — switching tabs must not drop another tab's state.
       this._presence = 'waiting';
       this.onStateChange = null;
 
@@ -146,6 +147,22 @@
 
       const wrapper = document.querySelector('.terminal-wrapper') || document.getElementById('terminalContainer') || document.body;
       if (wrapper) wrapper.appendChild(this.el);
+
+      // Re-open badge (C-P0-3): a small affordance shown when the panel is
+      // dismissed, so × is no longer a dead-end. Click restores the panel.
+      this._reopenBadge = el('button', {
+        class: 'artifact-panel__reopen', type: 'button', hidden: 'hidden',
+        title: 'Reopen artifact review', 'aria-label': 'Reopen artifact review',
+        text: '⤢ Artifact review',
+      });
+      this._reopenBadge.addEventListener('click', () => this.expand());
+      if (wrapper) wrapper.appendChild(this._reopenBadge);
+    }
+
+    // Active review record (or null). All per-session state (queue, chat) hangs
+    // off this, so tab switches never touch another session's state.
+    _activeReview() {
+      return this.activeSessionId ? (this.reviews.get(this.activeSessionId) || null) : null;
     }
 
     // ---- floating-window geometry ----------------------------------------
@@ -352,12 +369,20 @@
     open(message) {
       if (!message || !message.sessionId) return;
       const sessionId = String(message.sessionId);
+      const existing = this.reviews.get(sessionId);
       this.reviews.set(sessionId, {
         sessionId,
         viewUrl: this._authUrl('/view', sessionId), // client-token URL, not the broadcast's
         file: message.file || null,
         ready: false,
         scroll: { x: 0, y: 0 },
+        // Per-session panel state (C-P0-2): the queue (pills) and chat log live
+        // with the review, so switching tabs never drops queued annotations or
+        // wipes chat. Preserved across re-open of the same session.
+        queue: (existing && Array.isArray(existing.queue)) ? existing.queue : [],
+        chat: (existing && Array.isArray(existing.chat)) ? existing.chat : [],
+        chatCursor: (existing && typeof existing.chatCursor === 'number') ? existing.chatCursor : 0,
+        dismissed: false,
       });
       if (sessionId === this.activeSessionId) this._show(sessionId);
       this._emitState();
@@ -368,28 +393,33 @@
       if (!sessionId) return;
       this.reviews.delete(sessionId);
       if (sessionId === this._sseSessionId) this._teardownSse();
-      if (sessionId === this.activeSessionId) { this._clearQueue(); this._hide(); }
+      if (sessionId === this.activeSessionId) { this._renderQueue(); this._hide(); this._updateReopenBadge(); }
       this._emitState();
     }
 
-    agentReply(message) {
-      if (!message) return;
-      const sessionId = String(message.sessionId || this.activeSessionId || '');
-      const text = message.text == null ? '' : String(message.text);
-      if (sessionId === this.activeSessionId) {
-        this._appendChat('agent', text);
-        this._postToIframe('agent-reply', { text });
-        // The agent responded, so it is no longer mid-turn: re-enable Send.
-        if (this._presence === 'working') this._setPresence('listening');
-      }
+    // Server-driven dismiss/show (C-P0-3): another device (or the artifact_dismiss
+    // tool) changed panel visibility. Mirror it so all viewers agree.
+    dismissedByServer(message) {
+      const sessionId = message && message.sessionId ? String(message.sessionId) : this.activeSessionId;
+      if (!sessionId) return;
+      const review = this.reviews.get(sessionId);
+      if (review) review.dismissed = !!(message && message.dismissed);
+      if (sessionId !== this.activeSessionId) return;
+      if (review && review.dismissed) { this._collapsed = true; this._hide(); }
+      else { this._collapsed = false; if (this.reviews.has(sessionId)) this._show(sessionId); }
+      this._updateReopenBadge();
+      this._emitState();
     }
 
     notifyActiveSessionChanged(sessionId) {
       this.activeSessionId = sessionId ? String(sessionId) : null;
       this._cancelPendingSnapshot();
-      this._clearQueue();
-      if (this.activeSessionId && this.reviews.has(this.activeSessionId)) this._show(this.activeSessionId);
+      const review = this._activeReview();
+      // Per-session state (C-P0-2): do NOT clear the queue or wipe chat on switch.
+      // A dismissed review stays hidden (badge shown); otherwise show + repaint.
+      if (this.activeSessionId && review && !review.dismissed) this._show(this.activeSessionId);
       else this._hide();
+      this._updateReopenBadge();
     }
 
     _cancelPendingSnapshot() {
@@ -403,14 +433,21 @@
       const review = this.reviews.get(sessionId);
       if (!review) return;
       if (this._iframe.getAttribute('data-session') !== sessionId) {
-        this._chatLog.innerHTML = '';
-        this._clearQueue();
         this._iframe.setAttribute('data-session', sessionId);
         this._iframe.src = review.viewUrl;
       }
+      // Repaint per-session chat + queue (never wipe to empty on switch/re-open).
+      this._repaintChat(review);
+      this._renderQueue();
       this._connectSse(sessionId);
+      // Rehydrate from the server ONLY on a first, empty render of this session in
+      // this client (fresh load / reload). During live use chat is client-owned,
+      // so we never re-fetch and can't double-render.
+      if (!review.chat || review.chat.length === 0) this._loadHistory(sessionId);
       this._collapsed = false;
+      review.dismissed = false;
       this.el.hidden = false;
+      this._updateReopenBadge();
       // Now that the panel is visible (and measurable), pull any off-screen
       // persisted position back into the wrapper so the header stays grabbable.
       this._clampToBounds();
@@ -419,11 +456,34 @@
       this.el.hidden = true;
       this._teardownSse();
     }
-    collapse() { this._collapsed = true; this._hide(); this._emitState(); }
+    // × dismiss: server-authoritative hide, review stays alive, re-open badge shown.
+    collapse() {
+      this._collapsed = true;
+      const sessionId = this.activeSessionId;
+      const review = this._activeReview();
+      if (review) review.dismissed = true;
+      if (sessionId) this._post('/dismiss', sessionId, { dismissed: true });
+      this._hide();
+      this._updateReopenBadge();
+      this._emitState();
+    }
     expand() {
       this._collapsed = false;
-      if (this.activeSessionId && this.reviews.has(this.activeSessionId)) this._show(this.activeSessionId);
+      const sessionId = this.activeSessionId;
+      const review = this._activeReview();
+      if (review) review.dismissed = false;
+      if (sessionId && this.reviews.has(sessionId)) {
+        this._post('/dismiss', sessionId, { dismissed: false });
+        this._show(sessionId);
+      }
+      this._updateReopenBadge();
       this._emitState();
+    }
+    _updateReopenBadge() {
+      if (!this._reopenBadge) return;
+      const review = this._activeReview();
+      const show = !!(review && review.dismissed);
+      this._reopenBadge.hidden = !show;
     }
     isOpenForActive() { return !!(this.activeSessionId && this.reviews.has(this.activeSessionId)); }
 
@@ -494,6 +554,10 @@
         if (review) review.scroll = { x: Number(payload.x) || 0, y: Number(payload.y) || 0 };
         return;
       }
+      if (data.type === 'artifact-action') {
+        this._handleAction(sessionId, payload);
+        return;
+      }
       // Legacy message types (backward-compat with the pre-annotation SDK and
       // existing artifacts). 'artifact-prompts' POSTs immediately (the old
       // contract had no queue); 'artifact-layout-warnings' forwards to the
@@ -532,39 +596,46 @@
       );
     }
 
-    // ---- annotation queue + pills ----------------------------------------
+    // ---- annotation queue + pills (per-session; C-P0-2) ------------------
     _enqueueAnnotation(annotation) {
       if (!annotation || typeof annotation !== 'object') return;
-      this._queue.push(annotation);
+      const review = this._activeReview();
+      if (!review) return;
+      if (!Array.isArray(review.queue)) review.queue = [];
+      review.queue.push(annotation);
       this._renderQueue();
     }
     _clearQueue() {
-      this._queue = [];
+      const review = this._activeReview();
+      if (review) review.queue = [];
       this._renderQueue();
     }
     _renderQueue() {
       if (!this._pills) return;
+      const review = this._activeReview();
+      const queue = (review && Array.isArray(review.queue)) ? review.queue : [];
       this._pills.innerHTML = '';
-      this._queue.forEach((annotation, index) => {
+      queue.forEach((annotation, index) => {
         const label = (annotation.prompt || annotation.text || annotation.selector || 'annotation').toString();
         const pill = el('div', { class: 'artifact-panel__pill' });
         const preview = el('span', { class: 'artifact-panel__pill-text', title: annotation.selector || '', text: label });
         const remove = el('button', { class: 'artifact-panel__pill-x', type: 'button', 'aria-label': 'Remove queued annotation', text: '×' });
-        remove.addEventListener('click', () => { this._queue.splice(index, 1); this._renderQueue(); });
+        remove.addEventListener('click', () => { queue.splice(index, 1); this._renderQueue(); });
         pill.appendChild(preview);
         pill.appendChild(remove);
         this._pills.appendChild(pill);
       });
-      this._pillBar.hidden = this._queue.length === 0;
-      if (this._sendBtn) this._sendBtn.disabled = this._queue.length === 0 || this._presence === 'working';
+      this._pillBar.hidden = queue.length === 0;
+      if (this._sendBtn) this._sendBtn.disabled = queue.length === 0 || this._presence === 'working';
     }
     // Panel "Send to agent": ask the iframe SDK for a live DOM snapshot, then
     // flush the queue with it — so panel-Send carries the same context the SDK's
     // own Cmd/Ctrl+Enter send does. Falls back to sending without a snapshot if
     // the iframe doesn't reply promptly (sandboxed / not ready).
     _sendQueueWithSnapshot() {
+      const review = this._activeReview();
       const sessionId = this.activeSessionId;
-      if (!sessionId || this._queue.length === 0) return;
+      if (!sessionId || !review || !Array.isArray(review.queue) || review.queue.length === 0) return;
       if (this._snapshotPending) return; // a request is already in flight
       this._snapshotPending = true;
       this._snapshotSession = sessionId;
@@ -581,12 +652,14 @@
     }
     _sendQueue(domSnapshot) {
       const sessionId = this.activeSessionId;
-      if (!sessionId || !this.reviews.has(sessionId) || this._queue.length === 0) return;
-      const prompts = this._queue.slice();
+      const review = this._activeReview();
+      if (!sessionId || !review || !Array.isArray(review.queue) || review.queue.length === 0) return;
+      const prompts = review.queue.slice();
       // Optimistically clear so the pills reflect "sending"; restore them to the
       // FRONT of the queue if the POST fails (network error or non-2xx) so the
       // user's annotations are never silently lost and can be retried.
-      this._clearQueue();
+      review.queue = [];
+      this._renderQueue();
       prompts.forEach((p) => this._appendChat('you', (p && (p.prompt || p.text)) ? String(p.prompt || p.text) : JSON.stringify(p)));
       if (this._presence === 'listening') this._setPresence('working');
       let settle;
@@ -606,26 +679,149 @@
         // but the POST may complete with no reply, or fail).
         if (this._presence === 'working') this._setPresence('listening');
         if (ok) return;
-        this._queue = prompts.concat(this._queue);
+        const cur = this._activeReview();
+        if (cur) { cur.queue = prompts.concat(Array.isArray(cur.queue) ? cur.queue : []); }
         this._renderQueue();
         this._appendChat('agent', 'Could not send your annotations. They were restored to the queue — press Send to retry.');
       });
     }
 
+    // Note composer: restore the note + surface a retry on POST failure (C-P0-7),
+    // mirroring _sendQueue — a dropped note is never silently lost.
     _submitNote() {
+      const sessionId = this.activeSessionId;
       const text = (this._chatInput.value || '').trim();
-      if (!text || !this.activeSessionId) return;
+      if (!text || !sessionId) return;
       this._chatInput.value = '';
-      this._post('/prompts', this.activeSessionId, { prompts: [text] });
       this._appendChat('you', text);
+      let settle;
+      try {
+        settle = this._post('/prompts', sessionId, { prompts: [text] });
+      } catch (err) {
+        settle = Promise.resolve(false);
+      }
+      settle.then((ok) => {
+        if (ok) return;
+        // Restore the note into the composer so the user can retry.
+        if (sessionId === this.activeSessionId && !(this._chatInput.value || '').trim()) {
+          this._chatInput.value = text;
+        }
+        this._appendChat('agent', 'Could not send your note — it was restored to the box. Press Send to retry.');
+      });
     }
 
+    // ---- chat (per-session; single render path via SSE) -------------------
+    // Record + render a locally-originated chat line (optimistic 'you' sends and
+    // local status notices). Agent replies arrive via _applyAgentReply (id-deduped).
     _appendChat(role, text) {
+      const review = this._activeReview();
+      const entry = { role, text: String(text) };
+      if (review) { if (!Array.isArray(review.chat)) review.chat = []; review.chat.push(entry); }
+      this._renderChatEntry(entry);
+    }
+    _renderChatEntry(entry) {
+      const role = entry.role === 'agent' ? 'agent' : 'you';
       const line = el('div', { class: 'artifact-panel__msg artifact-panel__msg--' + role });
-      line.appendChild(el('span', { class: 'artifact-panel__role', text: role === 'agent' ? 'agent' : 'you' }));
-      line.appendChild(el('span', { class: 'artifact-panel__text', text: String(text) }));
+      line.appendChild(el('span', { class: 'artifact-panel__role', text: role }));
+      line.appendChild(el('span', { class: 'artifact-panel__text', text: String(entry.text) }));
       this._chatLog.appendChild(line);
       this._chatLog.scrollTop = this._chatLog.scrollHeight;
+    }
+    _repaintChat(review) {
+      this._chatLog.innerHTML = '';
+      const chat = (review && Array.isArray(review.chat)) ? review.chat : [];
+      chat.forEach((entry) => this._renderChatEntry(entry));
+    }
+    // Apply an agent reply from SSE, de-duplicated by server event id so the
+    // native EventSource reconnect replay (Last-Event-ID) can't render it twice.
+    _applyAgentReply(sessionId, id, text) {
+      const review = this.reviews.get(sessionId);
+      if (!review) return;
+      const numId = Number(id);
+      if (Number.isFinite(numId) && numId > 0) {
+        if (numId <= (review.chatCursor || 0)) return; // already seen
+        review.chatCursor = numId;
+      }
+      if (!Array.isArray(review.chat)) review.chat = [];
+      const entry = { role: 'agent', text: String(text == null ? '' : text), id: id };
+      review.chat.push(entry);
+      if (sessionId === this.activeSessionId) {
+        this._renderChatEntry(entry);
+        this._postToIframe('agent-reply', { text: entry.text });
+        if (this._presence === 'working') this._setPresence('listening');
+      }
+    }
+    // Rehydrate chat from the server on a first/empty render (fresh load / reload).
+    // De-dupes agent replies by id against chatCursor so a later SSE frame for the
+    // same reply is ignored.
+    _loadHistory(sessionId) {
+      const url = this._authUrl('/history', sessionId);
+      fetch(url, { headers: this._authHeaders() }).then(
+        (res) => (res && res.ok ? res.json() : null),
+        () => null
+      ).then((data) => {
+        if (!data || sessionId !== this.activeSessionId) return;
+        const review = this.reviews.get(sessionId);
+        if (!review) return;
+        const hist = Array.isArray(data.chat) ? data.chat.map((c) => ({
+          role: c.role === 'agent' ? 'agent' : 'you',
+          text: String(c.text == null ? '' : c.text),
+          id: c.id,
+        })) : [];
+        // MERGE with any live entries that landed during the fetch, de-duped by id,
+        // so a reply arriving mid-fetch can't discard the prior history (or be
+        // dropped). History is the authoritative prefix; live-only entries follow.
+        const histIds = new Set(hist.filter((c) => c.id != null).map((c) => String(c.id)));
+        const live = (Array.isArray(review.chat) ? review.chat : [])
+          .filter((c) => c.id == null || !histIds.has(String(c.id)));
+        review.chat = hist.concat(live);
+        // Advance the cursor past the highest agent-reply id we now hold so SSE
+        // won't re-add any of them.
+        review.chatCursor = review.chat.reduce((m, c) => {
+          const n = Number(c.id);
+          return (c.role === 'agent' && Number.isFinite(n)) ? Math.max(m, n) : m;
+        }, review.chatCursor || 0);
+        this._repaintChat(review);
+      });
+    }
+
+    // ---- structured actions (data-aod-*; C-P1-3) --------------------------
+    // Handle an 'artifact-action' from the iframe SDK: optimistically reflect the
+    // step/selection state back into the artifact, echo to chat, and POST the
+    // structured action to /actions (the server routes approvals or drains it).
+    _handleAction(sessionId, payload) {
+      if (!payload || sessionId !== this.activeSessionId) return;
+      const review = this._activeReview();
+      if (!review) return;
+      const action = { action: String(payload.action || ''), elementId: String(payload.elementId || '') };
+      if (!action.action || !action.elementId) return;
+      if (typeof payload.value === 'string') action.value = payload.value;
+      if (typeof payload.group === 'string') action.group = payload.group;
+      if (Array.isArray(payload.selected)) action.selected = payload.selected;
+      const ctx = payload.context || {};
+      if (typeof ctx.selector === 'string') action.selector = ctx.selector;
+      if (typeof ctx.sourceLine === 'number') action.sourceLine = ctx.sourceLine;
+
+      // Optimistic plan-state reflect back into the iframe.
+      if (!review.planState) review.planState = {};
+      const stateMap = { approve: 'approved', reject: 'rejected', choose: 'approved', submit: 'done' };
+      const steps = [];
+      const setState = (id, st) => { review.planState[id] = st; steps.push({ elementId: id, state: st }); };
+      if (action.action === 'submit' && Array.isArray(action.selected)) {
+        action.selected.forEach((s) => { if (s && s.elementId) setState(String(s.elementId), 'done'); });
+        setState(action.elementId, 'done');
+      } else {
+        setState(action.elementId, stateMap[action.action] || 'done');
+      }
+      this._postToIframe('plan-state', { steps });
+
+      // Echo to chat for visibility.
+      const label = action.action === 'submit'
+        ? 'submitted ' + (action.group || '') + ' (' + (Array.isArray(action.selected) ? action.selected.length : 0) + ' selected)'
+        : action.action + ': ' + action.elementId + (action.value ? ' = ' + action.value : '');
+      this._appendChat('you', '[' + label + ']');
+
+      this._post('/actions', sessionId, { actions: [action], domSnapshot: payload.domSnapshot });
     }
 
     // ---- presence ---------------------------------------------------------
@@ -638,7 +834,9 @@
         this._refs.presence.textContent = label;
         this._refs.presence.setAttribute('data-state', this._presence);
       }
-      if (this._sendBtn) this._sendBtn.disabled = this._queue.length === 0 || this._presence === 'working';
+      const review = this._activeReview();
+      const queueLen = (review && Array.isArray(review.queue)) ? review.queue.length : 0;
+      if (this._sendBtn) this._sendBtn.disabled = queueLen === 0 || this._presence === 'working';
     }
 
     // ---- SSE (agent replies + presence + end) ----------------------------
@@ -655,9 +853,9 @@
       src.addEventListener('agent-reply', (e) => {
         const d = this._parse(e.data);
         if (d && typeof d.text === 'string') {
-          this._appendChat('agent', d.text);
-          this._postToIframe('agent-reply', { text: d.text });
-          if (this._presence === 'working') this._setPresence('listening');
+          // SSE is the SOLE render path (C-P0-1); id-deduped so the native
+          // EventSource reconnect replay can't double-render (C-P0-4).
+          this._applyAgentReply(sessionId, d.id, d.text);
         }
       });
       src.addEventListener('presence', (e) => {
