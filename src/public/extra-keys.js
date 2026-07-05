@@ -187,7 +187,8 @@ class ExtraKeys {
             return;
           }
         }
-        return; // clipboard had nothing we can paste
+        // read() exposed neither an image nor text/plain — fall through to
+        // readText() below (some clipboards only surface text that way).
       } catch (_) { /* fall through to readText() */ }
     }
     try {
