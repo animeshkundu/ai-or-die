@@ -17,6 +17,12 @@ class KeysPanel {
     this.app = options.app;
     this._open = false;
     this._build();
+    // Escape closes the panel (a11y / external-keyboard users), matching the
+    // composer. Bound at document level; removed in destroy().
+    this._keydownHandler = (e) => {
+      if (e.key === 'Escape' && this._open) { e.preventDefault(); this.hide(); }
+    };
+    document.addEventListener('keydown', this._keydownHandler);
   }
 
   _encoder() {
@@ -242,6 +248,8 @@ class KeysPanel {
   }
 
   destroy() {
+    if (this._keydownHandler) document.removeEventListener('keydown', this._keydownHandler);
+    this._keydownHandler = null;
     [this.fab, this.backdrop, this.panel].forEach((el) => {
       if (el && el.parentNode) el.parentNode.removeChild(el);
     });

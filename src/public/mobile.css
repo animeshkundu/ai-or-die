@@ -192,11 +192,8 @@
 
 /* ── Mobile Breakpoints ── */
 
-/* iPad Mini and below — tab bar, bottom nav, hamburger, mode switcher.
-   Also covers coarse-pointer tablets up to 1024px (e.g. iPad gen 11 landscape)
-   so a touch tablet gets touch chrome, while a fine-pointer desktop at the same
-   width keeps the desktop layout. Mirrors the mode-switcher query above. */
-@media (max-width: 1024px) and (hover: none) and (pointer: coarse), (max-width: 820px) {
+/* iPad Mini and below — tab bar, bottom nav, hamburger, mode switcher */
+@media (max-width: 820px) {
     .hamburger-btn {
         display: flex;
         flex-shrink: 0;

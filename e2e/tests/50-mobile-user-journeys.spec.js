@@ -183,7 +183,7 @@ test.describe('extra key sends keystroke to terminal', () => {
       };
     });
 
-    const tabBtn = page.locator('.extra-key', { hasText: 'Tab' });
+    const tabBtn = page.locator('.extra-key', { hasText: /^Tab$/ });
     await expect(tabBtn).toBeVisible();
     await tabBtn.click();
 
@@ -252,7 +252,7 @@ test.describe('extra key sends keystroke to terminal', () => {
 
     // Send 'c' key with Ctrl active
     await page.evaluate(() => {
-      window.app.extraKeys._sendKey('c');
+      window.app.extraKeys._pressKey({ char: 'c' });
     });
 
     const sentKeys = await page.evaluate(() => window._sentKeys);

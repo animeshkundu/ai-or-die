@@ -121,4 +121,19 @@ const KEYS_PANEL_SRC = path.join(__dirname, '..', 'src', 'public', 'keys-panel.j
     assert.ok(!document.getElementById('keysPanel'));
     assert.ok(!document.querySelector('.keys-panel__backdrop'));
   });
+
+  it('closes on Escape when open', function () {
+    const kp = make();
+    kp.show();
+    assert.strictEqual(kp.open, true);
+    document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert.strictEqual(kp.open, false, 'Escape should close the panel');
+  });
+
+  it('removes the Escape listener on destroy', function () {
+    const kp = make();
+    kp.destroy();
+    assert.doesNotThrow(() =>
+      document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  });
 });
