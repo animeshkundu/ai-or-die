@@ -14,7 +14,9 @@
     justify-content: space-around;
 }
 
-@media (max-width: 820px) {
+/* Show the bottom nav on phones and coarse-pointer tablets up to 1024px
+   (iPad gen 11 landscape included); fine-pointer desktops keep tab actions. */
+@media (max-width: 1024px) and (hover: none) and (pointer: coarse), (max-width: 820px) {
     .bottom-nav {
         display: flex;
     }

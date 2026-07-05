@@ -136,11 +136,32 @@
 
 .sn-placeholder { opacity: 0.6; font-style: italic; }
 
-/* On narrow screens, keep the card compact and out of the way. */
+/* On narrow screens, dock the card below the mobile top bar. */
 @media (max-width: 640px) {
   .sticky-note-card {
-    width: 200px;
-    max-height: 35%;
-    font-size: 11px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    top: calc(52px + var(--sa-top, 0px));
+    max-height: 40vh;
+    max-height: 40dvh;
+    z-index: 30;
+  }
+
+  @supports (padding: env(safe-area-inset-right)) {
+    html.pwa-standalone .sticky-note-card {
+      left: max(8px, env(safe-area-inset-left));
+      right: max(8px, env(safe-area-inset-right));
+      top: calc(52px + var(--sa-top, 0px));
+    }
+  }
+
+  .sticky-note-collapse {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
 }

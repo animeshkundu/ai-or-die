@@ -402,6 +402,10 @@ class ClaudeCodeWebInterface {
         });
 
         window.addEventListener('resize', () => {
+            // Skip during a soft-keyboard transition: the keyboard controller
+            // owns the (coalesced) fit. On layout-viewport-resizing browsers a
+            // window.resize fires mid-animation and would race a competing fit.
+            if (this._inKeyboardTransition) return;
             this.fitTerminal();
         });
 
@@ -735,6 +739,10 @@ class ClaudeCodeWebInterface {
         if (termContainerEl && typeof ResizeObserver !== 'undefined') {
             let resizeTimeout;
             new ResizeObserver(() => {
+                // During a soft-keyboard transition the dedicated keyboard
+                // controller owns the (single, coalesced) fit — skip here so we
+                // don't fire a second competing fit mid-animation (flicker).
+                if (this._inKeyboardTransition) return;
                 clearTimeout(resizeTimeout);
                 resizeTimeout = setTimeout(() => {
                     this.fitTerminal();
@@ -847,8 +855,10 @@ class ClaudeCodeWebInterface {
                 }
                 this._ctrlModifierPending = false;
                 if (this.extraKeys) {
-                    this.extraKeys.ctrlActive = false;
-                    this.extraKeys._updateCtrlVisual();
+                    // Use the shared consume so the sticky-Ctrl 5s timeout is
+                    // cleared too (a stale timeout could otherwise cancel a
+                    // later Ctrl press).
+                    this.extraKeys._consumeCtrl();
                 }
             }
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -932,7 +942,13 @@ class ClaudeCodeWebInterface {
     _setupExtraKeys() {
         if (!this.isMobile || typeof ExtraKeys === 'undefined') return;
 
+        document.body.classList.add('is-mobile');
         this.extraKeys = new ExtraKeys({ app: this });
+        // Control-mode "all keys" panel (keyboard-down). Launcher FAB is shown
+        // via the .is-mobile body class. See keys-panel.js / ADR-0037.
+        if (typeof KeysPanel !== 'undefined') {
+            this.keysPanel = new KeysPanel({ app: this });
+        }
         this._keyboardOpen = false;
 
         // Browsers without visualViewport (Firefox Android, Samsung Internet):
@@ -970,6 +986,11 @@ class ClaudeCodeWebInterface {
                 this._keyboardOpen = false;
                 document.body.classList.remove('keyboard-open');
                 this._restoreTerminalFromKeyboard();
+            } else if (heightDiff > threshold && this._keyboardOpen) {
+                // Keyboard already open but the viewport height changed (final
+                // animation frame, or rotation while open) — re-apply the size so
+                // the terminal isn't left fit against a stale intermediate height.
+                this._updateKeyboardHeight(currentHeight);
             }
         };
 
@@ -1045,26 +1066,65 @@ class ClaudeCodeWebInterface {
     }
 
     _adjustTerminalForKeyboard(availableHeight) {
-        if (this.extraKeys) this.extraKeys.show();
+        if (this.extraKeys) {
+            this.extraKeys.show();
+            this.extraKeys._updateRow2Visibility();
+        }
+        this._updateKeyboardHeight(availableHeight);
+    }
+
+    // Apply (or re-apply) the terminal size for the current keyboard-open
+    // viewport height. Called on the first threshold crossing AND on every later
+    // visualViewport frame while the keyboard stays open (final animation frame,
+    // or rotation) so the terminal never fits against a stale intermediate
+    // height and extends under the keyboard. Style writes are cheap; the xterm
+    // fit is coalesced into one rAF below.
+    _updateKeyboardHeight(availableHeight) {
+        this._inKeyboardTransition = true;
         document.documentElement.style.setProperty('--visual-viewport-height', availableHeight + 'px');
         const termEl = document.getElementById('terminal');
         if (termEl) {
-            // Force reflow after show() so offsetHeight is accurate
-            const extraKeysHeight = this.extraKeys?.container?.offsetHeight || 44;
-            void extraKeysHeight; // ensure reflow read is not optimized away
-            termEl.style.height = (availableHeight - (this.extraKeys?.container?.offsetHeight || 44)) + 'px';
-            if (this.fitAddon) this.fitAddon.fit();
+            const barH = (this.extraKeys && this.extraKeys.container)
+                ? (this.extraKeys.container.offsetHeight || 44) : 0;
+            termEl.style.height = (availableHeight - barH) + 'px';
         }
+        this._scheduleKeyboardFit();
+        this._endKeyboardTransitionSoon();
     }
 
     _restoreTerminalFromKeyboard() {
+        this._inKeyboardTransition = true;
         if (this.extraKeys) this.extraKeys.hide();
         document.documentElement.style.removeProperty('--visual-viewport-height');
         const termEl = document.getElementById('terminal');
-        if (termEl) {
-            termEl.style.height = '';
-            if (this.fitAddon) this.fitAddon.fit();
-        }
+        if (termEl) termEl.style.height = '';
+        this._scheduleKeyboardFit();
+        this._endKeyboardTransitionSoon();
+    }
+
+    // Coalesce fits during a keyboard transition into a single rAF. Uses
+    // fitTerminal() (which applies the mobile row/column adjustments) and refits
+    // split panes — NOT a raw fitAddon.fit() that would bypass both.
+    _scheduleKeyboardFit() {
+        if (this._kbFitRaf) cancelAnimationFrame(this._kbFitRaf);
+        this._kbFitRaf = requestAnimationFrame(() => {
+            this._kbFitRaf = null;
+            this.fitTerminal();
+            if (this.splitContainer && this.splitContainer.splits) {
+                this.splitContainer.splits.forEach(s => { try { s.fit(); } catch (_) {} });
+            }
+        });
+    }
+
+    // End the transition window after the CSS chrome-collapse would have settled,
+    // then do one final measured fit to reconcile the resting layout.
+    _endKeyboardTransitionSoon() {
+        if (this._kbTransitionTimer) clearTimeout(this._kbTransitionTimer);
+        this._kbTransitionTimer = setTimeout(() => {
+            this._kbTransitionTimer = null;
+            this._inKeyboardTransition = false;
+            this._scheduleKeyboardFit();
+        }, 320);
     }
 
     showSessionSelectionModal() {

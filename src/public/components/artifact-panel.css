@@ -293,3 +293,42 @@
   .artifact-panel--maximized .artifact-panel__frame { width: 100%; }
   .artifact-panel--maximized .artifact-panel__chat { max-height: 30%; }
 }
+
+@media (max-width: 640px) {
+  .artifact-panel:not(.artifact-panel--maximized) {
+    left: 0 !important;
+    top: auto !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100% !important;
+    max-width: none;
+    height: 70vh !important;
+    height: 70dvh !important;
+    min-width: 0;
+    border-radius: 12px 12px 0 0;
+    box-sizing: border-box;
+    padding-bottom: var(--sa-bottom, 0px);
+    box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.45);
+  }
+
+  .artifact-panel__resize {
+    display: none;
+  }
+
+  .artifact-panel__header {
+    min-height: 44px;
+  }
+
+  .artifact-panel__btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .artifact-panel__reopen {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
