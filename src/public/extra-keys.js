@@ -162,20 +162,49 @@ class ExtraKeys {
 
   async _handlePaste() {
     if ('vibrate' in navigator) try { navigator.vibrate(10); } catch (_) {}
+    const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+    const nav = (typeof navigator !== 'undefined') ? navigator : null;
+    // Prefer clipboard.read() — it can carry an IMAGE as well as text, so this
+    // is the mobile Ctrl+V for images (iOS 13.4+ WebKit). Image wins; else paste
+    // text. Falls back to readText() where read() is unavailable.
+    if (nav && nav.clipboard && typeof nav.clipboard.read === 'function') {
+      try {
+        const items = await nav.clipboard.read();
+        for (const item of items) {
+          const imgType = item.types && item.types.find((t) => IMAGE_TYPES.includes(t));
+          if (imgType && window.imageHandler && typeof window.imageHandler.showImagePreview === 'function') {
+            const blob = await item.getType(imgType);
+            window.imageHandler.showImagePreview(blob, (imageData) => {
+              if (this.app && typeof this.app._uploadImage === 'function') this.app._uploadImage(imageData);
+            });
+            return;
+          }
+        }
+        for (const item of items) {
+          if (item.types && item.types.includes('text/plain')) {
+            const blob = await item.getType('text/plain');
+            this._pasteText(await blob.text());
+            return;
+          }
+        }
+        return; // clipboard had nothing we can paste
+      } catch (_) { /* fall through to readText() */ }
+    }
     try {
-      const text = await navigator.clipboard.readText();
-      if (text && this.app && this.app.send) {
-        // Wrap in bracketed paste when the TUI has it enabled so multi-line
-        // pastes are not executed line-by-line.
-        const enc = this._encoder();
-        const modes = this._terminalModes();
-        const data = enc ? enc.wrapPaste(text, modes) : text;
-        this.app.send({ type: 'input', data });
-        if (window.feedback) window.feedback.success('Pasted');
-      }
+      this._pasteText(await nav.clipboard.readText());
     } catch (err) {
       if (window.feedback) window.feedback.warning('Clipboard access denied');
     }
+  }
+
+  _pasteText(text) {
+    if (!text || !this.app || !this.app.send) return;
+    // Wrap in bracketed paste when the TUI has it enabled so multi-line pastes
+    // are not executed line-by-line.
+    const enc = this._encoder();
+    const data = enc ? enc.wrapPaste(text, this._terminalModes()) : text;
+    this.app.send({ type: 'input', data });
+    if (window.feedback) window.feedback.success('Pasted');
   }
 
   _encoder() {

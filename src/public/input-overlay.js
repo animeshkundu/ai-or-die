@@ -120,13 +120,24 @@ class InputOverlay {
       this.app.planDetector._suppressDetection = true;
     }
 
-    // Update voice button state
+    // Update voice button state, and keep it in sync while the composer is open
+    // (recording stops on its own when a transcription is delivered, so poll to
+    // reflect that in the mic button).
     this._syncVoiceState();
+    if (this._voiceSyncInterval) clearInterval(this._voiceSyncInterval);
+    this._voiceSyncInterval = setInterval(() => this._syncVoiceState(), 300);
   }
 
   hide() {
     if (!this._open) return;
     this._open = false;
+
+    if (this._voiceSyncInterval) { clearInterval(this._voiceSyncInterval); this._voiceSyncInterval = null; }
+    // Stop an in-progress recording when the composer closes so the mic doesn't
+    // keep running against the (now restored) terminal target.
+    if (this.app && this.app.voiceController && this.app.voiceController.isRecording) {
+      try { this.app.voiceController.cancelRecording(); } catch (_) {}
+    }
 
     // Hide DOM
     if (this._backdrop) this._backdrop.style.display = 'none';
@@ -253,22 +264,36 @@ class InputOverlay {
 
   _toggleVoice() {
     if (!this.app || !this.app.voiceController) return;
-    // Delegate to the header voice button click to reuse existing start/stop logic
-    var headerBtn = document.getElementById('voiceInputBtn');
-    if (headerBtn) headerBtn.click();
-    // Sync recording state after a tick
-    var self = this;
-    setTimeout(function() { self._syncVoiceState(); }, 100);
+    // Call the controller DIRECTLY. On mobile the header #voiceInputBtn is
+    // display:none and clicking a hidden element is unreliable, so the mic never
+    // toggled from the composer. Going straight to the controller makes enable/
+    // disable work on mobile independently of that button.
+    try {
+      this.app.voiceController.toggleRecording();
+    } catch (_) {
+      var headerBtn = document.getElementById('voiceInputBtn');
+      if (headerBtn) headerBtn.click();
+    }
+    this._syncVoiceState();
   }
 
   _syncVoiceState() {
     if (!this._voiceBtn) return;
-    var headerBtn = document.getElementById('voiceInputBtn');
-    var recording = headerBtn && headerBtn.classList.contains('recording');
-    this._voiceBtn.classList.toggle('recording', !!recording);
+    var vc = this.app && this.app.voiceController;
+    // Read recording state from the controller (authoritative) rather than the
+    // header button's class, which is invisible/unreliable on mobile.
+    var recording;
+    if (vc) {
+      recording = !!vc.isRecording;
+    } else {
+      var headerBtn = document.getElementById('voiceInputBtn');
+      recording = !!(headerBtn && headerBtn.classList.contains('recording'));
+    }
+    this._voiceBtn.classList.toggle('recording', recording);
+    this._voiceBtn.setAttribute('aria-pressed', recording ? 'true' : 'false');
 
-    // Hide voice button if voice is not configured
-    if (!this.app || !this.app.voiceController) {
+    // Hide the mic if voice isn't available at all.
+    if (!vc) {
       this._voiceBtn.style.display = 'none';
     } else {
       this._voiceBtn.style.display = '';

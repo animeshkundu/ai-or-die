@@ -54,4 +54,31 @@ Complete a real plan-mode Claude Code task using ONLY touch:
 - [ ] Installed + Airplane Mode + relaunch: the app shell loads from the service
       worker (or the intended offline state), not a browser error.
 
+## F. Images (desktop + mobile) — device-test findings, PR follow-up
+- [ ] Desktop: paste a real photo (>1 MB) into the terminal → preview modal →
+      Send. It uploads (over HTTP) and the `.claude-images/...` path is injected;
+      NO "A voice message was rejected by the server. Reconnecting…" and no socket
+      drop. (Root cause was image base64 exceeding the 1 MiB WS JSON guard.)
+- [ ] Mobile: bottom nav → More → "Attach image" offers Photo Library / Take
+      Photo / Files; the picked image previews and uploads; the path is injected.
+- [ ] Mobile: copy an image, tap the extra-keys "Pst" key → the image preview
+      appears (clipboard.read image path), send → uploads. Text paste still works.
+
+## G. Mic in the composer (mobile)
+- [ ] Open the composer (type-ahead input). Tap the mic: recording starts with a
+      visible pulsing/red state ON THE COMPOSER's mic button (not the hidden
+      header button). Speak → text lands in the composer. Tap mic again → stops.
+- [ ] Close the composer while recording → recording stops (no stray dictation
+      into the terminal).
+
+## H. PWA top alignment (Edge on iOS) — RE-VERIFY, fix is device-unverified
+- [ ] Installed PWA under Edge on iPhone 16: the top session-tabs bar clears the
+      Dynamic Island (not tucked under it). The fix drives the top inset from
+      `env(safe-area-inset-top)` unconditionally (no longer gated on a
+      pwa-standalone class Edge doesn't set). If it is STILL cramped, env() is
+      returning 0 in Edge's PWA and the JS polyfill needs a broader trigger —
+      capture `getComputedStyle(document.querySelector('.session-tabs-bar')).paddingTop`
+      and `getComputedStyle(document.documentElement).getPropertyValue('--safe-area-inset-top')`
+      on the device and report back.
+
 Record: device, iOS version, Edge version, and a screenshot/clip per section.

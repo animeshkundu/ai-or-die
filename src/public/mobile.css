@@ -15,23 +15,23 @@
     .session-tabs-bar {
         padding-left: max(10px, env(safe-area-inset-left));
         padding-right: max(10px, env(safe-area-inset-right));
+        /* Apply the TOP inset UNCONDITIONALLY. env(safe-area-inset-top) is 0 in a
+           normal browser tab (browser chrome already clears the status bar /
+           Dynamic Island, nothing to pad) and equals the cutout inset whenever
+           content extends under it — installed PWA in Safari AND Edge/Chrome
+           home-screen apps. The old rule gated this on html.pwa-standalone, but
+           Edge-on-iOS PWAs don't reliably report display-mode:standalone /
+           navigator.standalone, so the class was never set and the tab bar sat
+           under the Dynamic Island (the reported misalignment). The JS-populated
+           --safe-area-inset-top still wins when set, to cover the WebKit bug
+           where env() wrongly returns 0 in standalone. */
+        padding-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
     }
-    html.pwa-standalone .session-tabs-bar {
-        padding-top: var(--safe-area-inset-top, env(safe-area-inset-top));
+    .file-browser-panel .file-browser-header {
+        padding-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
     }
-    html.pwa-standalone .file-browser-panel .file-browser-header {
-        padding-top: var(--safe-area-inset-top, env(safe-area-inset-top));
-    }
-    /* Baseline (any env()-capable browser) preserves the long-standing menu
-       inset; in tab mode env(safe-area-inset-top) is 0 so this is a no-op,
-       but it guards against any non-PWA notched case the standalone rule
-       below wouldn't cover. The standalone rule wins by specificity and
-       routes through the JS-populated --safe-area-inset-top variable. */
     .mobile-menu {
-        padding-top: env(safe-area-inset-top);
-    }
-    html.pwa-standalone .mobile-menu {
-        padding-top: var(--safe-area-inset-top, env(safe-area-inset-top));
+        padding-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
     }
     .mode-switcher {
         bottom: max(80px, calc(80px + var(--sa-bottom)));

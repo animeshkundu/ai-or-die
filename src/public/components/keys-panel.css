@@ -2,21 +2,25 @@
    A launcher FAB plus a bottom-sheet grid of every terminal key the iOS soft
    keyboard lacks. See keys-panel.js and ADR-0037. */
 
-/* Launcher: floating above the bottom nav, out of the way of terminal reading. */
+/* Launcher: sits as the TOP of the right-side control column, directly above the
+   mode-switcher (Esc + mode buttons), so ⌨ / Esc / mode read as one clean stack
+   instead of overlapping. Matches the 56px circular mode-switcher buttons.
+   Offset = mode-switcher bottom (62px + sa) + its height (2×56 + 10 gap = 122) +
+   a 10px gap = 194px + sa. */
 .keys-panel-fab {
   position: fixed;
-  right: 12px;
-  bottom: calc(52px + var(--sa-bottom, 0px) + 12px);
+  right: 20px;
+  bottom: calc(194px + var(--sa-bottom, 0px));
   z-index: var(--z-overlay);
-  width: 48px;
-  height: 48px;
-  min-width: 48px;
-  min-height: 48px;
-  display: none; /* shown on mobile only; app toggles via .is-mobile on <html>/<body> */
+  width: 56px;
+  height: 56px;
+  min-width: 56px;
+  min-height: 56px;
+  display: none; /* shown on mobile only; app toggles via .is-mobile on <body> */
   align-items: center;
   justify-content: center;
   padding: 0;
-  font-size: var(--text-lg);
+  font-size: var(--text-xl);
   line-height: 1;
   border: 1px solid var(--border-default, #33363f);
   border-radius: 50%;

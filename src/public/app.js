@@ -575,6 +575,59 @@ class ClaudeCodeWebInterface {
         });
     }
 
+    // Upload an image over HTTP (POST /api/images/upload) instead of the WS
+    // image_upload path. A real photo's base64 (~5.5 MB) exceeds the 1 MiB WS
+    // JSON guard, which force-closes the socket with 1009 — previously surfaced
+    // (wrongly) as "A voice message was rejected". HTTP has a 20 MB body limit.
+    // On success the returned temp path is injected into the terminal.
+    _uploadImage(imageData, sessionId) {
+        sessionId = sessionId || this.currentClaudeSessionId;
+        if (!sessionId) { this._imageError('No session joined'); return; }
+        const caption = imageData.caption || '';
+        const body = JSON.stringify({
+            sessionId: sessionId,
+            base64: imageData.base64,
+            mimeType: imageData.mimeType,
+            fileName: imageData.fileName || 'pasted-image.png',
+            caption: caption
+        });
+        this.authFetch('/api/images/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body
+        }).then(async (resp) => {
+            if (!resp.ok) {
+                let msg = 'HTTP ' + resp.status;
+                try { const j = await resp.json(); if (j && j.error) msg = j.error; } catch (_) {}
+                this._imageError(msg);
+                return;
+            }
+            const data = await resp.json();
+            this._injectImagePath(data.filePath, caption);
+        }).catch((e) => this._imageError((e && e.message) || 'Upload failed'));
+    }
+
+    // Inject an uploaded image's temp path into the active terminal (caption +
+    // quoted path), matching the legacy image_upload_complete behavior.
+    _injectImagePath(filePath, caption) {
+        if (!filePath) return;
+        const normalizedPath = filePath.replace(/\\/g, '/');
+        const quotedPath = '"' + normalizedPath + '"';
+        const inputText = caption ? caption + ' ' + quotedPath : quotedPath;
+        let normalized = attachClipboardHandler.normalizeLineEndings(inputText);
+        if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+        }
+        this.send({ type: 'input', data: normalized });
+    }
+
+    _imageError(msg) {
+        if (window.feedback) window.feedback.warning('Image upload failed: ' + msg);
+        if (this.terminal) {
+            this.terminal.write('\r\n\x1b[31m[Image upload error] ' + msg + '\x1b[0m\r\n');
+        }
+    }
+
     sendEscape() {
         // Send ESC key to terminal
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -766,16 +819,7 @@ class ClaudeCodeWebInterface {
             this._imageHandler = window.imageHandler.attachImageHandler(
                 this.terminal, termContainer, {
                     onImageReady: (imageData) => {
-                        this._pendingImageCaption = imageData.caption;
-                        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                            this.send({
-                                type: 'image_upload',
-                                base64: imageData.base64,
-                                mimeType: imageData.mimeType,
-                                fileName: imageData.fileName || 'pasted-image.png',
-                                caption: imageData.caption || ''
-                            });
-                        }
+                        this._uploadImage(imageData);
                     },
                     // Non-image files pasted from a file manager (clipboardData
                     // carries File objects) — route through the generic pipeline.
@@ -807,16 +851,7 @@ class ClaudeCodeWebInterface {
                         files && files.length) {
                         try {
                             window.imageHandler.showImagePreview(files[0], (imageData) => {
-                                this._pendingImageCaption = imageData.caption;
-                                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                                    this.send({
-                                        type: 'image_upload',
-                                        base64: imageData.base64,
-                                        mimeType: imageData.mimeType,
-                                        fileName: imageData.fileName || 'pasted-image.png',
-                                        caption: imageData.caption || ''
-                                    });
-                                }
+                                this._uploadImage(imageData);
                             });
                         } catch (_) { /* ignore */ }
                     }
@@ -1250,16 +1285,7 @@ class ClaudeCodeWebInterface {
             // Fallback: generic handler unavailable — keep the legacy image-only picker.
             attachBtn.addEventListener('click', () => {
                 window.imageHandler.triggerFilePicker((imageData) => {
-                    this._pendingImageCaption = imageData.caption;
-                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                        this.send({
-                            type: 'image_upload',
-                            base64: imageData.base64,
-                            mimeType: imageData.mimeType,
-                            fileName: imageData.fileName || 'attached-image.png',
-                            caption: imageData.caption || ''
-                        });
-                    }
+                    this._uploadImage(imageData);
                 });
             });
         }
@@ -1358,6 +1384,22 @@ class ClaudeCodeWebInterface {
             settingsBtnMobile.addEventListener('click', () => {
                 this.showSettings();
                 this.closeMobileMenu();
+            });
+        }
+
+        // Mobile image attach — the desktop attach button is hidden on mobile,
+        // so this is the mobile entry point. The file picker offers Photo Library
+        // / Take Photo / Files on iOS; the picked image goes through the preview
+        // modal and the HTTP upload path (_uploadImage).
+        const attachImageBtnMobile = document.getElementById('attachImageBtnMobile');
+        if (attachImageBtnMobile) {
+            attachImageBtnMobile.addEventListener('click', () => {
+                this.closeMobileMenu();
+                if (window.imageHandler && typeof window.imageHandler.triggerFilePicker === 'function') {
+                    window.imageHandler.triggerFilePicker((imageData) => this._uploadImage(imageData));
+                } else if (window.feedback) {
+                    window.feedback.warning('Image upload is unavailable');
+                }
             });
         }
         
@@ -3960,7 +4002,6 @@ class ClaudeCodeWebInterface {
                     break;
                 }
                 case 'pasteImage': {
-                    const pasteSocket = activeSocket;
                     try {
                         if (navigator.clipboard && typeof navigator.clipboard.read === 'function') {
                             const items = await navigator.clipboard.read();
@@ -3971,17 +4012,7 @@ class ClaudeCodeWebInterface {
                                 if (imageType) {
                                     const blob = await item.getType(imageType);
                                     window.imageHandler.showImagePreview(blob, (imageData) => {
-                                        this._pendingImageCaption = imageData.caption;
-                                        const msg = JSON.stringify({
-                                            type: 'image_upload',
-                                            base64: imageData.base64,
-                                            mimeType: imageData.mimeType,
-                                            fileName: imageData.fileName || 'pasted-image.png',
-                                            caption: imageData.caption || ''
-                                        });
-                                        if (pasteSocket && pasteSocket.readyState === WebSocket.OPEN) {
-                                            pasteSocket.send(msg);
-                                        }
+                                        this._uploadImage(imageData);
                                     });
                                     return;
                                 }
@@ -4009,19 +4040,8 @@ class ClaudeCodeWebInterface {
                             { multiple: true }
                         );
                     } else if (window.imageHandler) {
-                        const attachSocket = activeSocket;
                         window.imageHandler.triggerFilePicker((imageData) => {
-                            this._pendingImageCaption = imageData.caption;
-                            const msg = JSON.stringify({
-                                type: 'image_upload',
-                                base64: imageData.base64,
-                                mimeType: imageData.mimeType,
-                                fileName: imageData.fileName || 'attached-image.png',
-                                caption: imageData.caption || ''
-                            });
-                            if (attachSocket && attachSocket.readyState === WebSocket.OPEN) {
-                                attachSocket.send(msg);
-                            }
+                            this._uploadImage(imageData);
                         });
                     }
                     break;
@@ -4267,10 +4287,6 @@ class ClaudeCodeWebInterface {
 
         // Capture the socket at attach-initiation time. The image preview modal
         // is async (user-driven); the active session/socket can change while it
-        // is open. Sending on a captured target avoids the upload landing on a
-        // different session (mirrors the context-menu's existing capture).
-        const targetSocket = this.socket;
-
         // Images: reuse the existing single-preview flow. The modal handles one
         // image at a time, so if several images are selected we attach the first
         // and tell the user rather than silently dropping the rest.
@@ -4279,16 +4295,7 @@ class ClaudeCodeWebInterface {
                 window.feedback.info('Only the first image is attached — attach images one at a time.');
             }
             ih.showImagePreview(images[0], (imageData) => {
-                this._pendingImageCaption = imageData.caption;
-                if (targetSocket && targetSocket.readyState === WebSocket.OPEN) {
-                    targetSocket.send(JSON.stringify({
-                        type: 'image_upload',
-                        base64: imageData.base64,
-                        mimeType: imageData.mimeType,
-                        fileName: imageData.fileName || 'attached-image.png',
-                        caption: imageData.caption || ''
-                    }));
-                }
+                this._uploadImage(imageData);
             });
         }
 

@@ -104,4 +104,34 @@ describe('input-overlay composer: iOS textarea attributes (static)', function ()
     ov._deliverText('send');
     assert.strictEqual(sent.length, 0, 'no frame sent while disconnected');
   });
+
+  it('mic toggle calls the voice controller directly (works on mobile where the header button is hidden)', function () {
+    let toggled = 0;
+    app.voiceController = { toggleRecording() { toggled += 1; }, cancelRecording() {}, isRecording: false };
+    const ov = new InputOverlay(app);
+    ov.show();
+    ov._toggleVoice();
+    assert.strictEqual(toggled, 1, 'toggleRecording() called directly, not via the hidden header button');
+    ov.hide();
+  });
+
+  it('mic button reflects recording state from the controller (not the hidden header button)', function () {
+    app.voiceController = { toggleRecording() {}, cancelRecording() {}, isRecording: true };
+    const ov = new InputOverlay(app);
+    ov.show();
+    ov._syncVoiceState();
+    const btn = document.getElementById('inputOverlayVoice');
+    assert.ok(btn.classList.contains('recording'), 'mic shows recording state');
+    assert.strictEqual(btn.getAttribute('aria-pressed'), 'true');
+    ov.hide();
+  });
+
+  it('closing the composer cancels an in-progress recording', function () {
+    let cancelled = 0;
+    app.voiceController = { toggleRecording() {}, cancelRecording() { cancelled += 1; }, isRecording: true };
+    const ov = new InputOverlay(app);
+    ov.show();
+    ov.hide();
+    assert.strictEqual(cancelled, 1, 'recording cancelled on hide');
+  });
 });
