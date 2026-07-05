@@ -603,6 +603,10 @@ class ClaudeCodeWebInterface {
                 return;
             }
             const data = await resp.json();
+            if (!data || !data.filePath) {
+                this._imageError('Upload succeeded but no file path was returned');
+                return;
+            }
             this._injectImagePath(data.filePath, caption);
         }).catch((e) => this._imageError((e && e.message) || 'Upload failed'));
     }
