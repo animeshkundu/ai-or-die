@@ -157,6 +157,26 @@ test.describe('ADR-0037 mobile composer and copy', () => {
       window.app.terminal.write(value + '\r\n', () => resolve());
     }), marker);
 
+    // The copy reads the VISIBLE viewport only. Scroll to the bottom and wait
+    // until the marker is actually in the visible buffer before copying — on
+    // slow Windows WebKit the written line can lag the visible viewport, which
+    // made this assertion flaky.
+    await page.evaluate(() => {
+      if (window.app.terminal.scrollToBottom) window.app.terminal.scrollToBottom();
+    });
+    await page.waitForFunction((value) => {
+      const t = window.app && window.app.terminal;
+      if (!t || !t.buffer || !t.buffer.active) return false;
+      const buf = t.buffer.active;
+      const rows = t.rows || 24;
+      const start = buf.viewportY || 0;
+      for (let i = 0; i < rows; i++) {
+        const line = buf.getLine(start + i);
+        if (line && line.translateToString(true).includes(value)) return true;
+      }
+      return false;
+    }, marker, { timeout: 10000 });
+
     await page.evaluate(() => {
       window.__mobileCopiedText = null;
       const clipboard = {
