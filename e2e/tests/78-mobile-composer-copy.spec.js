@@ -149,19 +149,13 @@ test.describe('ADR-0037 mobile composer and copy', () => {
     await expectMobileContract(page);
 
     const marker = `MOBILE_COPY_${Date.now()}`;
-    await page.evaluate((value) => {
-      window.app.terminal.writeln(value);
-    }, marker);
-    await page.waitForFunction((value) => {
-      const term = window.app && window.app.terminal;
-      if (!term) return false;
-      const buffer = term.buffer.active;
-      for (let i = 0; i < buffer.length; i++) {
-        const line = buffer.getLine(i);
-        if (line && line.translateToString(true).includes(value)) return true;
-      }
-      return false;
-    }, marker);
+    // Write the marker and wait for xterm to FINISH PARSING it (the write
+    // callback fires once the data is in the buffer). This is deterministic;
+    // the previous writeln() + 5s waitForFunction buffer-poll flaked on slow
+    // Windows WebKit CI runners.
+    await page.evaluate((value) => new Promise((resolve) => {
+      window.app.terminal.write(value + '\r\n', () => resolve());
+    }), marker);
 
     await page.evaluate(() => {
       window.__mobileCopiedText = null;
