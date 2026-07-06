@@ -1,6 +1,23 @@
 // @ts-check
 const { defineConfig, devices } = require('@playwright/test');
 
+// iOS device profiles for the mobile input / flicker work (ADR-0037). Edge on
+// iOS is WebKit (not Chromium), so these run under Playwright's WebKit engine —
+// the closest automated approximation to the real target. iPhone 16 is NOT in
+// the Playwright device registry, so it is an explicit descriptor; iPad (gen 11)
+// is built-in. Both need `npx playwright install webkit`.
+//   Verify keys: node -e "console.log(Object.keys(require('@playwright/test').devices).filter(k=>/iphone|ipad/i.test(k)).join('\n'))"
+const iPhone16 = {
+  browserName: 'webkit',
+  viewport: { width: 393, height: 852 },
+  deviceScaleFactor: 3,
+  isMobile: true,
+  hasTouch: true,
+};
+const iPhone16Landscape = { ...iPhone16, viewport: { width: 852, height: 393 } };
+const iPad11 = { ...devices['iPad (gen 11)'], browserName: 'webkit' };
+const iPad11Landscape = { ...devices['iPad (gen 11) landscape'], browserName: 'webkit' };
+
 module.exports = defineConfig({
   testDir: './tests',
   fullyParallel: false,
@@ -186,6 +203,28 @@ module.exports = defineConfig({
       name: 'restart',
       testMatch: '20-server-restart.spec.js',
       timeout: 120000,
+    },
+    // iOS mobile-input / flicker suite on WebKit (approximates Edge-on-iOS).
+    // Specs 77-79. Service workers allowed so the PWA/offline paths can run.
+    {
+      name: 'ios-iphone16',
+      testMatch: /7[7-9]-.*\.spec\.js/,
+      use: { ...iPhone16, serviceWorkers: 'allow' },
+    },
+    {
+      name: 'ios-iphone16-landscape',
+      testMatch: /79-.*\.spec\.js/,
+      use: { ...iPhone16Landscape, serviceWorkers: 'allow' },
+    },
+    {
+      name: 'ios-ipad11',
+      testMatch: /7[7-9]-.*\.spec\.js/,
+      use: { ...iPad11, serviceWorkers: 'allow' },
+    },
+    {
+      name: 'ios-ipad11-landscape',
+      testMatch: /79-.*\.spec\.js/,
+      use: { ...iPad11Landscape, serviceWorkers: 'allow' },
     },
   ],
 });

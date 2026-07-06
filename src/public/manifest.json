@@ -51,14 +51,14 @@
     {
       "src": "/screenshot-wide.png",
       "sizes": "1280x720",
-      "type": "image/svg+xml",
+      "type": "image/png",
       "form_factor": "wide",
       "label": "ai-or-die Interface"
     },
     {
       "src": "/screenshot-narrow.png",
       "sizes": "540x720",
-      "type": "image/svg+xml",
+      "type": "image/png",
       "form_factor": "narrow",
       "label": "ai-or-die Mobile"
     }

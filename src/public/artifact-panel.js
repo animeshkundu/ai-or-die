@@ -20,6 +20,7 @@
   const SDK_SOURCE_IN = 'ai-or-die-artifact-sdk';   // messages FROM the iframe
   const HOST_SOURCE_OUT = 'ai-or-die-artifact-host'; // messages TO the iframe
   const STORE_KEY = 'ai-or-die:artifact-panel:layout';
+  const PHONE_MQ = '(max-width:640px)';
 
   const MIN_W = 320;
   const MIN_H = 240;
@@ -60,6 +61,7 @@
 
       this._layout = this._loadLayout();
       this._buildDom();
+      this._wirePhoneMode();
       this._applyLayout();
       this._minimized = !!this._layout.minimized;
       this._applyMinimized();
@@ -82,6 +84,7 @@
       return {};
     }
     _saveLayout() {
+      if (this._isPhone()) return;
       try {
         window.localStorage.setItem(STORE_KEY, JSON.stringify({
           left: this._layout.left,
@@ -91,6 +94,39 @@
           minimized: this._minimized,
         }));
       } catch (_) { /* non-fatal */ }
+    }
+
+    _isPhone() {
+      return !!(typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(PHONE_MQ).matches);
+    }
+
+    _wirePhoneMode() {
+      if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+      const mql = window.matchMedia(PHONE_MQ);
+      this._phoneMql = mql;
+      this._onPhoneChange = (e) => {
+        const matches = !!(e && typeof e.matches === 'boolean' ? e.matches : mql.matches);
+        if (matches) {
+          this._cancelPointerInteraction();
+          this._clearInlineGeometry();
+        } else {
+          this._applyLayout();
+          this._clampToBounds();
+        }
+      };
+      if (typeof mql.addEventListener === 'function') mql.addEventListener('change', this._onPhoneChange);
+      else if (typeof mql.addListener === 'function') mql.addListener(this._onPhoneChange);
+      if (mql.matches) this._clearInlineGeometry();
+    }
+
+    _clearInlineGeometry() {
+      if (!this.el) return;
+      this.el.style.left = '';
+      this.el.style.top = '';
+      this.el.style.right = '';
+      this.el.style.bottom = '';
+      this.el.style.width = '';
+      this.el.style.height = '';
     }
 
     _buildDom() {
@@ -167,6 +203,10 @@
 
     // ---- floating-window geometry ----------------------------------------
     _applyLayout() {
+      if (this._isPhone()) {
+        this._clearInlineGeometry();
+        return;
+      }
       const L = this._layout;
       if (typeof L.width === 'number') this.el.style.width = clampNumber(L.width, MIN_W, 4000) + 'px';
       if (typeof L.height === 'number') this.el.style.height = clampNumber(L.height, MIN_H, 4000) + 'px';
@@ -186,6 +226,7 @@
     // live panel size, then persists the corrected value. Safe to call when the
     // panel is visible (a hidden panel measures 0x0, so we skip then).
     _clampToBounds() {
+      if (this._isPhone()) return;
       const L = this._layout;
       if (typeof L.left !== 'number' || typeof L.top !== 'number') return;
       if (this.el.hidden) return;
@@ -211,10 +252,20 @@
       return { width: wr.width, height: wr.height };
     }
 
+    _cancelPointerInteraction() {
+      if (this._dragCleanup) { try { this._dragCleanup(); } catch (_) { /* ignore */ } this._dragCleanup = null; }
+      if (this._resizeCleanup) { try { this._resizeCleanup(); } catch (_) { /* ignore */ } this._resizeCleanup = null; }
+    }
+
     _wireDrag(handle) {
       let startX = 0, startY = 0, originLeft = 0, originTop = 0, dragging = false;
       const onMove = (e) => {
         if (!dragging) return;
+        if (this._isPhone()) {
+          dragging = false;
+          this._cancelPointerInteraction();
+          return;
+        }
         const p = this._point(e);
         const b = this._bounds();
         const rect = this.el.getBoundingClientRect();
@@ -236,6 +287,7 @@
         this._saveLayout();
       };
       handle.addEventListener('mousedown', (e) => {
+        if (this._isPhone()) return;
         // Ignore drags that start on a header button.
         if (e.target && e.target.closest && e.target.closest('.artifact-panel__btn')) return;
         e.preventDefault();
@@ -265,6 +317,11 @@
       let startX = 0, startY = 0, originW = 0, originH = 0, resizing = false;
       const onMove = (e) => {
         if (!resizing) return;
+        if (this._isPhone()) {
+          resizing = false;
+          this._cancelPointerInteraction();
+          return;
+        }
         const p = this._point(e);
         const b = this._bounds();
         const rect = this.el.getBoundingClientRect();
@@ -288,6 +345,7 @@
         this._saveLayout();
       };
       handle.addEventListener('mousedown', (e) => {
+        if (this._isPhone()) return;
         e.preventDefault();
         e.stopPropagation();
         const p = this._point(e);
@@ -886,6 +944,10 @@
     destroy() {
       window.removeEventListener('message', this._onWindowMessage);
       if (this._onWindowResize) window.removeEventListener('resize', this._onWindowResize);
+      if (this._phoneMql && this._onPhoneChange) {
+        if (typeof this._phoneMql.removeEventListener === 'function') this._phoneMql.removeEventListener('change', this._onPhoneChange);
+        else if (typeof this._phoneMql.removeListener === 'function') this._phoneMql.removeListener(this._onPhoneChange);
+      }
       this._teardownSse();
       if (this._dragCleanup) { try { this._dragCleanup(); } catch (_) { /* ignore */ } this._dragCleanup = null; }
       if (this._resizeCleanup) { try { this._resizeCleanup(); } catch (_) { /* ignore */ } this._resizeCleanup = null; }

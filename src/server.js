@@ -1130,7 +1130,7 @@ class ClaudeCodeWebServer {
       // default route matching (case-insensitive routing), so every form that
       // reaches the upload handler is exempt from the ~100kb global parser.
       const p = req.path.replace(/\/+$/, '').toLowerCase() || '/';
-      if (p === '/api/files/upload') return next();
+      if (p === '/api/files/upload' || p === '/api/images/upload') return next();
       return _globalJsonParser(req, res, next);
     });
     
@@ -3083,6 +3083,25 @@ class ClaudeCodeWebServer {
     //     per spec ("user shell config is sacrosanct" applies to .gitignore
     //     too — we don't want to silently introduce a new tracked-by-default
     //     side effect on the user's repo).
+    // POST /api/images/upload — image paste/drop/pick upload (base64 JSON).
+    // Images go over HTTP (not the WS image_upload path) so a real photo's
+    // base64 (~5.5 MB) is not force-closed by the 1 MiB WS JSON guard. Mirrors
+    // handleImageUpload's pipeline via the shared _persistImageUpload core and
+    // returns the temp file path the client injects into the terminal.
+    this.app.post('/api/images/upload', express.json({ limit: '20mb' }), async (req, res) => {
+      const { sessionId, base64, mimeType, fileName, caption } = req.body || {};
+      if (!sessionId) return res.status(400).json({ error: 'sessionId is required' });
+      const session = this.claudeSessions.get(sessionId);
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      try {
+        const result = await this._persistImageUpload(session, { base64, mimeType, fileName, caption });
+        return res.json({ filePath: result.filePath, mimeType, size: result.size });
+      } catch (error) {
+        if (!error.userMessage) console.error('Image HTTP upload error:', error);
+        return res.status(error.status || 500).json({ error: error.userMessage || 'Failed to save image' });
+      }
+    });
+
     // Route parser limit is sized for base64 of the 10 MB decoded cap
     // (~14 MB) plus the small JSON envelope. The decoded-size guard below
     // (buffer.length > 10 MB) remains the real per-file cap. This parser is
@@ -7281,79 +7300,62 @@ class ClaudeCodeWebServer {
     }
 
     try {
-      // Rate limit: max 5 image uploads per minute per session
-      if (!session._imageUploadTimestamps) {
-        session._imageUploadTimestamps = [];
-      }
-      const now = Date.now();
-      session._imageUploadTimestamps = session._imageUploadTimestamps.filter(
-        ts => now - ts < 60000
-      );
-      if (session._imageUploadTimestamps.length >= 5) {
-        this.sendToWebSocket(wsInfo.ws, {
-          type: 'image_upload_error',
-          message: 'Rate limit exceeded: maximum 5 image uploads per minute.'
-        });
-        return;
-      }
-      session._imageUploadTimestamps.push(now);
-
-      // FIFO cap: max 1000 temp images per session
-      if (!session.tempImages) {
-        session.tempImages = [];
-      }
-      while (session.tempImages.length >= 1000) {
-        // Remove oldest by created date (O(n) scan instead of sort)
-        let oldestIdx = 0;
-        for (let i = 1; i < session.tempImages.length; i++) {
-          if (session.tempImages[i].created < session.tempImages[oldestIdx].created) oldestIdx = i;
-        }
-        const oldest = session.tempImages[oldestIdx];
-        try { fs.unlinkSync(oldest.path); } catch { /* ignore */ }
-        session.tempImages.splice(oldestIdx, 1);
-      }
-
-      // Validate base64 data
-      if (!data.base64 || typeof data.base64 !== 'string') {
-        this.sendToWebSocket(wsInfo.ws, {
-          type: 'image_upload_error',
-          message: 'Missing image data'
-        });
-        return;
-      }
-      if (data.base64.length > 5.5 * 1024 * 1024) {
-        this.sendToWebSocket(wsInfo.ws, {
-          type: 'image_upload_error',
-          message: 'Image too large (max 4MB file size)'
-        });
-        return;
-      }
-
-      // Validate MIME type
-      const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-      if (!allowedMimeTypes.includes(data.mimeType)) {
-        this.sendToWebSocket(wsInfo.ws, {
-          type: 'image_upload_error',
-          message: 'Unsupported image format. Allowed: PNG, JPEG, GIF, WebP'
-        });
-        return;
-      }
-
-      const filePath = await this.saveImageToTemp(session, data);
-
+      const result = await this._persistImageUpload(session, data);
       this.sendToWebSocket(wsInfo.ws, {
         type: 'image_upload_complete',
-        filePath: filePath,
+        filePath: result.filePath,
         mimeType: data.mimeType,
-        size: Buffer.byteLength(data.base64, 'base64')
+        size: result.size
       });
     } catch (error) {
-      console.error('Image upload error:', error);
+      if (!error.userMessage) console.error('Image upload error:', error);
       this.sendToWebSocket(wsInfo.ws, {
         type: 'image_upload_error',
-        message: 'Failed to save image: ' + error.message
+        message: error.userMessage || ('Failed to save image: ' + error.message)
       });
     }
+  }
+
+  // Shared image-persist core used by BOTH the WS image_upload path and the
+  // HTTP POST /api/images/upload path. Images go over HTTP so a real photo's
+  // base64 (up to ~5.5 MB) does not blow past the 1 MiB WS JSON guard
+  // (MAX_WS_MESSAGE_BYTES), which would force-close the socket with 1009.
+  // Throws an Error carrying `.status` (HTTP) + `.userMessage` on failure.
+  async _persistImageUpload(session, data) {
+    const fail = (status, userMessage) => {
+      const e = new Error(userMessage); e.status = status; e.userMessage = userMessage; return e;
+    };
+    // Rate limit: max 5 image uploads per minute per session
+    if (!session._imageUploadTimestamps) session._imageUploadTimestamps = [];
+    const now = Date.now();
+    session._imageUploadTimestamps = session._imageUploadTimestamps.filter(ts => now - ts < 60000);
+    if (session._imageUploadTimestamps.length >= 5) {
+      throw fail(429, 'Rate limit exceeded: maximum 5 image uploads per minute.');
+    }
+    session._imageUploadTimestamps.push(now);
+
+    // FIFO cap: max 1000 temp images per session
+    if (!session.tempImages) session.tempImages = [];
+    while (session.tempImages.length >= 1000) {
+      let oldestIdx = 0;
+      for (let i = 1; i < session.tempImages.length; i++) {
+        if (session.tempImages[i].created < session.tempImages[oldestIdx].created) oldestIdx = i;
+      }
+      const oldest = session.tempImages[oldestIdx];
+      try { fs.unlinkSync(oldest.path); } catch { /* ignore */ }
+      session.tempImages.splice(oldestIdx, 1);
+    }
+
+    // Validate base64 data, size, and MIME type
+    if (!data.base64 || typeof data.base64 !== 'string') throw fail(400, 'Missing image data');
+    if (data.base64.length > 5.5 * 1024 * 1024) throw fail(413, 'Image too large (max 4MB file size)');
+    const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+    if (!allowedMimeTypes.includes(data.mimeType)) {
+      throw fail(415, 'Unsupported image format. Allowed: PNG, JPEG, GIF, WebP');
+    }
+
+    const filePath = await this.saveImageToTemp(session, data);
+    return { filePath, size: Buffer.byteLength(data.base64, 'base64') };
   }
 
   // Thin shim for the legacy base64-JSON voice_upload path. The 'Missing audio

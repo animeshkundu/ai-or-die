@@ -291,6 +291,54 @@ jobs:
             playwright-report/
           retention-days: 14
 
+  # iOS mobile-input / flicker suite on the WebKit engine (Edge on iOS = WebKit,
+  # ADR-0037). Specs 77-79 across iPhone 16 + iPad gen 11, portrait + landscape.
+  test-browser-ios-webkit:
+    runs-on: ${{ matrix.os }}
+    needs: prewarm-models
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/AppData/Local/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright WebKit
+        # WebKit engine (closest to iOS Edge). Retry: the browser CDN download
+        # flakes intermittently. bash works on ubuntu and Windows (Git Bash).
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            npx playwright install webkit --with-deps && exit 0
+            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
+          done
+          exit 1
+      - name: Run iOS input suite (iPhone 16, WebKit)
+        run: npx playwright test --config e2e/playwright.config.js --project ios-iphone16 --project ios-iphone16-landscape
+      - name: Run iOS input suite (iPad gen 11, WebKit)
+        run: npx playwright test --config e2e/playwright.config.js --project ios-ipad11 --project ios-ipad11-landscape
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-ios-webkit-${{ matrix.os }}
+          path: |
+            e2e/test-results/
+            playwright-report/
+          retention-days: 14
+
   test-browser-visual:
     runs-on: ${{ matrix.os }}
     needs: prewarm-models

@@ -238,6 +238,11 @@
     background-color: transparent !important;
     overflow-y: auto !important;
     overflow-x: hidden !important;
+    /* iOS momentum scrolling for terminal scrollback (matches the keys panel and
+       modals); contain overscroll so dragging past the top/bottom doesn't chain
+       to the page and trigger pull-to-refresh / bounce. */
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
 }
 
 .xterm .xterm-screen {

@@ -25,6 +25,17 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
     <link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png">
     <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+    <!-- iOS PWA splash screens (apple-touch-startup-image). Device-gated by
+         media query. iPhone 16 (393x852 @3x), iPad gen 11 (820x1180 @2x).
+         Regenerate with: node scripts/gen-splash.js  (see ADR-0037) -->
+    <link rel="apple-touch-startup-image" href="/splash/iphone16-portrait.png"
+          media="screen and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
+    <link rel="apple-touch-startup-image" href="/splash/iphone16-landscape.png"
+          media="screen and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)">
+    <link rel="apple-touch-startup-image" href="/splash/ipad11-portrait.png"
+          media="screen and (device-width: 820px) and (device-height: 1180px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
+    <link rel="apple-touch-startup-image" href="/splash/ipad11-landscape.png"
+          media="screen and (device-width: 820px) and (device-height: 1180px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)">
     <meta name="msapplication-TileColor" content="#161b22">
     <meta name="msapplication-TileImage" content="/icon-144.png">
     
@@ -86,6 +97,7 @@
     <link rel="stylesheet" href="components/artifact-panel.css">
     <link rel="stylesheet" href="components/bottom-nav.css">
     <link rel="stylesheet" href="components/extra-keys.css">
+    <link rel="stylesheet" href="components/keys-panel.css">
     <link rel="stylesheet" href="mobile.css">
     <link rel="stylesheet" href="style.css">
     <!-- Loaded last: PWA standalone safe-area overrides win over component CSS. -->
@@ -255,6 +267,7 @@
                 <button id="sessionsBtnMobile" class="mobile-menu-btn">Sessions</button>
                 <button id="closeSessionBtnMobile" class="mobile-menu-btn btn-danger" style="display: none;">Close Session</button>
                 <button id="reconnectBtnMobile" class="mobile-menu-btn" disabled>Reconnect</button>
+                <button id="attachImageBtnMobile" class="mobile-menu-btn">Attach image</button>
                 <button id="clearBtnMobile" class="mobile-menu-btn">Clear Terminal</button>
                 <button id="settingsBtnMobile" class="mobile-menu-btn">Settings</button>
             </div>
@@ -285,6 +298,8 @@
                     </div>
                     <textarea id="inputOverlayText" class="input-overlay-textarea"
                               rows="3" placeholder="Type your response..."
+                              autocorrect="off" autocapitalize="none" autocomplete="off"
+                              spellcheck="false" inputmode="text"
                               aria-label="Type-ahead input for terminal"></textarea>
                     <div class="input-overlay-footer">
                         <span class="input-overlay-charcount" id="inputCharCount">0</span>
@@ -852,7 +867,10 @@
     <script src="voice-handler.js"></script>
     <script src="voice-frame.js"></script>
     <script src="command-palette.js"></script>
+    <script src="key-encoder.js"></script>
+    <script src="terminal-copy.js"></script>
     <script src="extra-keys.js"></script>
+    <script src="keys-panel.js"></script>
     <script src="input-overlay.js"></script>
     <script src="join-repaint.js"></script>
     <script src="terminal-snapshot-cache.js"></script>
