@@ -38,7 +38,10 @@ The conversation *read* surface is a new durable turn-stream over the JSONL (`re
 - **Timeout fails open interactively too (confirmed).** A `PreToolUse` hook killed at its `timeout` lets the tool run. ⇒ the blocking hook MUST run its own watchdog and **self-return `deny` before the host ceiling** (and deny immediately when no viewer is connected) — never let Claude's timeout end the wait, since that ends it in *allow*. A high `timeout` (7200 accepted) buys the human time; the hook owns the deadline.
 - **`ExitPlanMode` + `AskUserQuestion` each fire `PreToolUse` THEN `PermissionRequest`** with identical `tool_input` (`plan`; `questions[].{question,header,options[{label,description}],multiSelect}`). **Bind on `PreToolUse`** (earliest, before the decision UI).
 
-**Negative / risks**
+**Resolved (Origin/CSRF hardening, 2026-07-07):**
+- **The control plane is Origin-pinned to the server's OWN public origins**, not a shared suffix. A 3-lab adversarial review (codex + gemini ×2) found two Criticals in a first-cut allowlist — trusting a bare `*.ts.net`/`*.devtunnels.ms` suffix (any tenant can provision under those), and trusting the client `Host` header for same-origin (a DNS-rebinding bypass). Shipped fix (`src/server.js` `_isAllowedOrigin`): (i) exact-pin to `_trustedControlOrigins()` = the live `tunnelManager.publicUrl` + `meshManager.getStatus().publicUrl` (safe because the public host is unreachable until its URL is scraped, so "deny until known" has no real gap); (ii) never read the `Host` header; (iii) Origin-gate **every** control method — mutations AND reads — so cross-origin GET exfil (terminal output / history / pending decisions) is closed even under `--no-auth`; (iv) LAN access allows only the server's OWN interface addresses (`_ownLanHostnames()` via `os.networkInterfaces()`), not blanket RFC-1918 (which was a lateral keystroke-injection vector on shared Wi-Fi). No-Origin callers (the decision hook, curl, native apps) always pass; `AIORDIE_ALLOWED_ORIGINS` covers non-tunnel public deployments. Reviewed **GO-final**.
+
+
 - Depends on Claude Code hook semantics (undocumented timeout ceiling; cross-repo github-router coupling).
-- New durable turn-stream layer + auth/Origin/CSRF hardening on the phone-facing routes are real work (not reuse).
+- New durable turn-stream layer is real work (not reuse). Origin/CSRF hardening on the phone-facing routes + WS is **done** (see Resolved above).
 - Coverage gap: folder-trust and in-shell sub-prompts aren't hook-interceptable → raw-terminal fallback (rare).
