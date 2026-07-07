@@ -42,6 +42,11 @@ async function startMobileMode(page) {
       && document.body.classList.contains('mobile-mode-active')
       && !!(window.MobileMode && window.MobileMode.getController && window.MobileMode.getController());
   }, null, { timeout: 20000 });
+  await page.waitForFunction(() => {
+    const controller = window.MobileMode && window.MobileMode.getController && window.MobileMode.getController();
+    const sessionId = window.app && window.app.currentClaudeSessionId;
+    return !!(controller && sessionId && controller.currentSessionId === String(sessionId));
+  }, null, { timeout: 20000 });
 }
 
 async function createBoundTranscriptSession(name) {
@@ -62,6 +67,41 @@ async function createBoundTranscriptSession(name) {
 function appendJsonl(file, records) {
   const text = records.map((record) => JSON.stringify(record)).join('\n') + '\n';
   fs.appendFileSync(file, text, 'utf8');
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForMobileSession(page, sessionId) {
+  await page.waitForFunction((sid) => {
+    return window.app && window.app.currentClaudeSessionId === sid
+      && window.MobileMode && window.MobileMode.getController
+      && window.MobileMode.getController().currentSessionId === sid;
+  }, sessionId, { timeout: 20000 });
+}
+
+async function postControlDecision(sessionId, body) {
+  const response = await fetch(url + '/api/control/sessions/' + encodeURIComponent(sessionId) + '/decision', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error('decision create failed: HTTP ' + response.status + ' ' + await response.text());
+  return response.json();
+}
+
+async function awaitDecisionAnswer(decisionId) {
+  const response = await fetch(url + '/api/control/decisions/' + encodeURIComponent(decisionId) + '/await?timeoutMs=10000');
+  if (!response.ok) throw new Error('decision await failed: HTTP ' + response.status + ' ' + await response.text());
+  return response.json();
+}
+
+function waitForDecisionAnswerRequest(page, decisionId) {
+  return page.waitForRequest((request) => {
+    return request.method() === 'POST'
+      && request.url().includes('/api/control/decisions/' + encodeURIComponent(decisionId) + '/answer');
+  }, { timeout: 20000 });
 }
 
 test.describe('Mobile mode client shell', () => {
@@ -150,6 +190,72 @@ test.describe('Mobile mode client shell', () => {
     await expect(approve).not.toHaveClass(/primary/);
     const destructiveAttr = await approve.getAttribute('data-destructive');
     expect(destructiveAttr).toBe('true');
+  });
+
+  test('answers real Channel-1 mobile decisions without executing command HTML', async ({ page }) => {
+    server.claudeSessions.clear();
+    server._stickyJsonl.clear();
+
+    const xssCommand = 'rm -rf build && <img src=x onerror="window.__xssd=1">';
+    const { sessionId } = await createBoundTranscriptSession('Mobile Channel-1 decisions');
+    const firstEventsRequest = page.waitForRequest((request) => request.url().includes('/api/control/events?'), { timeout: 20000 });
+    await startMobileMode(page);
+    await firstEventsRequest;
+    await waitForMobileSession(page, sessionId);
+
+    const toolDecision = await postControlDecision(sessionId, {
+      kind: 'tool_approval',
+      tool: 'Bash',
+      command: xssCommand,
+      cwd: 'C:\\Users\\anikundu\\Software\\ai-or-die',
+    });
+    const toolDecisionId = toolDecision.decisionId;
+
+    const permissionSheet = page.locator('[data-testid="mobile-permission-sheet"]');
+    await expect(permissionSheet).toHaveClass(/active/);
+    await expect(permissionSheet).toHaveAttribute('aria-hidden', 'false');
+    await expect(permissionSheet).toHaveAttribute('data-decision-id', toolDecisionId);
+    await expect(page.locator('[data-mobile-needs-pill]')).toHaveCSS('opacity', '1');
+    await expect(permissionSheet.locator('[data-mobile-permission-command]')).toHaveText(xssCommand);
+    await expect(permissionSheet.locator('[data-mobile-permission-cwd]')).toHaveText('C:\\Users\\anikundu\\Software\\ai-or-die');
+    await expect(permissionSheet.locator('img[src="x"]')).toHaveCount(0);
+    await expect(await page.evaluate(() => window.__xssd)).toBeUndefined();
+
+    const approve = page.locator('[data-testid="mobile-approve-permission"]');
+    await expect(approve).toHaveClass(/danger/);
+    await expect(approve).not.toHaveClass(/primary/);
+    await expect(approve).toHaveAttribute('data-destructive', 'true');
+
+    const toolAwait = awaitDecisionAnswer(toolDecisionId);
+    await delay(20);
+    const toolAnswerRequest = waitForDecisionAnswerRequest(page, toolDecisionId);
+    await approve.click();
+    const toolRequest = await toolAnswerRequest;
+    expect(toolRequest.postDataJSON()).toEqual({ choice: 'accept' });
+    await expect(permissionSheet).not.toHaveClass(/active/);
+    await expect(await toolAwait).toEqual({ answered: true, choice: 'accept' });
+
+    const planText = '### Plan\n- [ ] Reject this mobile-mode plan\n- [ ] Keep Channel-1 first-answer-wins';
+    const planDecision = await postControlDecision(sessionId, {
+      kind: 'plan_approval',
+      plan: planText,
+    });
+    const planDecisionId = planDecision.decisionId;
+
+    const planSheet = page.locator('[data-testid="mobile-plan-sheet"]');
+    await expect(planSheet).toHaveClass(/active/);
+    await expect(planSheet).toHaveAttribute('aria-hidden', 'false');
+    await expect(planSheet).toHaveAttribute('data-decision-id', planDecisionId);
+    await expect(planSheet.locator('[data-mobile-plan-doc]')).toContainText('Reject this mobile-mode plan');
+
+    const planAwait = awaitDecisionAnswer(planDecisionId);
+    await delay(20);
+    const planAnswerRequest = waitForDecisionAnswerRequest(page, planDecisionId);
+    await planSheet.locator('[data-mobile-reject-plan]').click();
+    const planRequest = await planAnswerRequest;
+    expect(planRequest.postDataJSON()).toEqual({ choice: 'reject' });
+    await expect(await planAwait).toEqual({ answered: true, choice: 'reject' });
+    await expect(planSheet).not.toHaveClass(/active/);
   });
 
   test('renders the real turn stream tool card without executing tool-result HTML', async ({ page }) => {

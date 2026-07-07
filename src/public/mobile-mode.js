@@ -6,12 +6,12 @@
  * Conversation data is read from the control-plane semantic turn stream:
  *   {id, kind:'user-text'|'assistant-text'|'tool-call'|'tool-result'|
  *    'thinking', text?, thinking?, toolUseId?, name?, input?, content?, isError?}
- * Decision sheets remain locally rendered until the hook decision channel lands.
+ * Decision sheets are rendered from the structured Channel-1 decision store.
  */
 (function () {
   var controller = null;
   var TURN_PAGE_LIMIT = 200;
-  var CONTROL_EVENT_KINDS = 'turn_ended,became_busy,became_idle,waiting_input';
+  var CONTROL_EVENT_KINDS = 'turn_ended,became_busy,became_idle,waiting_input,decision_pending';
   var CONTROL_EVENTS_TIMEOUT_MS = 25000;
   var SESSION_WATCH_MS = 500;
   var EVENT_RETRY_MS = 1200;
@@ -61,6 +61,7 @@
     this.statusText = null;
     this.modeLabel = null;
     this.needsPill = null;
+    this.needsPillLabel = null;
     this.backdrop = null;
     this.sheets = [];
     this.composerText = null;
@@ -96,7 +97,13 @@
     this._eventRetryTimer = null;
     this._messageLoadInFlight = false;
     this._messageLoadQueued = false;
+    this._decisionLoadInFlight = false;
+    this._decisionLoadQueued = false;
+    this._decisionAnswerInFlight = false;
     this._localItemSeq = 0;
+    this.pendingDecisions = [];
+    this.currentDecision = null;
+    this.currentDecisionSurface = null;
     this.decisionStubs = {
       permission: clone(STUB_DECISIONS.permission),
       plan: clone(STUB_DECISIONS.plan),
@@ -152,7 +159,7 @@
       '        <button class="overflow-btn" type="button" aria-label="More options">\u22ee</button>',
       '      </div>',
       '    </header>',
-      '    <button class="needs-pill" type="button" data-mobile-needs-pill aria-live="polite"><span class="pulse" aria-hidden="true"></span><span>Claude needs you</span></button>',
+      '    <button class="needs-pill" type="button" data-mobile-needs-pill aria-live="polite"><span class="pulse" aria-hidden="true"></span><span data-mobile-needs-label>Claude needs you</span></button>',
       '    <main class="message-list" data-mobile-message-list aria-label="Messages">',
       '      <div class="message-stack" data-mobile-message-stack></div>',
       '    </main>',
@@ -255,6 +262,7 @@
     this.statusText = this.el.querySelector('[data-mobile-status-text]');
     this.modeLabel = this.el.querySelector('[data-mobile-mode-label]');
     this.needsPill = this.el.querySelector('[data-mobile-needs-pill]');
+    this.needsPillLabel = this.el.querySelector('[data-mobile-needs-label]');
     this.backdrop = this.el.querySelector('[data-mobile-backdrop]');
     this.sheets = toArray(this.el.querySelectorAll('[data-surface]'));
     this.composerText = this.el.querySelector('[data-mobile-composer-text]');
@@ -280,7 +288,9 @@
     this.el.addEventListener('click', function (event) {
       var openButton = closest(event.target, '[data-open-surface]', self.el);
       if (openButton) {
-        self.openSurface(openButton.getAttribute('data-open-surface'));
+        var requestedSurface = openButton.getAttribute('data-open-surface');
+        if (requestedSurface === 'composer' && self._hasBlockingDecision()) self._presentNextDecision();
+        else self.openSurface(requestedSurface);
         return;
       }
 
@@ -297,7 +307,8 @@
       }
 
       if (closest(event.target, '[data-mobile-needs-pill]', self.el)) {
-        if (self.state.pendingSurface) self.openSurface(self.state.pendingSurface);
+        if (self.currentDecision) self._presentNextDecision();
+        else if (self.state.pendingSurface) self.openSurface(self.state.pendingSurface);
         return;
       }
 
@@ -317,18 +328,30 @@
       }
 
       if (closest(event.target, '[data-mobile-reject-plan]', self.el)) {
-        self.closeSurface('Claude idle \u00b7 plan rejected');
-        self.addEventChip('Plan rejected');
+        if (self.currentDecision && self.currentDecision.kind === 'plan') {
+          self._answerCurrentDecision({ choice: 'reject' }, 'Claude idle \u00b7 plan rejected');
+        } else {
+          self.closeSurface('Claude idle \u00b7 plan rejected');
+          self.addEventChip('Plan rejected');
+        }
         return;
       }
 
       if (closest(event.target, '[data-mobile-approve-plan]', self.el)) {
-        self.closeSurface('working\u2026 \u00b7 plan approved');
-        self.addEventChip('Plan approved \u00b7 TODO(wire) hook return');
+        if (self.currentDecision && self.currentDecision.kind === 'plan') {
+          self._answerCurrentDecision({ choice: 'accept' }, 'working\u2026 \u00b7 plan approved');
+        } else {
+          self.closeSurface('working\u2026 \u00b7 plan approved');
+          self.addEventChip('Plan approved \u00b7 TODO(wire) hook return');
+        }
         return;
       }
 
       if (closest(event.target, '[data-mobile-comment-plan]', self.el)) {
+        if (self._hasBlockingDecision()) {
+          self.setStatus('needs you \u00b7 approve or reject first');
+          return;
+        }
         self.composerText.value = 'I want to adjust the plan: ';
         self.openSurface('composer');
         return;
@@ -472,8 +495,11 @@
     this.currentSessionId = sessionId;
     this.eventCursor = null;
     this._messageLoadQueued = false;
+    this._decisionLoadQueued = false;
+    this._decisionAnswerInFlight = false;
     this._clearEventRetry();
     this._resetConversationState();
+    this._resetDecisionState();
     this._syncSessionChrome();
     this.setNeedsInput(false);
     this.setStatus('idle');
@@ -481,6 +507,7 @@
     if (!sessionId) return;
     this._pollControlEvents(generation);
     this._scheduleMessageLoad(generation, true);
+    this._scheduleDecisionLoad(generation);
   };
 
   MobileModeController.prototype._currentSessionId = function () {
@@ -548,6 +575,38 @@
     }
   };
 
+  MobileModeController.prototype._scheduleDecisionLoad = function (generation) {
+    if (generation !== this._streamGeneration || !this.currentSessionId) return;
+    this._decisionLoadQueued = true;
+    if (this._decisionLoadInFlight) return;
+    this._drainDecisionLoads(generation);
+  };
+
+  MobileModeController.prototype._drainDecisionLoads = async function (generation) {
+    if (this._decisionLoadInFlight) return;
+    this._decisionLoadInFlight = true;
+    try {
+      while (this._decisionLoadQueued && generation === this._streamGeneration && this.currentSessionId) {
+        this._decisionLoadQueued = false;
+        await this._fetchPendingDecisions(generation);
+      }
+    } catch (err) {
+      if (generation === this._streamGeneration) this._logStreamError('decision load failed', err);
+    } finally {
+      this._decisionLoadInFlight = false;
+      if (this._decisionLoadQueued) this._scheduleDecisionLoad(this._streamGeneration);
+    }
+  };
+
+  MobileModeController.prototype._fetchPendingDecisions = async function (generation) {
+    var sessionId = this.currentSessionId;
+    if (!sessionId) return;
+    var url = '/api/control/sessions/' + encodeURIComponent(sessionId) + '/decisions';
+    var data = await this._fetchJson(url);
+    if (generation !== this._streamGeneration || sessionId !== this.currentSessionId) return;
+    this._syncPendingDecisions(data && data.decisions ? data.decisions : []);
+  };
+
   MobileModeController.prototype._pollControlEvents = async function (generation) {
     if (generation !== this._streamGeneration || !this.currentSessionId) return;
 
@@ -561,6 +620,7 @@
 
       if (data.gaps && data.gaps.length) {
         this._scheduleMessageLoad(generation, true);
+        this._scheduleDecisionLoad(generation);
       }
 
       var events = data.events || [];
@@ -571,6 +631,7 @@
         this._applyControlEvent(events[i]);
       }
       if (sawCurrentSession) this._scheduleMessageLoad(generation, false);
+      if (this._hasBlockingDecision()) this._scheduleDecisionLoad(generation);
       this._pollControlEvents(generation);
     } catch (err) {
       if (generation !== this._streamGeneration) return;
@@ -579,6 +640,7 @@
       this._clearEventRetry();
       this._eventRetryTimer = window.setTimeout(function () {
         self._eventRetryTimer = null;
+        self._scheduleDecisionLoad(generation);
         self._pollControlEvents(generation);
       }, EVENT_RETRY_MS);
     }
@@ -586,17 +648,26 @@
 
   MobileModeController.prototype._applyControlEvent = function (event) {
     if (!event || !event.kind) return;
+    if (event.kind === 'decision_pending') {
+      this._scheduleDecisionLoad(this._streamGeneration);
+      return;
+    }
     if (event.kind === 'became_busy') {
       this.setNeedsInput(false);
-      this.setStatus('working\u2026');
+      if (!this._hasBlockingDecision()) this.setStatus('working\u2026');
     } else if (event.kind === 'waiting_input') {
-      this.state.pendingSurface = 'composer';
       this.setNeedsInput(true);
-      this.setStatus('needs you');
+      if (this._hasBlockingDecision()) {
+        if (this.currentDecision) this.state.pendingSurface = this.currentDecisionSurface || this.currentDecision.kind;
+        this._syncNeedsPill();
+      } else {
+        this.state.pendingSurface = 'composer';
+        this.setStatus('needs you');
+      }
     } else if (event.kind === 'became_idle' || event.kind === 'turn_ended') {
       if (this.state.pendingSurface === 'composer') this.state.pendingSurface = null;
       this.setNeedsInput(false);
-      this.setStatus('idle');
+      if (!this._hasBlockingDecision()) this.setStatus('idle');
     }
   };
 
@@ -677,14 +748,171 @@
     if (window.console && console.warn) console.warn('[mobile-mode] ' + message, err && err.message ? err.message : err);
   };
 
+  MobileModeController.prototype._resetDecisionState = function () {
+    this.pendingDecisions = [];
+    this.currentDecision = null;
+    this.currentDecisionSurface = null;
+    this._decisionAnswerInFlight = false;
+    if (isDecisionSurface(this.state.activeSurface)) this.closeSurface('idle');
+    if (isDecisionSurface(this.state.pendingSurface)) this.state.pendingSurface = null;
+    this._setDecisionAnswering(false);
+    this._syncNeedsPill();
+  };
+
+  MobileModeController.prototype._syncPendingDecisions = function (decisions) {
+    var normalized = [];
+    for (var i = 0; i < (decisions || []).length; i++) {
+      var decision = normalizeDecision(decisions[i]);
+      if (decision) normalized.push(decision);
+    }
+    normalized.sort(function (a, b) {
+      return (a.createdAt - b.createdAt) || String(a.decisionId || '').localeCompare(String(b.decisionId || ''));
+    });
+
+    var currentId = this.currentDecision && this.currentDecision.decisionId;
+    if (currentId) {
+      var current = findDecision(normalized, currentId);
+      this.pendingDecisions = normalized;
+      if (!current) {
+        this._completeDecision(currentId, true, 'idle');
+        return;
+      }
+      this.currentDecision = current;
+      this.currentDecisionSurface = current.kind;
+      this.state.pendingSurface = current.kind;
+      this.renderDecision(current);
+      this._syncNeedsPill();
+      if (this.state.activeSurface === 'composer') this.openSurface(current.kind);
+      return;
+    }
+
+    this.pendingDecisions = normalized;
+    if (!this.pendingDecisions.length) {
+      this._syncNeedsPill();
+      return;
+    }
+    this._presentNextDecision();
+  };
+
+  MobileModeController.prototype._presentNextDecision = function () {
+    if (this.currentDecision) {
+      this.renderDecision(this.currentDecision);
+      this.state.pendingSurface = this.currentDecisionSurface || this.currentDecision.kind;
+      this._syncNeedsPill();
+      this.openSurface(this.state.pendingSurface);
+      return;
+    }
+    var next = this.pendingDecisions && this.pendingDecisions.length ? this.pendingDecisions[0] : null;
+    if (!next) {
+      if (isDecisionSurface(this.state.pendingSurface)) this.state.pendingSurface = this.state.needsInput ? 'composer' : null;
+      this._syncNeedsPill();
+      return;
+    }
+    this.currentDecision = next;
+    this.currentDecisionSurface = next.kind;
+    this.renderDecision(next);
+    this.state.pendingSurface = next.kind;
+    this._syncNeedsPill();
+    this.openSurface(next.kind);
+  };
+
+  MobileModeController.prototype._hasBlockingDecision = function () {
+    return !!(this.currentDecision || (this.pendingDecisions && this.pendingDecisions.length));
+  };
+
+  MobileModeController.prototype._answerCurrentDecision = async function (body, nextStatus) {
+    if (!this.currentDecision || !this.currentDecision.decisionId || this._decisionAnswerInFlight) return false;
+    var decisionId = this.currentDecision.decisionId;
+    this._decisionAnswerInFlight = true;
+    this._setDecisionAnswering(true);
+
+    try {
+      var response = await this._authFetch('/api/control/decisions/' + encodeURIComponent(decisionId) + '/answer', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(body || {})
+      });
+
+      if (response.status === 409 || response.status === 404) {
+        this._completeDecision(decisionId, true, 'idle');
+        this._scheduleDecisionLoad(this._streamGeneration);
+        return true;
+      }
+      if (!response.ok) throw new Error('HTTP ' + response.status + ' for decision answer');
+
+      var data = null;
+      try { data = await response.json(); } catch (_) { data = null; }
+      if (data && data.ok === true) {
+        this._completeDecision(decisionId, false, nextStatus || 'idle');
+        this._scheduleDecisionLoad(this._streamGeneration);
+        return true;
+      }
+      throw new Error('decision answer was not accepted');
+    } catch (err) {
+      if (this.currentDecision && this.currentDecision.decisionId === decisionId) {
+        this._setDecisionAnswering(false);
+        this._decisionAnswerInFlight = false;
+        this.setStatus('needs you \u00b7 answer failed');
+      }
+      this._logStreamError('decision answer failed', err);
+      return true;
+    }
+  };
+
+  MobileModeController.prototype._completeDecision = function (decisionId, quiet, nextStatus) {
+    decisionId = String(decisionId || '');
+    this.pendingDecisions = (this.pendingDecisions || []).filter(function (decision) {
+      return String(decision.decisionId || '') !== decisionId;
+    });
+
+    var wasCurrent = this.currentDecision && String(this.currentDecision.decisionId || '') === decisionId;
+    if (wasCurrent) {
+      var surface = this.currentDecisionSurface || this.currentDecision.kind;
+      this.currentDecision = null;
+      this.currentDecisionSurface = null;
+      this._decisionAnswerInFlight = false;
+      this._setDecisionAnswering(false);
+      if (this.state.activeSurface === surface) this.closeSurface(quiet ? (nextStatus || 'idle') : nextStatus);
+      else if (this.state.pendingSurface === surface) this.state.pendingSurface = this.state.needsInput ? 'composer' : null;
+    }
+
+    this._syncNeedsPill();
+    this._presentNextDecision();
+  };
+
+  MobileModeController.prototype._setDecisionAnswering = function (answering) {
+    var selectors = [
+      '[data-mobile-deny-permission]',
+      '[data-mobile-approve-permission]',
+      '[data-mobile-reject-plan]',
+      '[data-mobile-approve-plan]',
+      '[data-mobile-send-question]'
+    ];
+    for (var i = 0; i < selectors.length; i++) {
+      var nodes = this.el ? this.el.querySelectorAll(selectors[i]) : [];
+      for (var j = 0; j < nodes.length; j++) nodes[j].disabled = !!answering;
+    }
+    var inputs = this.questionOptions ? this.questionOptions.querySelectorAll('input') : [];
+    for (var k = 0; k < inputs.length; k++) inputs[k].disabled = !!answering;
+  };
+
   MobileModeController.prototype.renderDecision = function (data) {
-    // TODO(wire): Feed this from hook/control decision payloads. Channel-1
-    // allow/deny/answer transport is deliberately absent in this client-shell
-    // increment; buttons only update local UI stubs.
-    if (!data || !data.kind) return;
-    if (data.kind === 'permission') this.renderPermission(data);
-    if (data.kind === 'plan') this.renderPlan(data);
-    if (data.kind === 'question') this.renderQuestion(data);
+    var decision = normalizeDecision(data);
+    if (!decision) return;
+    this._markDecisionSurface(decision.kind, decision.decisionId);
+    if (decision.kind === 'permission') this.renderPermission(decision);
+    if (decision.kind === 'plan') this.renderPlan(decision);
+    if (decision.kind === 'question') this.renderQuestion(decision);
+  };
+
+  MobileModeController.prototype._markDecisionSurface = function (kind, decisionId) {
+    var sheet = this.el && this.el.querySelector('[data-surface="' + kind + '"]');
+    if (!sheet) return;
+    if (decisionId) sheet.setAttribute('data-decision-id', decisionId);
+    else sheet.removeAttribute('data-decision-id');
   };
 
   MobileModeController.prototype.setDecisionStub = function (kind, data) {
@@ -703,9 +931,10 @@
       return;
     }
 
-    if (name === 'permission') this.renderPermission(this.decisionStubs.permission);
-    if (name === 'plan') this.renderPlan(this.decisionStubs.plan);
-    if (name === 'question') this.renderQuestion(this.decisionStubs.question);
+    if (this.currentDecision && this.currentDecision.kind === name) this.renderDecision(this.currentDecision);
+    else if (name === 'permission') this.renderPermission(this.decisionStubs.permission);
+    else if (name === 'plan') this.renderPlan(this.decisionStubs.plan);
+    else if (name === 'question') this.renderQuestion(this.decisionStubs.question);
 
     if (this.state.activeSurface === 'permission' && name !== 'permission') this.stopCountdown();
     this.state.activeSurface = name;
@@ -770,8 +999,12 @@
 
   MobileModeController.prototype.renderPermission = function (data) {
     data = data || this.decisionStubs.permission;
-    this.decisionStubs.permission = merge(clone(this.decisionStubs.permission), data);
-    data = this.decisionStubs.permission;
+    if (!data.decisionId) {
+      var base = clone(this.decisionStubs.permission);
+      if (data && !Object.prototype.hasOwnProperty.call(data, 'destructive')) delete base.destructive;
+      this.decisionStubs.permission = merge(base, data);
+      data = this.decisionStubs.permission;
+    }
 
     var destructive = data.destructive;
     if (destructive == null) destructive = this._isDestructiveCommand(data.command || '');
@@ -790,29 +1023,37 @@
 
   MobileModeController.prototype.renderPlan = function (data) {
     data = data || this.decisionStubs.plan;
+    if (data.decisionId) {
+      this._renderPlanText(data.plan || '');
+      return;
+    }
     this.decisionStubs.plan = merge(clone(this.decisionStubs.plan), data);
     this._renderPlanText(this.decisionStubs.plan.plan || '');
   };
 
   MobileModeController.prototype.renderQuestion = function (data) {
     data = data || this.decisionStubs.question;
-    this.decisionStubs.question = merge(clone(this.decisionStubs.question), data);
-    data = this.decisionStubs.question;
+    if (!data.decisionId) {
+      this.decisionStubs.question = merge(clone(this.decisionStubs.question), data);
+      data = this.decisionStubs.question;
+    }
     this.questionTitle.textContent = data.question || 'Claude has a question';
     clearNode(this.questionOptions);
 
     var options = data.options || [];
     for (var i = 0; i < options.length; i++) {
+      var optionLabel = options[i].label || ('Option ' + (i + 1));
+      var optionValue = options[i].value != null ? options[i].value : optionLabel;
       var label = document.createElement('label');
       label.className = 'option-card' + (i === 0 ? ' is-selected' : '');
       var input = document.createElement('input');
       input.type = 'radio';
       input.name = 'mobileQuestionChoice';
-      input.value = options[i].label || ('Option ' + (i + 1));
+      input.value = String(optionValue);
       input.checked = i === 0;
       var copy = document.createElement('span');
       var strong = document.createElement('strong');
-      strong.textContent = options[i].label || ('Option ' + (i + 1));
+      strong.textContent = optionLabel;
       var desc = document.createElement('span');
       desc.textContent = options[i].description || '';
       copy.appendChild(strong);
@@ -863,6 +1104,10 @@
   MobileModeController.prototype.sendQuestionAnswer = function () {
     var selected = this.questionOptions.querySelector('input[name="mobileQuestionChoice"]:checked');
     var answer = selected ? selected.value : 'No answer';
+    if (this.currentDecision && this.currentDecision.kind === 'question') {
+      this._answerCurrentDecision({ optionValue: answer }, 'Claude idle \u00b7 answered');
+      return;
+    }
     this.closeSurface('Claude idle \u00b7 answered');
     this.addEventChip('Answered question \u00b7 ' + answer + ' \u00b7 TODO(wire) hook return');
   };
@@ -870,6 +1115,10 @@
   MobileModeController.prototype.approvePermission = function () {
     var cmd = this.decisionStubs.permission.command || '';
     this.stopCountdown();
+    if (this.currentDecision && this.currentDecision.kind === 'permission') {
+      this._answerCurrentDecision({ choice: 'accept' }, 'working\u2026 \u00b7 approved');
+      return;
+    }
     this.closeSurface('working\u2026 \u00b7 approved');
     this.addEventChip('Approved \u00b7 TODO(wire) hook return: ' + cmd);
   };
@@ -879,6 +1128,10 @@
     var dismiss = reason === 'dismiss';
     var cmd = this.decisionStubs.permission.command || '';
     this.stopCountdown();
+    if (this.currentDecision && this.currentDecision.kind === 'permission') {
+      this._answerCurrentDecision({ choice: 'reject' }, timeout ? 'Claude idle \u00b7 denied by timeout' : 'Claude idle \u00b7 denied');
+      return;
+    }
     this.closeSurface(timeout ? 'Claude idle \u00b7 denied by timeout' : 'Claude idle \u00b7 denied');
     this.addEventChip((timeout ? 'Denied by timeout' : (dismiss ? 'Denied by dismiss' : 'Denied')) + ' \u00b7 command was not run: ' + cmd);
   };
@@ -949,8 +1202,14 @@
   };
 
   MobileModeController.prototype._syncNeedsPill = function () {
-    var active = !!(this.state.needsInput || isDecisionSurface(this.state.pendingSurface) || isDecisionSurface(this.state.activeSurface));
+    var decisionCount = this.pendingDecisions ? this.pendingDecisions.length : 0;
+    var active = !!(this.state.needsInput || decisionCount || isDecisionSurface(this.state.pendingSurface) || isDecisionSurface(this.state.activeSurface));
     this.body.classList.toggle('has-decision', active);
+    if (this.needsPillLabel) {
+      if (decisionCount > 1) this.needsPillLabel.textContent = decisionCount + ' pending';
+      else if (decisionCount === 1 || isDecisionSurface(this.state.pendingSurface) || isDecisionSurface(this.state.activeSurface)) this.needsPillLabel.textContent = 'Claude needs you';
+      else this.needsPillLabel.textContent = 'Claude needs you';
+    }
   };
 
   MobileModeController.prototype.addUserMessage = function (text) {
@@ -1303,7 +1562,26 @@
   };
 
   MobileModeController.prototype._isDestructiveCommand = function (command) {
-    return /\b(rm\s+-rf|del\s+\/s|rmdir\s+\/s|remove-item\b.*\b-recurse\b|git\s+clean\s+-fd|drop\s+table)\b/i.test(command || '');
+    command = String(command || '');
+    var patterns = [
+      /\brm\s+-[\w-]*[rf][\w-]*[rf]?\b/i,
+      /\bgit\s+reset\s+--hard\b/i,
+      /\bgit\s+clean\s+-[\w-]*[df][\w-]*\b/i,
+      /\bmkfs(?:\.[\w-]+)?\b/i,
+      /\bdd\s+\S+/i,
+      /(^|[^<>])>\s*\S/,
+      /\btruncate\s+-s\s*0\b/i,
+      /\b(shred|wipefs)\b/i,
+      /\b(del|erase)\s+\/s\b/i,
+      /\brmdir\s+\/s\b/i,
+      /\bremove-item\b.*\b-recurse\b/i,
+      /\bdrop\s+table\b/i,
+      /\b(format|diskpart)\b.*\b(clean|delete)\b/i
+    ];
+    for (var i = 0; i < patterns.length; i++) {
+      if (patterns[i].test(command)) return true;
+    }
+    return false;
   };
 
   function init(options) {
@@ -1381,6 +1659,52 @@
     if (Object.prototype.hasOwnProperty.call(item, 'input')) out.input = item.input;
     if (Object.prototype.hasOwnProperty.call(item, 'content')) out.content = item.content;
     if (Object.prototype.hasOwnProperty.call(item, 'isError')) out.isError = !!item.isError;
+    return out;
+  }
+
+  function findDecision(decisions, decisionId) {
+    decisionId = String(decisionId || '');
+    for (var i = 0; i < (decisions || []).length; i++) {
+      if (String(decisions[i].decisionId || '') === decisionId) return decisions[i];
+    }
+    return null;
+  }
+
+  function normalizeDecision(item) {
+    if (!item || typeof item !== 'object') return null;
+    var rawKind = String(item.kind || '');
+    var kind = null;
+    if (rawKind === 'tool_approval' || rawKind === 'permission') kind = 'permission';
+    if (rawKind === 'plan_approval' || rawKind === 'plan') kind = 'plan';
+    if (rawKind === 'choice_question' || rawKind === 'question') kind = 'question';
+    if (!kind) return null;
+
+    var out = { kind: kind };
+    if (rawKind && rawKind !== kind) out.backendKind = rawKind;
+    if (item.decisionId != null) out.decisionId = String(item.decisionId);
+    if (item.sessionId != null) out.sessionId = String(item.sessionId);
+    out.createdAt = Number(item.createdAt) || 0;
+    out.expiresAt = Number(item.expiresAt) || 0;
+
+    if (item.tool != null) out.tool = String(item.tool);
+    if (item.command != null) out.command = String(item.command);
+    if (item.cwd != null) out.cwd = String(item.cwd);
+    if (item.plan != null) out.plan = String(item.plan);
+    if (item.question != null) out.question = String(item.question);
+    if (item.risk != null) out.risk = String(item.risk);
+    if (Object.prototype.hasOwnProperty.call(item, 'destructive')) out.destructive = !!item.destructive;
+
+    var options = Array.isArray(item.options) ? item.options : [];
+    out.options = [];
+    for (var i = 0; i < options.length; i++) {
+      var option = options[i] || {};
+      var label = option.label != null ? String(option.label) : '';
+      if (!label) label = 'Option ' + (i + 1);
+      var normalized = { label: label };
+      if (option.description != null) normalized.description = String(option.description);
+      if (option.value != null) normalized.value = String(option.value);
+      out.options.push(normalized);
+    }
     return out;
   }
 
