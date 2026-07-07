@@ -74,6 +74,101 @@ function collectMessages(ws, type, durationMs = 3000) {
 }
 
 /**
+ * Collect messages of a given type for a duration after the first one arrives.
+ * The listener is installed immediately; firstTimeoutMs gates only the first
+ * arrival so PTY load cannot consume the rate-measurement window.
+ */
+function collectMessagesAfterFirst(ws, type, firstTimeoutMs = 15000, durationMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const collected = [];
+    let collectionTimer = null;
+
+    const firstTimer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for first message type "${type}" after ${firstTimeoutMs}ms`));
+    }, firstTimeoutMs);
+
+    function onMessage(raw, isBinary) {
+      if (isBinary) return;
+      const msg = JSON.parse(raw.toString());
+      if (msg.type !== type) return;
+
+      collected.push(msg);
+      if (!collectionTimer) {
+        clearTimeout(firstTimer);
+        collectionTimer = setTimeout(() => {
+          cleanup();
+          resolve(collected);
+        }, durationMs);
+      }
+    }
+
+    function onClose() {
+      cleanup();
+      reject(new Error(`WebSocket closed while collecting "${type}"`));
+    }
+
+    function cleanup() {
+      clearTimeout(firstTimer);
+      if (collectionTimer) clearTimeout(collectionTimer);
+      ws.removeListener('message', onMessage);
+      ws.removeListener('close', onClose);
+    }
+
+    ws.on('message', onMessage);
+    ws.on('close', onClose);
+  });
+}
+
+/**
+ * Wait until no session_activity for a session has arrived for quietMs. This
+ * synchronizes tests with the server's >1s activity throttle without changing
+ * the post-input assertions.
+ */
+function waitForSessionActivityQuiet(ws, sessionId, quietMs = 1200, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    let quietTimer = null;
+
+    const timeoutTimer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for quiet session_activity window for "${sessionId}" after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    function resetQuietTimer() {
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(() => {
+        cleanup();
+        resolve();
+      }, quietMs);
+    }
+
+    function onMessage(raw, isBinary) {
+      if (isBinary) return;
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === 'session_activity' && msg.sessionId === sessionId) {
+        resetQuietTimer();
+      }
+    }
+
+    function onClose() {
+      cleanup();
+      reject(new Error(`WebSocket closed while waiting for quiet session_activity window for "${sessionId}"`));
+    }
+
+    function cleanup() {
+      clearTimeout(timeoutTimer);
+      if (quietTimer) clearTimeout(quietTimer);
+      ws.removeListener('message', onMessage);
+      ws.removeListener('close', onClose);
+    }
+
+    ws.on('message', onMessage);
+    ws.on('close', onClose);
+    resetQuietTimer();
+  });
+}
+
+/**
  * Send a JSON message over the WebSocket.
  */
 function wsSend(ws, data) {
@@ -1099,12 +1194,15 @@ describe('E2E: Session activity broadcasting', function () {
     // Client B connects but does NOT join any session (lobby state)
     const { ws: wsB } = await connectWs(port);
 
+    await waitForSessionActivityQuiet(wsB, created.sessionId);
+
     // Send input to session A via client A
     const marker = `ACTIVITY_${Date.now()}`;
+    const activityPromise = waitForMessage(wsB, 'session_activity', 15000);
     wsSend(wsA, { type: 'input', data: `echo ${marker}\n` });
 
     // Client B should receive session_activity (not output)
-    const activity = await waitForMessage(wsB, 'session_activity', 5000);
+    const activity = await activityPromise;
     assert.strictEqual(activity.sessionId, created.sessionId);
     assert.strictEqual(activity.sessionName, 'Active Session');
 
@@ -1204,17 +1302,16 @@ describe('E2E: Session activity broadcasting', function () {
     const { ws: wsB } = await connectWs(port);
 
     wsSend(wsA, { type: 'create_session', name: 'Throttle Test' });
-    await waitForMessage(wsA, 'session_created');
+    const created = await waitForMessage(wsA, 'session_created');
     wsSend(wsA, { type: 'start_terminal' });
     await waitForMessage(wsA, 'terminal_started', 15000);
     await waitForMessage(wsB, 'session_started', 5000).catch(() => {});
     await collectMessages(wsA, 'output', 1500);
 
-    // Wait for throttle window to pass from terminal start
-    await new Promise(r => setTimeout(r, 1100));
+    await waitForSessionActivityQuiet(wsB, created.sessionId);
 
     // Start collecting BEFORE sending input so we don't miss early messages
-    const collectPromise = collectMessages(wsB, 'session_activity', 4000);
+    const collectPromise = collectMessagesAfterFirst(wsB, 'session_activity', 15000, 4000);
 
     // Send 10 rapid echo commands (100ms apart)
     for (let i = 0; i < 10; i++) {
@@ -1247,12 +1344,12 @@ describe('E2E: Session activity broadcasting', function () {
     // Drain any session_started that arrived for session 1
     await collectMessages(wsB, 'session_started', 500);
 
-    // Wait for shell prompts to settle and throttle window to pass
-    await new Promise(r => setTimeout(r, 2000));
+    await waitForSessionActivityQuiet(wsB, created1.sessionId);
 
     // Send input to session 1
+    const activityPromise = waitForMessage(wsB, 'session_activity', 15000);
     wsSend(wsA, { type: 'input', data: `echo CROSS_SESSION\n` });
-    const activity = await waitForMessage(wsB, 'session_activity', 5000);
+    const activity = await activityPromise;
     assert.strictEqual(activity.sessionId, created1.sessionId);
 
     wsSend(wsA, { type: 'stop' });
@@ -1326,11 +1423,12 @@ describe('E2E: Session activity broadcasting', function () {
     await closeWs(wsB);
     const { ws: wsC } = await connectWs(port);
 
+    await waitForSessionActivityQuiet(wsC, created.sessionId);
+
     // Send input — new client C should receive activity
-    // Wait for shell prompts to settle and throttle window to pass
-    await new Promise(r => setTimeout(r, 2000));
+    const activityPromise = waitForMessage(wsC, 'session_activity', 15000);
     wsSend(wsA, { type: 'input', data: `echo RECONNECT\n` });
-    const activity = await waitForMessage(wsC, 'session_activity', 5000);
+    const activity = await activityPromise;
     assert.strictEqual(activity.sessionId, created.sessionId);
 
     wsSend(wsA, { type: 'stop' });
@@ -1355,12 +1453,12 @@ describe('E2E: Session activity broadcasting', function () {
     wsSend(wsB, { type: 'leave_session' });
     await waitForMessage(wsB, 'session_left', 5000);
 
-    // Wait long enough for shell prompts to settle and throttle window to pass
-    await new Promise(r => setTimeout(r, 2000));
+    await waitForSessionActivityQuiet(wsB, created.sessionId);
 
     // Send input — B (now in lobby) should receive session_activity
+    const activityPromise = waitForMessage(wsB, 'session_activity', 15000);
     wsSend(wsA, { type: 'input', data: `echo LOBBY\n` });
-    const activity = await waitForMessage(wsB, 'session_activity', 5000);
+    const activity = await activityPromise;
     assert.strictEqual(activity.sessionId, created.sessionId);
 
     wsSend(wsA, { type: 'stop' });
