@@ -204,6 +204,7 @@ class ClaudeCodeWebInterface {
             if (spIdText && spId) { spIdText.textContent = identity; spId.hidden = false; }
         }
         this.setupTerminal();
+        this._setupMobileMode();
         this._setupExtraKeys();
         this._setupOrientationHandler();
         this._setupPwaStandaloneListener();
@@ -950,6 +951,26 @@ class ClaudeCodeWebInterface {
         if (width <= 360) return 12;
         if (width <= 414) return 13;
         return 14;
+    }
+
+    _setupMobileMode() {
+        if (!this.isMobile) return;
+
+        // The new mobile-mode shell is opt-in until the conversation and
+        // decision streams are fully wired and validated.
+        const mobileModeFromUrl = new URLSearchParams(location.search).get('mobileMode') === '1';
+        let mobileModeFromSession = false;
+        try {
+            if (mobileModeFromUrl) sessionStorage.setItem('cc-mobile-mode', '1');
+            mobileModeFromSession = sessionStorage.getItem('cc-mobile-mode') === '1';
+        } catch (_) { /* sessionStorage may be unavailable; URL opt-in still works */ }
+        if (!mobileModeFromUrl && !mobileModeFromSession) return;
+
+        document.body.classList.add('is-mobile');
+
+        if (window.MobileMode && !this.mobileMode) {
+            this.mobileMode = window.MobileMode.init({ app: this, isMobile: true });
+        }
     }
 
     _setupOrientationHandler() {
