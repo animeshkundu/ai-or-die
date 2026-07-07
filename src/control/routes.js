@@ -19,6 +19,7 @@
 //   deps.respond(opts)          -> Promise<object>
 
 const express = require('express');
+const { DecisionStore } = require('./decision-store');
 const { deriveStatus } = require('./session-status');
 
 const DEFAULT_READ_LINES = 80;
@@ -27,6 +28,8 @@ const DEFAULT_MESSAGE_LIMIT = 200;
 const MAX_MESSAGE_LIMIT = 1000;
 const DEFAULT_EVENTS_TIMEOUT_MS = 25000;
 const MAX_EVENTS_TIMEOUT_MS = 60000;
+const DEFAULT_DECISION_AWAIT_TIMEOUT_MS = 25000;
+const MAX_DECISION_AWAIT_TIMEOUT_MS = 60000;
 const ROUTE_IDEMPOTENCY_CAP = 500;
 const DEFAULT_RATE_LIMIT_MAX = 600;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60000;
@@ -189,6 +192,7 @@ function createControlRouter(deps) {
   const routeIdempotency = new Map();
   const rateLimitBuckets = new Map();
   const rateLimit = normalizeRateLimit(deps.rateLimit);
+  const decisionStore = deps.decisionStore || new DecisionStore({ eventBus: deps.eventBus });
 
   router.use((req, res, next) => {
     if (isRateLimitExempt(req) || !rateLimit.max || !rateLimit.windowMs) return next();
@@ -343,6 +347,38 @@ function createControlRouter(deps) {
     }
   });
 
+  // POST /sessions/:id/decision — register a structured mobile-mode decision.
+  router.post('/sessions/:id/decision', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      const body = req.body || {};
+      const out = await routeIdempotent(routeIdempotency, 'decision', id, body.idempotencyKey, () => {
+        const decision = decisionStore.register(id, body);
+        if (deps.eventBus) deps.eventBus.append(id, 'decision_pending', decision);
+        return { decisionId: decision.decisionId };
+      });
+      sendControlResult(res, out);
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // GET /sessions/:id/decisions — currently pending structured decisions.
+  router.get('/sessions/:id/decisions', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      res.json({ decisions: decisionStore.listPending(id) });
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
   // POST /sessions/:id/message — send a user message and optionally await a turn end.
   router.post('/sessions/:id/message', async (req, res, next) => {
     try {
@@ -406,6 +442,45 @@ function createControlRouter(deps) {
       );
       sendControlResult(res, out);
     } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // POST /decisions/:decisionId/answer — structured answer from a human client.
+  router.post('/decisions/:decisionId/answer', async (req, res, next) => {
+    try {
+      const out = decisionStore.answer(req.params.decisionId, req.body || {});
+      res.json(out);
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // GET /decisions/:decisionId/await?timeoutMs= — bounded long-poll for a structured answer.
+  router.get('/decisions/:decisionId/await', async (req, res, next) => {
+    const controller = new AbortController();
+    let responseOpen = true;
+    const onClose = () => {
+      if (responseOpen) controller.abort();
+    };
+    res.once('close', onClose);
+    try {
+      const timeoutMs = clampInt(req.query.timeoutMs, DEFAULT_DECISION_AWAIT_TIMEOUT_MS, 0, MAX_DECISION_AWAIT_TIMEOUT_MS);
+      const out = await decisionStore.awaitAnswer(req.params.decisionId, timeoutMs, { signal: controller.signal });
+      responseOpen = false;
+      res.removeListener('close', onClose);
+      if (!out || out.status === 'missing') {
+        return res.status(404).json({ error: { code: 'DECISION_NOT_FOUND', message: 'Unknown or expired decision' } });
+      }
+      if (out.status === 'canceled') return;
+      if (out.status === 'answered') {
+        return res.json(Object.assign({ answered: true }, out.decision || {}));
+      }
+      const viewers = deps.getSessionViewerCount ? deps.getSessionViewerCount(out.sessionId) : 0;
+      res.json({ answered: false, viewers });
+    } catch (err) {
+      responseOpen = false;
+      res.removeListener('close', onClose);
       sendControlError(res, next, err);
     }
   });

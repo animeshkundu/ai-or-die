@@ -35,6 +35,7 @@ const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
 const KeepaliveManager = require('./keepalive-manager');
 const { ControlEventBus, EVENT_KINDS: CONTROL_EVENT_KINDS } = require('./control/event-bus');
+const { DecisionStore } = require('./control/decision-store');
 const TranscriptBuffer = require('./sticky-note-transcript');
 const { createControlRouter } = require('./control/routes');
 const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, buildArtifactPushPayload, artifactPushEnabledFromEnv } = require('./artifact-review');
@@ -161,6 +162,7 @@ class ClaudeCodeWebServer {
     this.app = express();
     this.claudeSessions = new Map(); // Persistent sessions (claude, codex, or agent)
     this.controlEventBus = new ControlEventBus();
+    this.decisionStore = new DecisionStore({ eventBus: this.controlEventBus });
     this.artifactReviews = new ArtifactReviewStore();
     this._artifactAssetSecret = crypto.randomBytes(32);
     this._artifactAssetSigner = createAssetTokenSigner(this._artifactAssetSecret);
@@ -4237,6 +4239,8 @@ class ClaudeCodeWebServer {
     return {
       sessions: this.claudeSessions,
       eventBus: this.controlEventBus,
+      decisionStore: this.decisionStore,
+      getSessionViewerCount: (id) => this._controlSessionViewerCount(id),
       getMeshPeers: () => this.meshManager ? this.meshManager.getStatus().peers : [],
       getStatusSignal: (id) => this._controlStatusSignal(id),
       readTail: async (id, lines) => this._controlReadTail(id, lines),
@@ -5615,6 +5619,22 @@ class ClaudeCodeWebServer {
     } catch (_) {
       return false;
     }
+  }
+
+  _controlSessionViewerCount(claudeSessionId) {
+    const session = this.claudeSessions.get(claudeSessionId);
+    if (!session || !session.connections) return 0;
+    let count = 0;
+    session.connections.forEach(wsId => {
+      const wsInfo = this.webSocketConnections.get(wsId);
+      if (wsInfo &&
+          wsInfo.claudeSessionId === claudeSessionId &&
+          wsInfo.ws &&
+          wsInfo.ws.readyState === WebSocket.OPEN) {
+        count++;
+      }
+    });
+    return count;
   }
 
   broadcastToSession(claudeSessionId, data) {
@@ -7100,6 +7120,9 @@ class ClaudeCodeWebServer {
     }
     if (this.diskUsageSampleInterval) {
       clearInterval(this.diskUsageSampleInterval);
+    }
+    if (this.decisionStore && typeof this.decisionStore.close === 'function') {
+      this.decisionStore.close();
     }
 
     // Stop memory monitoring to release the interval timer

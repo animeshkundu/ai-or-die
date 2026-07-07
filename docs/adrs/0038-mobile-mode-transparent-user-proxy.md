@@ -2,7 +2,7 @@
 
 ## Status
 
-**Proposed** (2026-07-07). Core mechanism validated in `claude -p`; two interactive-mode unknowns remain before build (see Consequences → Open). Supersedes nothing; extends ADR-0037 (mobile input). Depends on ADR-0026 (Claude bind hook), ADR-0032 (control plane), ADR-0033 (artifact panel). Full plan: `docs/planning/mobile-mode.md`. UI spec: `docs/specs/mobile-mode-ui.md`.
+**Proposed** (2026-07-07). Interactive-PTY gate **RESOLVED** (2026-07-07) — safe to build with a self-deadline, fail-closed hook (see Consequences → Resolved). Supersedes nothing; extends ADR-0037 (mobile input). Depends on ADR-0026 (Claude bind hook), ADR-0032 (control plane), ADR-0033 (artifact panel). Full plan: `docs/planning/mobile-mode.md`. UI spec: `docs/specs/mobile-mode-ui.md`.
 
 ## Context
 
@@ -34,9 +34,9 @@ The conversation *read* surface is a new durable turn-stream over the JSONL (`re
 - Multiple `PreToolUse` hooks **coexist, deny-wins, no deadlock**; a long `timeout` holds the tool cleanly (65s tested).
 - Exact `tool_input` fields: `ExitPlanMode` → `{plan, planFilePath, allowedPrompts?}` (field is **`plan`**, not `planText`); `AskUserQuestion` → `{questions:[{question, header, multiSelect, options:[{label, description}]}]}` (options are **`{label, description}`**, no `value`). JSONL is append-only; auto-compact writes a same-file `compact_boundary` + summary continuation (no rotation in the sample).
 
-**Open (must resolve in a true interactive-PTY spike before build):**
-- Does timeout still **fail open interactively** (it did in `-p`)? — critical; fail-open defeats the gate.
-- Do `ExitPlanMode`/`AskUserQuestion` fire an interceptable `PreToolUse`/`PermissionRequest` **event** in interactive mode (payload shapes proven; hook event routing not)?
+**Resolved (interactive-PTY spike, 2026-07-07):**
+- **Timeout fails open interactively too (confirmed).** A `PreToolUse` hook killed at its `timeout` lets the tool run. ⇒ the blocking hook MUST run its own watchdog and **self-return `deny` before the host ceiling** (and deny immediately when no viewer is connected) — never let Claude's timeout end the wait, since that ends it in *allow*. A high `timeout` (7200 accepted) buys the human time; the hook owns the deadline.
+- **`ExitPlanMode` + `AskUserQuestion` each fire `PreToolUse` THEN `PermissionRequest`** with identical `tool_input` (`plan`; `questions[].{question,header,options[{label,description}],multiSelect}`). **Bind on `PreToolUse`** (earliest, before the decision UI).
 
 **Negative / risks**
 - Depends on Claude Code hook semantics (undocumented timeout ceiling; cross-repo github-router coupling).

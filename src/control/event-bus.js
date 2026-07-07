@@ -55,6 +55,7 @@ const EVENT_KINDS = Object.freeze([
   'crashed',
   'session_created',
   'session_deleted',
+  'decision_pending',
 ]);
 
 class ControlEventBus extends EventEmitter {
