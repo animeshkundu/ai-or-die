@@ -10,6 +10,7 @@
 //   deps.sessions               Map<id, session>  (this.claudeSessions)
 //   deps.getStatusSignal(id)    -> { jsonl, renderedTail, exit, hadOutput }  (server-computed)
 //   deps.readTail(id, lines)    -> Promise<{ text, truncated, source }>
+//   deps.readMessages(id, cursor, limit) -> Promise<{ bound, items, cursor, epoch, reset, more }>
 //   deps.eventBus               ControlEventBus
 //   deps.createSession(opts)    -> Promise<{ sessionId, lifecycle }>
 //   deps.stopSession(id, mode, idempotencyKey) -> Promise<{ stopped, lifecycle }>
@@ -22,6 +23,8 @@ const { deriveStatus } = require('./session-status');
 
 const DEFAULT_READ_LINES = 80;
 const MAX_READ_LINES = 2000;
+const DEFAULT_MESSAGE_LIMIT = 200;
+const MAX_MESSAGE_LIMIT = 1000;
 const DEFAULT_EVENTS_TIMEOUT_MS = 25000;
 const MAX_EVENTS_TIMEOUT_MS = 60000;
 const ROUTE_IDEMPOTENCY_CAP = 500;
@@ -87,6 +90,38 @@ function parseCursor(raw) {
 
 function encodeCursor(cursor) {
   return `${cursor.epoch}:${cursor.seq}`;
+}
+
+function parseTurnCursor(raw) {
+  if (!raw) return undefined;
+  if (typeof raw === 'object') return normalizeTurnCursor(raw);
+  const s = String(raw).trim();
+  if (!s) return undefined;
+
+  if (s[0] === '{') {
+    try { return normalizeTurnCursor(JSON.parse(s)); } catch (_) { return undefined; }
+  }
+
+  if (s.includes(':')) {
+    const idx = s.lastIndexOf(':');
+    const epoch = s.slice(0, idx);
+    const offset = Number(s.slice(idx + 1));
+    if (epoch && Number.isSafeInteger(offset) && offset >= 0) return { epoch, offset };
+  }
+
+  try {
+    const obj = JSON.parse(Buffer.from(s, 'base64').toString('utf8'));
+    return normalizeTurnCursor(obj);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeTurnCursor(obj) {
+  if (!obj || typeof obj.epoch !== 'string') return undefined;
+  const offset = Number(obj.offset);
+  if (!Number.isSafeInteger(offset) || offset < 0) return undefined;
+  return { epoch: obj.epoch, offset };
 }
 
 function clampInt(v, def, min, max) {
@@ -242,6 +277,34 @@ function createControlRouter(deps) {
       if (lines === 0) return res.json({ sessionId: id, text: '', truncated: false, source: 'none', status });
       const tail = await deps.readTail(id, lines);
       res.json({ sessionId: id, text: tail.text, truncated: !!tail.truncated, source: tail.source, status });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // GET /sessions/:id/messages?after=&limit= — durable semantic transcript stream.
+  router.get('/sessions/:id/messages', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      const session = deps.sessions.get(id);
+      if (!session) return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      const after = parseTurnCursor(req.query.after);
+      if (req.query.after && after === undefined) {
+        return res.status(400).json({ error: { code: 'INVALID_ARGUMENT', message: 'invalid cursor' } });
+      }
+      const limit = clampInt(req.query.limit, DEFAULT_MESSAGE_LIMIT, 1, MAX_MESSAGE_LIMIT);
+      const out = deps.readMessages
+        ? await deps.readMessages(id, after, limit)
+        : { bound: false, items: [], cursor: null, epoch: null, reset: false, more: false };
+      res.json({
+        sessionId: id,
+        bound: !!out.bound,
+        items: out.items || [],
+        cursor: out.cursor || null,
+        epoch: out.epoch || null,
+        reset: !!out.reset,
+        more: !!out.more,
+      });
     } catch (err) {
       next(err);
     }

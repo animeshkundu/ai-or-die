@@ -139,6 +139,101 @@ describe('control/routes /api/control', function () {
     }
   });
 
+  it('GET /sessions/:id/messages streams semantic items and fails softly when unbound', async function () {
+    let seen;
+    const deps = fakeDeps({
+      readMessages: async (id, cursor, limit) => {
+        seen = { id, cursor, limit };
+        if (id === 's2') return { bound: false, items: [], cursor: null, epoch: null, reset: false, more: false };
+        return {
+          bound: true,
+          items: [{ id: 'u1', kind: 'user-text', text: 'hello' }],
+          cursor: { epoch: 'ep', offset: 9 },
+          epoch: 'ep',
+          reset: false,
+          more: true,
+        };
+      },
+    });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const full = await getJson(port, '/api/control/sessions/s1/messages?after=old:7&limit=1');
+      assert.equal(full.status, 200);
+      assert.equal(full.body.bound, true);
+      assert.deepEqual(full.body.items, [{ id: 'u1', kind: 'user-text', text: 'hello' }]);
+      assert.deepEqual(full.body.cursor, { epoch: 'ep', offset: 9 });
+      assert.equal(full.body.more, true);
+      assert.deepEqual(seen, { id: 's1', cursor: { epoch: 'old', offset: 7 }, limit: 1 });
+
+      const unbound = await getJson(port, '/api/control/sessions/s2/messages');
+      assert.equal(unbound.status, 200);
+      assert.equal(unbound.body.bound, false);
+      assert.deepEqual(unbound.body.items, []);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('GET /sessions/:id/messages clamps non-positive limits so clients cannot spin', async function () {
+    const seen = [];
+    const deps = fakeDeps({
+      readMessages: async (id, cursor, limit) => {
+        seen.push(limit);
+        return {
+          bound: true,
+          items: [{ id: `u-${seen.length}`, kind: 'user-text', text: 'hello' }],
+          cursor: { epoch: 'ep', offset: seen.length },
+          epoch: 'ep',
+          reset: false,
+          more: true,
+        };
+      },
+    });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const zero = await getJson(port, '/api/control/sessions/s1/messages?limit=0');
+      const negative = await getJson(port, '/api/control/sessions/s1/messages?limit=-5');
+      assert.equal(zero.status, 200);
+      assert.equal(negative.status, 200);
+      assert.deepEqual(seen, [1, 1]);
+      assert.ok(zero.body.items.length > 0);
+      assert.ok(negative.body.items.length > 0);
+      assert.notDeepEqual(zero.body.cursor, { epoch: 'ep', offset: 0 });
+      assert.notDeepEqual(negative.body.cursor, { epoch: 'ep', offset: 0 });
+    } finally {
+      server.close();
+    }
+  });
+
+  it('GET /sessions/:id/messages clamps excessive limits to the route maximum', async function () {
+    let seen;
+    const deps = fakeDeps({
+      readMessages: async (id, cursor, limit) => {
+        seen = limit;
+        return { bound: true, items: [], cursor: { epoch: 'ep', offset: 0 }, epoch: 'ep', reset: false, more: false };
+      },
+    });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const r = await getJson(port, '/api/control/sessions/s1/messages?limit=999999');
+      assert.equal(r.status, 200);
+      assert.equal(seen, 1000);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('GET /sessions/:id/messages rejects a malformed cursor', async function () {
+    const { server, port } = await listen(buildServer(fakeDeps()));
+    try {
+      const r = await getJson(port, '/api/control/sessions/s1/messages?after=not-a-cursor');
+      assert.equal(r.status, 400);
+      assert.equal(r.body.error.code, 'INVALID_ARGUMENT');
+    } finally {
+      server.close();
+    }
+  });
+
   it('POST /sessions/create and /stop', async function () {
     let stopKey;
     const { server, port } = await listen(buildServer(fakeDeps({

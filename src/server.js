@@ -40,6 +40,7 @@ const { createControlRouter } = require('./control/routes');
 const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, buildArtifactPushPayload, artifactPushEnabledFromEnv } = require('./artifact-review');
 const { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen, TRUST_PROMPT_REGEX, DEFAULT_UNBOUND_QUIET_MS } = require('./control/session-status');
 const { detectAwaiting, detectTurnState } = require('./control/jsonl-awaiting');
+const TurnStream = require('./control/turn-stream');
 
 // HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
 // large frame can't block the event loop for tens-to-hundreds of ms.
@@ -4239,6 +4240,7 @@ class ClaudeCodeWebServer {
       getMeshPeers: () => this.meshManager ? this.meshManager.getStatus().peers : [],
       getStatusSignal: (id) => this._controlStatusSignal(id),
       readTail: async (id, lines) => this._controlReadTail(id, lines),
+      readMessages: async (id, cursor, limit) => this._controlReadMessages(id, cursor, limit),
       createSession: async (opts) => this._controlCreateSession(opts),
       stopSession: async (id, mode, idempotencyKey) => this._controlStopSession(id, mode, idempotencyKey),
       sendMessage: async (opts) => this._controlSendMessage(opts),
@@ -4538,6 +4540,19 @@ class ClaudeCodeWebServer {
       truncated: (s.outputBuffer && s.outputBuffer.size ? s.outputBuffer.size > lines : false),
       source: 'buffer'
     };
+  }
+
+  async _controlReadMessages(id, cursor, limit) {
+    const binding = this._stickyJsonl && this._stickyJsonl.get(id);
+    if (!binding) {
+      return { bound: false, items: [], cursor: cursor || null, epoch: (cursor && cursor.epoch) || null, reset: false, more: false };
+    }
+    const file = binding.file || binding.pendingTranscriptPath;
+    if (!file) {
+      return { bound: true, items: [], cursor: cursor || null, epoch: (cursor && cursor.epoch) || null, reset: false, more: false };
+    }
+    const out = await TurnStream.readItems(file, cursor, { limit });
+    return { bound: true, items: out.items, cursor: out.cursor, epoch: out.epoch, reset: out.reset, more: out.more };
   }
 
   async _controlCreateSession(opts = {}) {
