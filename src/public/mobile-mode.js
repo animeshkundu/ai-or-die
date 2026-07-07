@@ -3,55 +3,18 @@
 /*
  * mobile-mode.js — hook-independent mobile client shell.
  *
- * The production data seams are intentionally local stubs in this increment:
- *   - turn stream items: {id, kind:'user-text'|'assistant-text'|'tool-call'|
- *     'tool-result'|'thinking', text?, toolUseId?, name?, input?, content?, isError?}
- *   - decision sheet data: {kind, tool, command, cwd, plan, question,
- *     options:[{label, description}]}
- *
- * TODO(wire): Replace the stubs with the control-plane message stream and hook
- * decision payloads when those endpoints/channels land. Do not invent fetches in
- * this shell; it only renders data handed to it and sends Channel-2 input bytes.
+ * Conversation data is read from the control-plane semantic turn stream:
+ *   {id, kind:'user-text'|'assistant-text'|'tool-call'|'tool-result'|
+ *    'thinking', text?, thinking?, toolUseId?, name?, input?, content?, isError?}
+ * Decision sheets remain locally rendered until the hook decision channel lands.
  */
 (function () {
   var controller = null;
-
-  var STUB_TURN_STREAM = [
-    {
-      id: 'stub-user-1',
-      kind: 'user-text',
-      text: 'Can you prep mobile mode before wiring the backend? I need to feel the permission gates on an iPhone.'
-    },
-    {
-      id: 'stub-assistant-1',
-      kind: 'assistant-text',
-      text: 'I\u2019ll keep this shell hook-independent: conversation rendering, approval sheets, questions, plan review, and a keyboard-safe composer.'
-    },
-    {
-      id: 'stub-tool-call-1',
-      kind: 'tool-call',
-      toolUseId: 'stub-tool-1',
-      name: 'Bash',
-      input: { command: 'npm test', cwd: 'C:\\Users\\anikundu\\Software\\ai-or-die' }
-    },
-    {
-      id: 'stub-tool-result-1',
-      kind: 'tool-result',
-      toolUseId: 'stub-tool-1',
-      content: 'PASS test/mobile-layout.test.js\nPASS test/tool-permission.test.js\n\n38 passed, 0 failed',
-      isError: false
-    },
-    {
-      id: 'stub-thinking-1',
-      kind: 'thinking',
-      text: 'Mapping the next mobile surface without touching backend hooks.'
-    },
-    {
-      id: 'stub-assistant-2',
-      kind: 'assistant-text',
-      text: 'The real message stream will attach at the TODO(wire) seam; for now this is a documented stub contract.'
-    }
-  ];
+  var TURN_PAGE_LIMIT = 200;
+  var CONTROL_EVENT_KINDS = 'turn_ended,became_busy,became_idle,waiting_input';
+  var CONTROL_EVENTS_TIMEOUT_MS = 25000;
+  var SESSION_WATCH_MS = 500;
+  var EVENT_RETRY_MS = 1200;
 
   var STUB_DECISIONS = {
     permission: {
@@ -122,6 +85,18 @@
     this._boundOrientation = null;
     this._boundViewport = null;
     this._lastActiveElement = null;
+    this.currentSessionId = null;
+    this.messageCursor = null;
+    this.messageEpoch = null;
+    this.eventCursor = null;
+    this.turnItems = [];
+    this.renderedItemIds = new Map();
+    this._streamGeneration = 0;
+    this._sessionWatchTimer = null;
+    this._eventRetryTimer = null;
+    this._messageLoadInFlight = false;
+    this._messageLoadQueued = false;
+    this._localItemSeq = 0;
     this.decisionStubs = {
       permission: clone(STUB_DECISIONS.permission),
       plan: clone(STUB_DECISIONS.plan),
@@ -130,6 +105,7 @@
     this.state = {
       activeSurface: null,
       pendingSurface: null,
+      needsInput: false,
       countdownTimer: null,
       countdownDeadline: 0,
       countdownTotalMs: 45000,
@@ -150,7 +126,7 @@
 
     this._cacheElements();
     this._bindEvents();
-    this.renderConversation(STUB_TURN_STREAM);
+    this.renderConversation([]);
     this.renderDecision(this.decisionStubs.permission);
     this.renderDecision(this.decisionStubs.plan);
     this.renderDecision(this.decisionStubs.question);
@@ -159,6 +135,7 @@
     this.scrollMessagesToBottom(true);
 
     this.body.classList.add('mobile-mode-active');
+    this.startTurnStream();
   };
 
   MobileModeController.prototype._template = function () {
@@ -473,14 +450,186 @@
   };
 
   MobileModeController.prototype.renderConversation = function (items) {
-    // TODO(wire): Feed this from GET /api/control/sessions/:id/messages once the
-    // turn-stream endpoint lands. This renderer intentionally accepts only the
-    // documented item contract and performs no backend reads itself.
-    items = items || [];
-    if (!this.messageStack) return;
-    this.messageStack.innerHTML = '';
+    this._resetConversationState();
+    this._appendTurnItems(items || [], true);
+  };
 
-    var grouped = this._groupTurnItems(items);
+  MobileModeController.prototype.startTurnStream = function () {
+    if (this._sessionWatchTimer) return;
+    var self = this;
+    this._sessionWatchTimer = window.setInterval(function () {
+      self._syncTurnSession();
+    }, SESSION_WATCH_MS);
+    this._syncTurnSession();
+  };
+
+  MobileModeController.prototype._syncTurnSession = function () {
+    var sessionId = this._currentSessionId();
+    if (sessionId === this.currentSessionId) return;
+
+    this._streamGeneration += 1;
+    var generation = this._streamGeneration;
+    this.currentSessionId = sessionId;
+    this.eventCursor = null;
+    this._messageLoadQueued = false;
+    this._clearEventRetry();
+    this._resetConversationState();
+    this._syncSessionChrome();
+    this.setNeedsInput(false);
+    this.setStatus('idle');
+
+    if (!sessionId) return;
+    this._pollControlEvents(generation);
+    this._scheduleMessageLoad(generation, true);
+  };
+
+  MobileModeController.prototype._currentSessionId = function () {
+    var app = this.app || window.app || null;
+    var sessionId = app && app.currentClaudeSessionId;
+    return sessionId ? String(sessionId) : null;
+  };
+
+  MobileModeController.prototype._scheduleMessageLoad = function (generation, fromStart) {
+    if (generation !== this._streamGeneration || !this.currentSessionId) return;
+    if (fromStart) this._messageLoadQueued = 'reset';
+    else if (!this._messageLoadQueued) this._messageLoadQueued = 'append';
+    if (this._messageLoadInFlight) return;
+    this._drainMessageLoads(generation);
+  };
+
+  MobileModeController.prototype._drainMessageLoads = async function (generation) {
+    if (this._messageLoadInFlight) return;
+    this._messageLoadInFlight = true;
+    try {
+      while (this._messageLoadQueued && generation === this._streamGeneration && this.currentSessionId) {
+        var mode = this._messageLoadQueued;
+        this._messageLoadQueued = false;
+        if (mode === 'reset') this._resetConversationState();
+        await this._fetchMessagePages(generation);
+      }
+    } catch (err) {
+      if (generation === this._streamGeneration) {
+        this.setStatus('idle');
+        this._logStreamError('message load failed', err);
+      }
+    } finally {
+      this._messageLoadInFlight = false;
+      if (this._messageLoadQueued) {
+        this._scheduleMessageLoad(this._streamGeneration, false);
+      }
+    }
+  };
+
+  MobileModeController.prototype._fetchMessagePages = async function (generation) {
+    var sessionId = this.currentSessionId;
+    if (!sessionId) return;
+
+    for (;;) {
+      if (generation !== this._streamGeneration || sessionId !== this.currentSessionId) return;
+      var after = this.messageCursor ? encodeTurnCursor(this.messageCursor) : null;
+      var url = '/api/control/sessions/' + encodeURIComponent(sessionId) + '/messages?limit=' + TURN_PAGE_LIMIT;
+      if (after) url += '&after=' + encodeURIComponent(after);
+
+      var data = await this._fetchJson(url);
+      if (generation !== this._streamGeneration || sessionId !== this.currentSessionId) return;
+
+      var nextEpoch = data && data.epoch;
+      var epochChanged = !!(this.messageEpoch && nextEpoch && nextEpoch !== this.messageEpoch);
+      if ((data.reset || epochChanged) && after) {
+        this._resetConversationState();
+        continue;
+      }
+      if (data.reset || epochChanged) this._resetConversationState();
+
+      if (nextEpoch) this.messageEpoch = nextEpoch;
+      if (data.cursor) this.messageCursor = data.cursor;
+      this._appendTurnItems(data.items || [], false);
+      if (!data.more) break;
+    }
+  };
+
+  MobileModeController.prototype._pollControlEvents = async function (generation) {
+    if (generation !== this._streamGeneration || !this.currentSessionId) return;
+
+    var url = '/api/control/events?kinds=' + encodeURIComponent(CONTROL_EVENT_KINDS) + '&timeoutMs=' + CONTROL_EVENTS_TIMEOUT_MS;
+    if (this.eventCursor) url += '&cursor=' + encodeURIComponent(this.eventCursor);
+
+    try {
+      var data = await this._fetchJson(url);
+      if (generation !== this._streamGeneration || !this.currentSessionId) return;
+      if (data.cursor) this.eventCursor = data.cursor;
+
+      if (data.gaps && data.gaps.length) {
+        this._scheduleMessageLoad(generation, true);
+      }
+
+      var events = data.events || [];
+      var sawCurrentSession = false;
+      for (var i = 0; i < events.length; i++) {
+        if (String(events[i].sessionId || '') !== this.currentSessionId) continue;
+        sawCurrentSession = true;
+        this._applyControlEvent(events[i]);
+      }
+      if (sawCurrentSession) this._scheduleMessageLoad(generation, false);
+      this._pollControlEvents(generation);
+    } catch (err) {
+      if (generation !== this._streamGeneration) return;
+      this._logStreamError('event poll failed', err);
+      var self = this;
+      this._clearEventRetry();
+      this._eventRetryTimer = window.setTimeout(function () {
+        self._eventRetryTimer = null;
+        self._pollControlEvents(generation);
+      }, EVENT_RETRY_MS);
+    }
+  };
+
+  MobileModeController.prototype._applyControlEvent = function (event) {
+    if (!event || !event.kind) return;
+    if (event.kind === 'became_busy') {
+      this.setNeedsInput(false);
+      this.setStatus('working\u2026');
+    } else if (event.kind === 'waiting_input') {
+      this.state.pendingSurface = 'composer';
+      this.setNeedsInput(true);
+      this.setStatus('needs you');
+    } else if (event.kind === 'became_idle' || event.kind === 'turn_ended') {
+      if (this.state.pendingSurface === 'composer') this.state.pendingSurface = null;
+      this.setNeedsInput(false);
+      this.setStatus('idle');
+    }
+  };
+
+  MobileModeController.prototype._resetConversationState = function () {
+    this.turnItems = [];
+    this.renderedItemIds = new Map();
+    this.messageCursor = null;
+    this.messageEpoch = null;
+    this._paintConversation(true);
+  };
+
+  MobileModeController.prototype._appendTurnItems = function (items, forceScroll) {
+    var added = false;
+    for (var i = 0; i < items.length; i++) {
+      var item = normalizeTurnItem(items[i]);
+      if (!item) continue;
+      var key = item.id;
+      if (key == null || key === '') {
+        key = 'local:' + (++this._localItemSeq);
+        item.id = key;
+      }
+      if (this.renderedItemIds.has(key)) continue;
+      this.renderedItemIds.set(key, true);
+      this.turnItems.push(item);
+      added = true;
+    }
+    if (added || forceScroll) this._paintConversation(forceScroll !== false);
+  };
+
+  MobileModeController.prototype._paintConversation = function (forceScroll) {
+    if (!this.messageStack) return;
+    clearNode(this.messageStack);
+    var grouped = this._groupTurnItems(this.turnItems || []);
     for (var i = 0; i < grouped.length; i++) {
       if (grouped[i].type === 'tool') {
         this.messageStack.appendChild(this._renderToolCard(grouped[i]));
@@ -488,7 +637,44 @@
         this.messageStack.appendChild(this._renderTurnItem(grouped[i].item));
       }
     }
-    this.scrollMessagesToBottom(true);
+    this.scrollMessagesToBottom(forceScroll);
+  };
+
+  MobileModeController.prototype._fetchJson = async function (url) {
+    var response = await this._authFetch(url, {
+      method: 'GET',
+      headers: { Accept: 'application/json' }
+    });
+    if (!response.ok) {
+      throw new Error('HTTP ' + response.status + ' for ' + url);
+    }
+    return response.json();
+  };
+
+  MobileModeController.prototype._authFetch = function (url, options) {
+    options = options || {};
+    if (this.app && typeof this.app.authFetch === 'function') {
+      return this.app.authFetch(url, options);
+    }
+
+    var headers = {};
+    if (window.authManager && typeof window.authManager.getAuthHeaders === 'function') {
+      headers = window.authManager.getAuthHeaders();
+    }
+    var request = merge({}, options);
+    request.method = request.method || 'GET';
+    request.headers = merge(headers, options.headers || {});
+    return fetch(url, request);
+  };
+
+  MobileModeController.prototype._clearEventRetry = function () {
+    if (!this._eventRetryTimer) return;
+    window.clearTimeout(this._eventRetryTimer);
+    this._eventRetryTimer = null;
+  };
+
+  MobileModeController.prototype._logStreamError = function (message, err) {
+    if (window.console && console.warn) console.warn('[mobile-mode] ' + message, err && err.message ? err.message : err);
   };
 
   MobileModeController.prototype.renderDecision = function (data) {
@@ -526,7 +712,7 @@
     if (isDecisionSurface(name)) this.state.pendingSurface = name;
 
     this.body.classList.toggle('has-surface', Boolean(name));
-    this.body.classList.toggle('has-decision', isDecisionSurface(name));
+    this._syncNeedsPill();
     this.body.dataset.surface = name || '';
 
     for (var i = 0; i < this.sheets.length; i++) {
@@ -550,7 +736,7 @@
       this._focusSurface(name);
     } else if (name === 'composer') {
       this.stopCountdown();
-      this.setStatus('Claude idle');
+      this.setStatus(this._statusAfterSurfaceChange('idle'));
       this._focusSurface(name, this.composerText);
     }
 
@@ -565,8 +751,10 @@
     }
 
     this.state.activeSurface = null;
-    this.state.pendingSurface = null;
-    this.body.classList.remove('has-surface', 'has-decision');
+    if (!this.state.needsInput) this.state.pendingSurface = null;
+    else this.state.pendingSurface = 'composer';
+    this.body.classList.remove('has-surface');
+    this._syncNeedsPill();
     this.body.dataset.surface = '';
 
     for (var i = 0; i < this.sheets.length; i++) {
@@ -576,7 +764,7 @@
       this.sheets[i].style.transition = '';
     }
 
-    if (nextStatus) this.setStatus(nextStatus);
+    if (nextStatus) this.setStatus(this._statusAfterSurfaceChange(nextStatus));
     this.syncVisualViewport();
   };
 
@@ -611,7 +799,7 @@
     this.decisionStubs.question = merge(clone(this.decisionStubs.question), data);
     data = this.decisionStubs.question;
     this.questionTitle.textContent = data.question || 'Claude has a question';
-    this.questionOptions.innerHTML = '';
+    clearNode(this.questionOptions);
 
     var options = data.options || [];
     for (var i = 0; i < options.length; i++) {
@@ -747,7 +935,22 @@
 
   MobileModeController.prototype.setStatus = function (text) {
     this.statusText.textContent = text;
-    this.statusChip.classList.toggle('working', /working|waiting|running/i.test(text));
+    this.statusChip.classList.toggle('working', /working|waiting|running|needs/i.test(text));
+  };
+
+  MobileModeController.prototype._statusAfterSurfaceChange = function (fallback) {
+    if (this.state.needsInput && (!fallback || /^Claude idle|^idle$/i.test(fallback))) return 'needs you';
+    return fallback || (this.state.needsInput ? 'needs you' : 'idle');
+  };
+
+  MobileModeController.prototype.setNeedsInput = function (needsInput) {
+    this.state.needsInput = !!needsInput;
+    this._syncNeedsPill();
+  };
+
+  MobileModeController.prototype._syncNeedsPill = function () {
+    var active = !!(this.state.needsInput || isDecisionSurface(this.state.pendingSurface) || isDecisionSurface(this.state.activeSurface));
+    this.body.classList.toggle('has-decision', active);
   };
 
   MobileModeController.prototype.addUserMessage = function (text) {
@@ -848,7 +1051,7 @@
 
   MobileModeController.prototype._groupTurnItems = function (items) {
     var out = [];
-    var byToolUseId = {};
+    var byToolUseId = new Map();
 
     for (var i = 0; i < items.length; i++) {
       var item = items[i];
@@ -856,9 +1059,9 @@
       if (item.kind === 'tool-call') {
         var group = { type: 'tool', call: item, result: null };
         out.push(group);
-        if (item.toolUseId) byToolUseId[item.toolUseId] = group;
+        if (item.toolUseId) byToolUseId.set(item.toolUseId, group);
       } else if (item.kind === 'tool-result') {
-        var existing = item.toolUseId && byToolUseId[item.toolUseId];
+        var existing = item.toolUseId ? byToolUseId.get(item.toolUseId) : null;
         if (existing) existing.result = item;
         else out.push({ type: 'tool', call: null, result: item });
       } else {
@@ -871,7 +1074,7 @@
   MobileModeController.prototype._renderTurnItem = function (item) {
     if (item.kind === 'user-text') return this._renderBubble('user', null, item.text || '');
     if (item.kind === 'assistant-text') return this._renderBubble('assistant', 'Claude', item.text || '');
-    if (item.kind === 'thinking') return this._renderEvent('thinking\u2026 ' + (item.text || ''));
+    if (item.kind === 'thinking') return this._renderEvent('thinking\u2026 ' + (item.text || item.thinking || ''));
     return this._renderEvent(item.text || item.kind || 'event');
   };
 
@@ -992,7 +1195,7 @@
   };
 
   MobileModeController.prototype._renderPlanText = function (text) {
-    this.planDoc.innerHTML = '';
+    clearNode(this.planDoc);
     var lines = String(text || '').split(/\r?\n/);
     var list = null;
     var fence = null;
@@ -1126,7 +1329,6 @@
     renderConversation: function (items) { if (controller) controller.renderConversation(items); },
     renderDecision: function (data) { if (controller) controller.renderDecision(data); },
     setDecisionStub: function (kind, data) { if (controller) controller.setDecisionStub(kind, data); },
-    STUB_TURN_STREAM: STUB_TURN_STREAM,
     STUB_DECISIONS: STUB_DECISIONS
   };
 
@@ -1151,6 +1353,35 @@
     if (!node || node.nodeType !== 1) return false;
     var fn = node.matches || node.msMatchesSelector || node.webkitMatchesSelector;
     return fn ? fn.call(node, selector) : false;
+  }
+
+  function clearNode(node) {
+    while (node && node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function encodeTurnCursor(cursor) {
+    if (!cursor || !cursor.epoch) return '';
+    return JSON.stringify({ epoch: String(cursor.epoch), offset: Number(cursor.offset) || 0 });
+  }
+
+  function normalizeTurnItem(item) {
+    if (!item || typeof item !== 'object') return null;
+    var kind = String(item.kind || '');
+    if (!/^(user-text|assistant-text|tool-call|tool-result|thinking)$/.test(kind)) return null;
+    var out = {
+      id: item.id == null ? null : String(item.id),
+      kind: kind
+    };
+    if (item.uuid != null) out.uuid = String(item.uuid);
+    if (item.timestamp != null) out.timestamp = item.timestamp;
+    if (item.text != null) out.text = String(item.text);
+    if (item.thinking != null) out.thinking = String(item.thinking);
+    if (item.toolUseId != null) out.toolUseId = String(item.toolUseId);
+    if (item.name != null) out.name = String(item.name);
+    if (Object.prototype.hasOwnProperty.call(item, 'input')) out.input = item.input;
+    if (Object.prototype.hasOwnProperty.call(item, 'content')) out.content = item.content;
+    if (Object.prototype.hasOwnProperty.call(item, 'isError')) out.isError = !!item.isError;
+    return out;
   }
 
   function clone(value) {

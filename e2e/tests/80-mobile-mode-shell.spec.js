@@ -1,4 +1,6 @@
 // @ts-check
+const fs = require('fs');
+const path = require('path');
 const { test, expect } = require('@playwright/test');
 const { createServer } = require('../helpers/server-factory');
 const {
@@ -40,6 +42,26 @@ async function startMobileMode(page) {
       && document.body.classList.contains('mobile-mode-active')
       && !!(window.MobileMode && window.MobileMode.getController && window.MobileMode.getController());
   }, null, { timeout: 20000 });
+}
+
+async function createBoundTranscriptSession(name) {
+  const response = await fetch(url + '/api/sessions/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  if (!response.ok) throw new Error('session create failed: HTTP ' + response.status);
+  const data = await response.json();
+  const sessionId = data.sessionId;
+  const transcriptPath = path.join(server._testTempDir, sessionId + '.jsonl');
+  fs.writeFileSync(transcriptPath, '', 'utf8');
+  server._stickyJsonl.set(sessionId, { file: transcriptPath });
+  return { sessionId, transcriptPath };
+}
+
+function appendJsonl(file, records) {
+  const text = records.map((record) => JSON.stringify(record)).join('\n') + '\n';
+  fs.appendFileSync(file, text, 'utf8');
 }
 
 test.describe('Mobile mode client shell', () => {
@@ -128,5 +150,84 @@ test.describe('Mobile mode client shell', () => {
     await expect(approve).not.toHaveClass(/primary/);
     const destructiveAttr = await approve.getAttribute('data-destructive');
     expect(destructiveAttr).toBe('true');
+  });
+
+  test('renders the real turn stream tool card without executing tool-result HTML', async ({ page }) => {
+    server.claudeSessions.clear();
+    server._stickyJsonl.clear();
+
+    const xss = '<img src=x onerror="window.__xss=1">';
+    const { sessionId, transcriptPath } = await createBoundTranscriptSession('Mobile real stream');
+    appendJsonl(transcriptPath, [
+      {
+        type: 'user',
+        uuid: 'mobile-user-1',
+        timestamp: '2026-07-07T00:00:00.000Z',
+        message: { role: 'user', content: 'Please run the mobile stream smoke test.' },
+      },
+      {
+        type: 'assistant',
+        uuid: 'mobile-assistant-1',
+        timestamp: '2026-07-07T00:00:01.000Z',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'I will run the smoke test now.' },
+            { type: 'tool_use', id: 'tool-mobile-1', name: 'Bash', input: { command: 'npm test -- --runInBand', cwd: 'C:\\Users\\anikundu\\Software\\ai-or-die' } },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        uuid: 'mobile-tool-result-1',
+        timestamp: '2026-07-07T00:00:02.000Z',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tool-mobile-1', content: xss, is_error: false }] },
+      },
+      {
+        type: 'assistant',
+        uuid: 'mobile-assistant-2',
+        timestamp: '2026-07-07T00:00:03.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'The smoke test finished safely.' }] },
+      },
+    ]);
+
+    const firstEventsRequest = page.waitForRequest((request) => request.url().includes('/api/control/events?'), { timeout: 20000 });
+    await startMobileMode(page);
+    await firstEventsRequest;
+
+    await page.waitForFunction((sid) => {
+      return window.app && window.app.currentClaudeSessionId === sid
+        && window.MobileMode && window.MobileMode.getController
+        && window.MobileMode.getController().currentSessionId === sid;
+    }, sessionId, { timeout: 20000 });
+
+    await expect(page.locator('.message-row.user .bubble')).toContainText('Please run the mobile stream smoke test.');
+    await expect(page.locator('.message-row.assistant .bubble').first()).toContainText('I will run the smoke test now.');
+    await expect(page.locator('.message-row.assistant .bubble').last()).toContainText('The smoke test finished safely.');
+
+    const toolCards = page.locator('[data-mobile-message-stack] .tool-card');
+    await expect(toolCards).toHaveCount(1);
+    await expect(toolCards.first().locator('.tool-summary')).toContainText('npm test -- --runInBand');
+    await toolCards.first().locator('.tool-summary').click();
+    await expect(toolCards.first()).toHaveClass(/expanded/);
+    await expect(toolCards.first().locator('.tool-details')).toContainText('npm test -- --runInBand');
+    await expect(toolCards.first().locator('pre')).toContainText(xss);
+    await expect(toolCards.first().locator('img[src="x"]')).toHaveCount(0);
+    await expect(await page.evaluate(() => window.__xss)).toBeUndefined();
+
+    const nextEventsRequest = page.waitForRequest((request) => request.url().includes('/api/control/events?'), { timeout: 20000 });
+    server.controlEventBus.append(sessionId, 'became_busy');
+    await expect(page.locator('[data-mobile-status-text]')).toHaveText('working…');
+    await nextEventsRequest;
+
+    const idleEventsRequest = page.waitForRequest((request) => request.url().includes('/api/control/events?'), { timeout: 20000 });
+    server.controlEventBus.append(sessionId, 'waiting_input');
+    await expect(page.locator('[data-mobile-status-text]')).toHaveText('needs you');
+    await expect(page.locator('[data-mobile-needs-pill]')).toHaveCSS('opacity', '1');
+    await idleEventsRequest;
+
+    server.controlEventBus.append(sessionId, 'became_idle');
+    await expect(page.locator('[data-mobile-status-text]')).toHaveText('idle');
+    await expect(page.locator('[data-mobile-needs-pill]')).toHaveCSS('opacity', '0');
   });
 });
