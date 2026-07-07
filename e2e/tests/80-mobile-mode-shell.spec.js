@@ -33,6 +33,11 @@ test.afterEach(async ({ page }, testInfo) => {
 
 async function startMobileMode(page) {
   setupPageCapture(page);
+  // Deterministic interaction: honor the CSS prefers-reduced-motion block so sheet
+  // slide transitions collapse to ~instant. Without it, Playwright's actionability
+  // "stable" check can fight the 260ms open/close animation under full-suite CPU
+  // load (janky frames) and time out clicking a sheet control (iPad-landscape flake).
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto(url + '?mobileMode=1');
   await waitForAppReady(page, 20000);
   await waitForWebSocket(page, 20000);
