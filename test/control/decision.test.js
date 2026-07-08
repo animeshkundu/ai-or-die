@@ -255,4 +255,109 @@ describe('control decision endpoints', function () {
       deps.decisionStore.close();
     }
   });
+
+  it('answering a decision injects the mapped keystroke and broadcasts decision_resolved', async function () {
+    const sent = [];
+    const deps = fakeDeps({ sendKeys: async (opts) => { sent.push(opts); return { delivered: true }; } });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const head = deps.eventBus.headCursor();
+      const reg = await postJson(port, '/api/control/sessions/s1/decision', { kind: 'tool_approval', tool: 'Bash', command: 'ls' });
+      const decisionId = reg.body.decisionId;
+
+      // accept -> Enter into the paused native prompt.
+      const ans = await postJson(port, `/api/control/decisions/${decisionId}/answer`, { choice: 'accept' });
+      assert.equal(ans.status, 200);
+      assert.equal(ans.body.ok, true);
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].sessionId, 's1');
+      assert.equal(sent[0].keys, 'enter');
+
+      // decision_resolved broadcast for that id.
+      const events = deps.eventBus.since(head, { sessionIds: ['s1'], kinds: ['decision_resolved'] }).events;
+      assert.equal(events.length, 1);
+      assert.equal(events[0].detail.decisionId, decisionId);
+
+      // No longer pending.
+      const pending = await getJson(port, '/api/control/sessions/s1/decisions');
+      assert.equal(pending.body.decisions.length, 0);
+    } finally {
+      server.close();
+      deps.decisionStore.close();
+    }
+  });
+
+  it('reject answer injects Escape', async function () {
+    const sent = [];
+    const deps = fakeDeps({ sendKeys: async (opts) => { sent.push(opts); return { delivered: true }; } });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const reg = await postJson(port, '/api/control/sessions/s1/decision', { kind: 'tool_approval', tool: 'Bash', command: 'rm -rf build' });
+      await postJson(port, `/api/control/decisions/${reg.body.decisionId}/answer`, { choice: 'reject' });
+      assert.equal(sent.length, 1);
+      assert.equal(sent[0].keys, 'escape');
+    } finally {
+      server.close();
+      deps.decisionStore.close();
+    }
+  });
+
+  it('a second answer loses (409) and does not double-inject', async function () {
+    const sent = [];
+    const deps = fakeDeps({ sendKeys: async (opts) => { sent.push(opts); return { delivered: true }; } });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const reg = await postJson(port, '/api/control/sessions/s1/decision', { kind: 'tool_approval', tool: 'Bash', command: 'ls' });
+      const first = await postJson(port, `/api/control/decisions/${reg.body.decisionId}/answer`, { choice: 'accept' });
+      const second = await postJson(port, `/api/control/decisions/${reg.body.decisionId}/answer`, { choice: 'reject' });
+      assert.equal(first.status, 200);
+      assert.equal(second.status, 409);
+      assert.equal(sent.length, 1, 'only the first answer injects');
+    } finally {
+      server.close();
+      deps.decisionStore.close();
+    }
+  });
+
+  it('POST /decision-resolved clears pending decisions without injecting (desktop answered natively)', async function () {
+    const sent = [];
+    const deps = fakeDeps({ sendKeys: async (opts) => { sent.push(opts); return { delivered: true }; } });
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const head = deps.eventBus.headCursor();
+      const reg = await postJson(port, '/api/control/sessions/s1/decision', { kind: 'tool_approval', tool: 'Bash', command: 'ls' });
+      const decisionId = reg.body.decisionId;
+
+      const resolved = await postJson(port, '/api/control/sessions/s1/decision-resolved', {});
+      assert.equal(resolved.status, 200);
+      assert.equal(resolved.body.resolved, 1);
+      assert.equal(sent.length, 0, 'external resolve must NOT inject a keystroke');
+
+      const events = deps.eventBus.since(head, { sessionIds: ['s1'], kinds: ['decision_resolved'] }).events;
+      assert.equal(events.length, 1);
+      assert.equal(events[0].detail.decisionId, decisionId);
+
+      const pending = await getJson(port, '/api/control/sessions/s1/decisions');
+      assert.equal(pending.body.decisions.length, 0);
+
+      // idempotent: nothing left to resolve.
+      const again = await postJson(port, '/api/control/sessions/s1/decision-resolved', {});
+      assert.equal(again.body.resolved, 0);
+    } finally {
+      server.close();
+      deps.decisionStore.close();
+    }
+  });
+
+  it('POST /decision-resolved on an unknown session is 404', async function () {
+    const deps = fakeDeps();
+    const { server, port } = await listen(buildServer(deps));
+    try {
+      const r = await postJson(port, '/api/control/sessions/nope/decision-resolved', {});
+      assert.equal(r.status, 404);
+    } finally {
+      server.close();
+      deps.decisionStore.close();
+    }
+  });
 });

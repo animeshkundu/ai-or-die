@@ -35,6 +35,28 @@ const DEFAULT_RATE_LIMIT_MAX = 600;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60000;
 const RATE_LIMIT_IDENTITY_CAP = 2000;
 
+// Keystrokes injected into Claude's paused native permission prompt to answer it
+// AS THE USER when the human taps the mobile decision card. The terminal is
+// static at the prompt (the github-router PermissionRequest notifier fired only
+// because Claude showed a dialog), so this is a deterministic write, not a race.
+// accept -> Enter (approve the pre-selected first option); reject -> Esc (deny).
+// These are TUI-invariant keys; overridable via env if Claude's prompt drifts.
+const DECISION_ACCEPT_KEYS = process.env.AIORDIE_DECISION_ACCEPT_KEYS || 'enter';
+const DECISION_REJECT_KEYS = process.env.AIORDIE_DECISION_REJECT_KEYS || 'escape';
+const DECISION_ACCEPT_CHOICES = new Set(['accept', 'approve', 'yes', 'allow']);
+
+// Map a structured mobile answer to the keystroke that answers Claude's native
+// prompt. Only choice-style answers (tool/plan approvals) are injected; an
+// optionValue (multi-option question) has no single-key mapping and returns null.
+function decisionAnswerKeystroke(body) {
+  if (!body || typeof body !== 'object') return null;
+  if (Object.prototype.hasOwnProperty.call(body, 'choice')) {
+    const choice = String(body.choice == null ? '' : body.choice).trim().toLowerCase();
+    return DECISION_ACCEPT_CHOICES.has(choice) ? DECISION_ACCEPT_KEYS : DECISION_REJECT_KEYS;
+  }
+  return null;
+}
+
 function statusForSession(deps, id, session) {
   const signal = (deps.getStatusSignal && deps.getStatusSignal(id)) || {};
   if (signal && typeof signal.then === 'function') {
@@ -379,6 +401,28 @@ function createControlRouter(deps) {
     }
   });
 
+  // POST /sessions/:id/decision-resolved — the github-router PostToolUse hook
+  // signals that a gated tool actually RAN, i.e. the human answered Claude's
+  // native prompt directly (on the desktop) rather than via the phone card. Clear
+  // any pending decision for the session and broadcast so a mirrored card on any
+  // other surface dismisses. No injection (the native answer already ran it);
+  // no-op when nothing is pending (the common case on every tool call).
+  router.post('/sessions/:id/decision-resolved', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      const resolved = decisionStore.externalResolve(id, 'tool_ran');
+      if (deps.eventBus) {
+        for (const decisionId of resolved) deps.eventBus.append(id, 'decision_resolved', { decisionId });
+      }
+      res.json({ resolved: resolved.length });
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
   // POST /sessions/:id/message — send a user message and optionally await a turn end.
   router.post('/sessions/:id/message', async (req, res, next) => {
     try {
@@ -447,9 +491,31 @@ function createControlRouter(deps) {
   });
 
   // POST /decisions/:decisionId/answer — structured answer from a human client.
+  // The mobile card answers Claude's OWN native prompt: after the atomic
+  // decisionStore.answer() (which enforces first-answer-wins with a 409), inject
+  // the corresponding keystroke into the paused session PTY so Claude proceeds,
+  // then broadcast decision_resolved so any other surface dismisses its card.
   router.post('/decisions/:decisionId/answer', async (req, res, next) => {
     try {
-      const out = decisionStore.answer(req.params.decisionId, req.body || {});
+      const decisionId = req.params.decisionId;
+      // Read the record first for its sessionId; answer() then atomically claims
+      // it (throws 409 if another surface already answered) so we inject at most once.
+      const record = decisionStore.get(decisionId);
+      const out = decisionStore.answer(decisionId, req.body || {});
+      if (record && record.sessionId) {
+        const keys = decisionAnswerKeystroke(req.body || {});
+        if (keys && deps.sendKeys) {
+          try {
+            await deps.sendKeys({ sessionId: record.sessionId, keys });
+          } catch (injErr) {
+            // The decision is already recorded as answered; a failed inject just
+            // means Claude's prompt wasn't driven from here (e.g. session gone).
+            // Surface nothing to the caller — first-answer-wins still holds.
+            if (deps.logError) deps.logError('decision keystroke inject failed', injErr);
+          }
+        }
+        if (deps.eventBus) deps.eventBus.append(record.sessionId, 'decision_resolved', { decisionId });
+      }
       res.json(out);
     } catch (err) {
       sendControlError(res, next, err);

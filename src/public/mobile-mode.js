@@ -11,7 +11,7 @@
 (function () {
   var controller = null;
   var TURN_PAGE_LIMIT = 200;
-  var CONTROL_EVENT_KINDS = 'turn_ended,became_busy,became_idle,waiting_input,decision_pending';
+  var CONTROL_EVENT_KINDS = 'turn_ended,became_busy,became_idle,waiting_input,decision_pending,decision_resolved';
   var CONTROL_EVENTS_TIMEOUT_MS = 25000;
   var SESSION_WATCH_MS = 500;
   var EVENT_RETRY_MS = 1200;
@@ -650,6 +650,14 @@
     if (!event || !event.kind) return;
     if (event.kind === 'decision_pending') {
       this._scheduleDecisionLoad(this._streamGeneration);
+      return;
+    }
+    if (event.kind === 'decision_resolved') {
+      var detail = event.detail || {};
+      var decisionId = detail.decisionId;
+      var matchesCurrent = this.currentDecision && String(this.currentDecision.decisionId || '') === String(decisionId || '');
+      var matchesPending = findDecision(this.pendingDecisions, decisionId);
+      if (decisionId && (matchesCurrent || matchesPending)) this._completeDecision(decisionId, true, 'idle');
       return;
     }
     if (event.kind === 'became_busy') {

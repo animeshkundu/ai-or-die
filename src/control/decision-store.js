@@ -132,6 +132,32 @@ class DecisionStore extends EventEmitter {
     return { ok: true };
   }
 
+  // Mark every pending decision for a session as resolved EXTERNALLY — the human
+  // answered Claude's native prompt directly (the desktop terminal), signalled by
+  // the tool actually running (PostToolUse). No keystroke is injected (the native
+  // answer already drove the terminal); this only clears the mirrored card and
+  // stops the decision from resurfacing on a later /decisions poll. Claude prompts
+  // serially, so at most one decision is pending. Returns the resolved ids.
+  externalResolve(sessionId, reason) {
+    this.cleanupExpired();
+    const ids = this._bySession.get(sessionId);
+    if (!ids) return [];
+    const resolved = [];
+    const now = this._now();
+    for (const decisionId of Array.from(ids)) {
+      const record = this._byId.get(decisionId);
+      if (!record || record.status !== 'pending') continue;
+      record.status = 'answered';
+      record.answer = { external: true, reason: reason || 'resolved' };
+      record.answeredAt = now;
+      record.expiresAt = Math.max(record.expiresAt, now + this._ttlMs);
+      this._finishWaiters(record, { status: 'answered', decision: this.answerSnapshot(record), sessionId: record.sessionId });
+      this.emit('answered', this.snapshot(record));
+      resolved.push(decisionId);
+    }
+    return resolved;
+  }
+
   awaitAnswer(decisionId, timeoutMs, options = {}) {
     this.cleanupExpired();
     const record = this._byId.get(decisionId);

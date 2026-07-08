@@ -263,6 +263,54 @@ test.describe('Mobile mode client shell', () => {
     await expect(planSheet).not.toHaveClass(/active/);
   });
 
+  test('dismisses a mobile decision when another surface resolves it', async ({ page }) => {
+    server.claudeSessions.clear();
+    server._stickyJsonl.clear();
+
+    const { sessionId } = await createBoundTranscriptSession('Mobile resolved elsewhere');
+    const firstEventsRequest = page.waitForRequest((request) => {
+      return request.url().includes('/api/control/events?')
+        && request.url().includes('decision_resolved');
+    }, { timeout: 20000 });
+    await startMobileMode(page);
+    await firstEventsRequest;
+    await waitForMobileSession(page, sessionId);
+
+    let decisionId = '';
+    let answeredFromMobile = false;
+    page.on('request', (request) => {
+      if (decisionId && request.method() === 'POST'
+          && request.url().includes('/api/control/decisions/' + encodeURIComponent(decisionId) + '/answer')) {
+        answeredFromMobile = true;
+      }
+    });
+
+    const toolDecision = await postControlDecision(sessionId, {
+      kind: 'tool_approval',
+      tool: 'Bash',
+      command: 'npm run mobile-mode:elsewhere',
+      cwd: 'C:\\Users\\anikundu\\Software\\ai-or-die',
+    });
+    decisionId = toolDecision.decisionId;
+
+    const permissionSheet = page.locator('[data-testid="mobile-permission-sheet"]');
+    await expect(permissionSheet).toHaveClass(/active/);
+    await expect(permissionSheet).toHaveAttribute('aria-hidden', 'false');
+    await expect(permissionSheet).toHaveAttribute('data-decision-id', decisionId);
+
+    const nextEventsRequest = page.waitForRequest((request) => request.url().includes('/api/control/events?'), { timeout: 20000 });
+    server.controlEventBus.append(sessionId, 'decision_resolved', { decisionId });
+    await expect(permissionSheet).not.toHaveClass(/active/);
+    await nextEventsRequest;
+
+    await expect(permissionSheet).toHaveAttribute('aria-hidden', 'true');
+    await expect(page.locator('[data-testid="mobile-composer-sheet"]')).toHaveAttribute('aria-hidden', 'true');
+    await expect(page.locator('[data-testid="mobile-compose-fab"]')).toBeVisible();
+    await expect(page.locator('[data-mobile-status-text]')).toHaveText('idle');
+    await expect(page.locator('[data-mobile-needs-pill]')).toHaveCSS('opacity', '0');
+    expect(answeredFromMobile).toBe(false);
+  });
+
   test('renders the real turn stream tool card without executing tool-result HTML', async ({ page }) => {
     server.claudeSessions.clear();
     server._stickyJsonl.clear();
