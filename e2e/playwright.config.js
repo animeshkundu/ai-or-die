@@ -205,10 +205,10 @@ module.exports = defineConfig({
       timeout: 120000,
     },
     // iOS mobile-input / flicker suite on WebKit (approximates Edge-on-iOS).
-    // Specs 77-79. Service workers allowed so the PWA/offline paths can run.
+    // Specs 77-80. Service workers allowed so the PWA/offline paths can run.
     {
       name: 'ios-iphone16',
-      testMatch: /7[7-9]-.*\.spec\.js/,
+      testMatch: /(?:7[7-9]-.*|80-mobile-mode-shell)\.spec\.js/,
       use: { ...iPhone16, serviceWorkers: 'allow' },
     },
     {
@@ -218,7 +218,7 @@ module.exports = defineConfig({
     },
     {
       name: 'ios-ipad11',
-      testMatch: /7[7-9]-.*\.spec\.js/,
+      testMatch: /(?:7[7-9]-.*|80-mobile-mode-shell)\.spec\.js/,
       use: { ...iPad11, serviceWorkers: 'allow' },
     },
     {

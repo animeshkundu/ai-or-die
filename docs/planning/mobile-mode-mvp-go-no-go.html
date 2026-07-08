@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mobile Mode MVP — Go / No-Go</title>
+<style>
+  :root {
+    --bg:#0f1115; --panel:#171a21; --panel2:#1b1f28; --fg:#e6e8ec; --muted:#9aa2ad;
+    --border:#2a2f3a; --accent:#4c8dff; --go:#37d67a; --warn:#f5a524; --stop:#ff5c5c;
+    --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:940px; margin:0 auto; padding:32px 24px 80px; }
+  h1 { font-size:26px; margin:0 0 4px; letter-spacing:-.02em; }
+  h2 { font-size:18px; margin:34px 0 12px; padding-bottom:6px; border-bottom:1px solid var(--border); }
+  h3 { font-size:15px; margin:18px 0 6px; color:var(--fg); }
+  p { margin:8px 0; }
+  .sub { color:var(--muted); margin:0 0 18px; }
+  .verdict { display:flex; align-items:center; gap:14px; background:var(--panel);
+    border:1px solid var(--border); border-left:4px solid var(--go); border-radius:10px; padding:16px 18px; margin:18px 0; }
+  .verdict .badge { font-weight:700; font-size:13px; letter-spacing:.08em; text-transform:uppercase;
+    color:#08240f; background:var(--go); padding:5px 12px; border-radius:999px; white-space:nowrap; }
+  .verdict .cond { color:var(--muted); font-size:13.5px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr; } }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .card h3 { margin-top:0; display:flex; align-items:center; gap:8px; }
+  .tick { color:var(--go); font-weight:700; }
+  table { width:100%; border-collapse:collapse; margin:6px 0 4px; font-size:13.5px; }
+  th,td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  td.n { color:var(--go); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  code,.mono { font-family:var(--mono); font-size:12.5px; background:var(--panel2);
+    padding:1.5px 6px; border-radius:5px; color:#d7dde7; }
+  pre { background:var(--panel2); border:1px solid var(--border); border-radius:8px; padding:12px 14px;
+    overflow-x:auto; font-family:var(--mono); font-size:12.5px; line-height:1.5; color:#d7dde7; }
+  ul { margin:8px 0; padding-left:22px; } li { margin:5px 0; }
+  .pill { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px;
+    background:var(--panel2); border:1px solid var(--border); color:var(--muted); }
+  .sev-crit { color:var(--stop); } .sev-imp { color:var(--warn); }
+  .caveat { border-left:3px solid var(--warn); background:var(--panel); border-radius:0 8px 8px 0;
+    padding:10px 14px; margin:10px 0; }
+  .caveat b { color:var(--warn); }
+  .muted { color:var(--muted); }
+  .foot { margin-top:30px; color:var(--muted); font-size:12.5px; }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Mobile Mode MVP — Go / No-Go</h1>
+  <p class="sub">Transparent user proxy for driving Claude Code from an iPhone / iPad · branch <code>main</code> (feature work) · 2026-07-07</p>
+
+  <div class="verdict">
+    <span class="badge">GO</span>
+    <div>
+      <div><b>Ship the MVP behind the <code>?mobileMode=1</code> opt-in.</b></div>
+      <div class="cond">Legacy mobile input stays the default. One human gate remains: your on-device parity pass over the mesh/tunnel (dimension fidelity can't be asserted from Windows — see below).</div>
+    </div>
+  </div>
+
+  <h2>What shipped — the four north-star surfaces</h2>
+  <p>The user treats the terminal as read-only and acts through structured surfaces. Claude only ever sees its <b>native</b> channels (a tool result, or terminal stdin) — it spends no turn/token on panels and can't tell a phone tap from a keystroke.</p>
+  <div class="grid">
+    <div class="card"><h3><span class="tick">✓</span> Conversation (read)</h3>
+      Durable turn-stream over the JSONL (stable ids, cursor+epoch, reset on compact/resume), collapsible tool-call/result cards. All content via <code>textContent</code>.</div>
+    <div class="card"><h3><span class="tick">✓</span> Decision cards — Channel 1</h3>
+      Blocking <code>PreToolUse</code> hook holds the tool; permission / plan / question sheets answer <span class="mono">allow/deny/choice</span> straight back to the hook. Fail-closed, wait-for-human, trusted rendering.</div>
+    <div class="card"><h3><span class="tick">✓</span> Input + interrupt — Channel 2</h3>
+      Composer injects to stdin only when <code>idle_at_prompt</code> (queued while busy); interrupt is the one immediate injection. Byte-exact, verified.</div>
+    <div class="card"><h3><span class="tick">✓</span> Trusted, transparent</h3>
+      Decision packets render from structured <code>tool_input</code> in a trusted component (no agent HTML) — sidesteps the artifact-XSS / forged-approval path. Artifact panel height cap also removed.</div>
+  </div>
+
+  <h2>Verification — what was actually run</h2>
+  <table>
+    <tr><th>Gate</th><th>Result</th><th>Detail</th></tr>
+    <tr><td>Full unit + control + e2e suite (<code>npm test</code>)</td><td class="n">1879 / 0</td><td>0 failing, exit 0 — full load profile</td></tr>
+    <tr><td>Mobile e2e (Playwright WebKit, portrait)</td><td class="n">12 / 12</td><td>iPhone 16 + iPad 11 · incl. 2 XSS-literal invariants, Channel-1 round-trip, byte-exact Channel-2</td></tr>
+    <tr><td>Desktop e2e (golden-path + functional-core)</td><td class="n">15 / 0</td><td>Origin gate does not disturb the main app's WS/HTTP</td></tr>
+    <tr><td>Decision-hook seam (real github-router binary ↔ live <code>/decision</code>)</td><td class="n">5 / 5</td><td>accept→allow, reject→deny, no-viewer→deny, viewer-timeout→deny (self-budget), plan→allow</td></tr>
+    <tr><td>Security — cross-lab adversarial review</td><td class="n">GO-final</td><td>3 labs (codex + gemini ×2); every finding closed &amp; re-verified</td></tr>
+  </table>
+
+  <h2>Security hardening — the control plane is a remote input API</h2>
+  <p>A 3-lab review treated the phone-facing control plane as a remote command-injection / exfil surface and found real holes in a first-cut Origin allowlist. All are closed and re-verified (7 dedicated origin tests):</p>
+  <table>
+    <tr><th>Finding</th><th>Sev</th><th>Resolution</th></tr>
+    <tr><td>Wildcard <code>*.ts.net</code>/<code>*.devtunnels.ms</code> suffix trust (any tenant can provision a host → cross-tenant RCE)</td><td class="sev-crit">Critical</td><td>Removed. Exact-pin to the server's OWN live origins (<code>tunnelManager.publicUrl</code> + <code>meshManager</code>), normalized by <code>_originKey</code></td></tr>
+    <tr><td>Host-header same-origin (DNS-rebinding bypass on default-port / tunnel)</td><td class="sev-crit">Critical</td><td>Removed. The client <code>Host</code> header is never read</td></tr>
+    <tr><td>Cross-origin GET read/exfil under <code>--no-auth</code></td><td class="sev-imp">Important</td><td>Every control method is Origin-gated (reads too); no-Origin + same-origin still pass</td></tr>
+    <tr><td>Blanket RFC-1918 trust (lateral keystroke-injection on shared Wi-Fi)</td><td class="sev-imp">Important</td><td>Replaced with the server's OWN interface addresses (<code>os.networkInterfaces()</code>)</td></tr>
+    <tr><td>POST-only gating (future PUT/DELETE unprotected)</td><td class="sev-imp">Important</td><td>Gate keyed on CSRF-unsafe method, not literal POST</td></tr>
+  </table>
+  <p class="muted">No-Origin callers (the decision hook, curl, native apps) always pass — Channel 1 is unaffected. Auth (Bearer/token) remains the primary gate; Origin is defense-in-depth.</p>
+
+  <h2>Where it might fail — honest caveats</h2>
+  <div class="caveat"><b>On-device dimensions (the open gate).</b> No iOS simulator exists on Windows; Playwright-WebKit verifies logic, not real-Safari layout. Final safe-area / keyboard / <code>dvh</code> polish converges on the <b>real iPhone over the mesh/tunnel</b> — your parity pass. Landscape UI (keyboard eats height) is a device-loop item; its logic is orientation-agnostic and covered on portrait.</div>
+  <div class="caveat"><b>Opt-in by design.</b> Mobile mode activates only via <code>?mobileMode=1</code> (or the <code>cc-mobile-mode</code> sessionStorage flag). Legacy touch-driving remains the default — a deliberate safe rollout, not a regression.</div>
+  <div class="caveat"><b>Non-tunnel public deploys.</b> With <code>--tunnel</code>/<code>--mesh</code> the origin auto-pins (no config). If you expose ai-or-die on a public host <i>without</i> them, set <code>AIORDIE_ALLOWED_ORIGINS=https://your-host</code>, or same-origin browser POSTs from that host are gated.</div>
+  <div class="caveat"><b>Startup window (self-healing).</b> A WS/POST in the sub-second gap after the tunnel routes but before Node scrapes its public URL is denied and recovers on the client's reconnect. You cannot reach the tunnel host before it exists, so there is no pre-tunnel exposure.</div>
+  <div class="caveat"><b>Coverage tail (by design).</b> Folder-trust prompts and a script's own in-shell <code>y/N</code> inside a <code>Bash</code> tool are not hook-interceptable → raw-terminal fallback (rare). Benign <code>MaxListeners</code>/<code>DEP0190</code> warnings in test output are pre-existing and non-blocking.</div>
+
+  <h2>Your on-device parity pass (the remaining gate)</h2>
+  <pre>1. Launch:  ai-or-die --tunnel        (or --mesh)
+2. iPhone:  open  https://&lt;tunnel-host&gt;.devtunnels.ms/?mobileMode=1
+3. Drive a Claude session and verify:
+   • conversation renders; tool cards collapse
+   • a Bash tool pops the permission sheet — exact command shown,
+     Deny is the default, Approve turns red on a destructive command
+   • Approve → runs;  Deny → cancelled
+   • ExitPlanMode pops the plan sheet; a question pops option cards
+   • composer injects only when idle; interrupt fires immediately</pre>
+
+  <h2>Commits (this delivery)</h2>
+  <pre>49f0dbd  test(e2e): deflake session_activity broadcasting (event-driven sync)
+aa810b5  test(mobile): deterministic sheet interaction via reduced-motion
+d21d448  docs(adr-0038): record shipped Origin-pinned control-plane hardening
+26adbda  feat(control): pin the control-plane Origin gate to the server's own origins
+c9970ff  feat(mobile): wire decision cards to Channel-1 (permission/plan/question)
+1628144  test(mobile): end-to-end decision-hook seam integration test
+  … plus turn-stream, /decision endpoint + store, mobile shell, artifact
+    height-cap; and in github-router: the internal-decision-hook + policy.</pre>
+
+  <p class="foot">Design + decision: <code>docs/adrs/0038-mobile-mode-transparent-user-proxy.md</code> · plan: <code>docs/planning/mobile-mode.md</code> · UI spec: <code>docs/specs/mobile-mode-ui.md</code> · reference mock: <code>src/public/mobile-proto.html</code>. Quality loop: plan → implement → self-check → 3-lab adversarial review → fix → re-verify → advisor. All findings closed; suite green.</p>
+
+</div>
+</body>
+</html>

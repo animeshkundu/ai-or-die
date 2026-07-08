@@ -10,6 +10,7 @@
 //   deps.sessions               Map<id, session>  (this.claudeSessions)
 //   deps.getStatusSignal(id)    -> { jsonl, renderedTail, exit, hadOutput }  (server-computed)
 //   deps.readTail(id, lines)    -> Promise<{ text, truncated, source }>
+//   deps.readMessages(id, cursor, limit) -> Promise<{ bound, items, cursor, epoch, reset, more }>
 //   deps.eventBus               ControlEventBus
 //   deps.createSession(opts)    -> Promise<{ sessionId, lifecycle }>
 //   deps.stopSession(id, mode, idempotencyKey) -> Promise<{ stopped, lifecycle }>
@@ -18,16 +19,43 @@
 //   deps.respond(opts)          -> Promise<object>
 
 const express = require('express');
+const { DecisionStore } = require('./decision-store');
 const { deriveStatus } = require('./session-status');
 
 const DEFAULT_READ_LINES = 80;
 const MAX_READ_LINES = 2000;
+const DEFAULT_MESSAGE_LIMIT = 200;
+const MAX_MESSAGE_LIMIT = 1000;
 const DEFAULT_EVENTS_TIMEOUT_MS = 25000;
 const MAX_EVENTS_TIMEOUT_MS = 60000;
+const DEFAULT_DECISION_AWAIT_TIMEOUT_MS = 25000;
+const MAX_DECISION_AWAIT_TIMEOUT_MS = 60000;
 const ROUTE_IDEMPOTENCY_CAP = 500;
 const DEFAULT_RATE_LIMIT_MAX = 600;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60000;
 const RATE_LIMIT_IDENTITY_CAP = 2000;
+
+// Keystrokes injected into Claude's paused native permission prompt to answer it
+// AS THE USER when the human taps the mobile decision card. The terminal is
+// static at the prompt (the github-router PermissionRequest notifier fired only
+// because Claude showed a dialog), so this is a deterministic write, not a race.
+// accept -> Enter (approve the pre-selected first option); reject -> Esc (deny).
+// These are TUI-invariant keys; overridable via env if Claude's prompt drifts.
+const DECISION_ACCEPT_KEYS = process.env.AIORDIE_DECISION_ACCEPT_KEYS || 'enter';
+const DECISION_REJECT_KEYS = process.env.AIORDIE_DECISION_REJECT_KEYS || 'escape';
+const DECISION_ACCEPT_CHOICES = new Set(['accept', 'approve', 'yes', 'allow']);
+
+// Map a structured mobile answer to the keystroke that answers Claude's native
+// prompt. Only choice-style answers (tool/plan approvals) are injected; an
+// optionValue (multi-option question) has no single-key mapping and returns null.
+function decisionAnswerKeystroke(body) {
+  if (!body || typeof body !== 'object') return null;
+  if (Object.prototype.hasOwnProperty.call(body, 'choice')) {
+    const choice = String(body.choice == null ? '' : body.choice).trim().toLowerCase();
+    return DECISION_ACCEPT_CHOICES.has(choice) ? DECISION_ACCEPT_KEYS : DECISION_REJECT_KEYS;
+  }
+  return null;
+}
 
 function statusForSession(deps, id, session) {
   const signal = (deps.getStatusSignal && deps.getStatusSignal(id)) || {};
@@ -87,6 +115,38 @@ function parseCursor(raw) {
 
 function encodeCursor(cursor) {
   return `${cursor.epoch}:${cursor.seq}`;
+}
+
+function parseTurnCursor(raw) {
+  if (!raw) return undefined;
+  if (typeof raw === 'object') return normalizeTurnCursor(raw);
+  const s = String(raw).trim();
+  if (!s) return undefined;
+
+  if (s[0] === '{') {
+    try { return normalizeTurnCursor(JSON.parse(s)); } catch (_) { return undefined; }
+  }
+
+  if (s.includes(':')) {
+    const idx = s.lastIndexOf(':');
+    const epoch = s.slice(0, idx);
+    const offset = Number(s.slice(idx + 1));
+    if (epoch && Number.isSafeInteger(offset) && offset >= 0) return { epoch, offset };
+  }
+
+  try {
+    const obj = JSON.parse(Buffer.from(s, 'base64').toString('utf8'));
+    return normalizeTurnCursor(obj);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeTurnCursor(obj) {
+  if (!obj || typeof obj.epoch !== 'string') return undefined;
+  const offset = Number(obj.offset);
+  if (!Number.isSafeInteger(offset) || offset < 0) return undefined;
+  return { epoch: obj.epoch, offset };
 }
 
 function clampInt(v, def, min, max) {
@@ -154,6 +214,7 @@ function createControlRouter(deps) {
   const routeIdempotency = new Map();
   const rateLimitBuckets = new Map();
   const rateLimit = normalizeRateLimit(deps.rateLimit);
+  const decisionStore = deps.decisionStore || new DecisionStore({ eventBus: deps.eventBus });
 
   router.use((req, res, next) => {
     if (isRateLimitExempt(req) || !rateLimit.max || !rateLimit.windowMs) return next();
@@ -247,6 +308,34 @@ function createControlRouter(deps) {
     }
   });
 
+  // GET /sessions/:id/messages?after=&limit= — durable semantic transcript stream.
+  router.get('/sessions/:id/messages', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      const session = deps.sessions.get(id);
+      if (!session) return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      const after = parseTurnCursor(req.query.after);
+      if (req.query.after && after === undefined) {
+        return res.status(400).json({ error: { code: 'INVALID_ARGUMENT', message: 'invalid cursor' } });
+      }
+      const limit = clampInt(req.query.limit, DEFAULT_MESSAGE_LIMIT, 1, MAX_MESSAGE_LIMIT);
+      const out = deps.readMessages
+        ? await deps.readMessages(id, after, limit)
+        : { bound: false, items: [], cursor: null, epoch: null, reset: false, more: false };
+      res.json({
+        sessionId: id,
+        bound: !!out.bound,
+        items: out.items || [],
+        cursor: out.cursor || null,
+        epoch: out.epoch || null,
+        reset: !!out.reset,
+        more: !!out.more,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // POST /sessions/create
   router.post('/sessions/create', async (req, res, next) => {
     try {
@@ -277,6 +366,60 @@ function createControlRouter(deps) {
       res.json(out);
     } catch (err) {
       next(err);
+    }
+  });
+
+  // POST /sessions/:id/decision — register a structured mobile-mode decision.
+  router.post('/sessions/:id/decision', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      const body = req.body || {};
+      const out = await routeIdempotent(routeIdempotency, 'decision', id, body.idempotencyKey, () => {
+        const decision = decisionStore.register(id, body);
+        if (deps.eventBus) deps.eventBus.append(id, 'decision_pending', decision);
+        return { decisionId: decision.decisionId };
+      });
+      sendControlResult(res, out);
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // GET /sessions/:id/decisions — currently pending structured decisions.
+  router.get('/sessions/:id/decisions', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      res.json({ decisions: decisionStore.listPending(id) });
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // POST /sessions/:id/decision-resolved — the github-router PostToolUse hook
+  // signals that a gated tool actually RAN, i.e. the human answered Claude's
+  // native prompt directly (on the desktop) rather than via the phone card. Clear
+  // any pending decision for the session and broadcast so a mirrored card on any
+  // other surface dismisses. No injection (the native answer already ran it);
+  // no-op when nothing is pending (the common case on every tool call).
+  router.post('/sessions/:id/decision-resolved', async (req, res, next) => {
+    try {
+      const id = req.params.id;
+      if (!deps.sessions.has(id)) {
+        return res.status(404).json({ error: { code: 'SESSION_NOT_FOUND', message: 'Unknown session' } });
+      }
+      const resolved = decisionStore.externalResolve(id, 'tool_ran');
+      if (deps.eventBus) {
+        for (const decisionId of resolved) deps.eventBus.append(id, 'decision_resolved', { decisionId });
+      }
+      res.json({ resolved: resolved.length });
+    } catch (err) {
+      sendControlError(res, next, err);
     }
   });
 
@@ -343,6 +486,67 @@ function createControlRouter(deps) {
       );
       sendControlResult(res, out);
     } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // POST /decisions/:decisionId/answer — structured answer from a human client.
+  // The mobile card answers Claude's OWN native prompt: after the atomic
+  // decisionStore.answer() (which enforces first-answer-wins with a 409), inject
+  // the corresponding keystroke into the paused session PTY so Claude proceeds,
+  // then broadcast decision_resolved so any other surface dismisses its card.
+  router.post('/decisions/:decisionId/answer', async (req, res, next) => {
+    try {
+      const decisionId = req.params.decisionId;
+      // Read the record first for its sessionId; answer() then atomically claims
+      // it (throws 409 if another surface already answered) so we inject at most once.
+      const record = decisionStore.get(decisionId);
+      const out = decisionStore.answer(decisionId, req.body || {});
+      if (record && record.sessionId) {
+        const keys = decisionAnswerKeystroke(req.body || {});
+        if (keys && deps.sendKeys) {
+          try {
+            await deps.sendKeys({ sessionId: record.sessionId, keys });
+          } catch (injErr) {
+            // The decision is already recorded as answered; a failed inject just
+            // means Claude's prompt wasn't driven from here (e.g. session gone).
+            // Surface nothing to the caller — first-answer-wins still holds.
+            if (deps.logError) deps.logError('decision keystroke inject failed', injErr);
+          }
+        }
+        if (deps.eventBus) deps.eventBus.append(record.sessionId, 'decision_resolved', { decisionId });
+      }
+      res.json(out);
+    } catch (err) {
+      sendControlError(res, next, err);
+    }
+  });
+
+  // GET /decisions/:decisionId/await?timeoutMs= — bounded long-poll for a structured answer.
+  router.get('/decisions/:decisionId/await', async (req, res, next) => {
+    const controller = new AbortController();
+    let responseOpen = true;
+    const onClose = () => {
+      if (responseOpen) controller.abort();
+    };
+    res.once('close', onClose);
+    try {
+      const timeoutMs = clampInt(req.query.timeoutMs, DEFAULT_DECISION_AWAIT_TIMEOUT_MS, 0, MAX_DECISION_AWAIT_TIMEOUT_MS);
+      const out = await decisionStore.awaitAnswer(req.params.decisionId, timeoutMs, { signal: controller.signal });
+      responseOpen = false;
+      res.removeListener('close', onClose);
+      if (!out || out.status === 'missing') {
+        return res.status(404).json({ error: { code: 'DECISION_NOT_FOUND', message: 'Unknown or expired decision' } });
+      }
+      if (out.status === 'canceled') return;
+      if (out.status === 'answered') {
+        return res.json(Object.assign({ answered: true }, out.decision || {}));
+      }
+      const viewers = deps.getSessionViewerCount ? deps.getSessionViewerCount(out.sessionId) : 0;
+      res.json({ answered: false, viewers });
+    } catch (err) {
+      responseOpen = false;
+      res.removeListener('close', onClose);
       sendControlError(res, next, err);
     }
   });

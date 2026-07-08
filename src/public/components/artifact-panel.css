@@ -9,7 +9,7 @@
   width: 420px;
   max-width: calc(100% - 32px);
   height: 60%;
-  max-height: 80vh;
+  max-height: calc(100dvh - 32px); /* no artificial cap; _clampToBounds keeps it inside the wrapper */
   min-width: 320px;
   min-height: 240px;
   display: flex;
@@ -302,8 +302,8 @@
     bottom: 0 !important;
     width: 100% !important;
     max-width: none;
-    height: 70vh !important;
-    height: 70dvh !important;
+    height: 90vh !important;
+    height: calc(100dvh - var(--sa-top, 0px) - 8px) !important;
     min-width: 0;
     border-radius: 12px 12px 0 0;
     box-sizing: border-box;

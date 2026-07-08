@@ -35,11 +35,13 @@ const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
 const KeepaliveManager = require('./keepalive-manager');
 const { ControlEventBus, EVENT_KINDS: CONTROL_EVENT_KINDS } = require('./control/event-bus');
+const { DecisionStore } = require('./control/decision-store');
 const TranscriptBuffer = require('./sticky-note-transcript');
 const { createControlRouter } = require('./control/routes');
 const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, buildArtifactPushPayload, artifactPushEnabledFromEnv } = require('./artifact-review');
 const { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen, TRUST_PROMPT_REGEX, DEFAULT_UNBOUND_QUIET_MS } = require('./control/session-status');
 const { detectAwaiting, detectTurnState } = require('./control/jsonl-awaiting');
+const TurnStream = require('./control/turn-stream');
 
 // HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
 // large frame can't block the event loop for tens-to-hundreds of ms.
@@ -61,6 +63,149 @@ const MAX_WS_MESSAGE_BYTES = 1 * 1024 * 1024;
 // reads GET /api/control/capabilities once per instance and fails closed when a
 // required capability is absent.
 const CONTROL_CONTRACT_VERSION = 1;
+
+// Control-plane Origin allowlist (defense-in-depth atop the Bearer/token auth on
+// the control routes + WS). A cross-site page must NOT be able to forge a
+// state-changing control request, read control state, or open the control WS,
+// even if it somehow holds the token. The gate trusts, in order: (1) NO Origin
+// header at all — server-to-server callers (the github-router decision hook, curl,
+// native apps) send none, and the Origin check only defends the browser cross-site
+// case; (2) the server's OWN live public origins (its devtunnel / mesh URL),
+// supplied by the caller and pinned by EXACT origin; (3) loopback + the server's
+// OWN network-interface addresses (so same-host LAN access works, but a DIFFERENT
+// LAN IP an attacker hosts on shared Wi-Fi does not); (4) the AIORDIE_ALLOWED_ORIGINS
+// env allowlist. It deliberately does NOT trust the client-supplied Host header (a
+// DNS-rebinding bypass), a bare *.ts.net / *.devtunnels.ms suffix (shared
+// multi-tenant domains any attacker can provision under), nor blanket RFC-1918
+// space (any same-L2 attacker IP). `trustedOrigins` is an array/Set of the server's
+// own public URL strings; `ownHostnames` is a Set of the server's own hostnames/IPs
+// — both re-read live per request.
+function _isAllowedOrigin(originHeader, trustedOrigins, ownHostnames) {
+  if (originHeader == null) return true;
+  if (Array.isArray(originHeader)) {
+    if (originHeader.length !== 1) return false;
+    originHeader = originHeader[0];
+  }
+
+  const rawOrigin = String(originHeader).trim();
+  if (!rawOrigin) return false;
+
+  let originUrl;
+  try {
+    originUrl = new URL(rawOrigin);
+  } catch (_) {
+    return false;
+  }
+
+  if (originUrl.username || originUrl.password || originUrl.pathname !== '/' || originUrl.search || originUrl.hash) {
+    return false;
+  }
+  if (!originUrl.host) return false;
+  const originHost = originUrl.host.toLowerCase();
+  const originHostname = _normalizeOriginHostname(originUrl.hostname);
+  if (!originHostname) return false;
+
+  const originKey = _originKey(originUrl);
+  if (originKey && _asTrustedOriginSet(trustedOrigins).has(originKey)) return true;
+
+  if (originHostname === 'localhost' || originHostname === '127.0.0.1' || originHostname === '::1') return true;
+  if (ownHostnames && _asHostnameSet(ownHostnames).has(originHostname)) return true;
+  if (_isEnvAllowedOrigin(originUrl, originHost, originHostname)) return true;
+
+  return false;
+}
+
+function _asHostnameSet(hostnames) {
+  if (hostnames instanceof Set) return hostnames;
+  return new Set(Array.isArray(hostnames) ? hostnames : []);
+}
+
+// Canonical compare key for an origin: scheme://hostname[:port], lower-cased, with
+// a single trailing FQDN dot stripped (a browser may send `foo.ts.net.`). Built
+// from the parsed URL so it ignores userinfo/path/query and normalizes default
+// ports identically on both the candidate and the trusted set.
+function _originKey(url) {
+  let u;
+  try {
+    u = typeof url === 'string' ? new URL(url) : url;
+  } catch (_) {
+    return '';
+  }
+  if (!u || !u.protocol) return '';
+  let host = _normalizeOriginHostname(u.hostname);
+  if (host.length > 1 && host.endsWith('.')) host = host.slice(0, -1);
+  if (!host) return '';
+  const hostPart = host.includes(':') ? '[' + host + ']' : host;
+  const port = u.port ? ':' + u.port : '';
+  return (u.protocol + '//' + hostPart + port).toLowerCase();
+}
+
+function _asTrustedOriginSet(trustedOrigins) {
+  if (trustedOrigins instanceof Set) return trustedOrigins;
+  const set = new Set();
+  if (Array.isArray(trustedOrigins)) {
+    for (const entry of trustedOrigins) {
+      const key = _originKey(entry);
+      if (key) set.add(key);
+    }
+  }
+  return set;
+}
+
+function _normalizeOriginHostname(hostname) {
+  const normalized = String(hostname || '').trim().toLowerCase();
+  if (normalized.startsWith('[') && normalized.endsWith(']')) return normalized.slice(1, -1);
+  return normalized;
+}
+
+function _isEnvAllowedOrigin(originUrl, originHost, originHostname) {
+  const rawAllowlist = process.env.AIORDIE_ALLOWED_ORIGINS || '';
+  for (const rawEntry of rawAllowlist.split(',')) {
+    const entry = String(rawEntry || '').trim();
+    if (!entry) continue;
+
+    if (entry.includes('://')) {
+      try {
+        const allowedUrl = new URL(entry);
+        if (allowedUrl.origin.toLowerCase() === originUrl.origin.toLowerCase()) return true;
+      } catch (_) {
+        /* ignore malformed allowlist entries */
+      }
+      continue;
+    }
+
+    const allowedHost = _normalizeAllowedHostEntry(entry);
+    if (!allowedHost) continue;
+    if (allowedHost.hasPort) {
+      if (allowedHost.value === originHost) return true;
+    } else if (allowedHost.value === originHostname) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function _normalizeAllowedHostEntry(entry) {
+  const normalized = String(entry || '').trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (normalized.startsWith('[')) {
+    const close = normalized.indexOf(']');
+    if (close === -1) return null;
+    const hostname = normalized.slice(1, close);
+    const rest = normalized.slice(close + 1);
+    if (!rest) return { value: hostname, hasPort: false };
+    if (/^:\d+$/.test(rest)) return { value: `[${hostname}]${rest}`, hasPort: true };
+    return null;
+  }
+
+  const colonCount = (normalized.match(/:/g) || []).length;
+  if (colonCount > 1) return { value: normalized, hasPort: false };
+
+  const withPort = /^(.*):(\d+)$/.exec(normalized);
+  if (withPort) return { value: `${withPort[1]}:${withPort[2]}`, hasPort: true };
+  return { value: normalized, hasPort: false };
+}
 
 // Inbound binary voice frames (client mic -> server STT) bypass the JSON guard
 // above. Framing + validation (incl. the Buffer[] fragmented-frame normalize)
@@ -160,6 +305,7 @@ class ClaudeCodeWebServer {
     this.app = express();
     this.claudeSessions = new Map(); // Persistent sessions (claude, codex, or agent)
     this.controlEventBus = new ControlEventBus();
+    this.decisionStore = new DecisionStore({ eventBus: this.controlEventBus });
     this.artifactReviews = new ArtifactReviewStore();
     this._artifactAssetSecret = crypto.randomBytes(32);
     this._artifactAssetSigner = createAssetTokenSigner(this._artifactAssetSecret);
@@ -476,6 +622,51 @@ class ClaudeCodeWebServer {
 
   setMeshManager(mm) {
     this.meshManager = mm;
+  }
+
+  // The server's OWN public origins, read live per request for the control-plane
+  // Origin gate. Sourced from the devtunnel + mesh managers (populated
+  // asynchronously once each tunnel reports its URL); empty until then, which is
+  // safe because the public host is unreachable until its URL exists. Loopback,
+  // private-LAN, and AIORDIE_ALLOWED_ORIGINS are handled inside _isAllowedOrigin.
+  _trustedControlOrigins() {
+    const out = [];
+    const tm = this.tunnelManager;
+    if (tm && tm.publicUrl) out.push(tm.publicUrl);
+    const mm = this.meshManager;
+    if (mm && typeof mm.getStatus === 'function') {
+      try {
+        const status = mm.getStatus();
+        if (status && status.publicUrl) out.push(status.publicUrl);
+      } catch (_) { /* mesh status unavailable — omit */ }
+    }
+    return out;
+  }
+
+  // The server's OWN hostnames/IPs (loopback + every non-internal network-interface
+  // address), for the control-plane Origin gate: same-host LAN access is allowed
+  // (the phone loads the server's own LAN IP), but a DIFFERENT LAN IP an attacker
+  // hosts on the same Wi-Fi is not. Cached ~5s since interfaces change rarely and
+  // this is read on every control request + WS handshake.
+  _ownLanHostnames() {
+    const now = Date.now();
+    if (this._ownLanHostnamesCache && (now - this._ownLanHostnamesCache.at) < 5000) {
+      return this._ownLanHostnamesCache.set;
+    }
+    const set = new Set(['localhost', '127.0.0.1', '::1']);
+    let ifaces;
+    try { ifaces = os.networkInterfaces(); } catch (_) { ifaces = null; }
+    for (const name of Object.keys(ifaces || {})) {
+      for (const addr of ifaces[name] || []) {
+        if (!addr || !addr.address) continue;
+        let host = String(addr.address).toLowerCase();
+        const zone = host.indexOf('%'); // strip IPv6 zone id (fe80::1%eth0)
+        if (zone !== -1) host = host.slice(0, zone);
+        if (host) set.add(host);
+      }
+    }
+    this._ownLanHostnamesCache = { at: now, set };
+    return set;
   }
 
   async saveSessionsToDisk(force = false) {
@@ -1253,6 +1444,7 @@ class ClaudeCodeWebServer {
           req.artifactAssetPathToken = asset.token;
           return next();
         }
+        // Bearer is preferred for mobile HTTP clients; ?token= remains for existing callers.
         const token = req.headers.authorization || req.query.token;
         if (token !== `Bearer ${this.auth}` && token !== this.auth) {
           return res.status(401).json({ error: 'Unauthorized' });
@@ -1269,6 +1461,24 @@ class ClaudeCodeWebServer {
       });
     }
 
+    // Origin-gate EVERY control request (defense-in-depth atop the Bearer/token
+    // auth above) — mutations AND reads. A cross-site browser page sends its
+    // foreign Origin and is rejected; same-origin requests (Origin absent or
+    // matching) and server-to-server callers (no Origin: the decision hook, curl,
+    // native apps) pass. Gating reads too closes the cross-origin state-exfil
+    // channel (terminal output / history / pending decisions), which matters most
+    // under --no-auth where these routes are otherwise public.
+    this.app.use('/api/control', (req, res, next) => {
+      if (_isAllowedOrigin(req.headers.origin, this._trustedControlOrigins(), this._ownLanHostnames())) {
+        return next();
+      }
+      return res.status(403).json({
+        error: {
+          code: 'ORIGIN_FORBIDDEN',
+          message: 'Origin is not allowed for this control request',
+        },
+      });
+    });
     this.app.use('/api/control', createControlRouter(this._buildControlDeps()));
     this.app.use('/api/artifact', createArtifactReviewRouter({
       store: this.artifactReviews,
@@ -3503,9 +3713,9 @@ class ClaudeCodeWebServer {
         if (!this.noAuth && this.auth) {
           const url = new URL(info.req.url, 'ws://localhost');
           const token = url.searchParams.get('token');
-          return token === this.auth;
+          if (token !== this.auth) return false;
         }
-        return true;
+        return _isAllowedOrigin(info.origin, this._trustedControlOrigins(), this._ownLanHostnames());
       }
     });
 
@@ -4236,9 +4446,12 @@ class ClaudeCodeWebServer {
     return {
       sessions: this.claudeSessions,
       eventBus: this.controlEventBus,
+      decisionStore: this.decisionStore,
+      getSessionViewerCount: (id) => this._controlSessionViewerCount(id),
       getMeshPeers: () => this.meshManager ? this.meshManager.getStatus().peers : [],
       getStatusSignal: (id) => this._controlStatusSignal(id),
       readTail: async (id, lines) => this._controlReadTail(id, lines),
+      readMessages: async (id, cursor, limit) => this._controlReadMessages(id, cursor, limit),
       createSession: async (opts) => this._controlCreateSession(opts),
       stopSession: async (id, mode, idempotencyKey) => this._controlStopSession(id, mode, idempotencyKey),
       sendMessage: async (opts) => this._controlSendMessage(opts),
@@ -4538,6 +4751,19 @@ class ClaudeCodeWebServer {
       truncated: (s.outputBuffer && s.outputBuffer.size ? s.outputBuffer.size > lines : false),
       source: 'buffer'
     };
+  }
+
+  async _controlReadMessages(id, cursor, limit) {
+    const binding = this._stickyJsonl && this._stickyJsonl.get(id);
+    if (!binding) {
+      return { bound: false, items: [], cursor: cursor || null, epoch: (cursor && cursor.epoch) || null, reset: false, more: false };
+    }
+    const file = binding.file || binding.pendingTranscriptPath;
+    if (!file) {
+      return { bound: true, items: [], cursor: cursor || null, epoch: (cursor && cursor.epoch) || null, reset: false, more: false };
+    }
+    const out = await TurnStream.readItems(file, cursor, { limit });
+    return { bound: true, items: out.items, cursor: out.cursor, epoch: out.epoch, reset: out.reset, more: out.more };
   }
 
   async _controlCreateSession(opts = {}) {
@@ -5600,6 +5826,22 @@ class ClaudeCodeWebServer {
     } catch (_) {
       return false;
     }
+  }
+
+  _controlSessionViewerCount(claudeSessionId) {
+    const session = this.claudeSessions.get(claudeSessionId);
+    if (!session || !session.connections) return 0;
+    let count = 0;
+    session.connections.forEach(wsId => {
+      const wsInfo = this.webSocketConnections.get(wsId);
+      if (wsInfo &&
+          wsInfo.claudeSessionId === claudeSessionId &&
+          wsInfo.ws &&
+          wsInfo.ws.readyState === WebSocket.OPEN) {
+        count++;
+      }
+    });
+    return count;
   }
 
   broadcastToSession(claudeSessionId, data) {
@@ -7086,6 +7328,9 @@ class ClaudeCodeWebServer {
     if (this.diskUsageSampleInterval) {
       clearInterval(this.diskUsageSampleInterval);
     }
+    if (this.decisionStore && typeof this.decisionStore.close === 'function') {
+      this.decisionStore.close();
+    }
 
     // Stop memory monitoring to release the interval timer
     if (this.restartManager) {
@@ -7665,4 +7910,4 @@ async function startServer(options) {
   return await server.start();
 }
 
-module.exports = { startServer, ClaudeCodeWebServer };
+module.exports = { startServer, ClaudeCodeWebServer, _isAllowedOrigin };

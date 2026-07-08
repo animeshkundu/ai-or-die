@@ -278,6 +278,56 @@ async function waitForWsMessage(page, dir, type, timeoutMs = 5000) {
   return null;
 }
 
+/**
+ * Return the current capture cursor for frames recorded by setupPageCapture().
+ * @param {import('@playwright/test').Page} page
+ * @returns {number}
+ */
+function wsCursor(page) {
+  return (page._wsMessages || []).length;
+}
+
+/**
+ * Wait for a captured WebSocket frame after a known cursor.
+ * @param {import('@playwright/test').Page} page
+ * @param {number} startIndex
+ * @param {(message: object) => boolean} predicate
+ * @param {string} label
+ * @param {number} [timeoutMs=5000]
+ * @returns {Promise<object>}
+ */
+async function waitForWsFrameAfter(page, startIndex, predicate, label, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let recent = [];
+  while (Date.now() < deadline) {
+    const messages = (page._wsMessages || []).slice(startIndex);
+    const found = messages.find(predicate);
+    if (found) return found;
+    recent = messages.slice(-5);
+    await page.waitForTimeout(50);
+  }
+  throw new Error(`Timed out waiting for ${label}. Recent WS frames: ${JSON.stringify(recent)}`);
+}
+
+/**
+ * Wait for an exact terminal-input frame after a known capture cursor.
+ * @param {import('@playwright/test').Page} page
+ * @param {number} startIndex
+ * @param {string} expectedData
+ * @param {string} label
+ * @param {number} [timeoutMs=5000]
+ * @returns {Promise<object>}
+ */
+async function waitForSentInput(page, startIndex, expectedData, label, timeoutMs = 5000) {
+  return waitForWsFrameAfter(
+    page,
+    startIndex,
+    (m) => m.dir === 'sent' && m.type === 'input' && m.data === expectedData,
+    `${label} input ${JSON.stringify(expectedData)}`,
+    timeoutMs
+  );
+}
+
 module.exports = {
   waitForAppReady,
   waitForTerminalCanvas,
@@ -291,5 +341,8 @@ module.exports = {
   attachFailureArtifacts,
   waitForWebSocket,
   waitForWsMessage,
+  waitForWsFrameAfter,
+  waitForSentInput,
+  wsCursor,
   joinSessionAndStartTerminal,
 };
