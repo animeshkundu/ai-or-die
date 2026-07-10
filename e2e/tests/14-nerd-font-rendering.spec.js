@@ -195,8 +195,15 @@ test.describe('Nerd Font rendering infrastructure', () => {
             const endX = term.buffer.active.cursorX;
             const delta = endX - startX;
 
-            // Read back the line from the buffer
-            const line = term.buffer.active.getLine(term.buffer.active.cursorY);
+            // Read back the line the cursor is on. cursorY is VIEWPORT-relative
+            // (0..rows-1); getLine() indexes the ABSOLUTE buffer (scrollback +
+            // viewport). Once the shell prompt has emitted output that scrolled
+            // the buffer, baseY > 0 and getLine(cursorY) reads a blank scrollback
+            // line while the just-written text lives at baseY + cursorY. xterm
+            // 6.0's \x1b[2J leaves that scrollback in place (5.3 did not surface
+            // it here), so the absolute index is the only correct read.
+            const buf = term.buffer.active;
+            const line = buf.getLine(buf.baseY + buf.cursorY);
             const text = line ? line.translateToString(true) : '';
 
             resolve({ startX, endX, delta, text });
@@ -386,8 +393,15 @@ test.describe('Nerd Font rendering infrastructure', () => {
             const endX = term.buffer.active.cursorX;
             const delta = endX - startX;
 
-            // Read back the line from the buffer
-            const line = term.buffer.active.getLine(term.buffer.active.cursorY);
+            // Read back the line the cursor is on. cursorY is VIEWPORT-relative
+            // (0..rows-1); getLine() indexes the ABSOLUTE buffer (scrollback +
+            // viewport). Once the shell prompt has emitted output that scrolled
+            // the buffer, baseY > 0 and getLine(cursorY) reads a blank scrollback
+            // line while the just-written text lives at baseY + cursorY. xterm
+            // 6.0's \x1b[2J leaves that scrollback in place (5.3 did not surface
+            // it here), so the absolute index is the only correct read.
+            const buf = term.buffer.active;
+            const line = buf.getLine(buf.baseY + buf.cursorY);
             const text = line ? line.translateToString(true) : '';
 
             resolve({ startX, endX, delta, text });

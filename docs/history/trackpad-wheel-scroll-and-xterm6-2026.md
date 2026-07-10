@@ -77,4 +77,38 @@ Two real bugs surfaced by that investigation and fixed here:
   rebind) on ANY browser. Now code 4000 is an explicit reconnect trigger; the
   static "N attempts" message is corrected. Covered by `test/ws-reconnect.test.js`.
 
+## Second CI fallout: `test-browser-new-features (windows-latest)` flake
+
+After the WebKit-on-Windows job was moved to ubuntu, the `new-features` Windows
+job started failing — one hard failure that rotated between
+`14-file-browser.spec.js › clicking a text file shows preview` and
+`14-nerd-font-rendering.spec.js` buffer-read tests, plus intermittent flakes.
+
+**Root cause (reproduced locally, Windows):** the two nerd-font tests
+(`powerline characters render at correct cursor position` and `bold text with
+powerline PUA codepoints renders with correct cell widths`) read the just-written
+line with `buffer.active.getLine(buffer.active.cursorY)`. `cursorY` is
+**viewport-relative** (`0..rows-1`) but `getLine()` indexes the **absolute**
+buffer (scrollback + viewport). Under xterm 6.0, `\x1b[2J` leaves prior shell
+prompt output in scrollback, so at read time `baseY` is 2–4 (not 0). The write
+itself was always correct — the cursor-advance (`delta`) and cell widths passed,
+and `getLine(baseY + cursorY)` always returned the text — but `getLine(cursorY)`
+read a blank scrollback line, so `translateToString(true)` was `""`. On xterm
+5.3 the same tests passed (`baseY` stayed 0 here); a branch A/B under CI load
+(`workers:2`, `CI=true`) measured 6/6 pass on `main` vs 1/6 on the PR branch,
+confirming the upgrade exposed the latent test bug. The file-browser preview
+hard-failure was CPU-contention collateral: the nerd-font retries loaded the
+2-worker Windows runner enough to time out the (unrelated, Monaco-backed)
+preview; it did not reproduce once the nerd-font tests passed first-try.
+
+**Fix:** read the cursor's line at its absolute index —
+`buffer.getLine(buffer.baseY + buffer.cursorY)` — in both nerd-font tests
+(`e2e/tests/14-nerd-font-rendering.spec.js`). This is the canonical correct read
+and is robust regardless of scrollback. No product code changed: xterm 6.0's
+write/callback/buffer pipeline is byte-identical to 5.3 (verified against the
+5.3.0 vs 6.0.0 `CoreTerminal.ts` / `WriteBuffer.ts` / `BufferLine.ts` sources).
+Post-fix the two tests pass 8/8 in a loop and the full `new-features` project
+passes 52/52 with zero flakes across repeated CI-load runs. No tests were
+removed by the PR (additions only), so none needed restoring.
+
 See ADR-0038.
