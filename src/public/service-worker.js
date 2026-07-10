@@ -1,6 +1,6 @@
 // Bump this version when urlsToCache entries are added or removed.
 // Content changes to existing files are handled by the network-first fetch strategy.
-const CACHE_NAME = 'ai-or-die-v11';
+const CACHE_NAME = 'ai-or-die-v13';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -49,7 +49,13 @@ const urlsToCache = [
   '/voice-handler.js',
   '/image-handler.js',
   '/input-overlay.js',
-  '/feedback-manager.js'
+  '/feedback-manager.js',
+  '/terminal-wheel.js'
+  // xterm.js is self-hosted under /vendor/xterm/ (served locally, fast) but is
+  // intentionally NOT precached on install: ~900KB of addons would bloat the
+  // install step (it churns on every fresh page load, and is pathologically slow
+  // under the WebKit-on-Windows CI runner). The runtime fetch handler caches it
+  // on first load, so offline still works after the first online visit.
 ];
 
 // Install event - cache resources

@@ -69,34 +69,34 @@ class Split {
 
         this.terminal.open(terminalDiv);
 
-        // WebGL renderer with Canvas fallback
+        // Trackpad/mouse-wheel policy (same as the main terminal): preempt
+        // xterm's alt-buffer wheel->arrow translation so scrolling doesn't
+        // hijack the Claude Code TUI. Reads the app-wide setting live.
+        if (typeof window.attachTerminalWheel === 'function') {
+            this._wheelHandler = window.attachTerminalWheel(
+                this.terminal,
+                terminalDiv,
+                () => (this.app && this.app._wheelScrollMode) || 'dontHijack'
+            );
+        }
+
+        // WebGL renderer with DOM-renderer fallback. The Canvas renderer was
+        // removed in xterm 6.0, so on WebGL failure/context-loss we fall back to
+        // xterm's default DOM renderer (loading no addon).
         if (typeof WebglAddon !== 'undefined') {
             try {
                 this.webglAddon = new WebglAddon.WebglAddon();
                 this.webglAddon.onContextLoss(() => {
-                    this.webglAddon.dispose();
+                    const addon = this.webglAddon;
                     this.webglAddon = null;
-                    if (typeof CanvasAddon !== 'undefined') {
-                        try {
-                            this.canvasAddon = new CanvasAddon.CanvasAddon();
-                            this.terminal.loadAddon(this.canvasAddon);
-                        } catch (_) {}
-                    }
+                    try { if (addon) addon.dispose(); } catch (_) {}
+                    // No addon loaded -> xterm reverts to the DOM renderer.
                 });
                 this.terminal.loadAddon(this.webglAddon);
             } catch (e) {
-                if (typeof CanvasAddon !== 'undefined') {
-                    try {
-                        this.canvasAddon = new CanvasAddon.CanvasAddon();
-                        this.terminal.loadAddon(this.canvasAddon);
-                    } catch (_) {}
-                }
+                this.webglAddon = null;
+                // Falls back to the default DOM renderer.
             }
-        } else if (typeof CanvasAddon !== 'undefined') {
-            try {
-                this.canvasAddon = new CanvasAddon.CanvasAddon();
-                this.terminal.loadAddon(this.canvasAddon);
-            } catch (_) {}
         }
 
         // Re-render split terminal when fonts finish loading
@@ -152,9 +152,67 @@ class Split {
                                 caption: imageData.caption || ''
                             }));
                         }
+                    },
+                    // Non-image files pasted from a file manager route through the
+                    // generic pipeline — same bridge as the main terminal
+                    // (app.js). Without this, non-image PASTE is silently dropped
+                    // in a split pane. Fires only after the image branch declines.
+                    onFilesPaste: (files) => {
+                        if (this._genericDropHandler
+                                && typeof this._genericDropHandler.dispatchFiles === 'function') {
+                            this._genericDropHandler.dispatchFiles(files);
+                        }
                     }
                 }
             );
+        }
+
+        // Generic (non-image) file drop — mirror of the main terminal wiring
+        // in app.js. WITHOUT this, a split pane attaches only the image
+        // handler, whose drop listener preventDefaults every drop and then
+        // silently returns for anything that isn't an accepted image — so
+        // dropping a PDF (or any non-image file) on a split does nothing.
+        // Runs in capture phase so it preempts xterm's own drop handling;
+        // image MIMEs delegate to the image preview via onImageDrop, everything
+        // else uploads to <session cwd>/.claude-attachments/ and injects
+        // `@<absolute-path>` as bracketed paste.
+        //
+        // Session scoping is load-bearing: use THIS split's sessionId-scoped
+        // working dir + THIS split's socket, never the foregrounded session's
+        // (same wrong-session hazard the link-provider comment above warns of).
+        if (window.genericDropHandler) {
+            this._genericDropHandler = window.genericDropHandler.attachGenericDropHandler({
+                containerEl: terminalContainer,
+                getWorkingDir: () => (this.app && typeof this.app.getSessionWorkingDir === 'function'
+                    ? this.app.getSessionWorkingDir(this.sessionId) : null),
+                getAuthToken: () => (window.authManager && window.authManager.getToken
+                    ? window.authManager.getToken() : null),
+                onImageDrop: () => {
+                    // Intentionally a no-op: for an image-only drop the generic
+                    // handler returns WITHOUT stopPropagation (see the "defer to
+                    // image-handler.js entirely" branch in generic-drop-handler.js),
+                    // so this split's own image handler onDrop still fires and
+                    // shows the preview. Calling showImagePreview here too would
+                    // stack a SECOND identical modal. (Mixed image+non-image drops
+                    // do stopPropagation, so the image partition of a mixed drop is
+                    // not previewed — a rare edge; drop images on their own.)
+                },
+                injectAtPath: (atPath) => {
+                    if (!atPath) return;
+                    let normalized = attachClipboardHandler.normalizeLineEndings(atPath + ' ');
+                    if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+                        normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                    }
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.socket.send(JSON.stringify({ type: 'input', data: normalized }));
+                    }
+                },
+                onError: (basename, msg) => {
+                    if (window.feedback && typeof window.feedback.error === 'function') {
+                        window.feedback.error(basename + ': ' + msg);
+                    }
+                },
+            });
         }
 
         // Setup terminal input handler
@@ -424,6 +482,11 @@ class Split {
 
     destroy() {
         this.disconnect();
+        // Tear down drop/paste handlers (listeners + any in-flight uploads)
+        // before disposing the terminal so nothing fires against a dead pane.
+        try { if (this._genericDropHandler && this._genericDropHandler.destroy) this._genericDropHandler.destroy(); } catch (_) {}
+        try { if (this._imageHandler && this._imageHandler.destroy) this._imageHandler.destroy(); } catch (_) {}
+        try { if (this._wheelHandler && this._wheelHandler.dispose) this._wheelHandler.dispose(); } catch (_) {}
         if (this.terminal) {
             this.terminal.dispose();
         }

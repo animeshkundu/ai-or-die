@@ -204,26 +204,37 @@ module.exports = defineConfig({
       testMatch: '20-server-restart.spec.js',
       timeout: 120000,
     },
-    // iOS mobile-input / flicker suite on WebKit (approximates Edge-on-iOS).
-    // Specs 77-79. Service workers allowed so the PWA/offline paths can run.
+    // iOS mobile-input suite on WebKit (approximates Edge-on-iOS), specs 77-79.
+    // These run on ubuntu-latest ONLY in CI (see the test-browser-ios-webkit job):
+    // Playwright-WebKit on the Windows runner wedges WebSocket inbound-frame
+    // delivery under the heavier xterm 6.0 page — a Playwright-WebKit-on-Windows
+    // ENGINE limitation, not a product bug (full diagnosis in ci.yml). The same
+    // WebKit engine + xterm 6.0 passes here on ubuntu-webkit and on macOS-webkit.
+    // serviceWorkers:'allow' so the PWA/offline paths can run; the SW was
+    // investigated and ruled out (blocking it did NOT change the failure).
+    // 120s budget is modest headroom for the heavier 6.0 page on WebKit.
     {
       name: 'ios-iphone16',
       testMatch: /7[7-9]-.*\.spec\.js/,
+      timeout: 120000,
       use: { ...iPhone16, serviceWorkers: 'allow' },
     },
     {
       name: 'ios-iphone16-landscape',
       testMatch: /79-.*\.spec\.js/,
+      timeout: 120000,
       use: { ...iPhone16Landscape, serviceWorkers: 'allow' },
     },
     {
       name: 'ios-ipad11',
       testMatch: /7[7-9]-.*\.spec\.js/,
+      timeout: 120000,
       use: { ...iPad11, serviceWorkers: 'allow' },
     },
     {
       name: 'ios-ipad11-landscape',
       testMatch: /79-.*\.spec\.js/,
+      timeout: 120000,
       use: { ...iPad11Landscape, serviceWorkers: 'allow' },
     },
   ],

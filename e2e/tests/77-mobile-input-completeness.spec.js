@@ -155,7 +155,11 @@ test.describe('ADR-0037 mobile input completeness', () => {
             height: rect.height,
           };
         })
-        .filter((box) => box.width < 44 || box.height < 44)
+        // Round to the pixel grid before comparing: getBoundingClientRect
+        // returns subpixel values, so a min-height:44px button can measure
+        // 43.99993896484375 on some WebKit/DPR combinations — still a valid 44px
+        // touch target. An exact `< 44` float compare is brittle; round first.
+        .filter((box) => Math.round(box.width) < 44 || Math.round(box.height) < 44)
     );
     expect(tooSmall, `all keys-panel buttons must be >=44x44: ${JSON.stringify(tooSmall)}`).toEqual([]);
 

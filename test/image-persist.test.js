@@ -57,6 +57,29 @@ describe('server._persistImageUpload (image persist core)', function () {
     assert.strictEqual(session.tempImages.length, 1, 'tracked one temp image');
   });
 
+  it('saves through a symlinked working dir (canonicalization containment)', async function () {
+    // Regression: saveImageToTemp compared a realpath'd temp dir against the
+    // RAW working dir / os.tmpdir(), so a working dir reached via a symlink
+    // (or macOS /var -> /private/var) false-positive-threw "unexpected
+    // location". Canonicalizing both sides fixes it.
+    const realBase = fs.mkdtempSync(path.join(os.tmpdir(), 'aod-img-real-'));
+    tmpRoots.push(realBase);
+    const linkBase = path.join(os.tmpdir(), 'aod-img-link-' + crypto.randomBytes(4).toString('hex'));
+    try {
+      fs.symlinkSync(realBase, linkBase, 'dir');
+    } catch (_) {
+      this.skip(); // e.g. Windows without symlink privilege
+      return;
+    }
+    tmpRoots.push(linkBase);
+    const session = { id: 'sess-symlink', workingDir: linkBase, tempImages: [] };
+    const result = await server._persistImageUpload(session, {
+      base64: PNG_1x1, mimeType: 'image/png', fileName: 'x.png'
+    });
+    assert.ok(result.filePath, 'save succeeds through a symlinked working dir');
+    assert.ok(fs.existsSync(result.filePath), 'the file exists on disk');
+  });
+
   it('rejects missing base64 with 400', async function () {
     const session = fakeSession();
     await expectThrows(() => server._persistImageUpload(session, { mimeType: 'image/png' }), 400);
