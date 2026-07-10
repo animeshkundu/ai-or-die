@@ -703,6 +703,26 @@ class ClaudeCodeWebServer {
     }
   }
 
+  /**
+   * General "is childPath inside parentPath" check. Canonicalizes BOTH sides
+   * via _canonicalizePathSync (macOS /var->/private/var symlink, Windows 8.3
+   * short names, \\?\ prefix) and compares with path.relative — never a raw
+   * startsWith, which false-positive-rejects across those OS-specific forms
+   * and can prefix-match siblings (/home/user vs /home/user-admin).
+   * Unlike isPathWithinBase, the parent is an arbitrary caller-supplied dir.
+   * @returns {boolean} true when childPath is parentPath or a descendant.
+   */
+  _isPathWithin(childPath, parentPath) {
+    try {
+      const child = this._canonicalizePathSync(childPath);
+      const parent = this._canonicalizePathSync(parentPath);
+      const relative = path.relative(parent, child);
+      return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    } catch (_) {
+      return false;
+    }
+  }
+
   validatePath(targetPath) {
     if (!targetPath) {
       return { valid: false, error: 'Path is required' };
@@ -7579,9 +7599,15 @@ class ClaudeCodeWebServer {
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
-    // Verify resolved path doesn't escape via symlinks
-    const resolvedTempDir = fs.realpathSync(tempDir);
-    if (resolvedTempDir !== tempDir && !resolvedTempDir.startsWith(session.workingDir) && !resolvedTempDir.startsWith(os.tmpdir())) {
+    // Verify the resolved temp dir didn't escape (e.g. via a symlinked
+    // .claude-images) outside BOTH the session working dir and the OS temp
+    // dir. Canonicalize every side first (_canonicalizePathSync expands the
+    // macOS /var -> /private/var symlink, Windows 8.3 short names, and strips
+    // the \\?\ long-path prefix), then compare with path.relative containment.
+    // A raw startsWith here false-positive-rejects on those OS-specific forms
+    // (e.g. realpath('/var/folders/..') === '/private/var/folders/..' on macOS).
+    if (!this._isPathWithin(tempDir, session.workingDir)
+        && !this._isPathWithin(tempDir, os.tmpdir())) {
       throw new Error('Temp directory resolved to unexpected location');
     }
 

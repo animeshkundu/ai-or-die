@@ -106,15 +106,19 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
-    <script src="https://unpkg.com/xterm@5.3.0/lib/xterm.js"></script>
-    <script src="https://unpkg.com/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
-    <script src="https://unpkg.com/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js"></script>
-    <script src="https://unpkg.com/xterm-addon-search@0.13.0/lib/xterm-addon-search.js"></script>
-    <script src="https://unpkg.com/xterm-addon-unicode11@0.6.0/lib/xterm-addon-unicode11.js"></script>
-    <script src="https://unpkg.com/xterm-addon-webgl@0.16.0/lib/xterm-addon-webgl.js"></script>
-    <script src="https://unpkg.com/xterm-addon-canvas@0.5.0/lib/xterm-addon-canvas.js"></script>
-    <script src="https://unpkg.com/xterm-addon-serialize@0.11.0/lib/xterm-addon-serialize.js"></script>
-    <link rel="stylesheet" href="https://unpkg.com/xterm@5.3.0/css/xterm.css" />
+    <!-- xterm.js self-hosted under vendor/xterm/ (not a CDN) for deterministic,
+         offline-capable, fast loads — same rationale as the self-hosted fonts.
+         Versions: xterm 6.0.0, addon-fit 0.11.0, addon-web-links 0.12.0,
+         addon-search 0.16.0, addon-unicode11 0.9.0, addon-webgl 0.19.0,
+         addon-serialize 0.14.0. -->
+    <script src="/vendor/xterm/xterm.js"></script>
+    <script src="/vendor/xterm/addon-fit.js"></script>
+    <script src="/vendor/xterm/addon-web-links.js"></script>
+    <script src="/vendor/xterm/addon-search.js"></script>
+    <script src="/vendor/xterm/addon-unicode11.js"></script>
+    <script src="/vendor/xterm/addon-webgl.js"></script>
+    <script src="/vendor/xterm/addon-serialize.js"></script>
+    <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
     <!-- Monaco editor is loaded lazily on first file preview/editor open via
          file-viewer-monaco.js (see ADR-0016). Preconnect above warms the
          CDN handshake; we don't preload loader.js to avoid charging users
@@ -493,6 +497,14 @@
                                         <span class="range-value" id="terminalPaddingValue">8px</span>
                                     </span>
                                 </div>
+                                <div class="setting-group">
+                                    <label for="wheelScrollMode">Trackpad scroll in full-screen apps</label>
+                                    <select id="wheelScrollMode">
+                                        <option value="dontHijack">Don't hijack menus</option>
+                                        <option value="altScroll">Scroll (send arrows)</option>
+                                    </select>
+                                </div>
+                                <div class="setting-hint">Inside full-screen apps like the Claude Code TUI, the wheel can't both scroll and drive menus. &ldquo;Don't hijack&rdquo; stops it from jumping menus; &ldquo;Scroll&rdquo; makes it scroll pagers like <code>less</code>. Normal shell scrolling is unaffected.</div>
                             </section>
 
                             <section class="settings-pane" id="settingsPane-voice" role="tabpanel" aria-labelledby="settingsTab-voice" tabindex="0" hidden>
@@ -841,6 +853,7 @@
     <script src="clipboard-handler.js"></script>
     <script src="image-handler.js"></script>
     <script src="generic-drop-handler.js"></script>
+    <script src="terminal-wheel.js"></script>
     <script src="auth.js"></script>
     <script src="feedback-manager.js"></script>
     <!-- marked.min.js and purify.min.js lazy-loaded on first plan viewer open -->
@@ -849,6 +862,7 @@
     <script src="sticky-note-card.js"></script>
     <script src="artifact-panel.js"></script>
     <script src="heartbeat-watchdog.js"></script>
+    <script src="ws-reconnect.js"></script>
     <script src="splits.js"></script>
     <script src="icons.js"></script>
     <script src="file-viewer-monaco.js"></script>

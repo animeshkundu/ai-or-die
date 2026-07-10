@@ -692,7 +692,7 @@ class ClaudeCodeWebInterface {
                 foreground: '#f0f6fc',
                 cursor: '#ff6b00',
                 cursorAccent: '#0d1117',
-                selection: 'rgba(255, 107, 0, 0.2)',
+                selectionBackground: 'rgba(255, 107, 0, 0.2)',
                 black: '#484f58',
                 red: '#ff7b72',
                 green: '#7ee787',
@@ -740,6 +740,20 @@ class ClaudeCodeWebInterface {
         }
 
         this.terminal.open(document.getElementById('terminal'));
+
+        // Trackpad/mouse-wheel policy: preempt xterm's alt-buffer wheel->arrow
+        // translation so scrolling doesn't hijack the Claude Code TUI. Reads the
+        // live setting via the cached `_wheelScrollMode` (default 'dontHijack').
+        if (typeof window.attachTerminalWheel === 'function') {
+            if (this._wheelHandler && this._wheelHandler.dispose) {
+                try { this._wheelHandler.dispose(); } catch (_) {}
+            }
+            this._wheelHandler = window.attachTerminalWheel(
+                this.terminal,
+                document.getElementById('terminal'),
+                () => this._wheelScrollMode || 'dontHijack'
+            );
+        }
 
         // Faithful per-tab snapshot cache for instant tab-switch repaint.
         // Guarded: if the serialize addon or the cache class failed to load
@@ -2293,7 +2307,17 @@ class ClaudeCodeWebInterface {
                         if (restartGen !== this._socketGeneration) return;
                         this.reconnect();
                     }, restartBackoff);
-                } else if ((!event.wasClean || voiceClose.rejected) && this.reconnectAttempts < this.maxReconnectAttempts) {
+                // Reconnect decision extracted to WsReconnect.isReconnectableClose
+                // (unit-tested): abnormal close, our own heartbeat pong-timeout
+                // (code 4000 — a clean close that MUST still reconnect, or a single
+                // transient pong-timeout strands the client on "Disconnected"), or a
+                // server frame-rejection (1009/1003). Inline fallback keeps reconnect
+                // working even if the tiny module failed to load.
+                } else if (
+                    ((window.WsReconnect && window.WsReconnect.isReconnectableClose)
+                        ? window.WsReconnect.isReconnectableClose(event, voiceClose.rejected)
+                        : (!event.wasClean || event.code === 4000 || voiceClose.rejected))
+                    && this.reconnectAttempts < this.maxReconnectAttempts) {
                     this.updateStatus('Reconnecting (' + (this.reconnectAttempts + 1) + '/' + this.maxReconnectAttempts + ')...');
                     // First attempt is fast (250ms covers a server-process restart window);
                     // subsequent attempts use exponential backoff with jitter.
@@ -2315,7 +2339,11 @@ class ClaudeCodeWebInterface {
                     this.reconnectAttempts++;
                 } else {
                     this.updateStatus('Disconnected');
-                    this.showError(`Connection lost after ${this.maxReconnectAttempts} attempts.\n\nYour session data is preserved on the server.\n\u2022 Check your network connection\n\u2022 The server may have restarted \u2014 try refreshing the page`);
+                    const n = this.reconnectAttempts;
+                    const lead = n > 0
+                        ? `Connection lost after ${n} reconnect attempt${n === 1 ? '' : 's'}.`
+                        : 'Disconnected from the server.';
+                    this.showError(`${lead}\n\nYour session data is preserved on the server.\n\u2022 Check your network connection\n\u2022 The server may have restarted \u2014 try refreshing the page`);
                 }
             };
             
@@ -3573,40 +3601,30 @@ class ClaudeCodeWebInterface {
     }
 
     _loadGpuRenderer() {
+        // The Canvas renderer was removed in xterm 6.0. Mobile keeps using the
+        // reliable default DOM renderer (WebGL was historically avoided there for
+        // context-loss/memory reasons); desktop uses WebGL and falls back to the
+        // DOM renderer on failure or context loss.
         if (this.isMobile) {
-            console.log('[Renderer] Mobile detected, using Canvas renderer for reliability');
-            this._loadCanvasAddon();
+            console.log('[Renderer] Mobile detected, using DOM renderer for reliability');
             return;
         }
         if (typeof WebglAddon !== 'undefined') {
             try {
                 this.webglAddon = new WebglAddon.WebglAddon();
                 this.webglAddon.onContextLoss(() => {
-                    this.webglAddon.dispose();
+                    const addon = this.webglAddon;
                     this.webglAddon = null;
-                    this._loadCanvasAddon();
+                    try { if (addon) addon.dispose(); } catch (_) {}
+                    console.log('[Renderer] WebGL context lost, using DOM renderer');
                 });
                 this.terminal.loadAddon(this.webglAddon);
             } catch (e) {
-                console.log('[Renderer] WebGL unavailable, using Canvas renderer');
-                this._loadCanvasAddon();
+                this.webglAddon = null;
+                console.log('[Renderer] WebGL unavailable, using DOM renderer');
             }
         } else {
-            console.log('[Renderer] WebGL unavailable, using Canvas renderer');
-            this._loadCanvasAddon();
-        }
-    }
-
-    _loadCanvasAddon() {
-        if (typeof CanvasAddon !== 'undefined') {
-            try {
-                this.canvasAddon = new CanvasAddon.CanvasAddon();
-                this.terminal.loadAddon(this.canvasAddon);
-            } catch (e) {
-                console.log('[Renderer] Canvas unavailable, using DOM renderer (slower)');
-            }
-        } else {
-            console.log('[Renderer] Canvas unavailable, using DOM renderer (slower)');
+            console.log('[Renderer] WebGL unavailable, using DOM renderer');
         }
     }
 
@@ -4259,6 +4277,9 @@ class ClaudeCodeWebInterface {
         const enableSessionStickyNotes = document.getElementById('enableSessionStickyNotes');
         if (enableSessionStickyNotes) enableSessionStickyNotes.checked = settings.enableSessionStickyNotes ?? true;
 
+        const wheelScrollMode = document.getElementById('wheelScrollMode');
+        if (wheelScrollMode) wheelScrollMode.value = settings.wheelScrollMode || 'dontHijack';
+
         // Update install section
         this._updateInstallSection();
     }
@@ -4559,7 +4580,11 @@ class ClaudeCodeWebInterface {
             notifVolume: 30,
             notifDesktop: true,
             enableSessionStickyNotes: true,
-            tabSnapshotLines: 500
+            tabSnapshotLines: 500,
+            // Trackpad/mouse-wheel behaviour inside full-screen (alt-buffer) apps:
+            //   'dontHijack' - wheel does nothing there (no menu hijack in the Claude Code TUI)
+            //   'altScroll'  - wheel sends Up/Down arrows (pagers like `less` scroll)
+            wheelScrollMode: 'dontHijack'
         };
     }
 
@@ -4602,7 +4627,8 @@ class ClaudeCodeWebInterface {
             notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
             notifDesktop: document.getElementById('notifDesktop')?.checked ?? true,
             enableSessionStickyNotes: document.getElementById('enableSessionStickyNotes')?.checked ?? true,
-            tabSnapshotLines: parseInt(document.getElementById('tabSnapshotLines')?.value || '500', 10)
+            tabSnapshotLines: parseInt(document.getElementById('tabSnapshotLines')?.value || '500', 10),
+            wheelScrollMode: document.getElementById('wheelScrollMode')?.value || 'dontHijack'
         };
 
         try {
@@ -4650,6 +4676,10 @@ class ClaudeCodeWebInterface {
         if (settings.cursorStyle) this.terminal.options.cursorStyle = settings.cursorStyle;
         this.terminal.options.cursorBlink = settings.cursorBlink ?? true;
         if (settings.scrollback) this.terminal.options.scrollback = settings.scrollback;
+
+        // Cache the wheel-scroll policy for the capture-phase wheel handler
+        // (read live per wheel event without touching localStorage each notch).
+        this._wheelScrollMode = settings.wheelScrollMode || 'dontHijack';
 
         // Push the instant-snapshot line cap to the cache (0 disables capture+paint).
         if (this.snapshotCache && settings.tabSnapshotLines !== undefined) {

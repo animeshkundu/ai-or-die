@@ -402,7 +402,17 @@ class UsageReader {
         }
       }
     } catch (error) {
-      console.error('Error finding JSONL files:', error);
+      // A missing ~/.claude/projects directory (no Claude sessions recorded yet,
+      // a user who has never run Claude, or a fresh CI runner) is an EXPECTED,
+      // benign condition — return an empty list silently. This path fired on
+      // every 10s usage poll (handleGetUsage -> getUsageStats/burn-rate/etc. ->
+      // readAllEntries -> findJsonlFiles); on Windows, console.error writes to a
+      // pipe are SYNCHRONOUS and block the event loop, which measurably delayed
+      // WebSocket handling (the terminal-join) and tripped the PROC-04
+      // event-loop gate on CI. compactStale() already handles ENOENT this way.
+      if (!error || error.code !== 'ENOENT') {
+        console.error('Error finding JSONL files:', error);
+      }
     }
 
     return files;
