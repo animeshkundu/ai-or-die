@@ -3523,7 +3523,11 @@ class ClaudeCodeWebServer {
         if (!this.noAuth && this.auth) {
           const url = new URL(info.req.url, 'ws://localhost');
           const token = url.searchParams.get('token');
-          return token === this.auth;
+          // Parity with the HTTP auth middleware: accept the bearer token via the
+          // Authorization header too, so a reverse proxy / mesh sidecar that injects
+          // `Authorization: Bearer <token>` on the WS upgrade authenticates the socket.
+          const header = info.req.headers && info.req.headers['authorization'];
+          return token === this.auth || header === `Bearer ${this.auth}`;
         }
         return true;
       }
