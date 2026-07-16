@@ -6,15 +6,26 @@ const path = require('path');
 // Keep the host machine awake while the ai-or-die server runs (Windows 11).
 //
 // Mechanism: spawn ONE long-lived Windows PowerShell (5.1, in-box) helper that
-// P/Invokes SetThreadExecutionState from kernel32.dll to hold a power
-// assertion, then blocks on stdin. When the parent closes stdin (graceful
-// release) OR dies (the OS tears down the pipe -> ReadLine() returns null), the
-// helper clears the assertion and exits. Windows also drops a thread's
-// execution-state flags when the holding process dies, so even taskkill /F
-// cannot leak the assertion past reboot. No native deps, no powercfg.
+// holds TWO redundant kernel32 power assertions, then blocks on stdin:
+//   1. SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED) -- the legacy
+//      per-thread assertion (shows in `powercfg /requests` with no reason text).
+//   2. PowerCreateRequest + PowerSetRequest(PowerRequestSystemRequired) with a
+//      REASON_CONTEXT SimpleReasonString of "GitHub Copilot CLI session active".
+//      This is the exact API + reason string the GitHub Copilot CLI /keep-alive
+//      registers (its bundled cli-native.node calls the same kernel32 Power*
+//      functions with that wide string), so `powercfg /requests` shows a
+//      byte-identical "GitHub Copilot CLI session active" line.
+// Holding both is deliberate belt-and-suspenders (chosen over Power*-only): if
+// either API is refused at runtime the other still keeps the machine awake. The
+// helper prints OK once AT LEAST ONE assertion is held. When the parent closes
+// stdin (graceful release) OR dies (the OS tears down the pipe -> ReadLine()
+// returns null), the helper clears both and exits. Windows also drops a thread's
+// execution-state flags AND releases a process's power requests when the holding
+// process dies, so even taskkill /F cannot leak past reboot. No native deps.
 //
 // Windows-only by design; an instant no-op on macOS/Linux. See
-// docs/specs/keepalive.md and docs/adrs/0028-windows-keepalive.md.
+// docs/specs/keepalive.md and
+// docs/adrs/0029-windows-keepalive-power-request.md (supersedes ADR-0028).
 
 // SetThreadExecutionState flags as DECIMAL uint32 literals. PowerShell 5.1
 // parses 0x80000001 as a negative Int32 and the [uint32] cast then throws, so
@@ -25,6 +36,15 @@ const path = require('path');
 const ES_CONTINUOUS = 2147483648;
 const ES_SYSTEM = 2147483649;
 const ES_SYSTEM_DISPLAY = 2147483651;
+
+// POWER_REQUEST_TYPE enum values passed to PowerSetRequest / PowerClearRequest.
+// Small ints, so no PS 5.1 hex/Int32 parsing hazard (unlike the ES_ flags).
+const PR_DISPLAY = 0; // PowerRequestDisplayRequired
+const PR_SYSTEM = 1;  // PowerRequestSystemRequired
+
+// REASON_CONTEXT.SimpleReasonString shown by `powercfg /requests`. Byte-for-byte
+// the string the GitHub Copilot CLI registers, so the entry is indistinguishable.
+const KEEPALIVE_REASON = 'GitHub Copilot CLI session active';
 
 const READY_TIMEOUT_MS = 5000;
 
@@ -52,7 +72,25 @@ class KeepaliveManager {
   // ---- pure builders (static so tests assert them without spawning) ----
 
   static buildScript(displayRequired, ppid = process.pid) {
-    const assert = displayRequired ? ES_SYSTEM_DISPLAY : ES_SYSTEM;
+    const stesAssert = displayRequired ? ES_SYSTEM_DISPLAY : ES_SYSTEM;
+    // One Add-Type carrying the REASON_CONTEXT struct (SIMPLE_STRING layout:
+    // Version + Flags + a single LPWStr) and the four kernel32 P/Invokes.
+    // Attributes are fully qualified so the compile never depends on Add-Type's
+    // default `using`s. The native REASON_CONTEXT is a union (SimpleReasonString
+    // XOR a larger Detailed struct); we only ever use SIMPLE_STRING, but two
+    // long pad fields make the marshalled struct >= the native union size
+    // (32 bytes x64 / 28 x86) so PowerCreateRequest can never read past the [In]
+    // buffer. Marshalling verified on a real Windows host.
+    const members = [
+      '[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]',
+      'public struct REASON_CONTEXT { public uint Version; public uint Flags; [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.LPWStr)] public string Reason; public long Pad0; public long Pad1; }',
+      '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint e);',
+      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)] public static extern System.IntPtr PowerCreateRequest(ref REASON_CONTEXT Context);',
+      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)] public static extern bool PowerSetRequest(System.IntPtr PowerRequest, int RequestType);',
+      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)] public static extern bool PowerClearRequest(System.IntPtr PowerRequest, int RequestType);',
+      '[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)] public static extern bool CloseHandle(System.IntPtr hObject);',
+    ].join('\n');
+
     return [
       // 'Stop' is load-bearing: under Constrained Language Mode / WDAC /
       // AppLocker / EDR, Add-Type (which writes a .cs to %TEMP% and shells to
@@ -65,13 +103,39 @@ class KeepaliveManager {
       // input) so a stale/orphaned helper is identifiable for triage:
       //   Get-CimInstance Win32_Process -Filter "Name='powershell.exe'"
       `# aod-keepalive ppid=${ppid}`,
-      `Add-Type -Name P -Namespace W -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint e);'`,
-      // exit 1 when the assertion is refused so the helper never blocks on
-      // stdin WITHOUT actually holding the assertion (which would otherwise
-      // latch us "started" while the machine can still sleep).
-      `if ([W.P]::SetThreadExecutionState([uint32]${assert}) -ne 0) { [Console]::Out.WriteLine('OK'); [Console]::Out.Flush() } else { [Console]::Error.WriteLine('SetThreadExecutionState returned 0'); exit 1 }`,
+      `Add-Type -Name P -Namespace W -MemberDefinition '${members}'`,
+      `$held = $false`,
+      // (1) Legacy per-thread assertion. Redundant safety net; carries no name in
+      // `powercfg /requests`.
+      `if ([W.P]::SetThreadExecutionState([uint32]${stesAssert}) -ne 0) { $held = $true }`,
+      // (2) Named power request -- this is the "GitHub Copilot CLI session active"
+      // line. Flags=1 is POWER_REQUEST_CONTEXT_SIMPLE_STRING; Version=0.
+      `$ctx = New-Object 'W.P+REASON_CONTEXT'`,
+      `$ctx.Version = 0`,
+      `$ctx.Flags = 1`,
+      `$ctx.Reason = '${KEEPALIVE_REASON}'`,
+      `$h = [W.P]::PowerCreateRequest([ref]$ctx)`,
+      // PowerCreateRequest returns NULL or INVALID_HANDLE_VALUE (-1) on failure.
+      `$hv = $h.ToInt64()`,
+      `$powerSys = $false`,
+      ...(displayRequired ? [`$powerDisp = $false`] : []),
+      // Set each request type independently so "at least one held" counts a
+      // display-only success too, and each is cleared only if it was set.
+      `if ($hv -ne 0 -and $hv -ne -1) {`,
+      `  if ([W.P]::PowerSetRequest($h, ${PR_SYSTEM})) { $held = $true; $powerSys = $true }`,
+      ...(displayRequired ? [`  if ([W.P]::PowerSetRequest($h, ${PR_DISPLAY})) { $held = $true; $powerDisp = $true }`] : []),
+      `}`,
+      // Only latch "started" (block on stdin) when SOMETHING is actually held, so
+      // a total failure surfaces as ready=false instead of a silent awake-less
+      // block. Close a valid-but-unused handle before exiting so nothing lingers.
+      `if (-not $held) { if ($hv -ne 0 -and $hv -ne -1) { [void][W.P]::CloseHandle($h) } [Console]::Error.WriteLine('SetThreadExecutionState and PowerSetRequest both failed'); exit 1 }`,
+      `[Console]::Out.WriteLine('OK'); [Console]::Out.Flush()`,
       `while ($null -ne [Console]::In.ReadLine()) {}`,
+      // Release each held assertion on EOF; process death also drops all of them.
       `[void][W.P]::SetThreadExecutionState([uint32]${ES_CONTINUOUS})`,
+      `if ($powerSys) { [void][W.P]::PowerClearRequest($h, ${PR_SYSTEM}) }`,
+      ...(displayRequired ? [`if ($powerDisp) { [void][W.P]::PowerClearRequest($h, ${PR_DISPLAY}) }`] : []),
+      `if ($hv -ne 0 -and $hv -ne -1) { [void][W.P]::CloseHandle($h) }`,
     ].join('\n');
   }
 
@@ -206,8 +270,8 @@ class KeepaliveManager {
           const hint = firstErr || 'powershell.exe unavailable or blocked (Constrained Language Mode / WDAC / AV)';
           this._safe(() => this._logger.warn && this._logger.warn(
             `⚠  keepalive: could not hold the wake assertion; the machine may sleep (${hint}). Disable with --no-keepalive.`));
-          // Reap a helper that timed out without exiting (e.g. SetThreadExecutionState
-          // returned 0 and it is blocked on stdin) so it cannot leak.
+          // Reap a helper that timed out without exiting (e.g. both assertions were
+          // refused yet it is somehow blocked on stdin) so it cannot leak.
           if (this._child === child) this._safe(() => this.releaseSync());
         }
       }).catch(() => {});
