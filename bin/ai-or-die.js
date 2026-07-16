@@ -46,7 +46,8 @@ program
   .option('--sticky-notes-model <url>', 'override the sticky-note model GGUF download URL')
   .option('--sticky-notes-threads <number>', 'CPU threads for sticky-note inference (default: auto — three-quarters of the cores on CPU, gentle on GPU)')
   .option('--no-keepalive', 'disable keeping the machine awake while the server runs (Windows only; on by default)')
-  .option('--keepalive-display', 'also keep the display on (default keeps the system awake but lets the monitor sleep)');
+  .option('--keepalive-display', 'also keep the display on (default keeps the system awake but lets the monitor sleep)')
+  .option('--disable-hibernation', 'disable OS hibernation + set sleep/hibernate timeouts to Never via elevated powercfg (Windows only; off by default; prompts for UAC; needed to stop host-initiated hibernation on Hyper-V guests)');
 
 // Auto-open is OFF by default and opt-in via --open. Legacy callers may still pass
 // --no-open (the old opt-out flag); filter it out so it parses harmlessly as a no-op.
@@ -138,6 +139,10 @@ async function main() {
       // the display on.
       keepalive: options.keepalive !== false && process.env.AIORDIE_DISABLE_KEEPALIVE !== '1',
       keepaliveDisplay: options.keepaliveDisplay === true || process.env.AIORDIE_KEEPALIVE_DISPLAY === '1',
+      // Opt-in: disable OS hibernation (+ sleep/hibernate timeouts -> Never) via
+      // an elevated powercfg. Off by default. The wake assertion can't block a
+      // host-initiated hibernate (Hyper-V vmicshutdown); this removes the target.
+      disableHibernation: options.disableHibernation === true || process.env.AIORDIE_DISABLE_HIBERNATION === '1',
       // Mesh binds loopback-only always: the tailnet `serve` proxy reaches the
       // port, the LAN never does (even with --https). Other modes: all interfaces.
       bindHost: options.mesh ? '127.0.0.1' : undefined,

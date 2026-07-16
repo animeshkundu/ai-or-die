@@ -149,8 +149,48 @@ started.
   CPU throttles and NICs may power down (connections can still drop). To fully
   prevent this the operator must disable Modern Standby at the OS level; out of
   scope for this feature.
+- **Host-initiated hibernation (Hyper-V)** — the wake assertion suppresses only
+  the *idle timer*. A programmatic/forced suspend (Microsoft: STES "cannot be used
+  to prevent ... standby or hibernate") is not covered. On a Hyper-V guest the
+  host's Guest Shutdown Service (`vmicshutdown`) can request **hibernation** via
+  the Application API; the assertion cannot block it. The opt-in hibernation guard
+  below removes that vector.
 
-## Manual verification (Windows 11)
+## Host-initiated hibernation guard (`--disable-hibernation`, opt-in)
+
+`HibernationGuard` (`src/hibernation-guard.js`) is a sibling to `KeepaliveManager`
+that removes the sleep *target* the assertion cannot block. **OFF by default**;
+enable with `--disable-hibernation` / `AIORDIE_DISABLE_HIBERNATION=1`. Windows
+only; skipped under `underTest` / `CI`. See ADR-0030.
+
+One in-box `powershell.exe` runs once at startup:
+
+1. **Detect (non-privileged)** — read `HKLM\SYSTEM\CurrentControlSet\Control\Power\
+   HibernateEnabled`. If `0`, print `SKIPPED` and exit — **no UAC prompt**. Once
+   configured, subsequent launches never prompt.
+2. **Elevate only if needed** — otherwise `Start-Process -Verb RunAs` launches ONE
+   elevated `cmd.exe` (one UAC prompt) running: `powercfg /hibernate off`, and
+   `powercfg /change {standby,hibernate}-timeout-{ac,dc} 0` (→ Never). The flag is
+   the pre-approval; UAC is the OS approve/deny. Already-elevated shells skip the
+   prompt.
+3. **Best-effort + non-fatal** — a declined UAC, a headless/no-desktop session, or
+   any spawn failure logs a **warn** and startup continues. The helper prints one
+   of `APPLIED` / `SKIPPED` / `DENIED` / `ERROR`, which the guard maps to an
+   info/warn line. Never throws.
+
+| Token | Meaning | Level |
+|-------|---------|-------|
+| `APPLIED` | hibernation disabled + timeouts set to Never | info |
+| `SKIPPED` | already disabled — no UAC shown | info |
+| `DENIED`  | UAC declined — hibernation left enabled | warn |
+| `ERROR`   | spawn/exec failure (hint in stderr) | warn |
+
+**Persistent by design** — the change is a machine setup, *not* released on exit.
+Reverse manually with `powercfg /hibernate on`. All powercfg commands are
+constants (no user input); the parent-PID tag `# aod-hibernation ppid=` aids
+triage.
+
+
 
 ```text
 node bin/ai-or-die.js
