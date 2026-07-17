@@ -83,21 +83,38 @@ describe('KeepaliveManager', () => {
   });
 
   describe('buildScript / buildArgs (pure)', () => {
-    it('uses $ErrorActionPreference=Stop and the decimal system flag', () => {
+    it('holds both assertions: STES (decimal system flag) + a named power request', () => {
       const s = KeepaliveManager.buildScript(false, 4242);
       assert.ok(s.includes("$ErrorActionPreference = 'Stop'"), 'has Stop preference');
+      // (1) legacy SetThreadExecutionState net
+      assert.ok(s.includes('SetThreadExecutionState'), 'P/Invokes the legacy API');
       assert.ok(s.includes('[uint32]2147483649'), 'asserts ES_CONTINUOUS|ES_SYSTEM_REQUIRED');
       assert.ok(!s.includes('2147483651'), 'does NOT request display when system-only');
       assert.ok(s.includes('[uint32]2147483648'), 'clears with ES_CONTINUOUS alone');
-      assert.ok(s.includes('aod-keepalive ppid=4242'), 'tags the parent pid');
-      assert.ok(s.includes('exit 1'), 'exits when the assertion is refused (no silent block)');
-      assert.ok(s.includes('SetThreadExecutionState'), 'P/Invokes the API');
       assert.ok(!/0x8000000/i.test(s), 'no hex flag literal');
+      // (2) named power request (the Copilot-identical entry)
+      assert.ok(s.includes('PowerCreateRequest'), 'creates a power request');
+      assert.ok(s.includes('PowerSetRequest($h, 1)'), 'sets PowerRequestSystemRequired');
+      assert.ok(!s.includes('PowerSetRequest($h, 0)'), 'no display power request when system-only');
+      assert.ok(s.includes('$ctx.Flags = 1'), 'POWER_REQUEST_CONTEXT_SIMPLE_STRING');
+      assert.ok(s.includes('GitHub Copilot CLI session active'), 'carries the Copilot reason string');
+      // shared
+      assert.ok(s.includes('aod-keepalive ppid=4242'), 'tags the parent pid');
+      assert.ok(s.includes('exit 1'), 'exits when BOTH assertions are refused (no silent block)');
     });
 
-    it('adds the display flag when keepDisplayOn', () => {
+    it('adds the display flag/request to BOTH mechanisms when keepDisplayOn', () => {
       const s = KeepaliveManager.buildScript(true, 1);
-      assert.ok(s.includes('[uint32]2147483651'), 'asserts +ES_DISPLAY_REQUIRED');
+      assert.ok(s.includes('[uint32]2147483651'), 'STES asserts +ES_DISPLAY_REQUIRED');
+      assert.ok(s.includes('PowerSetRequest($h, 0)'), 'also sets PowerRequestDisplayRequired');
+      assert.ok(s.includes('PowerClearRequest($h, 0)'), 'clears the display request on release');
+    });
+
+    it('releases both on stdin EOF (clear STES + PowerClearRequest + CloseHandle)', () => {
+      const s = KeepaliveManager.buildScript(false, 1);
+      assert.ok(s.includes('while ($null -ne [Console]::In.ReadLine()) {}'), 'blocks on stdin, releases on EOF');
+      assert.ok(s.includes('PowerClearRequest($h, 1)'), 'clears the system power request');
+      assert.ok(s.includes('CloseHandle($h)'), 'closes the request handle');
     });
 
     it('builds non-interactive, profile-less, bypass argv ending in the script', () => {

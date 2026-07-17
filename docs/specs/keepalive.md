@@ -1,7 +1,12 @@
 # Spec: Keep-Awake (prevent OS sleep while the server runs)
 
-Holds a Windows power assertion for the lifetime of the ai-or-die server so the
-host does not sleep mid-session. See ADR-0028 for rationale and rejected options.
+Holds two redundant Windows power assertions for the lifetime of the ai-or-die
+server so the host does not sleep mid-session. One of them is a named
+`PowerCreateRequest` carrying the reason string `GitHub Copilot CLI session
+active` (byte-identical to what the GitHub Copilot CLI `/keep-alive` registers),
+so `powercfg /requests` reads as Copilot. See ADR-0028 (original design) and
+**ADR-0029 (current mechanism, supersedes 0028)** for rationale and rejected
+options.
 
 ## Components
 
@@ -13,29 +18,53 @@ host does not sleep mid-session. See ADR-0028 for rationale and rejected options
 
 ## Mechanism
 
-One long-lived `powershell.exe` (Windows PowerShell 5.1, in-box) runs:
+One long-lived `powershell.exe` (Windows PowerShell 5.1, in-box) holds **two
+redundant kernel32 power assertions**, then blocks on stdin:
 
 ```powershell
 $ErrorActionPreference = 'Stop'
 # aod-keepalive ppid=<parent pid>
-Add-Type -Name P -Namespace W -MemberDefinition '[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern uint SetThreadExecutionState(uint e);'
-if ([W.P]::SetThreadExecutionState([uint32]2147483649) -ne 0) { [Console]::Out.WriteLine('OK'); [Console]::Out.Flush() }
+Add-Type -Name P -Namespace W -MemberDefinition '<REASON_CONTEXT struct + 4 kernel32 P/Invokes>'
+$held = $false
+# (1) legacy per-thread assertion (unnamed in powercfg /requests)
+if ([W.P]::SetThreadExecutionState([uint32]2147483649) -ne 0) { $held = $true }
+# (2) named power request -- the "GitHub Copilot CLI session active" entry
+$ctx = New-Object 'W.P+REASON_CONTEXT'
+$ctx.Version = 0
+$ctx.Flags = 1                                      # POWER_REQUEST_CONTEXT_SIMPLE_STRING
+$ctx.Reason = 'GitHub Copilot CLI session active'
+$h = [W.P]::PowerCreateRequest([ref]$ctx)
+$hv = $h.ToInt64()
+$power = $false
+if ($hv -ne 0 -and $hv -ne -1) { if ([W.P]::PowerSetRequest($h, 1)) { $held = $true; $power = $true } }
+if (-not $held) { [Console]::Error.WriteLine('...both failed'); exit 1 }
+[Console]::Out.WriteLine('OK'); [Console]::Out.Flush()
 while ($null -ne [Console]::In.ReadLine()) {}
-[void][W.P]::SetThreadExecutionState([uint32]2147483648)
+[void][W.P]::SetThreadExecutionState([uint32]2147483648)   # clear STES
+if ($power) { [void][W.P]::PowerClearRequest($h, 1) }      # clear the request
+if ($hv -ne 0 -and $hv -ne -1) { [void][W.P]::CloseHandle($h) }
 ```
+
+The named request (2) uses the **exact** API and reason string of the GitHub
+Copilot CLI `/keep-alive` (confirmed by disassembling its `cli-native.node`), so
+`powercfg /requests` shows a byte-identical `GitHub Copilot CLI session active`
+line. The holding process is still `powershell.exe` — it cannot be renamed; only
+the reason string is Copilot's. Holding both assertions is deliberate
+belt-and-suspenders (see ADR-0029).
 
 Spawned via the absolute path `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`
 with `-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command <script>`,
 `windowsHide: true`, `shell: false`, `stdio: ['pipe','pipe','pipe']`.
 
-- Prints `OK` once the assertion is held (parent readiness signal), then blocks
-  on stdin. Closing stdin (release) **or** parent death (pipe closes → EOF)
-  clears the assertion and exits.
+- Prints `OK` once **at least one** assertion is held (parent readiness signal),
+  then blocks on stdin. Closing stdin (release) **or** parent death (pipe closes
+  → EOF) clears both assertions and exits. `exit 1` (→ readiness false → visible
+  warn) only when **both** are refused.
 - The child and all three stdio streams are `unref()`'d so the helper can never
   keep the parent's event loop alive (`unref()` does not affect stdin
   writability, so `release()` can still `.end()` it).
 
-### Flags (decimal `[uint32]`, never hex)
+### SetThreadExecutionState flags (decimal `[uint32]`, never hex)
 
 | Value | Meaning |
 |-------|---------|
@@ -45,6 +74,21 @@ with `-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command <script>`,
 
 Hex `0x80000001` is misparsed as a negative `Int32` in PS 5.1 and the `[uint32]`
 cast throws — the decimal forms are mandatory.
+
+### Power request (named, Copilot-identical)
+
+`PowerCreateRequest` → `PowerSetRequest(type)` → `PowerClearRequest(type)` +
+`CloseHandle`, with a `REASON_CONTEXT` marshalled `Sequential`/`Unicode`
+(`Version = 0`, `Flags = 1` = `POWER_REQUEST_CONTEXT_SIMPLE_STRING`,
+`SimpleReasonString = "GitHub Copilot CLI session active"` as an `LPWStr`).
+
+| `POWER_REQUEST_TYPE` | Value | When |
+|----------------------|-------|------|
+| `PowerRequestSystemRequired` | `1` | always (default) |
+| `PowerRequestDisplayRequired` | `0` | added by `--keepalive-display` |
+
+Small ints, so no hex/`Int32` hazard. `PowerCreateRequest` returns `NULL` /
+`INVALID_HANDLE_VALUE` (-1) on failure — both are handled before `PowerSetRequest`.
 
 ## Configuration
 
@@ -105,21 +149,66 @@ started.
   CPU throttles and NICs may power down (connections can still drop). To fully
   prevent this the operator must disable Modern Standby at the OS level; out of
   scope for this feature.
+- **Host-initiated hibernation (Hyper-V)** — the wake assertion suppresses only
+  the *idle timer*. A programmatic/forced suspend (Microsoft: STES "cannot be used
+  to prevent ... standby or hibernate") is not covered. On a Hyper-V guest the
+  host's Guest Shutdown Service (`vmicshutdown`) can request **hibernation** via
+  the Application API; the assertion cannot block it. The opt-in hibernation guard
+  below removes that vector.
 
-## Manual verification (Windows 11)
+## Host-initiated hibernation guard (`--disable-hibernation`, opt-in)
+
+`HibernationGuard` (`src/hibernation-guard.js`) is a sibling to `KeepaliveManager`
+that removes the sleep *target* the assertion cannot block. **OFF by default**;
+enable with `--disable-hibernation` / `AIORDIE_DISABLE_HIBERNATION=1`. Windows
+only; skipped under `underTest` / `CI`. See ADR-0030.
+
+One in-box `powershell.exe` runs once at startup:
+
+1. **Detect (non-privileged)** — read `HKLM\SYSTEM\CurrentControlSet\Control\Power\
+   HibernateEnabled`. If `0`, print `SKIPPED` and exit — **no UAC prompt**. Once
+   configured, subsequent launches never prompt.
+2. **Elevate only if needed** — otherwise `Start-Process -Verb RunAs` launches ONE
+   elevated `cmd.exe` (one UAC prompt) running: `powercfg /hibernate off`, and
+   `powercfg /change {standby,hibernate}-timeout-{ac,dc} 0` (→ Never). The flag is
+   the pre-approval; UAC is the OS approve/deny. Already-elevated shells skip the
+   prompt.
+3. **Best-effort + non-fatal** — a declined UAC, a headless/no-desktop session, or
+   any spawn failure logs a **warn** and startup continues. The helper prints one
+   of `APPLIED` / `SKIPPED` / `DENIED` / `ERROR`, which the guard maps to an
+   info/warn line. Never throws.
+
+| Token | Meaning | Level |
+|-------|---------|-------|
+| `APPLIED` | hibernation disabled + timeouts set to Never | info |
+| `SKIPPED` | already disabled — no UAC shown | info |
+| `DENIED`  | UAC declined — hibernation left enabled | warn |
+| `ERROR`   | spawn/exec failure (hint in stderr) | warn |
+
+**Persistent by design** — the change is a machine setup, *not* released on exit.
+Reverse manually with `powercfg /hibernate on`. All powercfg commands are
+constants (no user input); the parent-PID tag `# aod-hibernation ppid=` aids
+triage.
+
+
 
 ```text
 node bin/ai-or-die.js
-# in another shell:
-powercfg /requests        # SYSTEM: shows a [PROCESS] ...\powershell.exe entry
-# Ctrl+C the server, re-run powercfg /requests -> entry is gone.
+# in an ELEVATED shell (powercfg /requests needs admin to show entries):
+powercfg /requests
+#   SYSTEM:
+#   [PROCESS] \Device\...\powershell.exe
+#   GitHub Copilot CLI session active     <- the named PowerSetRequest (Copilot-identical)
+#   [PROCESS] \Device\...\powershell.exe  <- the SetThreadExecutionState net (no reason text)
+# Ctrl+C the server, re-run powercfg /requests -> both entries are gone.
 
-# --keepalive-display adds a DISPLAY: entry.
+# --keepalive-display adds DISPLAY: entries (STES +ES_DISPLAY_REQUIRED and
+#   PowerRequestDisplayRequired).
 # --no-keepalive / AIORDIE_DISABLE_KEEPALIVE=1 -> no entry, no helper spawned.
 
 # Hard-kill check:
 taskkill /F /PID <node pid>
-powercfg /requests        # SYSTEM entry clears within ~seconds (stdin EOF)
+powercfg /requests        # both entries clear within ~seconds (stdin EOF / process death)
 Get-CimInstance Win32_Process -Filter "Name='powershell.exe'"   # no 'aod-keepalive' orphan
 ```
 
@@ -127,8 +216,11 @@ Get-CimInstance Win32_Process -Filter "Name='powershell.exe'"   # no 'aod-keepal
 
 `test/keepalive.test.js` (mocha) — injected `platform` / `spawn` / `logger` +
 fake child, so the Windows logic is exercised on macOS/Linux CI without
-PowerShell: script/argv generation (decimal flags, `Stop`, ppid tag, absolute
-path), platform + enabled gating, readiness (OK / early-exit / timeout), the
-visible warning, stdio unref, idempotency + the double-helper race, and
-`release()` safety. Plus a real-process integration test proving a stdin-blocking
-helper exits when its parent process is killed (the C1 EOF-on-death invariant).
+PowerShell: script/argv generation (both mechanisms — STES decimal flags AND the
+`PowerCreateRequest`/`PowerSetRequest` request with the `GitHub Copilot CLI
+session active` reason string, `Flags=1`, system=1/display=0 request types,
+release + `CloseHandle`; `Stop`, ppid tag, absolute path), platform + enabled
+gating, readiness (OK / early-exit / timeout), the visible warning, stdio unref,
+idempotency + the double-helper race, and `release()` safety. Plus a real-process
+integration test proving a stdin-blocking helper exits when its parent process is
+killed (the C1 EOF-on-death invariant).

@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted (2026-06).
+Accepted (2026-06). **Mechanism superseded by [ADR-0029](0029-windows-keepalive-power-request.md)**
+(2026-07): the helper now also holds a named `PowerCreateRequest` /
+`PowerSetRequest` assertion carrying the reason string
+`GitHub Copilot CLI session active`, while retaining the `SetThreadExecutionState`
+assertion described below. The lifecycle, gating, and degradation design here
+still stand.
 
 ## Context
 

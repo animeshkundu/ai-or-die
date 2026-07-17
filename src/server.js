@@ -34,6 +34,7 @@ const CircularBuffer = require('./utils/circular-buffer');
 const MinHeap = require('./utils/eviction-heap');
 const RestartManager = require('./restart-manager');
 const KeepaliveManager = require('./keepalive-manager');
+const HibernationGuard = require('./hibernation-guard');
 const { ControlEventBus, EVENT_KINDS: CONTROL_EVENT_KINDS } = require('./control/event-bus');
 const TranscriptBuffer = require('./sticky-note-transcript');
 const { createControlRouter } = require('./control/routes');
@@ -286,6 +287,13 @@ class ClaudeCodeWebServer {
       enabled: options.keepalive !== false && !underTest && !isCI &&
         process.env.AIORDIE_DISABLE_KEEPALIVE !== '1',
       keepDisplayOn: !!options.keepaliveDisplay,
+    });
+    // Opt-in, one-shot at startup: disable OS hibernation via elevated powercfg
+    // (Windows only). The wake assertion above only blocks the idle timer; a
+    // host-initiated hibernate (Hyper-V vmicshutdown) needs the target removed.
+    // Off by default; same underTest/CI gating as keepalive.
+    this.hibernationGuard = new HibernationGuard({
+      enabled: !!options.disableHibernation && !underTest && !isCI,
     });
 
     this.sessionStore = new SessionStore(options.sessionStoreOptions);
@@ -3552,6 +3560,9 @@ class ClaudeCodeWebServer {
           // Now listening — hold the OS awake for the server's lifetime
           // (Windows only; no-op elsewhere; never throws).
           this.keepaliveManager.start();
+          // Opt-in one-shot: disable hibernation (elevated) so a Hyper-V host
+          // can't hibernate us. Fire-and-forget; off by default; never throws.
+          this.hibernationGuard.run();
           resolve(server);
         }
       };
