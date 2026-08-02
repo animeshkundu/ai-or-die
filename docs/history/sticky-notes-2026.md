@@ -222,8 +222,8 @@ Reverted to **pull-on-startup** (server `start()` calls `_ensureSttModel()` +
   DISABLED (with a downloading/loading hint) while pulling, ENABLED on ready, and
   uses cloud only when local isn't the configured backend. Decision logic is the
   pure, unit-tested `VoiceHandler.computeMicButtonState()`.
-- Sticky (Gemma): `_ensureStickyNoteEngine()` runs at startup (Node-only;
-  self-gates off under Bun/test/`--no-sticky-notes`). The per-session summariser
+- Sticky (Gemma): `_ensureStickyNoteEngine()` runs at startup only when explicitly
+  enabled (Node-only; self-gates off by default, under Bun, and under test). The per-session summariser
   only runs inference once the engine `isReady()`.
 
 ## Cross-lab review caught what self-review missed

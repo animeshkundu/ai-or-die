@@ -41,7 +41,7 @@ program
   .option('--stt-endpoint <url>', 'use external STT endpoint (OpenAI-compatible)')
   .option('--stt-model-dir <path>', 'custom directory for STT model files')
   .option('--stt-threads <number>', 'CPU threads for STT inference (default: auto, max 4)')
-  .option('--no-sticky-notes', 'disable per-tab AI session summaries + auto tab titles (on by default)')
+  .option('--sticky-notes', 'enable per-tab local AI session summaries (off by default; Claude tab titles remain free)')
   .option('--sticky-notes-model-dir <path>', 'custom directory for the sticky-note model file')
   .option('--sticky-notes-model <url>', 'override the sticky-note model GGUF download URL')
   .option('--sticky-notes-threads <number>', 'CPU threads for sticky-note inference (default: auto — three-quarters of the cores on CPU, gentle on GPU)')
@@ -128,8 +128,8 @@ async function main() {
       sttEndpoint: options.sttEndpoint || process.env.STT_ENDPOINT,
       sttModelDir: options.sttModelDir || process.env.AI_OR_DIE_MODELS_DIR,
       sttThreads: options.sttThreads || process.env.STT_THREADS,
-      // Per-tab AI session summaries (on by default; --no-sticky-notes disables).
-      stickyNotes: options.stickyNotes !== false && process.env.STICKY_NOTES_DISABLED !== '1',
+      // Per-tab AI session summaries are opt-in; --sticky-notes enables them.
+      stickyNotes: options.stickyNotes === true && process.env.STICKY_NOTES_DISABLED !== '1',
       stickyNotesModelDir: options.stickyNotesModelDir || process.env.STICKY_NOTES_MODEL_DIR,
       stickyNotesModel: options.stickyNotesModel || process.env.STICKY_NOTES_MODEL,
       stickyNotesThreads: options.stickyNotesThreads || process.env.STICKY_NOTES_THREADS,

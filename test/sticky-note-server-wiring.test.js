@@ -193,6 +193,16 @@ describe('sticky-note server wiring', function () {
     assert.strictEqual(self._summarizerCalls.pop()[0], 'enable');
   });
 
+  it('_handleSetStickyNotes requires an explicit true opt-in', function () {
+    const self = makeStub();
+    self.claudeSessions.set('s1', { active: true, agent: 'claude', stickyNote: null, connections: new Set(['ws1']) });
+
+    ClaudeCodeWebServer.prototype._handleSetStickyNotes.call(self, 'ws1', { sessionId: 's1' });
+
+    assert.strictEqual(self.claudeSessions.get('s1').stickyNotesEnabled, false);
+    assert.deepStrictEqual(self._summarizerCalls.pop(), ['disable', 's1']);
+  });
+
   it('_maybeStartStickyNotes summarises terminal tabs too, but skips disabled sessions', function () {
     const self = makeStub();
     // Terminal tab is now eligible (users run AI CLIs inside a shell).
@@ -244,12 +254,15 @@ describe('sticky-note server wiring', function () {
     assert.strictEqual(self._summarizerCalls.filter((c) => c[0] === 'enable').length, 0, 'summariser NOT enabled');
   });
 
-  it('_maybeStartStickyNotes skips an opted-out tab with NO bind sidecar', function () {
+  it('_maybeStartStickyNotes keeps the free Claude title tail running when summaries are disabled', function () {
     let pollStarted = 0;
-    const self = makeStub({ _startStickyJsonlPoll: () => { pollStarted++; } });
-    self.claudeSessions.set('off', { stickyNotesEnabled: false, stickyNote: null }); // opted out, no sidecar
+    const self = makeStub({
+      stickyNoteEngine: { _enabled: false, getStatus: () => 'unavailable', getDownloadProgress: () => null },
+      _startStickyJsonlPoll: () => { pollStarted++; },
+    });
+    self.claudeSessions.set('off', { stickyNotesEnabled: false, stickyNote: null });
     ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'off', 'claude', 80, 24);
-    assert.strictEqual(pollStarted, 0, 'no binding need + opted out → nothing started');
+    assert.strictEqual(pollStarted, 1, 'Claude title tail starts without the summary engine');
     assert.strictEqual(self._summarizerCalls.filter((c) => c[0] === 'enable').length, 0);
   });
 
@@ -463,17 +476,17 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
         ['ui', { active: true, agent: 'claude', workingDir: '/proj' }],            // claude, no sidecar
         ['term', { active: true, agent: 'terminal', claudeBindSidecar: '/x/t.json', workingDir: '/proj' }],
       ]),
-      // summariser disabled for everyone (e.g. --no-sticky-notes / node-llama-cpp missing)
+      // summariser disabled for everyone (default mode / node-llama-cpp missing)
       stickyNoteSummarizer: { isEnabled: () => false },
       _isAiAgent: ClaudeCodeWebServer.prototype._isAiAgent,
       _isStickyEligible: ClaudeCodeWebServer.prototype._isStickyEligible,
       _pumpStickyJsonl: async (id) => { pumped.push(id); },
     };
     await ClaudeCodeWebServer.prototype._pollStickyJsonl.call(srv);
-    // Only the sidecar-bound CLAUDE session is pumped for binding/turn events even
-    // with the summariser off and the tab opted out; a no-sidecar claude and a
-    // terminal (no claude binding) are skipped.
-    assert.deepStrictEqual(pumped.sort(), ['ctl']);
+    // Every Claude session is pumped for the free ai-title tail and turn events
+    // even with summaries off; a terminal with a Claude sidecar also needs the
+    // model-free control-plane binding.
+    assert.deepStrictEqual(pumped.sort(), ['ctl', 'term', 'ui']);
   });
 
   it('SIDECAR: _ownedClaudeSessions reserves a tab pinned via sidecar', function () {
@@ -674,6 +687,26 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
     await self._pumpStickyJsonl('tab1', cwd);
     assert.ok(self._feeds.some((f) => f.id === 'tab1'), 'expanded tab feeds the summariser');
   });
+
+  it('tails ai-title without an enabled summariser or a model worker', async function () {
+    const cwd = '/Users/x/proj';
+    const body =
+      JSON.stringify({ type: 'ai-title', aiTitle: 'Free Claude Title' }) + '\n' +
+      JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'completed work' }] } }) + '\n';
+    writeSession(cwd, 'title-only.jsonl', body, 0);
+    const self = makeBindStub();
+    self.stickyNoteSummarizer.isEnabled = () => false;
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, stickyNotesEnabled: false });
+
+    await self._pumpStickyJsonl('tab1', cwd);
+
+    assert.strictEqual(self.claudeSessions.get('tab1').autoTitle, 'Free Claude Title');
+    assert.strictEqual(self._feeds.length, 0, 'no summary text is sent to an unavailable engine');
+    assert.ok(
+      self._broadcasts.some((b) => b.data.autoTitle === 'Free Claude Title'),
+      'the independent ai-title update reaches the client'
+    );
+  });
   it('_handleSetStickyActive ref-counts expanded viewers; disconnect purges without leaking', function () {
     const self = makeStub();
     self._stickyActive = new Map();
@@ -760,7 +793,7 @@ describe('sticky-note persistence (session-store round-trip)', function () {
     const s = loaded.get('old');
     assert.ok(s, 'legacy session loads without error');
     assert.ok(!s.stickyNote, 'no sticky note for a legacy session (null/undefined)');
-    assert.notStrictEqual(s.stickyNotesEnabled, false); // undefined -> treated as enabled
+    assert.notStrictEqual(s.stickyNotesEnabled, true); // legacy unset state remains disabled
   });
 
   it('migrates a legacy progress/waitingOn note to done/remaining/updates', function () {

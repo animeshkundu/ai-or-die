@@ -120,7 +120,7 @@ class StickyNoteCard {
   }
 
   _enabled() {
-    return !this.app || this.app.stickyNotesEnabled !== false;
+    return !this.app || this.app.stickyNotesEnabled === true;
   }
 
   // --- public API (used by the toolbar button) -----------------------------

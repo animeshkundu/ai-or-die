@@ -2,9 +2,11 @@
 
 ## Status
 
-Accepted (2026-06). Supersedes the **Model** decision of
-[ADR-0022](0022-local-llm-sticky-notes.md) (Gemma 3 1B). The rest of ADR-0022
-(architecture, worker, redaction, scheduling, on-by-default, degradation) stands.
+Superseded by [ADR-0039](0039-disable-default-local-llm-sticky-notes.md).
+This remains the historical model bake-off and supersedes the **Model** decision of
+[ADR-0022](0022-local-llm-sticky-notes.md) (Gemma 3 1B). Its architecture,
+worker, redaction, scheduling, and degradation history remain; its default-on
+policy is superseded by ADR-0039.
 
 ## Context
 

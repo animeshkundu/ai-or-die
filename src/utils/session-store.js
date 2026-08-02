@@ -239,7 +239,7 @@ class SessionStore {
                 claudePinnedSessionId: session.claudePinnedSessionId || null,
                 autoTitle: session.autoTitle || null,
                 nameIsUserSet: session.nameIsUserSet || false,
-                stickyNotesEnabled: session.stickyNotesEnabled !== false
+                stickyNotesEnabled: session.stickyNotesEnabled === true
             }));
 
             const data = {

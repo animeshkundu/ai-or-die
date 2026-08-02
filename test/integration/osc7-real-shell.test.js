@@ -107,7 +107,15 @@ class Session {
     });
     this.ws.on('message', (raw, isBinary) => {
       if (isBinary) {
-        this.outputAccum += raw.toString('utf-8');
+        const output = raw.toString('utf-8');
+        this.outputAccum += output;
+        // PowerShell's PSReadLine probes the terminal cursor position during
+        // startup. Browsers answer this CSI 6n query through xterm; this raw
+        // WebSocket test client must emulate that reply or pwsh blocks before
+        // it ever renders a prompt.
+        if (output.includes('\x1b[6n')) {
+          this.ws.send(JSON.stringify({ type: 'input', data: '\x1b[1;1R' }));
+        }
         return;
       }
       let msg;
@@ -122,9 +130,10 @@ class Session {
   }
 
   async startTerminal() {
+    const outputLength = this.outputAccum.length;
     this.ws.send(JSON.stringify({ type: 'start_terminal', cols: 80, rows: 24 }));
     await this.waitFor('terminal_started', 10000);
-    await sleep(300);
+    await this.waitForOutputAfter(outputLength, '', 5000);
     return this;
   }
 
@@ -157,6 +166,37 @@ class Session {
           clearInterval(tick);
           clearTimeout(t);
           resolve(this.cwdChangedFrames[this.cwdChangedFrames.length - 1]);
+        }
+      }, 25);
+    });
+  }
+
+  waitForOutput(marker, timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      const tick = setInterval(() => {
+        if (this.outputAccum.includes(marker)) {
+          clearInterval(tick);
+          resolve();
+        } else if (Date.now() - start >= timeoutMs) {
+          clearInterval(tick);
+          reject(new Error('terminal output timed out waiting for ' + JSON.stringify(marker)));
+        }
+      }, 25);
+    });
+  }
+
+  waitForOutputAfter(offset, marker, timeoutMs = 5000) {
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      const tick = setInterval(() => {
+        const freshOutput = this.outputAccum.slice(offset);
+        if (freshOutput.length > 0 && freshOutput.includes(marker)) {
+          clearInterval(tick);
+          resolve();
+        } else if (Date.now() - start >= timeoutMs) {
+          clearInterval(tick);
+          reject(new Error('terminal output timed out waiting for fresh ' + JSON.stringify(marker)));
         }
       }, 25);
     });
@@ -278,12 +318,17 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   // 3. PowerShell hook (verbatim from spec).
   // ──────────────────────────────────────────────────────────────────────
 
-  (HAS_PWSH ? it : it.skip)('pwsh + spec prompt function → cwd_changed on Set-Location', async function () {
+  // The documented prompt function is Windows-specific: `$env:COMPUTERNAME`
+  // combined with a drive-style ProviderPath forms file://host/C:/... . On
+  // POSIX pwsh it instead emits file:////tmp/... (an invalid sandbox path), so
+  // validate the real user contract on its Windows target.
+  (HAS_PWSH && process.platform === 'win32' ? it : it.skip)('pwsh + spec prompt function → cwd_changed on Set-Location', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
+    const pwshOutputAt = sess.outputAccum.length;
     sess.send('exec pwsh -NoLogo -NoProfile\n');
-    await sleep(800);
+    await sess.waitForOutputAfter(pwshOutputAt, 'PS ', 5000);
     // Single-line collapse of the spec's multi-line $PROFILE function.
     const psHook =
       'function prompt { $loc = $executionContext.SessionState.Path.CurrentLocation; ' +
@@ -291,7 +336,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
       '$p = $loc.ProviderPath -replace "\\\\","/"; ' +
       '$out += "$([char]27)]7;file://$env:COMPUTERNAME/$p$([char]7)" }; $out }\n';
     sess.send(psHook);
-    await sleep(400);
+    await sess.waitForOutput('PS ', 5000);
     sess.reset();
 
     sess.send('Set-Location ' + JSON.stringify(path.join(baseDir, 'a')) + '\n');

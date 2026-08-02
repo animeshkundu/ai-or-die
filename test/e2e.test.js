@@ -73,6 +73,33 @@ function collectMessages(ws, type, durationMs = 3000) {
   });
 }
 
+/** Wait until binary terminal output contains a marker, including split frames. */
+function waitForTerminalOutput(ws, marker, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for terminal output "${marker}"`));
+    }, timeoutMs);
+
+    function onMessage(raw, isBinary) {
+      if (!isBinary) return;
+      output += raw.toString();
+      if (output.includes(marker)) {
+        cleanup();
+        resolve();
+      }
+    }
+
+    function cleanup() {
+      clearTimeout(timer);
+      ws.removeListener('message', onMessage);
+    }
+
+    ws.on('message', onMessage);
+  });
+}
+
 /**
  * Send a JSON message over the WebSocket.
  */
@@ -745,6 +772,7 @@ describe('E2E: Input/output round-trip', function () {
   let server;
   let port;
   let ws;
+  let ioSessionId;
 
   before(async function () {
     server = new ClaudeCodeWebServer({ port: 0, noAuth: true });
@@ -754,7 +782,7 @@ describe('E2E: Input/output round-trip', function () {
     // Set up a session with a running terminal for all tests in this block
     ({ ws } = await connectWs(port));
     wsSend(ws, { type: 'create_session', name: 'IO Test' });
-    await waitForMessage(ws, 'session_created');
+    ioSessionId = (await waitForMessage(ws, 'session_created')).sessionId;
     // Set up listener before sending to avoid race condition
     const startedPromise = waitForMessage(ws, 'terminal_started', 15000);
     wsSend(ws, { type: 'start_terminal' });
@@ -798,17 +826,13 @@ describe('E2E: Input/output round-trip', function () {
   it('should replay output buffer when a new client joins the session', async function () {
     // Send a distinctive marker through the terminal
     const marker = `REPLAY_${Date.now()}`;
+    const outputReady = waitForTerminalOutput(ws, marker);
     wsSend(ws, { type: 'input', data: `echo ${marker}\n` });
-    await collectMessages(ws, 'output', 2000);
-
-    // Get the session ID from the server
-    const listRes = await httpRequest('GET', `http://127.0.0.1:${port}/api/sessions/list`);
-    const ioSession = listRes.body.sessions.find(s => s.name === 'IO Test');
-    assert(ioSession, 'Could not find the IO Test session');
+    await outputReady;
 
     // Connect a second client and join the same session
     const { ws: ws2 } = await connectWs(port);
-    wsSend(ws2, { type: 'join_session', sessionId: ioSession.id });
+    wsSend(ws2, { type: 'join_session', sessionId: ioSessionId });
     const joinMsg = await waitForMessage(ws2, 'session_joined');
 
     // The output buffer should contain our marker
