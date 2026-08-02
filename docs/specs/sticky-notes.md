@@ -1,6 +1,7 @@
 # Spec: Per-Tab Sticky Notes & Auto Tab Titles
 
-Local-LLM session summaries. See ADR-0022 for rationale.
+Optional local-LLM session summaries plus model-free Claude tab titles. Local
+summaries are **off by default**; see ADR-0039 for the cost/quality decision.
 
 ## Components
 
@@ -27,13 +28,15 @@ never calls `worker.terminate()` because force-tearing down a
 on Windows. If a worker reports ready after shutdown has begun, the engine
 refuses to adopt it.
 
-On shutdown, `src/sticky-note-worker.js` disposes native objects in order:
+The disabled default does not probe, download, or load the GGUF and does not spawn
+this worker. When explicitly enabled, `src/sticky-note-worker.js` disposes native
+objects in order:
 context, model, then the top-level `llama` backend, before exiting.
 
 ## Data flow
 
 ```
-PTY bytes → server onOutput → summarizer.feed(sessionId, chunk)   [hot path: buffer + timers only]
+PTY bytes → server onOutput → summarizer.feed(sessionId, chunk)   [explicit local-summary opt-in only]
   → @xterm/headless (per session) → snapshot recent rendered lines → redactSecrets
   → engine.infer(prompt) [worker] → JSON {title,goal,progress[],waitingOn[]}
   → session.stickyNote (persisted) → broadcastToSession('sticky_note_update') → client card + tab title
@@ -41,7 +44,8 @@ PTY bytes → server onOutput → summarizer.feed(sessionId, chunk)   [hot path:
 
 ## Update triggers (deterministic)
 
-An update = one inference, attempted only when ALL gates hold: feature enabled
+An update = one inference, attempted only when ALL gates hold: the server was
+started with `--sticky-notes`, the browser Display setting is enabled, feature enabled
 for the session · eligible tab (AI-agent OR terminal — `_isStickyEligible`) ·
 model `ready` · breaker closed · new committed output since last summary ·
 `minInterval` satisfied · not already running.
@@ -52,7 +56,7 @@ minInterval), **initial**, **focus** (foreground transition, gated). Tab switch
 / reconnect are render-only.
 
 Guards: `minInterval = max(20s, 3 × lastInferenceMs)`; single-flight + dirty-bit
-(timeout clears the bit + backs off — no retry-storm); circuit breaker after N
+(a timeout preserves pending work and backs off — no retry-storm); circuit breaker after N
 failures; foreground-first fair dispatch over one shared worker. **Threads are
 auto-selected by the worker once it knows the backend** (`sticky-note-threads.js`
 `pickThreads`): GPU present → the worker requests **full layer offload**
@@ -124,9 +128,10 @@ without github-router), bind to the active, unowned writer in the tab's project 
 The toolbar toggle (`#stickyNoteBtn`) is shown only once the engine reports
 `ready` (not merely when enabled), so it never appears when the model can't run.
 
-### Expand-gating & ai-title (ADR-0025)
+### Expand-gating & ai-title (ADR-0025, superseded in part by ADR-0039)
 
-The card starts **collapsed** (expanding is a deliberate "activate"). Processing
+The card starts **collapsed** (expanding is a deliberate "activate"). If the
+optional summary feature is explicitly enabled, processing
 splits in **three** tiers by cost:
 
 - **Turn-boundary detection (cheap; no model) runs EVERY poll regardless of
@@ -147,7 +152,8 @@ splits in **three** tiers by cost:
   forever-running inference. `_isStickyExpandedActive` gates the note path. A
   collapsed tab freezes its note at `binding.offset`; on re-expand the next poll
   resumes from there in one bounded catch-up read.
-- **The tab title is claude's own `ai-title`, tailed cheaply with no model**
+- **The tab title is claude's own `ai-title`, tailed cheaply with no model,
+  including while local summaries are disabled.**
   (`readNewAiTitle`, a separate always-advancing `binding.titleOffset`) and
   applied via `_applyAiTitle`. It runs every poll regardless of collapse, so even
   a collapsed/never-expanded tab keeps a fresh, self-describing title. Non-claude
@@ -169,15 +175,16 @@ Client → server:
 
 | Flag / env | Effect |
 |------------|--------|
-| `--no-sticky-notes` / `STICKY_NOTES_DISABLED=1` | Disable globally. |
+| `--sticky-notes` | Enable local-LLM summaries globally. Default is off; without this flag the GGUF is not downloaded and no sticky-note worker is spawned. |
+| `STICKY_NOTES_DISABLED=1` | Force local-LLM summaries off, including when the flag was supplied. |
 | `--sticky-notes-model-dir <path>` / `STICKY_NOTES_MODEL_DIR` | Model cache dir. |
 | `--sticky-notes-model <url>` / `STICKY_NOTES_MODEL` | Override the GGUF URL (e.g. the lighter `LFM2-1.2B-Q4_K_M.gguf`). |
 | `--sticky-notes-threads <n>` / `STICKY_NOTES_THREADS` | Inference CPU threads. |
-| Settings → Display → "Session sticky notes & auto-titles" | Per-client on/off (sent to server). |
+| Settings → Display → "Enable local session summaries" | Per-client opt-in (off by default; sent to server). Claude `ai-title` tab titles do not depend on this setting. |
 
 ## Model
 
-Default: `LiquidAI/LFM2-2.6B-GGUF` → `LFM2-2.6B-Q4_K_M.gguf` (~1.56 GB,
+When explicitly enabled: `LiquidAI/LFM2-2.6B-GGUF` → `LFM2-2.6B-Q4_K_M.gguf` (~1.56 GB,
 **SHA-256-pinned** — refuses a swapped same-size file), `contextSize` 8192. The
 cache (`~/.ai-or-die/models/`) is excluded from the disk-quota breaker. Same
 file on Windows + macOS. Chosen by a bake-off over real claude JSONL transcripts
@@ -197,8 +204,8 @@ open a per-session circuit breaker.
 **Windows / CPU backend (primary target).** When the Vulkan/CUDA prebuilt binary
 is incompatible (common on Windows 11), node-llama-cpp falls back to pure CPU
 (`llama.gpu === false`). CPU inference is materially slower — a grammar-constrained
-summary measures ~90s on half-core threading and up to ~160s at 2 threads on a
-16-core box. The fix is twofold: the worker uses **half the cores** on CPU (not
+summary measures ~90s on three-quarter-core threading and up to ~160s at 2 threads on a
+16-core box. The fix is twofold: the worker uses **three-quarters of the cores** on CPU (not
 the gentle 2), and the per-request timeout is a generous **300s watchdog** (was
 60s, tuned for Metal). The first CPU note therefore renders ~90s after the card
 is expanded; the breaker self-heals (a success resets the failure count). A dev

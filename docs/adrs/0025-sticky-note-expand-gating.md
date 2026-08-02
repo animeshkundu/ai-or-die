@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted (2026-06). Extends [ADR-0022](0022-local-llm-sticky-notes.md) /
+Superseded in part by [ADR-0039](0039-disable-default-local-llm-sticky-notes.md).
+The expand-gated LLM policy is retired; the independent `ai-title` tail remains.
+This ADR extends [ADR-0022](0022-local-llm-sticky-notes.md) /
 [ADR-0024](0024-sticky-note-binding-resume.md). No conflict; it changes *when*
 the model runs and *where* the tab title comes from.
 

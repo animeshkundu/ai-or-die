@@ -69,7 +69,7 @@ async function bootAndSpawnGrandchild(port, withIpc, extraEnv) {
   const stdio = withIpc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'];
   const sup = spawn(process.execPath, [
     SUPERVISOR, '--port', String(port), '--disable-auth',
-    '--no-sticky-notes', '--no-stt', '--no-keepalive',
+    '--no-stt', '--no-keepalive',
   ], { cwd: REPO_ROOT, stdio, env: { ...process.env, AOD_SUPERVISOR_RESTART: '1', ...(extraEnv || {}) } });
   state.sup = sup;
   sup.stdout.on('data', (d) => { state.out += d.toString(); });

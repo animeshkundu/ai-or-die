@@ -216,11 +216,9 @@ class ClaudeCodeWebServer {
       modelsDir: options.sttModelDir,
       numThreads: options.sttThreads ? parseInt(options.sttThreads, 10) : undefined,
     });
-    // Per-tab local-LLM "sticky note" summariser. ON by default for AI-agent
-    // tabs; disable globally with --no-sticky-notes / AIORDIE_DISABLE_STICKY_NOTES=1
-    // (sticky-notes only — does NOT affect STT). The engine lazily downloads its
-    // model + spawns its worker on the FIRST AI session start, and degrades to
-    // "unavailable" if node-llama-cpp / the model is missing.
+    // Per-tab local-LLM "sticky note" summariser. It is opt-in through
+    // --sticky-notes, so default startup never downloads a model or spawns a
+    // worker. Claude's model-free ai-title tail remains available independently.
     //
     // Bun: node-llama-cpp's native N-API addon crashes Bun (NAPI FATAL ERROR,
     // exit 133 — a Bun bug, not ours), which would take down the whole server.
@@ -228,7 +226,7 @@ class ClaudeCodeWebServer {
     // also self-gates (see StickyNoteEngine._doInitialize) as defence-in-depth.
     // STT (sherpa) is unaffected and still runs under Bun.
     this._stickyNotesEnabledGlobally =
-      options.stickyNotes !== false && !underTest && !isBun() &&
+      options.stickyNotes === true && !underTest && !isBun() &&
       process.env.AIORDIE_DISABLE_STICKY_NOTES !== '1';
     this._foregroundSessionId = null;
     this._stickyInitStarted = false;
@@ -3404,8 +3402,8 @@ class ClaudeCodeWebServer {
     // engine no-ops without downloading. An external endpoint inits cheaply.
     this._ensureSttModel();
 
-    // Sticky-note (Gemma) model is also pulled on startup so it is `ready` by the
-    // time an AI tab opens. Self-gates: disabled / under-test / Bun → no-op (the
+    // An explicitly enabled sticky-note model is pulled on startup so it is `ready`
+    // by the time an AI tab opens. Self-gates: disabled / under-test / Bun → no-op (the
     // engine never loads node-llama-cpp under Bun, which would crash it). Loads in
     // its own worker thread, so the ~806MB pull never blocks the event loop.
     this._ensureStickyNoteEngine();
@@ -4025,9 +4023,9 @@ class ClaudeCodeWebServer {
         models: {}
       },
       maxBufferSize: 1000,
-      // Sticky-note (local-LLM summary) state. Enabled by default for AI tabs;
-      // a client can opt out via set_sticky_notes. autoTitle/nameIsUserSet drive
-      // auto tab titling without clobbering a manual rename.
+      // Sticky-note (local-LLM summary) state. Disabled by default; a client can
+      // explicitly opt in via set_sticky_notes. autoTitle/nameIsUserSet drive
+      // model-free Claude tab titling without clobbering a manual rename.
       stickyNote: null,
       autoTitle: null,
       nameIsUserSet: false,
@@ -4099,7 +4097,7 @@ class ClaudeCodeWebServer {
       renderedSnapshot, // rendered last screen so idle/empty-buffer joins repaint
       stickyNote: session.stickyNote || null,
       autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
-      stickyNotesEnabled: session.stickyNotesEnabled !== false,
+      stickyNotesEnabled: session.stickyNotesEnabled === true,
       // Deliver the engine status on every join so the toolbar toggle reliably
       // appears once the model is ready (the broadcast-on-init can race a late
       // joiner; this never misses).
@@ -5725,15 +5723,14 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(sessionId);
     if (!session) return;
     if (!this._isStickyEligible(toolName)) return;
-    // A control/fleet claude session with a bind sidecar ALWAYS needs the model-free
-    // JSONL turn-binding pump (fleet await_turn / readiness depend on it) — even if
-    // this tab opted out of sticky-note summarisation or the engine is unavailable.
-    const bindingNeeded = toolName === 'claude' && !!session.claudeBindSidecar;
-    if (session.stickyNotesEnabled === false && !bindingNeeded) return;
+    // Claude tabs always need the model-free JSONL pump: it tails Claude's own
+    // ai-title, and sidecar-bound tabs also drive fleet turn transitions. Terminal
+    // tabs only need it without summaries when github-router supplied a sidecar.
+    const bindingNeeded = toolName === 'claude' || !!session.claudeBindSidecar;
     // The model-free binding/turn pump is a CONTROL-PLANE invariant and runs
     // independently of the OPTIONAL summariser. Enable the LLM summariser only when
     // it is wanted (not opted out) AND its engine is available; always start the poll.
-    if (session.stickyNotesEnabled !== false && this.stickyNoteEngine._enabled) {
+    if (session.stickyNotesEnabled === true && this.stickyNoteEngine._enabled) {
       // Start buffering output now — cheap (a pure-JS headless terminal), never
       // inference. The summariser buffers and produces its first note once ready.
       this.stickyNoteSummarizer.enable(sessionId, {
@@ -5744,7 +5741,9 @@ class ClaudeCodeWebServer {
       });
       this._ensureStickyNoteEngine();
     }
-    this._startStickyJsonlPoll();
+    if (bindingNeeded || (session.stickyNotesEnabled === true && this.stickyNoteEngine._enabled)) {
+      this._startStickyJsonlPoll();
+    }
   }
 
   // Poll each summarising tab for a claude JSONL transcript at its cwd; when found,
@@ -5761,10 +5760,10 @@ class ClaudeCodeWebServer {
   }
 
   async _pollStickyJsonl() {
-    // NOT gated on the sticky-note engine: the model-free binding + turn detection
-    // below must run for control/fleet claude sessions even when the summariser is
-    // disabled (--no-sticky-notes) or its model is unavailable. The LLM note
-    // inference inside _pumpStickyJsonl stays independently gated.
+    // NOT gated on the sticky-note engine: the model-free title tail + turn
+    // detection below must run for Claude sessions even when summaries are
+    // disabled or their model is unavailable. The LLM note inference inside
+    // _pumpStickyJsonl stays independently gated.
     // Lock so a slow sweep (many old session files) can't overlap the next tick
     // and double-feed the same turns into pendingText.
     if (this._pollingStickyJsonl) return;
@@ -5773,12 +5772,10 @@ class ClaudeCodeWebServer {
       for (const [sessionId, session] of this.claudeSessions) {
         if (!session.active) continue;
         if (!this._isStickyEligible(session.agent)) continue;
-        // Pump when summarising (UI note cards) OR when this is a claude session
-        // with a bind sidecar (control/fleet turn-binding) — the latter needs
-        // binding + turn events regardless of the summariser, and a per-tab
-        // summarisation opt-out must NOT defeat control-plane turn-binding.
-        const bindingNeeded = session.agent === 'claude' && !!session.claudeBindSidecar;
-        if (session.stickyNotesEnabled === false && !bindingNeeded) continue;
+        // Pump when summarising (UI note cards), for every Claude session (free
+        // ai-title tailing), or for a terminal session with a github-router bind
+        // sidecar (control-plane turn binding).
+        const bindingNeeded = session.agent === 'claude' || !!session.claudeBindSidecar;
         const summarising = this.stickyNoteSummarizer.isEnabled(sessionId);
         if (!summarising && !bindingNeeded) continue;
         const cwd = session.liveCwd || session.workingDir;
@@ -6301,7 +6298,7 @@ class ClaudeCodeWebServer {
     if (!session) return;
     // Only a socket that belongs to the session may change it (mirrors resize).
     if (!session.connections.has(wsId)) return;
-    const enabled = data.enabled !== false;
+    const enabled = data.enabled === true;
     session.stickyNotesEnabled = enabled;
     this.sessionStore.markDirty();
     if (enabled) {

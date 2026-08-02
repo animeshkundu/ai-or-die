@@ -201,6 +201,27 @@ describe('sticky-note engine', function () {
     assert.strictEqual(engine.isReady(), false);
   });
 
+  it('does not check, download, or spawn a worker unless summaries are explicitly enabled', async function () {
+    let checked = 0;
+    let downloaded = 0;
+    let spawned = 0;
+    const engine = new StickyNoteEngine({
+      enabled: false,
+      modelManager: {
+        isModelReady: async () => { checked++; return false; },
+        ensureModel: async () => { downloaded++; },
+        getModelFile: () => '/tmp/model.gguf',
+      },
+      createWorker: () => { spawned++; return new FakeWorker(); },
+    });
+
+    await engine.initialize();
+
+    assert.strictEqual(checked, 0, 'disabled engine must not probe the GGUF');
+    assert.strictEqual(downloaded, 0, 'disabled engine must not download the GGUF');
+    assert.strictEqual(spawned, 0, 'disabled engine must not create a worker');
+  });
+
   it('refuses to spawn under Bun (node-llama-cpp crashes Bun) without loading the worker', async function () {
     const hadBun = Object.prototype.hasOwnProperty.call(process.versions, 'bun');
     const prevBun = process.versions.bun;

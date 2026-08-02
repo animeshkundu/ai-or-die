@@ -233,7 +233,7 @@ class ClaudeCodeWebInterface {
         await this.sessionTabManager.init();
 
         // Per-tab sticky-note card (local-LLM session summary overlay).
-        this.stickyNotesEnabled = this.loadSettings().enableSessionStickyNotes !== false;
+        this.stickyNotesEnabled = this.loadSettings().enableSessionStickyNotes === true;
         // The toolbar toggle only appears once the server reports the engine is
         // 'ready' (model loaded) — not merely when the setting is on. Keeps the
         // control out of the UI when the feature can't run (no model, Bun, CI).
@@ -1497,7 +1497,7 @@ class ClaudeCodeWebInterface {
     _refreshStickyNoteBtnVisibility() {
         const btn = document.getElementById('stickyNoteBtn');
         if (!btn) return;
-        const show = this.stickyNotesEnabled !== false && this._stickyNotesAvailable === true;
+        const show = this.stickyNotesEnabled === true && this._stickyNotesAvailable === true;
         btn.style.display = show ? '' : 'none';
     }
 
@@ -4275,7 +4275,7 @@ class ClaudeCodeWebInterface {
         if (notifDesktop) notifDesktop.checked = settings.notifDesktop ?? true;
 
         const enableSessionStickyNotes = document.getElementById('enableSessionStickyNotes');
-        if (enableSessionStickyNotes) enableSessionStickyNotes.checked = settings.enableSessionStickyNotes ?? true;
+        if (enableSessionStickyNotes) enableSessionStickyNotes.checked = settings.enableSessionStickyNotes ?? false;
 
         const wheelScrollMode = document.getElementById('wheelScrollMode');
         if (wheelScrollMode) wheelScrollMode.value = settings.wheelScrollMode || 'dontHijack';
@@ -4579,7 +4579,7 @@ class ClaudeCodeWebInterface {
             notifSound: true,
             notifVolume: 30,
             notifDesktop: true,
-            enableSessionStickyNotes: true,
+            enableSessionStickyNotes: false,
             tabSnapshotLines: 500,
             // Trackpad/mouse-wheel behaviour inside full-screen (alt-buffer) apps:
             //   'dontHijack' - wheel does nothing there (no menu hijack in the Claude Code TUI)
@@ -4626,7 +4626,7 @@ class ClaudeCodeWebInterface {
             notifSound: document.getElementById('notifSound')?.checked ?? true,
             notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
             notifDesktop: document.getElementById('notifDesktop')?.checked ?? true,
-            enableSessionStickyNotes: document.getElementById('enableSessionStickyNotes')?.checked ?? true,
+            enableSessionStickyNotes: document.getElementById('enableSessionStickyNotes')?.checked ?? false,
             tabSnapshotLines: parseInt(document.getElementById('tabSnapshotLines')?.value || '500', 10),
             wheelScrollMode: document.getElementById('wheelScrollMode')?.value || 'dontHijack'
         };
@@ -4634,7 +4634,7 @@ class ClaudeCodeWebInterface {
         try {
             localStorage.setItem('cc-web-settings', JSON.stringify(settings));
             this.applySettings(settings);
-            this._applyStickyNotesSetting(settings.enableSessionStickyNotes !== false);
+            this._applyStickyNotesSetting(settings.enableSessionStickyNotes === true);
 
             // Flash save button green briefly
             const saveBtn = document.getElementById('saveSettingsBtn');

@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted (2026-06).
+Superseded in part by [ADR-0039](0039-disable-default-local-llm-sticky-notes.md):
+the default-on local-LLM summary and model residency decisions are retired. The
+JSONL binding, redaction, and model-free `ai-title` mechanisms remain historical
+context.
 
 ## Context
 
@@ -59,7 +62,8 @@ download and graceful degradation. We reuse that shape.
   AI-agent tabs (claude/codex/gemini/copilot) AND plain terminal tabs — users
   frequently launch an AI CLI inside a shell, so `_isStickyEligible` includes
   `terminal` (an idle terminal never triggers inference; a noisy one can be
-  turned off per-tab). Disable globally with `--no-sticky-notes`; the
+  turned off per-tab). This historical default was later superseded by ADR-0039;
+  the old global disable flag was `--no-sticky-notes`. The
   server-authoritative per-session `stickyNotesEnabled` persists. Terminal output
   may contain secrets, so the
   text is **redacted on BOTH ends** (`src/utils/secret-redact.js`) — the input
