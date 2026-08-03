@@ -110,7 +110,6 @@ async function startProcServer(options = {}) {
     '--port', String(port),
     '--disable-auth',
     '--no-stt',
-    '--no-sticky-notes',
     '--no-keepalive',
   ], {
     cwd: workDir,

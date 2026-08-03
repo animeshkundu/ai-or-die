@@ -195,8 +195,10 @@ prompt queue.
 **Locations:** `src/sticky-note-summarizer.js:170` appends every turn to
 `pendingText`; `:241-245` returns permanently when engine status is
 `unavailable`; and `:321-325` drains text only after successful inference.
-`node-llama-cpp` is optional and sticky notes are on by default, so a missing
-binding/model is a reachable state.
+`node-llama-cpp` is optional. At the reproduced base commit sticky summaries
+were on by default; current main makes them opt-in via `--sticky-notes`, so this
+retainer now requires an explicitly enabled deployment whose model/binding is
+unavailable.
 
 **Retainer chain:** `ClaudeCodeWebServer -> stickyNoteSummarizer -> _states Map
 -> session state -> pendingText rope/string`.
