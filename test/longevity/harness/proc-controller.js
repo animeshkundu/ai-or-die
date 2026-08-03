@@ -107,7 +107,7 @@ async function startProcServer(options = {}) {
         path.join(workDir, wrapperName),
         `@echo off\r\nnode "%~dp0${fixtureName}" %*\r\n`,
       );
-      childEnv.AIORDIE_CLAUDE_LAUNCHER = wrapperName;
+      childEnv.AIORDIE_CLAUDE_LAUNCHER = `cmd.exe /d /s /c ${wrapperName}`;
     } else {
       childEnv.AIORDIE_CLAUDE_LAUNCHER = `node ${fixtureName}`;
     }
