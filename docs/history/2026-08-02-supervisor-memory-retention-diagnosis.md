@@ -35,8 +35,10 @@ post-GC and heap-snapshot probes, process-isolated Node 22 harnesses, worker
 heap reporting, a streaming weak-edge-aware dominator analyzer, and opt-in
 expected-red tests. A paired persistence-on/off arm crossed the 30-second
 autosave boundary and separated serialization churn from the live-session
-floor. Later fix PRs should implement byte/count budgets and lifecycle deletion
-independently so each characterization flips green for one reason.
+floor on both Windows and Ubuntu; an explicit tick assertion prevents timing
+drift from silently changing that evidence shape. Later fix PRs should implement
+byte/count budgets and lifecycle deletion independently so each
+characterization flips green for one reason.
 
 ## Watch For
 

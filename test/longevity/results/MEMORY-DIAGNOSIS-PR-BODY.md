@@ -50,9 +50,19 @@ Ubuntu artifact `8842503467` has digest
 The redacted JSON from both artifacts is committed under
 `test/longevity/results/derived/`.
 
+Follow-up opt-in run
+[`30787741123`](https://github.com/animeshkundu/ai-or-die/actions/runs/30787741123)
+at head `5094c05d4fa5a54defa4c117b15b758e7da8010a` passed the new paired
+SessionStore autosave arm on both matrix lanes. Windows artifact `8846018423`
+has digest
+`sha256:03cc1c2d40c6360a68fe89d50f8fd57fcb1841c92b41a627353d2406666cebd4`;
+Ubuntu artifact `8845981202` has digest
+`sha256:f543a2af60e5331b34f019e49ca7d4ad89c0a1debf57d90843fb8397eb71a85c`.
+
 | Arm | Windows | Ubuntu |
 |---|---:|---:|
 | Sessions at 1/s | 17,881.87 post-GC bytes/op; 61.11 MiB/h | 17,952.67 bytes/op; 61.57 MiB/h |
+| Persistence on minus off at 1/s | 3,734.67 bytes/op; 12.82 MiB/h | 3,689.87 bytes/op; 12.67 MiB/h |
 | PTY, 10s post-exit | 3,477,496 post-GC heap bytes **plus native handle/process retention** | 2,856,712 heap bytes; no child/handle retention |
 | Ended artifact reviews | 27,832.93 post-GC bytes/op | 27,538.53 bytes/op |
 | Sticky unavailable | 1,167.84 post-GC bytes/turn | 1,167.68 bytes/turn |
@@ -396,6 +406,16 @@ rate that difference is 12.77 MiB/hour; that stress-rate figure is not a
 production projection. The active serialization peak is separately bounded by
 the 17,967-byte counter and is absent after drain, so it is transient rather
 than part of the post-GC retained figure.
+
+The matrix run reproduced the same shape on the primary Windows lane: exactly
+one autosave tick and 31/0 save calls in all six paired processes, with 30
+sessions retained on both sides. Windows persistence-on minus off was 112,040
+post-GC bytes median (104,776-112,184), or **3,734.67 bytes/session**
+(3,492.53-3,739.47) and 12.82 MiB/hour at the measured stress rate. Ubuntu was
+110,696 bytes median (103,336-122,248), or **3,689.87 bytes/session**
+(3,444.53-4,074.93) and 12.67 MiB/hour. The peak serialized string was 19,137
+bytes on Windows and 17,967 on Ubuntu; maximum save durations were 15-41 ms and
+3-4 ms respectively.
 
 Status: **RULED OUT as an independent permanent leak; IMPORTANT transient
 amplifier and persistence mirror of Finding 3 for the exercised arm.** The
