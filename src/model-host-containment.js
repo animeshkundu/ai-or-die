@@ -5,6 +5,11 @@ const jobGuard = require('./job-guard');
 
 function attachHost(child) {
   if (process.platform !== 'win32') return { ok: true, job: null };
+  // No pid means the process never started — a spawn error is already in flight
+  // and will surface on its own. There is nothing running to contain, so
+  // reporting a containment failure here would mask the real cause (e.g. an
+  // EACCES from spawn) behind an opaque Job Object message.
+  if (!child || typeof child.pid !== 'number' || child.pid <= 0) return { ok: true, job: null };
   const job = jobGuard.createKillOnCloseJob();
   if (!job) return { ok: false, job: null, error: new Error('Unable to create model-host Job Object') };
   if (!jobGuard.assignPid(job, child.pid)) {
