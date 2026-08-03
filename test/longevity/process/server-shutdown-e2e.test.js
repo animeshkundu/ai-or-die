@@ -63,14 +63,24 @@ async function waitFor(fn, timeoutMs, iv = 200) {
 // launches a real `node` grandchild. Resolves { sup, gcPid, port, out, exitInfo }.
 async function bootAndSpawnGrandchild(port, withIpc, extraEnv) {
   const gcFile = path.join(os.tmpdir(), `aod-e2e-gc-${process.pid}-${port}-${Date.now()}.pid`);
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), `aod-e2e-sessions-${port}-`));
   try { fs.rmSync(gcFile, { force: true }); } catch (_) { /* ignore */ }
 
-  const state = { out: '', exitInfo: null, gcFile };
+  const state = { out: '', exitInfo: null, gcFile, sessionDir };
   const stdio = withIpc ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'];
   const sup = spawn(process.execPath, [
     SUPERVISOR, '--port', String(port), '--disable-auth',
     '--no-stt', '--no-keepalive',
-  ], { cwd: REPO_ROOT, stdio, env: { ...process.env, AOD_SUPERVISOR_RESTART: '1', ...(extraEnv || {}) } });
+  ], {
+    cwd: REPO_ROOT,
+    stdio,
+    env: {
+      ...process.env,
+      AOD_SUPERVISOR_RESTART: '1',
+      AI_OR_DIE_SESSION_DIR: sessionDir,
+      ...(extraEnv || {}),
+    },
+  });
   state.sup = sup;
   sup.stdout.on('data', (d) => { state.out += d.toString(); });
   sup.stderr.on('data', (d) => { state.out += d.toString(); });
@@ -107,6 +117,9 @@ function cleanup(state) {
   if (state && state.sup && state.sup.pid) { try { killHard(state.sup.pid); } catch (_) { /* ignore */ } }
   if (state && state.gcPid && pidAlive(state.gcPid)) { try { killHard(state.gcPid); } catch (_) { /* ignore */ } }
   if (state && state.gcFile) { try { fs.rmSync(state.gcFile, { force: true }); } catch (_) { /* ignore */ } }
+  if (state && state.sessionDir) {
+    try { fs.rmSync(state.sessionDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+  }
 }
 
 describe('deterministic shutdown: real-server end-to-end (PTY + node grandchild)', function () {

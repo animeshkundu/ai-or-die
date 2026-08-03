@@ -32,7 +32,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const assert = require('assert');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 const WebSocket = require('ws');
 
 let ClaudeCodeWebServer;
@@ -47,7 +47,11 @@ try {
 // ---------------------------------------------------------------------------
 
 function has(cmd) {
-  try { execSync('command -v ' + cmd, { stdio: 'ignore', shell: '/bin/sh' }); return true; }
+  try {
+    const probe = process.platform === 'win32' ? 'where.exe' : 'which';
+    execFileSync(probe, [cmd], { stdio: 'ignore' });
+    return true;
+  }
   catch (_) { return false; }
 }
 
@@ -57,7 +61,7 @@ const HAS_TMUX = has('tmux');
 const HAS_PWSH = has('pwsh');
 const HAS_SUDO_NOPASSWD = (() => {
   if (!has('sudo')) return false;
-  try { execSync('sudo -n true', { stdio: 'ignore', timeout: 2000 }); return true; }
+  try { execFileSync('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: 2000 }); return true; }
   catch (_) { return false; }
 })();
 
@@ -77,7 +81,11 @@ async function startServer() {
   fs.symlinkSync(path.join(baseDir, 'a'), path.join(baseDir, 'a-link'));
   const origCwd = process.cwd();
   process.chdir(baseDir);
-  server = new ClaudeCodeWebServer({ port: 0, noAuth: true });
+  server = new ClaudeCodeWebServer({
+    port: 0,
+    noAuth: true,
+    sessionStoreOptions: { storageDir: path.join(baseDir, '.sessions') },
+  });
   const httpServer = await server.start();
   port = httpServer.address().port;
   process.chdir(origCwd);
@@ -97,6 +105,7 @@ class Session {
     this.frames = [];
     this.cwdChangedFrames = [];
     this.outputAccum = '';
+    this._dsrTail = '';
   }
 
   async open(workingDir) {
@@ -107,15 +116,9 @@ class Session {
     });
     this.ws.on('message', (raw, isBinary) => {
       if (isBinary) {
-        const output = raw.toString('utf-8');
-        this.outputAccum += output;
-        // PowerShell's PSReadLine probes the terminal cursor position during
-        // startup. Browsers answer this CSI 6n query through xterm; this raw
-        // WebSocket test client must emulate that reply or pwsh blocks before
-        // it ever renders a prompt.
-        if (output.includes('\x1b[6n')) {
-          this.ws.send(JSON.stringify({ type: 'input', data: '\x1b[1;1R' }));
-        }
+        const text = raw.toString('utf-8');
+        this.outputAccum += text;
+        this._answerDsr(text);
         return;
       }
       let msg;
@@ -138,6 +141,16 @@ class Session {
   }
 
   send(data) { this.ws.send(JSON.stringify({ type: 'input', data })); }
+
+  _answerDsr(text) {
+    const scan = this._dsrTail + text;
+    let index = scan.indexOf('\x1b[6n');
+    while (index !== -1) {
+      this.send('\x1b[1;1R');
+      index = scan.indexOf('\x1b[6n', index + 4);
+    }
+    this._dsrTail = scan.slice(-3);
+  }
 
   waitFor(type, timeoutMs) {
     return new Promise((resolve, reject) => {
@@ -334,12 +347,12 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
       'function prompt { $loc = $executionContext.SessionState.Path.CurrentLocation; ' +
       '$out = "PS $loc> "; if ($loc.Provider.Name -eq "FileSystem") { ' +
       '$p = $loc.ProviderPath -replace "\\\\","/"; ' +
-      '$out += "$([char]27)]7;file://$env:COMPUTERNAME/$p$([char]7)" }; $out }\n';
+      '$out += "$([char]27)]7;file://$p$([char]7)" }; $out }\r';
     sess.send(psHook);
     await sess.waitForOutput('PS ', 5000);
     sess.reset();
 
-    sess.send('Set-Location ' + JSON.stringify(path.join(baseDir, 'a')) + '\n');
+    sess.send('Set-Location ' + JSON.stringify(path.join(baseDir, 'a')) + '\r');
     const f = await sess.waitForCwdChanged(3000);
     assert.strictEqual(path.resolve(f.cwd), realA());
     await sess.close();

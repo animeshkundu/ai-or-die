@@ -63,6 +63,11 @@ test.describe('@voice Voice Input UI', () => {
 
     await page.goto(serverInfo.url);
     await waitForAppReady(page);
+    await page.evaluate(() => window.app.handleMessage({
+      type: 'voice_status',
+      status: 'unavailable',
+      voiceInput: { localStatus: 'unavailable', localEnabled: false, cloudAvailable: false },
+    }));
 
     // With no --stt (localStatus: unavailable) AND no SpeechRecognition,
     // the mic button should remain hidden
@@ -193,6 +198,11 @@ test.describe('@voice Voice Input UI', () => {
 
     await page.goto(serverInfo.url);
     await waitForAppReady(page);
+    await page.evaluate(() => window.app.handleMessage({
+      type: 'voice_status',
+      status: 'unavailable',
+      voiceInput: { localStatus: 'unavailable', localEnabled: false, cloudAvailable: false },
+    }));
 
     // With no --stt and no SpeechRecognition, button should be hidden or disabled
     const btnState = await page.evaluate(() => {

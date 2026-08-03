@@ -92,6 +92,9 @@ function request(port, method, urlPath, body) {
     if (fs.existsSync(attachmentsDir)) {
       fs.rmSync(attachmentsDir, { recursive: true, force: true });
     }
+    if (server && typeof server._attachmentDirCacheInvalidate === 'function') {
+      server._attachmentDirCacheInvalidate(attachmentsDir);
+    }
     // Remove any leftover .gitignore so each test starts clean.
     const gi = path.join(workingDir, '.gitignore');
     if (fs.existsSync(gi)) fs.unlinkSync(gi);
@@ -273,6 +276,19 @@ function request(port, method, urlPath, body) {
     } finally {
       server._attachmentSessionCapBytes = original;
     }
+  });
+
+  it('re-scans after an out-of-band attachment-directory replacement is invalidated', function () {
+    fs.mkdirSync(attachmentsDir, { recursive: true });
+    fs.writeFileSync(path.join(attachmentsDir, 'large.bin'), Buffer.alloc(95 * 1024));
+    assert.strictEqual(server._attachmentDirBytes(attachmentsDir), 95 * 1024);
+
+    fs.rmSync(attachmentsDir, { recursive: true, force: true });
+    fs.mkdirSync(attachmentsDir);
+    fs.writeFileSync(path.join(attachmentsDir, 'small.bin'), Buffer.alloc(10 * 1024));
+    server._attachmentDirCacheInvalidate(attachmentsDir);
+
+    assert.strictEqual(server._attachmentDirBytes(attachmentsDir), 10 * 1024);
   });
 
   it('cap only applies to .claude-attachments/ uploads (other targetDirs unaffected)', async function () {

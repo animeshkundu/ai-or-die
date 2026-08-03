@@ -7,8 +7,8 @@ summaries are **off by default**; see ADR-0039 for the cost/quality decision.
 
 | File | Role |
 |------|------|
-| `src/sticky-note-engine.js` | Lazy model download + worker-thread inference; serialised request queue; graceful degrade (`MODULE_NOT_FOUND` / missing model / crash → `unavailable`). Mirrors `stt-engine.js`. |
-| `src/sticky-note-worker.js` | Worker thread. Dynamic-imports ESM `node-llama-cpp`, loads the GGUF, answers `{type:'infer'}` with JSON-schema-grammar-constrained output. |
+| `src/sticky-note-engine.js` | Download preparation + child-host inference; bounded queue; lazy demand and 90 s idle unload. |
+| `src/sticky-note-host.js` | Child process. Dynamic-imports ESM `node-llama-cpp`, loads the GGUF, and returns grammar-constrained output. |
 | `src/sticky-note-summarizer.js` | Off-hot-path scheduler. Per-session headless transcript + deterministic triggers + guards. Emits results via `onResult`. |
 | `src/sticky-note-transcript.js` | Per-session `@xterm/headless` wrapper. `write()` raw PTY bytes, `snapshot()` the recent rendered lines. |
 | `src/sticky-note-prompt.js` | `SYSTEM_PROMPT`, `NOTE_SCHEMA`, `buildPrompt()`, `parseNote()` (clamp + sanitise). |
@@ -17,28 +17,25 @@ summaries are **off by default**; see ADR-0039 for the cost/quality decision.
 | `src/public/sticky-note-card.js` | Floating per-tab card; `textContent`-only rendering. |
 | `src/public/components/sticky-note.css` | Card styling. |
 
-### Worker lifecycle
-
-`ClaudeCodeWebServer.handleShutdown` tears down the sticky-note engine during
-server shutdown. The engine marks itself stopping, tracks a worker from spawn
-time (`_spawningWorker`), waits on a bounded shared deadline for any in-flight
-model load, sends `{type:'shutdown'}`, and awaits the worker's own clean exit. It
-never calls `worker.terminate()` because force-tearing down a
-`node-llama-cpp`/ggml worker can abort the process and can leave the GGUF locked
-on Windows. If a worker reports ready after shutdown has begun, the engine
-refuses to adopt it.
+### Model-host lifecycle
 
 The disabled default does not probe, download, or load the GGUF and does not spawn
-this worker. When explicitly enabled, `src/sticky-note-worker.js` disposes native
-objects in order:
-context, model, then the top-level `llama` backend, before exiting.
+a host. When explicitly enabled, boot prepares the download without spawning a
+host. Expanding any card demands the child and holds it through an expiring
+connection/card lease. After the last card collapses or its lease expires, the
+host unloads after 90 seconds. On shutdown the host disposes context, model, and
+backend in dependency order before the process is reaped. The engine never
+force-terminates a loading host: killing `node-llama-cpp`/ggml mid-load can leave
+the GGUF locked on Windows, so teardown is cooperative with a bounded deadline
+and a SIGKILL backstop. A host that reports ready after shutdown has begun is not
+adopted.
 
 ## Data flow
 
 ```
 PTY bytes → server onOutput → summarizer.feed(sessionId, chunk)   [explicit local-summary opt-in only]
   → @xterm/headless (per session) → snapshot recent rendered lines → redactSecrets
-  → engine.infer(prompt) [worker] → JSON {title,goal,progress[],waitingOn[]}
+  → engine.infer(prompt) [child host] → JSON {title,goal,done[],remaining[]}
   → session.stickyNote (persisted) → broadcastToSession('sticky_note_update') → client card + tab title
 ```
 
@@ -47,7 +44,7 @@ PTY bytes → server onOutput → summarizer.feed(sessionId, chunk)   [explicit 
 An update = one inference, attempted only when ALL gates hold: the server was
 started with `--sticky-notes`, the browser Display setting is enabled, feature enabled
 for the session · eligible tab (AI-agent OR terminal — `_isStickyEligible`) ·
-model `ready` · breaker closed · new committed output since last summary ·
+model available on demand · card expanded · breaker closed · new committed output since last summary ·
 `minInterval` satisfied · not already running.
 
 Triggers: **quiet** (~4s idle), **volume** (~80 committed lines / ~6 KB),
@@ -56,9 +53,9 @@ minInterval), **initial**, **focus** (foreground transition, gated). Tab switch
 / reconnect are render-only.
 
 Guards: `minInterval = max(20s, 3 × lastInferenceMs)`; single-flight + dirty-bit
-(a timeout preserves pending work and backs off — no retry-storm); circuit breaker after N
-failures; foreground-first fair dispatch over one shared worker. **Threads are
-auto-selected by the worker once it knows the backend** (`sticky-note-threads.js`
+(timeout clears the bit + backs off — no retry-storm); circuit breaker after N
+failures; foreground-first fair dispatch over one shared host. **Threads are
+auto-selected by the host once it knows the backend** (`sticky-note-threads.js`
 `pickThreads`): GPU present → the worker requests **full layer offload**
 (`gpuLayers:'max'`, falling back to `auto` if VRAM is short) and keeps CPU threads
 gentle (`min(2, cores-2)`); **no GPU (CPU) → three-quarters of the cores**
@@ -125,10 +122,16 @@ without github-router), bind to the active, unowned writer in the tab's project 
   sessionId captured at inference start; a result that arrives after a rebind is
   persisted to the OUTGOING session's note, never the new one.
 
-The toolbar toggle (`#stickyNoteBtn`) is shown only once the engine reports
-`ready` (not merely when enabled), so it never appears when the model can't run.
+The legacy status projects an unloaded host to `ready`, so pre-upgrade pages keep
+the toolbar toggle and expanding it can warm the model. Negotiated clients also
+receive lifecycle state and label idle, reconnecting, and failed states.
 
 ### Expand-gating & ai-title (ADR-0025, superseded in part by ADR-0039)
+
+Every inference attempt, including retry and process-exit flush paths, re-checks
+that at least one unexpired expanded-card lease exists. Collapsed pending work
+remains buffered and resumes when the card is expanded; it cannot resurrect an
+unloaded host by itself.
 
 The card starts **collapsed** (expanding is a deliberate "activate"). If the
 optional summary feature is explicitly enabled, processing
@@ -147,9 +150,9 @@ splits in **three** tiers by cost:
 - **Note summarisation (the LLM inference) runs only while ≥1 connected client
   has the card EXPANDED.** Clients report this with `set_sticky_active
   {sessionId, active}`; the server reference-counts expanded viewers per session
-  (`_stickyActive: Map<sessionId, Set<wsId>>`), tied to connection presence
-  (`_clearStickyActiveForWs` on disconnect) so a closed browser can't leak a
-  forever-running inference. `_isStickyExpandedActive` gates the note path. A
+  (`_stickyActive: Map<sessionId, Set<wsId>>`), tied to connection presence and
+  a 45 s expiring lease refreshed every 30 s. `_isStickyExpandedActive` gates
+  both JSONL and raw PTY feed paths. A
   collapsed tab freezes its note at `binding.offset`; on re-expand the next poll
   resumes from there in one bounded catch-up read.
 - **The tab title is claude's own `ai-title`, tailed cheaply with no model,
@@ -165,10 +168,13 @@ Server → client:
 - `sticky_note_update { sessionId, stickyNote, autoTitle }` — `autoTitle` is null when the user renamed the tab. Client drops updates with `rev` ≤ last applied.
 - `sticky_notes_model_progress { file, downloaded, total, percent }` — drives the download banner.
 - `sticky_notes_status { status, progress }`.
+- `model_lifecycle_status { stt, stickyNotes }` after capability negotiation.
 - `session_joined` carries `stickyNote`, `autoTitle`, `stickyNotesEnabled` for hydration.
 
 Client → server:
 - `set_sticky_notes { sessionId, enabled }` — server-authoritative enable/disable.
+- `set_sticky_active { sessionId, active }` — idempotent ownership update and lease heartbeat.
+- `client_capabilities { capabilities:['model_host_lifecycle'] }`.
 - `set_tab_name { sessionId, name }` — sets `nameIsUserSet` so auto-titles stop overriding.
 
 ## Configuration
@@ -197,7 +203,8 @@ latency) via `--sticky-notes-model`.
 
 If `node-llama-cpp` is absent, the model fails to download, or the arch is
 unsupported, the engine reports `unavailable`, no card appears, and the terminal
-path is unaffected. Inference errors/timeouts never propagate into the PTY path;
+path is unaffected. Native faults terminate only the child. Inference
+errors/timeouts never propagate into the PTY path;
 a failed summary is retried after backoff (never stranded) and repeated failures
 open a per-session circuit breaker.
 
@@ -212,7 +219,7 @@ is expanded; the breaker self-heals (a success resets the failure count). A dev
 log on `ready` reports the backend + thread count. See ADR-0023.
 
 **Runtime: Node.js only.** The feature is force-disabled under Bun
-(`server.js` `!isBun()` + `StickyNoteEngine._doInitialize` self-gate →
+(`server.js` `!isBun()` + `StickyNoteEngine.ensureDownloaded` self-gate →
 `unavailable` / `_lastSpawnError='BUN_UNSUPPORTED'`), because node-llama-cpp's
 native N-API addon crashes Bun (exit 133). Bun runs with **limited support** for
 the app overall — it continues to run, but node-pty can't read the PTY master

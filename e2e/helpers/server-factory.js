@@ -32,6 +32,7 @@ async function createServer(opts) {
   // mock STT inference). The visual spec passes stt:false to avoid its download
   // banner; opt sticky back in with createServer({ stickyNotes: true }).
   if (opts.stt === false) constructorOpts.stt = false;
+  else if (opts.stt === true) constructorOpts.stt = true;
   if (opts.stickyNotes !== true) constructorOpts.stickyNotes = false;
   if (opts.auth) {
     constructorOpts.auth = opts.auth;
@@ -48,12 +49,12 @@ async function createServer(opts) {
 }
 
 /**
- * Spawn the actual CLI entry point (node bin/ai-or-die.js) as a child process.
+ * Spawn the installed CLI entry path (the supervisor) as a child process.
  * Used by the golden path test to validate the real user flow.
  * @returns {Promise<{process: ChildProcess, port: number, url: string}>}
  */
 async function spawnCli() {
-  const binPath = path.resolve(__dirname, '../../bin/ai-or-die.js');
+  const binPath = path.resolve(__dirname, '../../bin/supervisor.js');
 
   // Use a random high port (CLI rejects port 0)
   const randomPort = 49152 + Math.floor(Math.random() * 16383);

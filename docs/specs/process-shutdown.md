@@ -8,6 +8,13 @@ descendant tree (server, PTYs, and the CLI's MCP `node`/`bun` grandchildren) mus
 the system is alive, individual subprocesses (tunnels, workers, the server itself) keep
 restarting independently; only top-process death brings everything down.
 
+Model-host retirement is explicitly different from core shutdown: a model crash,
+timeout, crash-budget failure, unload, or memory-pressure decision may terminate
+only that host. It must never enter `handleShutdown()` or stop a live PTY.
+The system-memory decision uses `os.freemem()` rather than core RSS, because child
+host RSS is outside `process.memoryUsage()`. It unloads only inactive, request-free
+hosts.
+
 ("Zombie" here means a *live orphan*, not a POSIX `<defunct>` entry — those are auto-reaped
 by init/launchd.)
 
@@ -45,17 +52,27 @@ No-op on non-Windows and whenever koffi is unavailable. Never throws into the ca
    take seconds to boot before spawning MCP servers, so the window is empty; and any escapee is
    still in the **supervisor** job, so it dies on supervisor death regardless. The per-PTY job is
    per-session convenience + defense in depth, not the primary guarantee.
+3. **Per-model-host nested** (`src/model-host-containment.js`): a host receives a
+   dedicated kill-on-close job before it receives permission to load native code.
+   Job creation or assignment failure is fatal for that host. A startup orphan
+   sweep removes marked hosts not owned by the current core.
 
-**Degraded mode**: the deterministic kernel guarantee needs koffi + a usable Job Object. When
+**Degraded mode for the supervisor and PTY jobs**: the deterministic kernel guarantee needs koffi + a usable Job Object. When
 that's unavailable — koffi fails to load (e.g. the **SEA single-file binary**, where koffi is
 left as an external runtime require and there is no `node_modules`), `AssignProcessToJobObject`
 is denied (EDR / Constrained Language Mode / Server Silo / outer-job UI limits), or the operator
-sets `AOD_DISABLE_JOB_GUARD=1` — `isAvailable()` returns false and **every** teardown path falls
+sets `AOD_DISABLE_JOB_GUARD=1` — `isAvailable()` returns false and the supervisor/PTY teardown paths fall
 back to the best-effort `src/utils/process-tree.js` helper: `taskkill /T /F /PID` on Windows, a
 `kill(-pgid)` process-group kill on POSIX. This fires on the spawn-watchdog, error, `stopSession`,
 `uncaughtException`, and IPC-disconnect paths (gated on "no job was closed", so it never
 double-kills when the kernel job already reaped the subtree). The supervisor logs a prominent
 warning and the server reports `process_guard.job_guard_active=false` in `/api/diagnostics`.
+
+Model hosts deliberately do **not** use that degraded fallback. The model-host
+boundary requires a dedicated Job Object before native loading; unavailable,
+failed, or disabled Job Object support makes that host fail closed. This preserves
+the primary Windows containment guarantee instead of running native model weights
+in an uncontained process.
 
 > **SEA binary note:** `sea-bootstrap.js` runs `bin/ai-or-die.js` **directly** (no supervisor),
 > and koffi is externalized out of the bundle, so the packaged binary always runs in degraded
@@ -75,6 +92,11 @@ and escapes `kill(-pgid)`. After a server crash there is no record of its pid, s
 survive. The only airtight POSIX option is cgroup v2 `cgroup.kill`, which needs a delegated
 subtree — launch via `systemd-run --user --scope -p Delegate=yes` to get one. macOS has no
 PDEATHSIG and no cgroups; daemonized grandchildren can survive there.
+
+Model hosts add an armed fd-5 liveness watchdog before native load. Core death
+closes the pipe and the watchdog kills its own host process even when the host's
+main thread is blocked in synchronous native inference. `SIGSTOP` and
+uninterruptible waits remain uncovered.
 
 ### Cross-cutting
 
@@ -104,6 +126,8 @@ The Windows guarantee depends on nothing in the tree setting `CREATE_BREAKAWAY_F
   uncatchable `taskkill /F` of a self-assigned parent reaps a grandchild. (Windows; skips elsewhere.)
 - `test/longevity/process/supervisor-tree-kill.test.js` — the real `bin/supervisor.js`: an
   uncatchable `taskkill /F` of the supervisor reaps its forked child via the job. (Windows.)
+- `test/longevity/process/model-host-isolation.test.js` — kills a host generation
+  while a real terminal PTY continues streaming, then observes host replacement.
 
 ## Files
 

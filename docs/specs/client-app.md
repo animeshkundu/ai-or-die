@@ -126,6 +126,7 @@ The main application controller. Instantiated once on page load.
 | `extraKeys` | ExtraKeys | Mobile extra key row instance (Tab/Ctrl/Esc/arrows) |
 | `voiceMode` | string \| null | Active voice method: `'local'`, `'cloud'`, or `null` |
 | `_inputBuffer` | string | Accumulated keystrokes awaiting flush |
+| `_modelLifecycle` | object | Negotiated additive `{stt, stickyNotes}` host states |
 
 ### Initialization Flow
 
@@ -144,8 +145,23 @@ The main application controller. Instantiated once on page load.
 
 - **Connection:** Constructs the URL with the session token via `authManager.getWebSocketUrl()`. Reconnects automatically with exponential backoff up to `maxReconnectAttempts`.
 - **Message handling:** Routes incoming messages by `type` field to appropriate handlers (output rendering, session state updates, usage updates, etc.).
+- **Model lifecycle negotiation:** After `connected`, advertises
+  `model_host_lifecycle`. Legacy status still controls compatibility. The
+  additive message labels sticky-note idle, reconnecting, and failed states
+  without removing its warm-on-open affordance.
 - **Output rendering:** Writes raw terminal data directly to xterm.js via `terminal.write(data)`. Also feeds data to `planDetector.processOutput(data)` and `sessionTabManager.markSessionActivity()`.
 - **Background session events:** Handles `session_activity`, `session_exit`, `session_error`, `session_started`, and `session_stopped` messages for sessions the client is not actively joined to. These update tab status indicators and feed the notification idle timer. These handlers never modify the terminal or show overlays — they only interact with `SessionTabManager`.
+- **Model warming:** Local recording start sends `voice_warm`; expanding a
+  sticky-note card sends `set_sticky_active` and refreshes its lease every 30 s.
+- **Sticky lifecycle affordance:** Negotiated pages keep the toolbar action
+  visible through idle/loading/restarting. An open card shows explicit
+  ready-on-demand, loading, memory-release, reconnecting, or unavailable copy and
+  states that the terminal remains live. A prior note remains rendered while the
+  host refreshes.
+- **Voice lifecycle affordance:** The mic remains actionable for demand-capable
+  idle and reconnecting states. Its title and color distinguish start-on-record,
+  loading, memory-released, reconnecting, and failed states without changing the
+  legacy readiness field used by older pages.
 
 ### Reconnection & Liveness
 
@@ -335,6 +351,11 @@ Manages the browser-style tab bar for multi-session support.
 1. If the session name is customized (does not start with "Session " containing ":"), use it.
 2. Otherwise, extract the last path component of `workingDir` as the folder name.
 3. Fall back to the default session name.
+
+When tabs are restored from `/api/sessions/list`, `SessionTabManager` must apply
+the persisted `agent` as the tab's `toolType` before replayed terminal output is
+processed. Activity labels and badges must therefore remain tool-correct across
+reloads (for example, a terminal prompt remains `Terminal: Running...`).
 
 ### Drag and Drop
 
@@ -723,3 +744,6 @@ Events `vscode_tunnel_started`, `vscode_tunnel_status`, `vscode_tunnel_auth`, an
 | Copy VS Code Tunnel URL | -- | Copy URL to clipboard |
 
 See the [VS Code Tunnel Specification](vscode-tunnel.md) for the complete feature documentation including server manager, binary discovery, auth flow, and WebSocket protocol.
+On mobile, the bottom navigation exposes a lifecycle-aware **Status** action
+whenever sticky notes are available. It mirrors the desktop toolbar toggle,
+including pressed state, accessible labeling, and open/minimize behavior.

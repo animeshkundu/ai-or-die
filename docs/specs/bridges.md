@@ -2,6 +2,10 @@
 
 Bridges manage the spawning, I/O, and lifecycle of CLI agent processes via `node-pty`. Each bridge class owns a `Map<sessionId, BridgeSession>` of active pty sessions.
 
+Model hosts are not bridges and never own PTYs. Their crash, timeout, unload, or
+restart is isolated from every bridge session; model-host process tests treat
+continued PTY streaming as a load-bearing invariant.
+
 ---
 
 ## Common Interface

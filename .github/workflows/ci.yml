@@ -9,12 +9,40 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      flake_inventory_runs:
+        description: Consecutive full-suite runs per OS (0 disables inventory job)
+        required: false
+        default: '0'
 
 concurrency:
   group: ci-main-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 jobs:
+  flake-inventory:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.flake_inventory_runs != '0' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: node scripts/run-flake-inventory.js ${{ inputs.flake_inventory_runs }} flake-inventory-artifacts
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: flake-inventory-${{ matrix.os }}
+          path: flake-inventory-artifacts/
+          retention-days: 14
+
   # Compile-check the Go mesh sidecar on PRs (the release workflow only builds it
   # on push to main, so without this a Go break would not surface until release).
   mesh-sidecar-build:
@@ -67,8 +95,29 @@ jobs:
       - name: Verify bundled ripgrep
         run: node -e "const p = require('@vscode/ripgrep').rgPath; require('fs').accessSync(p, require('fs').constants.X_OK); console.log('rg OK:', p)"
       - run: npm test
+      - run: npm run test:integration
       - run: npm audit --audit-level=moderate
         continue-on-error: true
+
+  test-bun-model-host:
+    name: model-host Bun 1.3.14 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+      - run: npm ci
+      - run: bun test/fixtures/bun-model-host-smoke.js
 
   # Warm the STT model cache ONCE before the browser jobs so none of them pay
   # the ~640MB on-demand download inside their per-job budget (a timed-out job

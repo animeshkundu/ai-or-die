@@ -1,6 +1,7 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
 const { createServer, createSessionViaApi } = require('../helpers/server-factory');
+const fs = require('fs');
 const {
   waitForAppReady,
   waitForTerminalCanvas,
@@ -37,11 +38,8 @@ test.describe('@voice-real Real STT Pipeline', () => {
     }
 
     // Start server with STT enabled using real model
-    const { ClaudeCodeWebServer } = require('../../src/server');
-    const server = new ClaudeCodeWebServer({ port: 0, noAuth: true, stt: true });
-    const httpServer = await server.start();
-    const port = httpServer.address().port;
-    serverInfo = { server, port, url: `http://127.0.0.1:${port}` };
+    serverInfo = await createServer({ stt: true, stickyNotes: false });
+    const { server, port } = serverInfo;
 
     // Wait for STT engine to become ready (model loading)
     const deadline = Date.now() + 60000;
@@ -61,7 +59,10 @@ test.describe('@voice-real Real STT Pipeline', () => {
       if (serverInfo.server.sttEngine) {
         await serverInfo.server.sttEngine.shutdown();
       }
-      serverInfo.server.close();
+      await serverInfo.server.close();
+      if (serverInfo.server._testTempDir) {
+        fs.rmSync(serverInfo.server._testTempDir, { recursive: true, force: true });
+      }
     }
   });
 

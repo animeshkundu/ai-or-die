@@ -1,6 +1,9 @@
 'use strict';
 
+const os = require('os');
+
 const RESTART_EXIT_CODE = 75;
+const NON_RETRYABLE_EXIT_CODE = 78;
 const MEMORY_CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const NOTIFICATION_THROTTLE_MS = 30 * 60 * 1000; // 30 minutes
 const RESTART_BROADCAST_DELAY_MS = 500;
@@ -21,6 +24,9 @@ class RestartManager {
     this.server = server;
     this.gcThresholdBytes = (parseInt(process.env.MEMORY_GC_THRESHOLD_MB, 10) || 1024) * 1024 * 1024;
     this.warnThresholdBytes = (parseInt(process.env.MEMORY_WARN_THRESHOLD_MB, 10) || 2048) * 1024 * 1024;
+    this.modelPressureFreeBytes =
+      (parseInt(process.env.MODEL_HOST_PRESSURE_FREE_MB, 10) || 1024) * 1024 * 1024;
+    this._freeMemoryBytes = () => os.freemem();
     this._lastWarningTime = 0;
     this._lastRestartTime = 0;
     this._monitorInterval = null;
@@ -44,6 +50,13 @@ class RestartManager {
     const rssMB = (mem.rss / (1024 * 1024)).toFixed(1);
     const heapMB = (mem.heapUsed / (1024 * 1024)).toFixed(1);
 
+    if (this._freeMemoryBytes() < this.modelPressureFreeBytes &&
+        typeof this.server.retireModelHostsForMemoryPressure === 'function') {
+      Promise.resolve(this.server.retireModelHostsForMemoryPressure()).catch((error) => {
+        console.warn('[memory] Failed to retire an idle model host:', error.message);
+      });
+    }
+
     // Schedule GC via setImmediate so in-flight I/O (WebSocket frames, HTTP responses)
     // drains first. global.gc() is synchronous and can stall the event loop 100-300ms.
     if (mem.rss > this.gcThresholdBytes && typeof global.gc === 'function') {
@@ -57,15 +70,19 @@ class RestartManager {
       if (now - this._lastWarningTime >= NOTIFICATION_THROTTLE_MS) {
         this._lastWarningTime = now;
         console.warn(`[memory] RSS ${rssMB} MB exceeds warning threshold (${(this.warnThresholdBytes / (1024 * 1024)).toFixed(0)} MB). Notifying clients.`);
-        this.server.broadcastToAll({
-          type: 'memory_warning',
-          rss: `${rssMB} MB`,
-          rssBytes: mem.rss,
-          heapUsed: `${heapMB} MB`,
-          heapUsedBytes: mem.heapUsed,
-          threshold: `${(this.warnThresholdBytes / (1024 * 1024)).toFixed(0)} MB`,
-          supervised: this.server.supervised
-        });
+        try {
+          this.server.broadcastToAll({
+            type: 'memory_warning',
+            rss: `${rssMB} MB`,
+            rssBytes: mem.rss,
+            heapUsed: `${heapMB} MB`,
+            heapUsedBytes: mem.heapUsed,
+            threshold: `${(this.warnThresholdBytes / (1024 * 1024)).toFixed(0)} MB`,
+            supervised: this.server.supervised
+          });
+        } catch (error) {
+          console.warn('[memory] Failed to broadcast warning:', error.message);
+        }
       }
     }
   }
@@ -127,6 +144,7 @@ class RestartManager {
 
 module.exports = RestartManager;
 module.exports.RESTART_EXIT_CODE = RESTART_EXIT_CODE;
+module.exports.NON_RETRYABLE_EXIT_CODE = NON_RETRYABLE_EXIT_CODE;
 module.exports.MEMORY_CHECK_INTERVAL_MS = MEMORY_CHECK_INTERVAL_MS;
 module.exports.NOTIFICATION_THROTTLE_MS = NOTIFICATION_THROTTLE_MS;
 module.exports.MIN_RESTART_INTERVAL_MS = MIN_RESTART_INTERVAL_MS;

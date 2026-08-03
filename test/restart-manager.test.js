@@ -26,13 +26,16 @@ describe('RestartManager', function () {
     it('should read thresholds from env vars', function () {
       process.env.MEMORY_GC_THRESHOLD_MB = '256';
       process.env.MEMORY_WARN_THRESHOLD_MB = '512';
+      process.env.MODEL_HOST_PRESSURE_FREE_MB = '768';
       try {
         const rm = new RestartManager(createMockServer());
         assert.strictEqual(rm.gcThresholdBytes, 256 * 1024 * 1024);
         assert.strictEqual(rm.warnThresholdBytes, 512 * 1024 * 1024);
+        assert.strictEqual(rm.modelPressureFreeBytes, 768 * 1024 * 1024);
       } finally {
         delete process.env.MEMORY_GC_THRESHOLD_MB;
         delete process.env.MEMORY_WARN_THRESHOLD_MB;
+        delete process.env.MODEL_HOST_PRESSURE_FREE_MB;
       }
     });
   });
@@ -85,6 +88,28 @@ describe('RestartManager', function () {
       rm._checkMemory();
 
       assert.strictEqual(broadcastCount, 1, 'should only broadcast once within throttle window');
+    });
+
+    it('contains a failed memory-warning broadcast', function () {
+      const rm = new RestartManager(createMockServer({
+        broadcastToAll: () => { throw new Error('socket closed'); },
+      }));
+      rm.warnThresholdBytes = 1;
+      assert.doesNotThrow(() => rm._checkMemory());
+    });
+
+    it('retires model hosts instead of restarting the core under system pressure', async function () {
+      let retireCalls = 0;
+      let shutdownCalls = 0;
+      const rm = new RestartManager(createMockServer({
+        retireModelHostsForMemoryPressure: async () => { retireCalls++; },
+        handleShutdown: async () => { shutdownCalls++; },
+      }));
+      rm._freeMemoryBytes = () => 0;
+      rm._checkMemory();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(retireCalls, 1);
+      assert.strictEqual(shutdownCalls, 0);
     });
   });
 

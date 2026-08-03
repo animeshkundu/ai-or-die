@@ -15,6 +15,7 @@ class StickyNoteCard {
     this._sessionId = null;
     this._note = null;
     this._summarizing = false;
+    this._modelState = null;
     this._updatedAt = 0;
     this._freshnessTimer = null;
     this._collapsed = this._loadCollapsed();
@@ -71,6 +72,7 @@ class StickyNoteCard {
     const placeholder = document.createElement('div');
     placeholder.className = 'sn-placeholder';
     placeholder.textContent = 'No status yet — a summary appears as the session works.';
+    placeholder.setAttribute('aria-live', 'polite');
 
     const mk = (cls, labelText, listTag) => {
       const sec = document.createElement('div');
@@ -173,6 +175,27 @@ class StickyNoteCard {
     this._emitState();
   }
 
+  setModelState(state) {
+    this._modelState = state || null;
+    if (this.el) this.el.dataset.modelState = this._modelState || '';
+    this._renderPlaceholder();
+  }
+
+  _renderPlaceholder() {
+    const placeholder = this._refs && this._refs.placeholder;
+    if (!placeholder || this._note) return;
+    const copy = {
+      idle: 'Ready on demand — opening this card starts the local summary model.',
+      loading: 'Starting the local summary model… Your terminal stays live.',
+      unloading: 'Releasing summary-model memory… Your terminal stays live.',
+      restarting: 'Summary model reconnecting… Your terminal stays live.',
+      failed: 'Summary model unavailable. Your terminal session is unaffected.',
+      disabled: 'Session summaries are disabled.',
+    };
+    placeholder.textContent = copy[this._modelState] ||
+      'No status yet — a summary appears as the session works.';
+  }
+
   _emitState() {
     if (typeof this.onStateChange === 'function') {
       try {
@@ -251,6 +274,7 @@ class StickyNoteCard {
       this._refs.remSec.hidden = true;
       this._refs.updSec.hidden = true;
       this._refs.fresh.textContent = '';
+      this._renderPlaceholder();
       this._stopFreshness();
     }
   }

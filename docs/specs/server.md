@@ -41,6 +41,8 @@ new ClaudeCodeWebServer(options)
 | `selectedWorkingDir` | string \| null | Currently selected working directory via folder browser |
 | `baseFolder` | string | `process.cwd()` at startup -- root for path validation |
 | `isShuttingDown` | boolean | Prevents duplicate shutdown sequences |
+| `sttEngine` | `SttEngine` | Download prep and isolated STT model-host lifecycle |
+| `stickyNoteEngine` | `StickyNoteEngine` | Download prep and isolated sticky-note model-host lifecycle |
 
 ---
 
@@ -149,6 +151,24 @@ Returns server configuration relevant to the client, including the machine hostn
 ```
 
 `tools` entries for unavailable tools include install-advisor details, and `prerequisites` is included when any unavailable tool needs prerequisite information.
+
+#### `GET /api/diagnostics`
+
+Includes core memory/handle/session counters and additive `model_hosts` entries.
+Each host entry reports lifecycle state, legacy status, pid, generation, crash
+counts, and permanent failure detail. Host RSS is not included in core
+`process.memoryUsage()` and must not be interpreted as core RSS.
+
+The five-minute memory monitor also samples system free memory. Below the
+`MODEL_HOST_PRESSURE_FREE_MB` threshold (default 1024 MiB), it requests a safe
+intentional unload from inactive, request-free model hosts. It never converts
+memory pressure into a core restart.
+
+### Model lifecycle WebSocket capability
+
+Clients advertise `model_host_lifecycle` with `client_capabilities`. Only those
+clients receive the separate `model_lifecycle_status {stt, stickyNotes}` message.
+Legacy `voice_status` and `sticky_notes_status` values remain unchanged.
 
 #### `GET /api/folders`
 Browse directories within `baseFolder`.

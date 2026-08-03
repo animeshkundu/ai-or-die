@@ -158,11 +158,34 @@ describe('voice: ModelManager', function () {
 describe('voice: SttEngine', function () {
   this.timeout(10000);
 
-  // We cannot import the real SttEngine without sherpa-onnx-node being loadable,
-  // so we test the engine's logic by constructing it with enabled=false and
-  // exercising the public API paths that don't require the worker.
-
   const SttEngine = require('../src/stt-engine');
+  const { EventEmitter } = require('events');
+  const modelManager = {
+    isModelReady: async () => true,
+    ensureModel: async () => {},
+    getModelPath: () => '/tmp/stt-model',
+  };
+  class FakeHost extends EventEmitter {
+    constructor() {
+      super();
+      this.state = 'idle';
+      this.requests = [];
+    }
+    async demand() { this.state = 'ready'; this.emit('state', 'ready'); }
+    request(request) {
+      return new Promise((resolve, reject) => this.requests.push({ request, resolve, reject }));
+    }
+    async shutdown() {
+      for (const pending of this.requests.splice(0)) pending.reject(new Error('STT engine shutting down'));
+      this.state = 'idle';
+      this.emit('state', 'idle');
+    }
+    getState() { return this.state; }
+    getRuntimeInfo() { return null; }
+    diagnostics() { return { name: 'stt', state: this.state, status: 'ready', pid: null }; }
+    warm() { return this.demand(); }
+    unload() { return Promise.resolve(false); }
+  }
 
   it('constructor respects enabled flag (disabled)', function () {
     const engine = new SttEngine({ enabled: false });
@@ -190,22 +213,36 @@ describe('voice: SttEngine', function () {
     );
   });
 
-  it('concurrency queue: accepts 3, rejects 4th with "STT busy"', async function () {
-    // Create an engine and manually set it to ready state
-    const engine = new SttEngine({ enabled: true });
-    engine._status = 'ready';
+  it('does not construct a host until model preparation completes', async function () {
+    let release;
+    let hostCreated = 0;
+    const delayedManager = {
+      isModelReady: async () => false,
+      ensureModel: () => new Promise((resolve) => { release = resolve; }),
+      getModelPath: () => '/tmp/stt-model',
+    };
+    const host = new FakeHost();
+    host.request = () => Promise.resolve({ text: 'ready after download' });
+    const engine = new SttEngine({
+      enabled: true,
+      modelManager: delayedManager,
+      hostFactory: () => {
+        hostCreated++;
+        return host;
+      },
+    });
+    const transcription = engine.transcribe(new Float32Array(16));
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(hostCreated, 0);
+    release();
+    assert.strictEqual(await transcription, 'ready after download');
+    assert.strictEqual(hostCreated, 1);
+  });
 
-    // Mock worker so transcribe() queues but never resolves. Mirrors the real
-    // Worker surface the engine's cooperative shutdown needs: once('exit') +
-    // a graceful {type:'shutdown'} message that makes it "exit".
-    engine._worker = (() => {
-      let onExit = null;
-      return {
-        postMessage: (m) => { if (m && m.type === 'shutdown' && onExit) process.nextTick(() => onExit(0)); },
-        once: (ev, cb) => { if (ev === 'exit') onExit = cb; },
-        terminate: async () => { if (onExit) onExit(0); },
-      };
-    })();
+  it('concurrency queue: accepts 3, rejects 4th with "STT busy"', async function () {
+    const host = new FakeHost();
+    const engine = new SttEngine({ enabled: true, modelManager, hostFactory: () => host });
+    await engine.demand();
 
     const promises = [];
     for (let i = 0; i < 3; i++) {
@@ -250,16 +287,9 @@ describe('voice: SttEngine', function () {
   });
 
   it('shutdown() rejects all queued requests', async function () {
-    const engine = new SttEngine({ enabled: true });
-    engine._status = 'ready';
-    engine._worker = (() => {
-      let onExit = null;
-      return {
-        postMessage: (m) => { if (m && m.type === 'shutdown' && onExit) process.nextTick(() => onExit(0)); },
-        once: (ev, cb) => { if (ev === 'exit') onExit = cb; },
-        terminate: async () => { if (onExit) onExit(0); },
-      };
-    })();
+    const host = new FakeHost();
+    const engine = new SttEngine({ enabled: true, modelManager, hostFactory: () => host });
+    await engine.demand();
 
     const p1 = engine.transcribe(new Float32Array(100));
     await engine.shutdown();
@@ -272,16 +302,14 @@ describe('voice: SttEngine', function () {
     assert.strictEqual(engine.getDownloadProgress(), null);
   });
 
-  it('worker crash recovery: status changes to loading', function () {
-    const engine = new SttEngine({ enabled: true });
-    engine._status = 'ready';
-    engine._worker = { postMessage: () => {} };
-
-    // Simulate worker exit
-    engine._onWorkerExit(1);
-
-    assert.strictEqual(engine.getStatus(), 'loading');
-    assert.strictEqual(engine._worker, null);
+  it('host crash recovery preserves legacy readiness while lifecycle reconnects', async function () {
+    const host = new FakeHost();
+    const engine = new SttEngine({ enabled: true, modelManager, hostFactory: () => host });
+    await engine.demand();
+    host.state = 'restarting';
+    host.emit('state', 'restarting');
+    assert.strictEqual(engine.getStatus(), 'ready');
+    assert.strictEqual(engine.getLifecycleState(), 'restarting');
   });
 });
 

@@ -36,6 +36,7 @@ class StickyNoteSummarizer {
     this._redact = options.redact || ((s) => s);
     this._onResult = options.onResult || (() => {}); // (sessionId, { note, autoTitle, rev })
     this._getForeground = options.getForeground || (() => null);
+    this._shouldInfer = options.shouldInfer || (() => true);
     this._now = options.now || Date.now;
     this._timers = options.timers || {
       set: (fn, ms) => setTimeout(fn, ms),
@@ -237,6 +238,7 @@ class StickyNoteSummarizer {
     if (!s || s.cancelled) return;
     if (s.inFlight) return; // single-flight; the post-run check re-runs if needed
     if (!s.needsSummary) return; // nothing un-summarised
+    if (!this._shouldInfer(sessionId)) return;
 
     if (!this._engine || !this._engine.isReady()) {
       // Still downloading/loading -> poll back. Permanently unavailable -> stop.

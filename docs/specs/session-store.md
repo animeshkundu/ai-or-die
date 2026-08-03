@@ -11,10 +11,10 @@ Source: `src/utils/session-store.js`
 ## Storage Path
 
 ```
-~/.claude-code-web/sessions.json
+~/.ai-or-die/sessions.json
 ```
 
-The directory `~/.claude-code-web/` is created on initialization (`mkdir -p` equivalent) if it does not exist. Future versions will migrate to `~/.ai-or-die/sessions.json`.
+The directory `~/.ai-or-die/` is created on initialization (`mkdir -p` equivalent) if it does not exist. Unit tests are forced into a per-run temporary directory and fail if they resolve a store path beneath the operator's real home-directory store.
 
 ---
 
@@ -24,7 +24,7 @@ The directory `~/.claude-code-web/` is created on initialization (`mkdir -p` equ
 new SessionStore()
 ```
 
-- Sets `this.storageDir` to `path.join(os.homedir(), '.claude-code-web')`.
+- Sets `this.storageDir` to `AI_OR_DIE_SESSION_DIR` when provided, otherwise `path.join(os.homedir(), '.ai-or-die')`.
 - Sets `this.sessionsFile` to `path.join(this.storageDir, 'sessions.json')`.
 - Calls `initializeStorage()` to ensure the directory exists.
 

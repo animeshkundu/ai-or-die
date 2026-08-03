@@ -1,6 +1,12 @@
 # Process isolation: shrink the core, make heavy subsystems independently restartable
 
-> Status: revised after cross-lab adversarial review (Google + OpenAI). One earlier recommendation was **withdrawn** — see "Correction" below.
+> Status: implemented on 2026-08-02. One earlier recommendation was **withdrawn** — see "Correction" below.
+>
+> Sequencing note: PR #149 was still open at implementation time, so sticky
+> notes remained enabled by default on this branch. STT was extracted first for
+> risk/isolation reasons: its surface is smaller, it already had respawn coverage,
+> and external-endpoint mode exercises ready-with-no-child behavior. It was not
+> the larger default-path memory win on this branch.
 
 ## Context
 
@@ -182,23 +188,47 @@ Boot with nothing expanded → ~150 MB, `model_hosts` empty. Expand a card → h
 
 ## Also in scope: the pre-existing red suite
 
-`main` is red before any of this work: **15 failing / 1880 passing**. Two unrelated classes, both must be driven to green. Do NOT paper over either with a retry, a skip, a relaxed assertion, or a raised `--timeout`.
+The fixed claim of **15 failing / 1880 passing** did not reproduce on Linux or in
+the available clean Windows CI evidence. Its stated model-loading lead is
+retracted: `src/server.js` forces both engines inert whenever Mocha is present, so
+removing eager native loading cannot change `npm test`.
 
-**Class A — two genuine e2e assertion failures** in `test/e2e.test.js`: `should deliver broadcasts to a reconnected client` and `should send activity to a client that left a session (lobby state)`. These reproduce outside the full suite, so they are real defects.
+The implementation fixed independently verified defects without substituting a
+new unsupported causal story:
 
-**Class B — nine control-plane timeouts** in `test/control/routes.test.js` and `test/control/steering-helpers.test.js`, all `Timeout of 2000ms exceeded`. Diagnostic evidence gathered so far:
+- `close()` removes every process-level listener registered by the server.
+- `npm test` uses a per-run session-store sandbox and fails if a test resolves a
+  path under the real `~/.ai-or-die`.
+- Playwright project regexes are suffix-anchored so hostile checkout names such as
+  `factory-33-workspace` cannot reassign every spec.
+- The stable PowerShell OSC 7 integration failure was in the raw PTY harness:
+  PSReadLine blocked on DSR `ESC[6n`, requires CR submission, and the test used a
+  stale host-bearing URL. The harness now answers DSR, sends CR, and uses the
+  documented empty-host form. The tool probe works on Windows without `/bin/sh`.
+- `npm run test:integration` now runs in both CI matrix jobs.
 
-- `routes.test.js` alone: 22 passing in 520 ms.
-- `e2e.test.js` + `routes.test.js`: routes still passes. So e2e is not the polluter.
-- Full suite: every routes test times out.
-- `npm test` passes no `--timeout`, so these inherit mocha's 2000 ms default (`test:integration` uses 60000).
-- **Removing eager model loading dropped suite wall-clock 13m → 12m and turned three of these green with no change to the control code.**
-
-That last point is the lead. It is cumulative resource accumulation across ~40 test files degrading the process until tests that take 520 ms miss a 2000 ms budget — the suite exhibiting in 13 minutes what the service exhibits over 9 days. Root-cause the accumulation. It is plausibly the same retention family as the eight verified JS-heap findings listed under "out of scope" above; if so, fix the shared cause.
+No retry, skip, relaxed assertion, platform carve-out, or timeout increase was
+used. Detailed evidence is in `docs/history/test-suite-flake-inventory.md`.
+Local Linux verification finished with three consecutive retry-free full-suite
+passes (1966 passing, 2 pending, 0 failing each). Repeated Windows evidence remains
+the output of the manual matrix inventory job and is not inferred from Linux.
 
 ## Also in scope: STT default scrutiny
 
-Local STT is ON by default and eagerly loads 0.64 GB of sherpa weights at boot (`server.js:3405`), before the HTTP server exists. The equivalent question asked of sticky notes has never been asked of it: is the always-on default earning its cost? Measure and decide with evidence.
+Local STT remains ON by default but no longer loads native weights at boot. A
+cached-model measurement on 2026-08-02 produced:
+
+| Step | Core RSS | Host RSS | Cold latency |
+|---|---:|---:|---:|
+| Constructed | 53.2 MB | none | — |
+| Download-ready, idle | 53.5 MB | none | — |
+| First demand ready | 53.3 MB | 1480.2 MB | 9850 ms |
+| Unloaded | 53.3 MB | none | — |
+
+Decision: keep the default enabled but lazy. Download preparation has negligible
+core cost, first demand fits the bounded 25 s cold path, `voice_warm` starts it at
+recording start, and 10-minute idle unload returns the full host allocation to the
+OS. External-endpoint STT never creates or unloads a host.
 
 ## Product bar
 

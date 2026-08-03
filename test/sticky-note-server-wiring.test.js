@@ -203,6 +203,19 @@ describe('sticky-note server wiring', function () {
     assert.deepStrictEqual(self._summarizerCalls.pop(), ['disable', 's1']);
   });
 
+  it('renews expanded-card leases from the legacy client heartbeat', function () {
+    const self = makeStub({
+      _stickyLeaseExpiries: new Map([
+        ['s1:ws1', { sessionId: 's1', wsId: 'ws1', expiresAt: 1 }],
+        ['s2:ws2', { sessionId: 's2', wsId: 'ws2', expiresAt: 2 }],
+      ]),
+    });
+    const before = Date.now();
+    ClaudeCodeWebServer.prototype._renewStickyLeasesForWs.call(self, 'ws1');
+    assert.ok(self._stickyLeaseExpiries.get('s1:ws1').expiresAt >= before + 45000);
+    assert.strictEqual(self._stickyLeaseExpiries.get('s2:ws2').expiresAt, 2);
+  });
+
   it('_maybeStartStickyNotes summarises terminal tabs too, but skips disabled sessions', function () {
     const self = makeStub();
     // Terminal tab is now eligible (users run AI CLIs inside a shell).
@@ -727,6 +740,23 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
     // A socket not belonging to the session cannot activate it.
     self._handleSetStickyActive('wsZ', { sessionId: 's1', active: true });
     assert.ok(!self._isStickyExpandedActive('s1'), 'foreign socket cannot mark active');
+  });
+
+  it('expires sticky leases without parsing structured ids from the map key', function () {
+    const self = makeStub();
+    self._stickyActive = new Map();
+    self._stickyLeaseExpiries = new Map();
+    self._isStickyExpandedActive = ClaudeCodeWebServer.prototype._isStickyExpandedActive;
+    self._handleSetStickyActive = ClaudeCodeWebServer.prototype._handleSetStickyActive;
+    self._expireStickyLeases = ClaudeCodeWebServer.prototype._expireStickyLeases;
+    const sessionId = 'mesh:node:session';
+    const wsId = 'socket:epoch';
+    self.webSocketConnections = new Map([[wsId, { claudeSessionId: sessionId }]]);
+    self.claudeSessions.set(sessionId, { connections: new Set([wsId]) });
+    self._handleSetStickyActive(wsId, { sessionId, active: true });
+    for (const lease of self._stickyLeaseExpiries.values()) lease.expiresAt = 0;
+    self._expireStickyLeases();
+    assert.ok(!self._isStickyExpandedActive(sessionId));
   });
 });
 

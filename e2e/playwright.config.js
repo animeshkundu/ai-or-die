@@ -22,7 +22,7 @@ module.exports = defineConfig({
   testDir: './tests',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 1 : 0,
+  retries: 0,
   workers: process.env.CI ? 2 : 1,
   timeout: 60000,
   updateSnapshots: 'missing',
@@ -39,9 +39,9 @@ module.exports = defineConfig({
     browserName: 'chromium',
     serviceWorkers: 'block',
     permissions: ['clipboard-read', 'clipboard-write'],
-    trace: 'on-first-retry',
+    trace: process.env.CI ? 'retain-on-failure' : 'off',
     screenshot: 'only-on-failure',
-    video: process.env.CI ? 'on-first-retry' : 'off',
+    video: process.env.CI ? 'retain-on-failure' : 'off',
     viewport: { width: 1280, height: 720 },
   },
   projects: [
@@ -51,11 +51,11 @@ module.exports = defineConfig({
     },
     {
       name: 'functional-core',
-      testMatch: /0[2-5]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])0[2-5]-.*\.spec\.js$/,
     },
     {
       name: 'functional-extended',
-      testMatch: /0[6-7]-.*\.spec\.js|09-image-paste\.spec\.js|09-background-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])(?:0[6-7]-.*|09-image-paste|09-background-.*)\.spec\.js$/,
     },
     {
       name: 'mobile-iphone',
@@ -79,11 +79,11 @@ module.exports = defineConfig({
     },
     {
       name: 'new-features',
-      testMatch: /1[0-5]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])1[0-5]-.*\.spec\.js$/,
     },
     {
       name: 'integrations',
-      testMatch: /1[6-9]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])1[6-9]-.*\.spec\.js$/,
     },
     {
       name: 'voice-e2e',
@@ -124,17 +124,17 @@ module.exports = defineConfig({
     // Power user flow tests — real CLI tools, real workflows
     {
       name: 'power-user-flows',
-      testMatch: /3[0-6]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])3[0-6]-.*\.spec\.js$/,
     },
     // Mobile flow tests — device emulation with real terminal interaction
     {
       name: 'mobile-flows',
-      testMatch: /3[7-9]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])3[7-9]-.*\.spec\.js$/,
     },
     // UI feature tests — command palette styling, voice settings, mic chimes
     {
       name: 'ui-features',
-      testMatch: /4[0-7]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])4[0-7]-.*\.spec\.js$/,
     },
     // Mobile Sprint 1 fix validation
     {
@@ -154,13 +154,13 @@ module.exports = defineConfig({
     // UX features: feedback system, input overlay, plan viewer
     {
       name: 'ux-features',
-      testMatch: /5[1-5]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])5[1-5]-.*\.spec\.js$/,
     },
     // File browser v2: OSC 7 CWD tracking, Cmd-P fuzzy find, terminal-path
     // click resolution, generic file drop. Specs 56–69.
     {
       name: 'file-browser-v2',
-      testMatch: /5[6-9]-.*\.spec\.js|6[0-9]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])(?:5[6-9]-.*|6[0-9]-.*)\.spec\.js$/,
       timeout: 90000,
     },
     // Exploratory user-journey suite. Drives the live dev server at
@@ -170,7 +170,7 @@ module.exports = defineConfig({
     // (See e2e/tests/journey/journey.spec.js for the 12-step plan.)
     {
       name: 'journey',
-      testMatch: /journey[\\/]journey\.spec\.js/,
+      testMatch: /(?:^|[\\/])journey[\\/]journey\.spec\.js$/,
       timeout: 120000,
       use: {
         viewport: { width: 1280, height: 800 },
@@ -180,7 +180,7 @@ module.exports = defineConfig({
     //   node bin/ai-or-die.js --port 11501 --no-open --auth foo
     {
       name: 'journey-auth',
-      testMatch: /journey[\\/]journey-auth\.spec\.js/,
+      testMatch: /(?:^|[\\/])journey[\\/]journey-auth\.spec\.js$/,
       timeout: 120000,
       use: {
         viewport: { width: 1280, height: 800 },
@@ -192,7 +192,7 @@ module.exports = defineConfig({
     // pre-running 11501 dev server).
     {
       name: 'journey-auth-regressions',
-      testMatch: /journey[\\/]journey-auth-regressions\.spec\.js/,
+      testMatch: /(?:^|[\\/])journey[\\/]journey-auth-regressions\.spec\.js$/,
       timeout: 60000,
       use: {
         viewport: { width: 1280, height: 800 },
@@ -215,25 +215,25 @@ module.exports = defineConfig({
     // 120s budget is modest headroom for the heavier 6.0 page on WebKit.
     {
       name: 'ios-iphone16',
-      testMatch: /7[7-9]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])7[7-9]-.*\.spec\.js$/,
       timeout: 120000,
       use: { ...iPhone16, serviceWorkers: 'allow' },
     },
     {
       name: 'ios-iphone16-landscape',
-      testMatch: /79-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])79-.*\.spec\.js$/,
       timeout: 120000,
       use: { ...iPhone16Landscape, serviceWorkers: 'allow' },
     },
     {
       name: 'ios-ipad11',
-      testMatch: /7[7-9]-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])7[7-9]-.*\.spec\.js$/,
       timeout: 120000,
       use: { ...iPad11, serviceWorkers: 'allow' },
     },
     {
       name: 'ios-ipad11-landscape',
-      testMatch: /79-.*\.spec\.js/,
+      testMatch: /(?:^|[\\/])79-.*\.spec\.js$/,
       timeout: 120000,
       use: { ...iPad11Landscape, serviceWorkers: 'allow' },
     },

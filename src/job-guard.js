@@ -126,6 +126,7 @@ function createKillOnCloseJob() {
   if (!api) return null;
   let job = null;
   try {
+    // NULL SECURITY_ATTRIBUTES makes the returned HANDLE non-inheritable.
     job = api.CreateJobObjectW(null, null);
     if (_isNullHandle(job)) return null;
     const info = {

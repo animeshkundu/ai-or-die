@@ -109,7 +109,19 @@ For the initial test suite, browser-level tests are **deferred**. The server E2E
 - **Mock the tools, not the infrastructure** -- Use bash/echo as the "tool" instead of Claude/Copilot
 - **Cross-platform** -- Tests must pass on Linux and Windows CI; use `TerminalBridge` (shell) as the universal tool
 - **Deterministic** -- Avoid timing-dependent assertions; use event-driven waits with timeouts
+- **Retry-free browser gate** -- Playwright retries are disabled in CI; failures
+  retain traces, screenshots, and video rather than being hidden by a green retry.
 - **Isolated** -- Each test suite starts its own server on an ephemeral port
+- **Checkout-path independent** -- Playwright regular-expression `testMatch` entries are anchored to the test basename/path suffix so digits in a parent checkout directory cannot reassign specs between projects.
+- **No hidden integration red** -- `npm run test:integration` runs in the Ubuntu and Windows CI matrix alongside `npm test`.
+- **Recorded flake inventory** -- manual CI dispatch accepts
+  `flake_inventory_runs`; `scripts/run-flake-inventory.js` records platform,
+  Node version, exit code, wall time, and a structured report containing every
+  test title, state, duration, and failure alongside the raw log for every
+  consecutive run on both matrix operating systems.
+- **Legacy-page compatibility** -- `scripts/pin-legacy-client.js` and
+  `e2e/helpers/legacy-client.js` serve pre-change client assets against the
+  upgraded server for browser-level protocol compatibility checks.
 
 ### 2.2 File Structure
 

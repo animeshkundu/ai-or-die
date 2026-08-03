@@ -93,6 +93,19 @@ describe('sticky-note card (DOM, v2: goal/done/remaining/updates + toolbar minim
     assert.strictEqual(card._refs.goalSec.hidden, true);
   });
 
+  it('shows explicit lifecycle copy without replacing an existing note', function () {
+    const card = new StickyNoteCard(app);
+    card.expand();
+    card.render(null);
+    card.setModelState('loading');
+    assert.match(card._refs.placeholder.textContent, /Starting the local summary model/);
+    assert.match(card._refs.placeholder.textContent, /terminal stays live/i);
+    card.render(note({ goal: 'keep this visible' }));
+    card.setModelState('restarting');
+    assert.strictEqual(card._refs.goalText.textContent, 'keep this visible');
+    assert.strictEqual(card._refs.placeholder.hidden, true);
+  });
+
   it('stays hidden when the feature is disabled', function () {
     app.stickyNotesEnabled = false;
     const card = new StickyNoteCard(app);

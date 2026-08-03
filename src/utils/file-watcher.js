@@ -294,7 +294,7 @@ class FileWatcher extends EventEmitter {
       // flakiness with sync writeFileSync; production stays on the
       // OS-native backend.
       usePolling: this._usePolling,
-      interval: this._usePolling ? 50 : undefined,
+      interval: this._usePolling ? this._pollIntervalMs : undefined,
       atomic: false,
       // depth: 0 confines chokidar to direct children of every watched
       // path (the watchRoot + anything later added via subscribe). The
@@ -406,6 +406,17 @@ class FileWatcher extends EventEmitter {
     if (this._depth === 0) {
       const target = isRecursive ? canonical : path.dirname(canonical);
       this._refWatchTarget(target);
+    }
+    if (this._usePolling) {
+      // Chokidar can emit its initial `ready` before the polling backend has
+      // crossed a post-subscription scan boundary. Returning 204 before that
+      // boundary lets an immediate same-tick create be mistaken for initial
+      // state and suppressed by ignoreInitial. Make subscribe() a real
+      // readiness barrier instead of forcing callers to guess a delay.
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        Math.max(80, this._pollIntervalMs * 2)
+      ));
     }
   }
 
