@@ -199,6 +199,27 @@ function startModelHostRuntime(handlers) {
         return;
       }
       metadata.set(key, { ...message, at: Date.now() });
+      // Bun path: the payload rides the control message because bytes written
+      // to fd 4 never reach the child there. Validate it against the declared
+      // length so a mismatched inline payload is a protocol error rather than a
+      // silently truncated inference.
+      if (typeof message.payloadBase64 === 'string') {
+        let inline;
+        try { inline = Buffer.from(message.payloadBase64, 'base64'); }
+        catch (_) { failProtocol('Malformed inline model-host payload'); return; }
+        if (inline.length !== message.length) {
+          failProtocol('Inline model-host payload length mismatch');
+          return;
+        }
+        frames.set(key, {
+          nonce: message.nonce,
+          seq: message.seq,
+          dtype: message.dtype,
+          length: inline.length,
+          payload: inline,
+          at: Date.now(),
+        });
+      }
       maybeDispatch(key);
       return;
     }

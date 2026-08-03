@@ -7,6 +7,12 @@ const { EventEmitter } = require('events');
 const { encodeFrame, writeFrame } = require('./model-host-protocol');
 const containment = require('./model-host-containment');
 
+// Bun cannot deliver bytes written to the extra stdio pipe (fd 4) to the child.
+// Its IPC channel works, so under Bun the payload rides the control message.
+// Node keeps the zero-copy pipe. Parent and child are the same runtime (the
+// child is spawned with process.execPath), so the parent's check decides both.
+const USE_IPC_PAYLOAD = !!(process.versions && process.versions.bun);
+
 const STATES = Object.freeze([
   'disabled',
   'downloading',
@@ -248,6 +254,15 @@ class ModelHost extends EventEmitter {
       });
       generation.runtime.requests.set(seq, request);
       try {
+        // Bun does not deliver data written to the extra stdio pipe (fd 4) to
+        // the child, while its IPC channel works fine — verified with a minimal
+        // probe on bun 1.4.0-canary: identical parent/child code delivers under
+        // Node and times out under Bun. Carry the payload inside the control
+        // message there instead. Base64 costs ~33% over the wire and one copy,
+        // acceptable because the payload is hard-capped (MAX_PAYLOAD_BYTES) and
+        // exactly one request is in flight at a time. Node keeps the zero-copy
+        // pipe path.
+        const viaIpc = USE_IPC_PAYLOAD;
         generation.child.send({
           ...metadata,
           type: 'request',
@@ -255,10 +270,11 @@ class ModelHost extends EventEmitter {
           seq,
           dtype,
           length: body.length,
+          ...(viaIpc ? { payloadBase64: body.toString('base64') } : {}),
         }, (error) => {
           if (error) this._finalize(generation, 'control-error', error);
         });
-        await writeFrame(generation.payload, frame);
+        if (!viaIpc) await writeFrame(generation.payload, frame);
       } catch (error) {
         generation.runtime.requests.delete(seq);
         clearTimeout(request.timer);
