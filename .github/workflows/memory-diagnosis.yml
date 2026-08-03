@@ -33,7 +33,7 @@ jobs:
     env:
       DIAG_OPERATIONS: ${{ github.event.inputs.operations || '60' }}
       DIAG_SESSION_RATE: ${{ github.event.inputs.session_rate || '1' }}
-      DIAG_OS: ${{ runner.os }}
+      DIAG_OS: ${{ matrix.os }}
       DIAG_OUT: test/longevity/results/workflow-derived
     steps:
       - uses: actions/checkout@v4
