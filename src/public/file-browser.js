@@ -2542,6 +2542,31 @@
         return;
       }
       resolvedHandle = handle;
+      // Re-apply the documented `.fb-code-gutter` / `.fb-code-content` contract
+      // onto Monaco's own DOM.
+      //
+      // _buildPlainCodePreview above emits those classes so content is visible
+      // instantly, but Monaco SWEEPS host before mounting — so once it resolves,
+      // both locators disappear. That made the contract depend on who won the
+      // race: slow Monaco (CDN cold) left the plain DOM in place and locators
+      // resolved; fast Monaco swept it first and they did not. Observed as an
+      // intermittent Windows CI failure on `.fb-code-gutter` while the earlier
+      // `.fb-code-content` assertion passed moments before.
+      //
+      // Monaco renders line numbers in `.margin` and text in `.view-lines`, so
+      // tag those rather than widening a timeout — the contract now holds in
+      // BOTH render modes instead of only the slow one. Guarded so the classes
+      // are applied at most once (Playwright strict mode fails on duplicates).
+      try {
+        var gutterEl = host.querySelector('.margin');
+        if (gutterEl && !gutterEl.classList.contains('fb-code-gutter')) {
+          gutterEl.classList.add('fb-code-gutter');
+        }
+        var contentEl = host.querySelector('.view-lines');
+        if (contentEl && !contentEl.classList.contains('fb-code-content')) {
+          contentEl.classList.add('fb-code-content');
+        }
+      } catch (_) { /* cosmetic aliasing only — never break the viewer */ }
       // Expose the live Monaco editor instance on the panel so the
       // fs-watcher integration (and tests) can reach it for cursor /
       // selection / scroll preservation across silent reloads. Same
