@@ -88,6 +88,7 @@ const HAS_SUDO_NOPASSWD = (() => {
 // ---------------------------------------------------------------------------
 
 let server, port, baseDir;
+let hasSymlink = false;
 
 async function startServer() {
   baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'osc7-real-shell-'));
@@ -96,7 +97,18 @@ async function startServer() {
   fs.mkdirSync(path.join(baseDir, 'b'));
   fs.mkdirSync(path.join(baseDir, 'foo bar'));        // path with spaces
   fs.mkdirSync(path.join(baseDir, 'résumé'));         // unicode
-  fs.symlinkSync(path.join(baseDir, 'a'), path.join(baseDir, 'a-link'));
+  // Creating a symlink on Windows needs Developer Mode or elevation. CI runners
+  // have it; a normal Windows dev box does not, and an unguarded symlinkSync
+  // here threw EPERM in before(), taking down EVERY test in this file —
+  // including the pwsh scenario, which is the one Windows case that matters.
+  // The symlink is only consumed by a POSIX-gated test, so record whether it
+  // exists rather than making the whole suite unrunnable locally.
+  try {
+    fs.symlinkSync(path.join(baseDir, 'a'), path.join(baseDir, 'a-link'));
+    hasSymlink = true;
+  } catch (_) {
+    hasSymlink = false;
+  }
   const origCwd = process.cwd();
   process.chdir(baseDir);
   server = new ClaudeCodeWebServer({
@@ -185,6 +197,37 @@ class Session {
         }
       };
       this.ws.on('message', handler);
+    });
+  }
+
+  /**
+   * Wait for a cwd_changed frame whose cwd resolves to `expected`.
+   *
+   * Prefer this over waitForCwdChanged() whenever a hook was installed earlier
+   * in the test: installing a prompt hook makes the shell redraw immediately,
+   * which legitimately emits a cwd_changed for the CURRENT directory before the
+   * navigation under test happens. "Wait for the next frame" then races that
+   * redraw and asserts against the wrong directory — non-deterministically,
+   * depending on whether the redraw landed before or after the wait started.
+   * Matching on the target path is order-independent.
+   */
+  waitForCwdChangedTo(expected, timeoutMs) {
+    const want = path.resolve(expected);
+    return new Promise((resolve, reject) => {
+      const start = Date.now();
+      const tick = setInterval(() => {
+        const hit = this.cwdChangedFrames.find((f) => path.resolve(f.cwd) === want);
+        if (hit) {
+          clearInterval(tick);
+          resolve(hit);
+        } else if (Date.now() - start >= timeoutMs) {
+          clearInterval(tick);
+          const seen = this.cwdChangedFrames.map((f) => f.cwd).join(', ') || '(none)';
+          reject(new Error(
+            'cwd_changed for ' + want + ' timed out after ' + timeoutMs + 'ms; saw: ' + seen
+          ));
+        }
+      }, 25);
     });
   }
 
@@ -374,7 +417,10 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
     sess.reset();
 
     sess.send('Set-Location ' + JSON.stringify(path.join(baseDir, 'a')) + '\r');
-    const f = await sess.waitForCwdChanged(10000);
+    // Match on the target dir, not "the next frame": installing the prompt hook
+    // above makes pwsh redraw and emit a cwd_changed for the CURRENT directory,
+    // which raced the Set-Location frame on CI and asserted against baseDir.
+    const f = await sess.waitForCwdChangedTo(realA(), 15000);
     assert.strictEqual(path.resolve(f.cwd), realA());
     await sess.close();
   });
