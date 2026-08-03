@@ -107,27 +107,45 @@ function startModelHostRuntime(handlers) {
   payload.on('end', () => parser.end());
   payload.on('error', (error) => parser.emit('protocolError', error));
 
-  const watchdog = new Worker(path.join(__dirname, 'model-host-liveness.js'), {
-    workerData: { fd: 5 },
-  });
-  watchdog.on('message', (message) => {
-    if (message && message.type === 'armed') {
-      send({ type: 'liveness_armed' });
-    } else if (message && message.type === 'failed') {
-      send({ type: 'error', code: 'LIVENESS_FAILED', message: message.message });
+  // The liveness watchdog is a pure-JS worker thread blocking on fd 5, so core
+  // death closes the write end and we SIGKILL ourselves. It exists to cover the
+  // window where `disconnect` cannot be delivered because the main thread is
+  // inside a synchronous native call.
+  //
+  // Bun cannot run it: worker_threads plus a blocking fs.readSync never arms,
+  // and the parent gates {type:'load'} on liveness_armed, so the host would sit
+  // in `loading` until the readiness deadline and the feature would simply not
+  // work under Bun. Report armed-but-degraded instead so startup proceeds. This
+  // is the same degraded posture Bun already has for containment (koffi panics
+  // the runtime, so the Job Object guard is off there too) — teardown falls back
+  // to the parent's tree-kill path.
+  const IS_BUN = !!(process.versions && process.versions.bun);
+  let watchdog = null;
+  if (IS_BUN) {
+    send({ type: 'liveness_armed', degraded: 'bun-unsupported' });
+  } else {
+    watchdog = new Worker(path.join(__dirname, 'model-host-liveness.js'), {
+      workerData: { fd: 5 },
+    });
+    watchdog.on('message', (message) => {
+      if (message && message.type === 'armed') {
+        send({ type: 'liveness_armed' });
+      } else if (message && message.type === 'failed') {
+        send({ type: 'error', code: 'LIVENESS_FAILED', message: message.message });
+        process.exit(1);
+      }
+    });
+    watchdog.once('error', (error) => {
+      send({ type: 'error', code: 'LIVENESS_FAILED', message: error.message });
       process.exit(1);
-    }
-  });
-  watchdog.once('error', (error) => {
-    send({ type: 'error', code: 'LIVENESS_FAILED', message: error.message });
-    process.exit(1);
-  });
-  watchdog.once('exit', (code) => {
-    if (!shuttingDown) {
-      send({ type: 'error', code: 'LIVENESS_FAILED', message: `liveness watchdog exited (${code})` });
-      process.exit(1);
-    }
-  });
+    });
+    watchdog.once('exit', (code) => {
+      if (!shuttingDown) {
+        send({ type: 'error', code: 'LIVENESS_FAILED', message: `liveness watchdog exited (${code})` });
+        process.exit(1);
+      }
+    });
+  }
 
   orphanTimer = setInterval(expireOrphans, 5000);
   if (orphanTimer.unref) orphanTimer.unref();

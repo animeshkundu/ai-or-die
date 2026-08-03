@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-or-die × Happy — Path Forward</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --ink:#e8eaed; --muted:#9aa3b2;
+    --line:#2a2f3a; --accent:#4c8bf5; --good:#3fb950; --warn:#d29922; --bad:#f85149;
+    --chip:#232834;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  .wrap{max-width:940px;margin:0 auto;padding:28px 22px 60px}
+  h1{font-size:24px;margin:0 0 4px}
+  h2{font-size:16px;letter-spacing:.02em;text-transform:uppercase;color:var(--muted);
+     margin:30px 0 10px;border-bottom:1px solid var(--line);padding-bottom:6px}
+  .sub{color:var(--muted);margin:0 0 18px}
+  .verdict{background:linear-gradient(180deg,#16351f,#12261a);border:1px solid #2f6b3d;
+    border-radius:12px;padding:16px 18px;margin:14px 0 6px}
+  .verdict b{color:#7ee08a}
+  .verdict .big{font-size:18px;font-weight:600;margin-bottom:4px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h3{margin:0 0 8px;font-size:14px}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin:6px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--muted);font-weight:600}
+  code{background:var(--chip);padding:1px 6px;border-radius:5px;font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  pre{background:#0c0e13;border:1px solid var(--line);border-radius:10px;padding:14px;overflow:auto;
+     font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#cdd3de}
+  .pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;border:1px solid var(--line);background:var(--chip);color:var(--muted)}
+  .pill.good{color:#7ee08a;border-color:#2f6b3d}
+  .pill.warn{color:#e2c078;border-color:#6b5a22}
+  .pill.risk{color:#f0a39c;border-color:#7a2f2a}
+  ul{margin:6px 0 6px 0;padding-left:20px}
+  li{margin:4px 0}
+  .own{color:#7ee08a;font-weight:600}
+  .reuse{color:#7db4ff;font-weight:600}
+  .none{color:#e2c078;font-weight:600}
+  .actions{margin-top:26px;display:flex;flex-direction:column;gap:10px}
+  .aod{display:block;width:100%;text-align:left;cursor:pointer;border-radius:10px;padding:13px 15px;
+    border:1px solid var(--line);background:var(--panel2);color:var(--ink);font-size:14.5px}
+  .aod:hover{border-color:var(--accent)}
+  .aod .k{font-weight:600}
+  .aod .d{color:var(--muted);font-size:13px;margin-top:2px}
+  .rec{border-color:#2f6b3d;background:#14251b}
+  .foot{color:var(--muted);font-size:12.5px;margin-top:18px}
+  .statusrow{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>ai-or-die × Happy — recommended path forward</h1>
+  <p class="sub">Question: can we drive our ai-or-die Claude sessions from the <b>existing</b> Happy iPhone/iPad app, keeping app modification as a last resort — and does its security model allow it?</p>
+
+  <div class="verdict">
+    <div class="big"><b>Yes. Use the Happy app unmodified. No fork required.</b></div>
+    Happy ships a custom-server-URL setting (no rebuild), it's end-to-end encrypted (the relay it talks to is untrusted by design), and it has no cert pinning or host lock — so it works over a <b>private</b> Tailscale/LAN endpoint that is never exposed to the internet. Everything we build lives on <b>our</b> side (a relay + a producer adapter); we never touch the app.
+  </div>
+  <div class="statusrow">
+    <span class="pill good">app: unmodified</span>
+    <span class="pill good">relay: published npm pkg</span>
+    <span class="pill good">endpoint: private (Tailscale/LAN)</span>
+    <span class="pill good">wire: PROVEN (Proof-1 ✓)</span>
+    <span class="pill warn">protocol: pre-1.0 (churns)</span>
+  </div>
+
+  <h2>Recommended architecture</h2>
+  <pre>  iPhone / iPad                         your machine(s) — all private, nothing internet-facing
+  ┌──────────────┐   Tailscale /       ┌───────────────────────────────────────────────┐
+  │  Happy app   │   LAN (no open      │  happy-server-self-host   ◄──►  ai-or-die       │
+  │ (UNMODIFIED) │──  public port) ───►│  (published npm relay)          producer adapter │
+  │  Settings →  │   https://host      │  · Socket.IO /v1/updates        (OUR code)       │
+  │  Server URL  │   .ts.net           │  · seq / CAS / store       ┌──►· tails Claude    │
+  └──────────────┘                     │  · "Welcome to Happy       │    JSONL → RawRecord │
+        ▲  E2E-encrypted; relay         │     Server!" gate          │    → secretbox → v3  │
+        │  only sees ciphertext         │                            │ · inbound msg →      │
+        └───────────────────────────────┤  each instance = a         │    /api/control      │
+                                        │  "machine" the app lists   └──► ai-or-die control │
+                                        └───────────────────────────────────────────────┘
+  Multi-instance: every ai-or-die instance runs the adapter and dials OUT to ONE relay →
+  the app sees them all as separate machines under one account.</pre>
+
+  <h2>What we own vs. what we reuse</h2>
+  <table>
+    <tr><th>Component</th><th>Ownership</th><th>Notes</th></tr>
+    <tr><td>Happy iOS/iPad app</td><td class="none">REUSE as-is</td><td>Custom-server-URL is a shipped feature. Zero changes, zero maintenance.</td></tr>
+    <tr><td>Relay server</td><td class="reuse">REUSE (npm dep)</td><td><code>happy-server-self-host@1.1.11</code> — published, versioned, PGlite (no Postgres/Redis/Docker). Their code owns the churny Socket.IO + seq/CAS correctness.</td></tr>
+    <tr><td>Producer adapter</td><td class="own">OWN (small)</td><td>The only real new code: pairing + legacy secretbox crypto + JSONL→RawRecord uplink + inbound→control-plane downlink. Common to every strategy.</td></tr>
+    <tr><td>Transport / reachability</td><td class="reuse">REUSE</td><td>ai-or-die's existing Tailscale mesh → private <code>.ts.net</code> origin.</td></tr>
+  </table>
+
+  <h2>Why the security model allows "app as-is"</h2>
+  <div class="grid">
+    <div class="card"><h3>End-to-end encrypted</h3>The relay only ever holds ciphertext + routing metadata. Even though <i>we</i> run the relay, session content is encrypted with a key the app owns (delivered once via QR pairing). Threat model = access/abuse, not confidentiality.</div>
+    <div class="card"><h3>No open endpoint needed</h3>App has <b>no</b> embedded VPN/mesh and <b>no</b> cert pinning (source-audited). Relay lives inside your tailnet/LAN; the OS routes the app to <code>https://host.ts.net</code> transparently. Want no Tailscale on the phone? <code>tailscale funnel</code> publishes just that port (HTTPS+wss, valid cert), gated by E2E + a pubkey allowlist.</div>
+    <div class="card"><h3>Single-user lockdown</h3>Registration is by public key; we add a one-line <code>ALLOWED_ACCOUNT_PUBKEYS</code> allowlist so only your device's key can pair. Google can still gate access — as Tailscale's SSO, at the network layer.</div>
+    <div class="card"><h3>Nothing to maintain in the app</h3>No app fork means no App-Store account, no rebuilds chasing Expo/RN upgrades, no keeping a fork in sync with upstream. That burden is exactly what "last resort" is meant to avoid.</div>
+  </div>
+
+  <h2>Sub-decision: reuse their relay (S1a) vs. build our own (S2)</h2>
+  <table>
+    <tr><th></th><th class="own">S1a — reuse published relay (recommended)</th><th>S2 — native in-process relay</th></tr>
+    <tr><td>Relay correctness (Socket.IO, seq/CAS)</td><td>Theirs — battle-tested, tracks churn</td><td>Ours to reimplement &amp; keep correct</td></tr>
+    <tr><td>Runtime</td><td>Second process (PGlite) — but supervised like our mesh/keepalive sidecars</td><td>One process; rides our auth/mesh directly</td></tr>
+    <tr><td>Maintenance under protocol churn</td><td class="own">Low — bump the npm dep</td><td>Higher — chase every wire change</td></tr>
+    <tr><td>Best when</td><td>Now / minimize ownership</td><td>Later, if the 2nd process becomes a burden</td></tr>
+  </table>
+
+  <h2>Residual risks &amp; mitigations</h2>
+  <ul>
+    <li><span class="pill risk">verify</span> <b>Push notifications.</b> Expo tokens are bound to Happy's project; a self-host relay <i>forwards</i> to Expo (happy-cli does this). Likely works, <b>to confirm empirically</b>. Foreground realtime needs no push.</li>
+    <li><span class="pill risk">fidelity</span> <b>Permission approvals.</b> The app expects an RPC lifecycle + a cleared request; ai-or-die drives a real PTY. We map the modals it reliably detects and clear state proactively; edge permission shapes may not be 1:1.</li>
+    <li><span class="pill warn">churn</span> <b>Pre-1.0 protocol.</b> Emit legacy behind a mapper; pin behavior with tests against the real app build (the app validates with its own copy of the types).</li>
+    <li><span class="pill warn">win</span> <b>Windows-first.</b> ConPTY prompt parsing for the permission path must be tested on Windows.</li>
+  </ul>
+  <p class="foot">The only scenario that could ever force an app fork is if push turned out to strictly require our own Expo project — and even then, live in-app use works without it. Nothing else in the audit points to a fork.</p>
+
+  <h2>Empirical validation — Proof-1 PASSED ✓</h2>
+  <ul>
+    <li>✅ Relay live (<code>Welcome to Happy Server!</code> gate passing, 37 migrations on PGlite; the published <code>happy-server-self-host</code>).</li>
+    <li>✅ <b>Full wire proven, independently re-run:</b> a mock app created an account, paired (ephemeral X25519, legacy secret sealed by the app), then our adapter registered a machine + session and streamed real Claude JSONL turns → legacy secretbox → <code>POST /v3/messages</code>. The mock app received <code>new-machine</code>/<code>new-session</code>/<code>new-message</code> over Socket.IO and <b>decrypted 4/4 records with matching UUID + text</b> (0 misses).</li>
+    <li>✅ Confirms: pairing, byte-exact legacy crypto, machine/session registration, v3 batch + per-session seq, update/ephemeral fan-out, RawRecord shape.</li>
+    <li>⬜ <b>Device test (only remaining unknown):</b> point your real Happy app at <code>http://&lt;lan-ip&gt;:3005</code> (or the funnel URL) and scan the adapter QR — confirms the actual iOS build's own <code>typesRaw.ts</code> validation accepts these shapes. The mock app is a faithful stand-in but not proof of the shipped binary.</li>
+  </ul>
+
+  <div class="actions">
+    <button class="aod rec" data-aod-action="approve-path" data-aod-id="s1a-tailscale">
+      <div class="k">✓ Approve this path — unmodified app + published relay (S1a) + Tailscale</div>
+      <div class="d">Proceed to finish Proof-1, then the device test. No app fork.</div>
+    </button>
+    <button class="aod" data-aod-action="choose-relay" data-aod-id="s2-native">
+      <div class="k">Prefer S2 — native in-process relay instead of the sidecar</div>
+      <div class="d">One process, but we own the Socket.IO + seq/CAS reimplementation.</div>
+    </button>
+    <button class="aod" data-aod-action="derisk-first" data-aod-id="validate-push-perm">
+      <div class="k">Validate push + permission fidelity before committing</div>
+      <div class="d">Spend a pass proving background push forwarding and the permission RPC round-trip first.</div>
+    </button>
+  </div>
+
+  <p class="foot">Pick an option above, or just tell me in chat. I'll fold the Proof-1 result into this decision as soon as the spike finishes.</p>
+</div>
+</body>
+</html>

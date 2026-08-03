@@ -5,6 +5,12 @@ const jobGuard = require('./job-guard');
 
 function attachHost(child) {
   if (process.platform !== 'win32') return { ok: true, job: null };
+  // Structurally unavailable (Bun, SEA, koffi missing, operator opt-out) is the
+  // documented degraded mode, not a failure: fall back to killProcessTreeSync
+  // exactly as base-bridge._attachPtyJob does. Only a guard that IS available
+  // and then fails is fatal, because that means containment was expected to
+  // work and silently did not.
+  if (!jobGuard.isAvailable()) return { ok: true, job: null, degraded: true };
   // No pid means the process never started — a spawn error is already in flight
   // and will surface on its own. There is nothing running to contain, so
   // reporting a containment failure here would mask the real cause (e.g. an

@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '26'
       - run: npm ci
       - run: npm test -- --grep "voice"
 
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '26'
       - run: npm ci
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
@@ -74,7 +74,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '26'
 
       # Cache the 670MB Parakeet V3 model — download once per platform, reuse across runs
       - uses: actions/cache@v4
