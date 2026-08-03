@@ -100,7 +100,7 @@ jobs:
         continue-on-error: true
 
   test-bun-model-host:
-    name: model-host Bun 1.3.14 (${{ matrix.os }})
+    name: model-host Bun canary (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -115,7 +115,7 @@ jobs:
           cache: 'npm'
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.3.14'
+          bun-version: 'canary'
       - run: npm ci
       - run: bun test/fixtures/bun-model-host-smoke.js
 

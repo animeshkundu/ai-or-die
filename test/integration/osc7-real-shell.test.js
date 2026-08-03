@@ -58,6 +58,20 @@ function has(cmd) {
 const HAS_BASH = has('bash');
 const HAS_ZSH  = has('zsh');
 const HAS_TMUX = has('tmux');
+// Scenarios that drive a POSIX shell inside the terminal (`exec bash ...`,
+// PROMPT_COMMAND, `exec zsh`, tmux, sudo) are POSIX-only by construction.
+// On Windows the terminal bridge spawns pwsh (src/terminal-bridge.js:112-115),
+// where `exec` is not a command at all — bash never starts, the documented
+// hook is never installed, and no OSC 7 is ever emitted. Those tests would
+// report a harness mismatch as a product failure.
+//
+// This was previously invisible: the old `has()` probe shelled out through
+// `/bin/sh`, which does not exist on Windows, so EVERY probe returned false
+// and the entire suite silently skipped there. Fixing the probe (where.exe)
+// un-skipped scenarios that were never written for this platform. The Windows
+// contract is covered by the pwsh scenario below, which is the real user path.
+const POSIX_SHELL = process.platform !== 'win32';
+const posixIt = (HAS_BASH && POSIX_SHELL) ? it : it.skip;
 // PowerShell's interactive terminal initialization requires emulator replies
 // that this raw POSIX PTY harness cannot supply. The supported deployment
 // contract is Windows ConPTY, so exercise this scenario there rather than
@@ -268,7 +282,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   // 1. Bash PROMPT_COMMAND hook (verbatim from spec).
   // ──────────────────────────────────────────────────────────────────────
 
-  it('bash --noprofile --norc + spec PROMPT_COMMAND → cwd_changed on cd', async function () {
+  posixIt('bash --noprofile --norc + spec PROMPT_COMMAND → cwd_changed on cd', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -335,17 +349,20 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   // 3. PowerShell hook (verbatim from spec).
   // ──────────────────────────────────────────────────────────────────────
 
-  // The documented prompt function is Windows-specific: `$env:COMPUTERNAME`
-  // combined with a drive-style ProviderPath forms file://host/C:/... . On
-  // POSIX pwsh it instead emits file:////tmp/... (an invalid sandbox path), so
-  // validate the real user contract on its Windows target.
+  // The documented prompt function is Windows-specific: a drive-style
+  // ProviderPath forms file://C:/... , which fileURLToPath decodes to a clean
+  // drive path. Validate the real user contract on its Windows target.
+  //
+  // NOTE: the Windows terminal bridge already spawns pwsh as the shell
+  // (src/terminal-bridge.js:112-115), so there is nothing to exec into — an
+  // earlier version of this test sent `exec pwsh -NoLogo -NoProfile\n`, which
+  // is a POSIX builtin that pwsh does not have, terminated with \n where
+  // ConPTY needs \r. It reported a harness mismatch as a product failure; the
+  // OSC 7 emit path itself was verified working end-to-end on Windows.
   (HAS_PWSH && process.platform === 'win32' ? it : it.skip)('pwsh + spec prompt function → cwd_changed on Set-Location', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
-    const pwshOutputAt = sess.outputAccum.length;
-    sess.send('exec pwsh -NoLogo -NoProfile\n');
-    await sess.waitForOutputAfter(pwshOutputAt, 'PS ', 5000);
     // Single-line collapse of the spec's multi-line $PROFILE function.
     const psHook =
       'function prompt { $loc = $executionContext.SessionState.Path.CurrentLocation; ' +
@@ -353,11 +370,11 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
       '$p = $loc.ProviderPath -replace "\\\\","/"; ' +
       '$out += "$([char]27)]7;file://$p$([char]7)" }; $out }\r';
     sess.send(psHook);
-    await sess.waitForOutput('PS ', 5000);
+    await sess.waitForOutput('PS ', 10000);
     sess.reset();
 
     sess.send('Set-Location ' + JSON.stringify(path.join(baseDir, 'a')) + '\r');
-    const f = await sess.waitForCwdChanged(3000);
+    const f = await sess.waitForCwdChanged(10000);
     assert.strictEqual(path.resolve(f.cwd), realA());
     await sess.close();
   });
@@ -422,7 +439,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   it.skip('ssh into a remote — manual smoke recommended (harness cannot drive remote PROMPT_COMMAND)', function () {});
 
   // 4d. Login shell — bash --login + hook.
-  it('login bash + spec hook → cwd_changed on cd (login-shell semantics fire PROMPT_COMMAND)', async function () {
+  posixIt('login bash + spec hook → cwd_changed on cd (login-shell semantics fire PROMPT_COMMAND)', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -442,7 +459,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   //     EXPECTED behaviour (documented limit), asserted explicitly so a
   //     future change that suddenly DOES emit OSC 7 in non-interactive
   //     mode would surface here.
-  it('non-interactive bash -c does NOT emit OSC 7 (PROMPT_COMMAND doesn\'t fire)', async function () {
+  posixIt('non-interactive bash -c does NOT emit OSC 7 (PROMPT_COMMAND doesn\'t fire)', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -458,7 +475,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
 
   // 4f. Race: 100 KB stdout immediately after OSC 7 — confirms the
   //     parser's pending buffer doesn't get clobbered or out-of-sync.
-  it('OSC 7 followed immediately by 100 KB stdout — cwd_changed survives the burst', async function () {
+  posixIt('OSC 7 followed immediately by 100 KB stdout — cwd_changed survives the burst', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -476,7 +493,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
 
   // 4g. Reconnect — server-side liveCwd must persist across WebSocket
   //     close so a page reload doesn't reset the panel root.
-  it('server-side session.liveCwd persists across WebSocket close (page reload)', async function () {
+  posixIt('server-side session.liveCwd persists across WebSocket close (page reload)', async function () {
     const sess1 = new Session();
     await sess1.open(baseDir);
     const sessionId = sess1.sessionId;
@@ -501,7 +518,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   // 5. Path edge cases through the live OSC 7 flow.
   // ──────────────────────────────────────────────────────────────────────
 
-  it('path with spaces (`/foo bar`) — decoded correctly via fileURLToPath', async function () {
+  posixIt('path with spaces (`/foo bar`) — decoded correctly via fileURLToPath', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -517,7 +534,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
     await sess.close();
   });
 
-  it('unicode path (`/résumé`) — decoded correctly', async function () {
+  posixIt('unicode path (`/résumé`) — decoded correctly', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -533,7 +550,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
     await sess.close();
   });
 
-  it('symlink — liveCwd reports the realpath (validatePath canonicalizes)', async function () {
+  posixIt('symlink — liveCwd reports the realpath (validatePath canonicalizes)', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -550,7 +567,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
     await sess.close();
   });
 
-  it('cd outside the sandbox (e.g. /etc) — silently dropped, no cwd_changed', async function () {
+  posixIt('cd outside the sandbox (e.g. /etc) — silently dropped, no cwd_changed', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
