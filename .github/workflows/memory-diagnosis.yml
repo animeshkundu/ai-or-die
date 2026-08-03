@@ -103,7 +103,7 @@ jobs:
             --payload-bytes=65536 \
             --warmup-ms=500 \
             --control-ms=250 \
-            --drain-ms=500 \
+            --drain-ms=10000 \
             --out="$DIAG_OUT/pty-$DIAG_OS.json"
 
       - name: Sticky unavailable-engine component probe
