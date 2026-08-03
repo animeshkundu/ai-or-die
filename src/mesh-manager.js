@@ -10,6 +10,7 @@
 const { spawn } = require('child_process');
 const os = require('os');
 const path = require('path');
+const { withoutDiagnosticSecrets } = require('./utils/child-env');
 const fs = require('fs');
 const crypto = require('crypto');
 
@@ -34,7 +35,7 @@ class MeshManager {
     this._authKey = options.authKey || process.env.AIORDIE_TS_AUTHKEY || null;
     delete process.env.AIORDIE_TS_AUTHKEY;
     delete process.env.AIORDIE_PROXY_BEARER;
-    this._childEnv = { ...process.env };
+    this._childEnv = withoutDiagnosticSecrets();
     delete this._childEnv.AIORDIE_TS_AUTHKEY;
     delete this._childEnv.AIORDIE_PROXY_BEARER;
 

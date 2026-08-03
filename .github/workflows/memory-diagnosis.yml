@@ -1,0 +1,158 @@
+name: Memory Retention Diagnosis (opt-in, expected-red)
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      operations:
+        description: 'Operations per arm and repeat'
+        required: false
+        default: '60'
+      session_rate:
+        description: 'Session create/disconnect operations per second'
+        required: false
+        default: '1'
+  pull_request:
+    types: [labeled]
+
+concurrency:
+  group: memory-diagnosis-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  memory-diagnosis:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'run-memory-diagnosis'
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      DIAG_OPERATIONS: ${{ github.event.inputs.operations || '60' }}
+      DIAG_SESSION_RATE: ${{ github.event.inputs.session_rate || '1' }}
+      DIAG_OS: ${{ matrix.os }}
+      DIAG_OUT: test/longevity/results/workflow-derived
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+
+      - name: Passing diagnosis harness tests
+        run: >-
+          npx mocha --exit --timeout 180000
+          test/longevity/diagnosis/heap-snapshot-analyzer.test.js
+          test/longevity/diagnosis/memory-diagnosis-harness.test.js
+          test/longevity/diagnosis/proc-controller.test.js
+          test/longevity/diagnosis/session-retention-lifecycle.test.js
+
+      - name: Verify exactly five documented expected-red retainers
+        shell: bash
+        run: |
+          set +e
+          npx mocha --exit --timeout 180000 --reporter json \
+            --reporter-option output=expected-red.json \
+            test/longevity/diagnosis/*.expected-fail.test.js
+          status=$?
+          set -e
+          if [ "$status" -ne 5 ]; then
+            cat expected-red.json
+            echo "Expected exactly five assertion failures, mocha exited $status."
+            exit 1
+          fi
+          node -e "const r=require('./expected-red.json'); const want=['bounds retained live sessions after create/disconnect churn','releases an artifact review when end() completes','bounds artifact chat independently of the replay-event cap','bounds code serve-web stdout retained by its data-listener closure','bounds pending JSONL text when the sticky-note engine is unavailable']; const got=r.failures.map(f=>f.title); if(r.tests.length!==5||JSON.stringify(got)!==JSON.stringify(want)||r.failures.some(f=>f.err.name!=='AssertionError')) process.exit(1)"
+
+      - name: Session-retention process-isolated probe
+        shell: bash
+        run: |
+          node test/longevity/harness/memory-diagnosis-cli.js \
+            --arm=sessions \
+            --operations="$DIAG_OPERATIONS" \
+            --repeats=3 \
+            --rate="$DIAG_SESSION_RATE" \
+            --warmup-ms=500 \
+            --control-ms=250 \
+            --drain-ms=500 \
+            --out="$DIAG_OUT/sessions-$DIAG_OS.json"
+
+      - name: Artifact-review process-isolated probe
+        shell: bash
+        run: |
+          node test/longevity/harness/memory-diagnosis-cli.js \
+            --arm=artifacts \
+            --operations="$DIAG_OPERATIONS" \
+            --repeats=3 \
+            --payload-bytes=4096 \
+            --warmup-ms=500 \
+            --control-ms=250 \
+            --drain-ms=500 \
+            --out="$DIAG_OUT/artifacts-$DIAG_OS.json"
+
+      - name: SessionStore persistence enabled-versus-disabled probe
+        shell: bash
+        run: |
+          # The harness asserts exactly one real 30-second autosave tick in
+          # both paired processes, so timing drift fails instead of changing
+          # the evidence shape silently.
+          node test/longevity/harness/memory-diagnosis-cli.js \
+            --arm=persistence \
+            --operations=30 \
+            --repeats=3 \
+            --rate=1 \
+            --warmup-ms=500 \
+            --control-ms=250 \
+            --drain-ms=1000 \
+            --out="$DIAG_OUT/persistence-$DIAG_OS.json"
+
+      - name: PTY output-buffer process-isolated probe
+        shell: bash
+        run: |
+          node test/longevity/harness/memory-diagnosis-cli.js \
+            --arm=pty \
+            --operations=32 \
+            --repeats=3 \
+            --payload-bytes=65536 \
+            --warmup-ms=500 \
+            --control-ms=250 \
+            --drain-ms=10000 \
+            --out="$DIAG_OUT/pty-$DIAG_OS.json"
+
+      - name: Sticky unavailable-engine component probe
+        shell: bash
+        run: |
+          node test/longevity/harness/component-retainer-probe.js \
+            --arm=sticky \
+            --operations=100 \
+            --payload-bytes=1024 \
+            --repeats=3 \
+            --out="$DIAG_OUT/sticky-$DIAG_OS.json"
+
+      - name: VS Code stdout component probe
+        shell: bash
+        run: |
+          node test/longevity/harness/component-retainer-probe.js \
+            --arm=vscode \
+            --operations=8 \
+            --payload-bytes=65536 \
+            --repeats=3 \
+            --out="$DIAG_OUT/vscode-$DIAG_OS.json"
+
+      - name: Redacted session dominator proof
+        shell: bash
+        run: |
+          node test/longevity/harness/session-dominator-proof.js \
+            --operations=100 \
+            --out="$DIAG_OUT/session-dominators-$DIAG_OS.json"
+
+      - name: Upload derived counters only
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: memory-diagnosis-derived-${{ matrix.os }}-${{ github.run_id }}
+          path: test/longevity/results/workflow-derived/*.json
+          retention-days: 14

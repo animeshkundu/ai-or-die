@@ -254,6 +254,17 @@ describe('sticky-note server wiring', function () {
     assert.strictEqual(self._summarizerCalls.filter((c) => c[0] === 'enable').length, 0, 'summariser NOT enabled');
   });
 
+  it('_maybeStartStickyNotes skips an opted-out tab with NO bind sidecar', function () {
+    let pollStarted = 0;
+    const self = makeStub({ _startStickyJsonlPoll: () => { pollStarted++; } });
+    self.claudeSessions.set('off', { stickyNotesEnabled: false, stickyNote: null });
+
+    ClaudeCodeWebServer.prototype._maybeStartStickyNotes.call(self, 'off', 'terminal', 80, 24);
+
+    assert.strictEqual(pollStarted, 0, 'non-Claude tab without a sidecar has no binding need');
+    assert.strictEqual(self._summarizerCalls.filter((c) => c[0] === 'enable').length, 0);
+  });
+
   it('_maybeStartStickyNotes keeps the free Claude title tail running when summaries are disabled', function () {
     let pollStarted = 0;
     const self = makeStub({

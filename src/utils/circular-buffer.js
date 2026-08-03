@@ -13,10 +13,23 @@ class CircularBuffer {
     this.buffer = new Array(capacity);
     this.head = 0;   // next write position
     this.size = 0;
+    if (process.env.AOD_DIAG_ENABLED === '1') {
+      this._trackBytes = true;
+      this.byteSize = 0;
+    }
   }
 
   /** Add an item, evicting the oldest if at capacity. O(1). */
   push(item) {
+    if (this._trackBytes) {
+      const evicted = this.buffer[this.head];
+      if (typeof evicted === 'string' || Buffer.isBuffer(evicted)) {
+        this.byteSize -= Buffer.byteLength(evicted);
+      }
+      if (typeof item === 'string' || Buffer.isBuffer(item)) {
+        this.byteSize += Buffer.byteLength(item);
+      }
+    }
     this.buffer[this.head] = item;
     this.head = (this.head + 1) % this.capacity;
     if (this.size < this.capacity) this.size++;

@@ -6,8 +6,9 @@
 // dynamic import(); a missing module is reported as {type:'error'} and the
 // worker exits (the engine then degrades gracefully to "unavailable").
 
-const { parentPort, workerData } = require('worker_threads');
+const { parentPort, workerData, threadId } = require('worker_threads');
 const os = require('os');
+const v8 = require('v8');
 const { SYSTEM_PROMPT, NOTE_SCHEMA } = require('./sticky-note-prompt');
 const { pickThreads } = require('./sticky-note-threads');
 
@@ -95,7 +96,16 @@ let _inferChain = Promise.resolve();
 let _shuttingDown = false;
 parentPort.on('message', (msg) => {
   if (!msg) return;
-  if (msg.type === 'infer') {
+  if (msg.type === 'diagnostics') {
+    parentPort.postMessage({
+      type: 'diagnostics',
+      id: msg.id,
+      threadId,
+      memory: process.memoryUsage(),
+      heapStatistics: v8.getHeapStatistics(),
+      heapSpaces: v8.getHeapSpaceStatistics(),
+    });
+  } else if (msg.type === 'infer') {
     if (_shuttingDown) return;
     _inferChain = _inferChain.then(() => handleInfer(msg));
   } else if (msg.type === 'shutdown') {

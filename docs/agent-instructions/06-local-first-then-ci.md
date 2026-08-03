@@ -111,6 +111,13 @@ The CI pipeline is defined in `.github/workflows/ci.yml`. Jobs run in parallel, 
 
 Total: 16+ parallel job executions (8+ job types × 2 platforms). All must pass for green CI.
 
+Longevity has separate smoke/nightly/weekly workflows. Memory-retention
+characterization uses `memory-diagnosis.yml`, which is deliberately opt-in and
+non-blocking because its assertions describe known retainers and remain red
+until a later fix PR changes the contract. Windows results are the gate; hosted
+`windows-latest` is Windows Server, so Windows 11 model-backed or multi-day arms
+run on a self-hosted Windows 11 runner.
+
 ### Playwright project configuration
 
 The Playwright config at `e2e/playwright.config.js` defines how test files map to projects:

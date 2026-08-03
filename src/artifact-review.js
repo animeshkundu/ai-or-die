@@ -230,6 +230,11 @@ class ArtifactReviewStore extends EventEmitter {
     if (!Array.isArray(review.layoutWarnings)) review.layoutWarnings = [];
     if (!Array.isArray(review.chat)) review.chat = [];
     if (!Array.isArray(review.events)) review.events = [];
+    if (process.env.AOD_DIAG_ENABLED === '1') {
+      if (!Number.isFinite(review._diagnosticQueuedPromptBytes)) review._diagnosticQueuedPromptBytes = 0;
+      if (!Number.isFinite(review._diagnosticChatBytes)) review._diagnosticChatBytes = 0;
+      if (!Number.isFinite(review._diagnosticDomSnapshotBytes)) review._diagnosticDomSnapshotBytes = 0;
+    }
     if (typeof review._seq !== 'number') review._seq = 0;
     if (review.visibility !== 'dismissed') review.visibility = 'shown';
     if (!review.presence || typeof review.presence !== 'object') {
@@ -325,6 +330,11 @@ class ArtifactReviewStore extends EventEmitter {
     const queued = cloneArray(prompts);
     if (queued.length > 0) {
       review.queuedPrompts.push(...queued);
+      if (process.env.AOD_DIAG_ENABLED === '1') {
+        for (const prompt of queued) {
+          review._diagnosticQueuedPromptBytes += Buffer.byteLength(JSON.stringify(prompt), 'utf8');
+        }
+      }
       // Record each as a typed comment event for /history + /await (non-destructive;
       // independent of the destructive queuedPrompts/poll path).
       for (const p of queued) {
@@ -334,6 +344,11 @@ class ArtifactReviewStore extends EventEmitter {
     }
     if (domSnapshot !== undefined) {
       review.domSnapshot = domSnapshot;
+      if (process.env.AOD_DIAG_ENABLED === '1') {
+        review._diagnosticDomSnapshotBytes = typeof domSnapshot === 'string'
+          ? Buffer.byteLength(domSnapshot, 'utf8')
+          : 0;
+      }
     }
     review.updatedAt = nowIso();
 
@@ -390,6 +405,7 @@ class ArtifactReviewStore extends EventEmitter {
 
     const snapshot = feedbackSnapshot(review);
     review.queuedPrompts = [];
+    if (process.env.AOD_DIAG_ENABLED === '1') review._diagnosticQueuedPromptBytes = 0;
     review.layoutWarnings = [];
     review.updatedAt = nowIso();
 
@@ -418,6 +434,11 @@ class ArtifactReviewStore extends EventEmitter {
       ? ack.promptsJson
       : JSON.stringify(cloneArray(snapshot.prompts));
     if (promptCount > 0 && JSON.stringify(review.queuedPrompts.slice(0, promptCount)) === promptsJson) {
+      if (process.env.AOD_DIAG_ENABLED === '1') {
+        for (const prompt of review.queuedPrompts.slice(0, promptCount)) {
+          review._diagnosticQueuedPromptBytes -= Buffer.byteLength(JSON.stringify(prompt), 'utf8');
+        }
+      }
       review.queuedPrompts.splice(0, promptCount);
     }
 
@@ -442,6 +463,11 @@ class ArtifactReviewStore extends EventEmitter {
     const prompts = cloneArray(snapshot.prompts);
     if (prompts.length > 0) {
       review.queuedPrompts.unshift(...prompts);
+      if (process.env.AOD_DIAG_ENABLED === '1') {
+        for (const prompt of prompts) {
+          review._diagnosticQueuedPromptBytes += Buffer.byteLength(JSON.stringify(prompt), 'utf8');
+        }
+      }
       if (snapshot.dom_snapshot !== undefined && review.domSnapshot == null) {
         review.domSnapshot = snapshot.dom_snapshot;
       }
@@ -461,6 +487,9 @@ class ArtifactReviewStore extends EventEmitter {
     });
     const reply = { role: 'agent', text: event.text, at: event.at, id: event.id };
     review.chat.push(reply);
+    if (process.env.AOD_DIAG_ENABLED === '1') {
+      review._diagnosticChatBytes += Buffer.byteLength(JSON.stringify(reply), 'utf8');
+    }
     review.updatedAt = nowIso();
 
     this.emit('agent-reply', { aiSessionId, id: event.id, text: reply.text, reply, review });

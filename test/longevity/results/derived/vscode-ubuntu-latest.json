@@ -1,0 +1,1126 @@
+{
+  "metadata": {
+    "captured_at": "2026-08-03T01:40:42.621Z",
+    "head": "0e1172c825d835c859443132da3d52f209218a69",
+    "node_version": "v22.23.1",
+    "platform": "linux",
+    "arm": "vscode",
+    "operations": 8,
+    "payload_bytes": 65536,
+    "repeats": 3
+  },
+  "summary": {
+    "post_gc_heap_delta_bytes": {
+      "median": 534200,
+      "min": 533688,
+      "max": 534200
+    },
+    "bytes_per_operation": {
+      "median": 66775,
+      "min": 66711,
+      "max": 66775
+    },
+    "ownership_counter": {
+      "median": 524331,
+      "min": 524331,
+      "max": 524331
+    }
+  },
+  "runs": [
+    {
+      "repeat": 0,
+      "control": {
+        "before": {
+          "pid": 3458,
+          "memory": {
+            "rss": 52297728,
+            "heapTotal": 10440704,
+            "heapUsed": 5497248,
+            "external": 1828401,
+            "arrayBuffers": 21146
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 3576,
+              "space_available_size": 2058248,
+              "physical_space_size": 1466368
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4243456,
+              "space_used_size": 3835800,
+              "space_available_size": 141184,
+              "physical_space_size": 4456448
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 54272,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 983384,
+              "space_available_size": 92264,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "after": {
+          "pid": 3458,
+          "memory": {
+            "rss": 52297728,
+            "heapTotal": 10440704,
+            "heapUsed": 5498528,
+            "external": 1828441,
+            "arrayBuffers": 21146
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 552,
+              "space_available_size": 2061272,
+              "physical_space_size": 1466368
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4243456,
+              "space_used_size": 3833712,
+              "space_available_size": 138464,
+              "physical_space_size": 4456448
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 54272,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 983520,
+              "space_available_size": 0,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "ownership_counter": 0
+      },
+      "measured": {
+        "before": {
+          "pid": 3465,
+          "memory": {
+            "rss": 52924416,
+            "heapTotal": 10440704,
+            "heapUsed": 5689952,
+            "external": 1828401,
+            "arrayBuffers": 21146
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 3576,
+              "space_available_size": 2058248,
+              "physical_space_size": 2162688
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4243456,
+              "space_used_size": 3910560,
+              "space_available_size": 73536,
+              "physical_space_size": 4456448
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 105024,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1050576,
+              "space_available_size": 25072,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "after": {
+          "pid": 3465,
+          "memory": {
+            "rss": 53186560,
+            "heapTotal": 11227136,
+            "heapUsed": 6225432,
+            "external": 1893977,
+            "arrayBuffers": 86682
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 552,
+              "space_available_size": 2061272,
+              "physical_space_size": 1654784
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 5029888,
+              "space_used_size": 4436544,
+              "space_available_size": 246176,
+              "physical_space_size": 5242880
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 110336,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1051528,
+              "space_available_size": 0,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "ownership_counter": 524331
+      }
+    },
+    {
+      "repeat": 1,
+      "control": {
+        "before": {
+          "pid": 3474,
+          "memory": {
+            "rss": 51879936,
+            "heapTotal": 10440704,
+            "heapUsed": 5497248,
+            "external": 1828401,
+            "arrayBuffers": 21146
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 3576,
+              "space_available_size": 2058248,
+              "physical_space_size": 1466368
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4243456,
+              "space_used_size": 3835800,
+              "space_available_size": 121360,
+              "physical_space_size": 4452352
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 54272,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 983384,
+              "space_available_size": 92264,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "after": {
+          "pid": 3474,
+          "memory": {
+            "rss": 51879936,
+            "heapTotal": 10440704,
+            "heapUsed": 5498528,
+            "external": 1828441,
+            "arrayBuffers": 21146
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 552,
+              "space_available_size": 2061272,
+              "physical_space_size": 1466368
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4243456,
+              "space_used_size": 3833712,
+              "space_available_size": 119080,
+              "physical_space_size": 4456448
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 54272,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 983520,
+              "space_available_size": 0,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "ownership_counter": 0
+      },
+      "measured": {
+        "before": {
+          "pid": 3481,
+          "memory": {
+            "rss": 52928512,
+            "heapTotal": 10440704,
+            "heapUsed": 5689736,
+            "external": 1828401,
+            "arrayBuffers": 21146
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 3576,
+              "space_available_size": 2058248,
+              "physical_space_size": 2162688
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4243456,
+              "space_used_size": 3910344,
+              "space_available_size": 68624,
+              "physical_space_size": 4456448
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 105024,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1050576,
+              "space_available_size": 25072,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "after": {
+          "pid": 3481,
+          "memory": {
+            "rss": 53190656,
+            "heapTotal": 11227136,
+            "heapUsed": 6225216,
+            "external": 1893977,
+            "arrayBuffers": 86682
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 552,
+              "space_available_size": 2061272,
+              "physical_space_size": 1654784
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 5029888,
+              "space_used_size": 4436328,
+              "space_available_size": 282984,
+              "physical_space_size": 5242880
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 110336,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1051528,
+              "space_available_size": 0,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "ownership_counter": 524331
+      }
+    },
+    {
+      "repeat": 2,
+      "control": {
+        "before": {
+          "pid": 3490,
+          "memory": {
+            "rss": 51814400,
+            "heapTotal": 10440704,
+            "heapUsed": 5497248,
+            "external": 1828401,
+            "arrayBuffers": 21146
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 3576,
+              "space_available_size": 2058248,
+              "physical_space_size": 1466368
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4243456,
+              "space_used_size": 3835800,
+              "space_available_size": 151040,
+              "physical_space_size": 4456448
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 54272,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 983384,
+              "space_available_size": 92264,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "after": {
+          "pid": 3490,
+          "memory": {
+            "rss": 51814400,
+            "heapTotal": 10440704,
+            "heapUsed": 5498528,
+            "external": 1828441,
+            "arrayBuffers": 21146
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 552,
+              "space_available_size": 2061272,
+              "physical_space_size": 1466368
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4243456,
+              "space_used_size": 3833712,
+              "space_available_size": 115856,
+              "physical_space_size": 4456448
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 54272,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 983520,
+              "space_available_size": 0,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "ownership_counter": 0
+      },
+      "measured": {
+        "before": {
+          "pid": 3497,
+          "memory": {
+            "rss": 52957184,
+            "heapTotal": 10440704,
+            "heapUsed": 5690352,
+            "external": 1828401,
+            "arrayBuffers": 21146
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 3576,
+              "space_available_size": 2058248,
+              "physical_space_size": 2162688
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4243456,
+              "space_used_size": 3910512,
+              "space_available_size": 68304,
+              "physical_space_size": 4456448
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 105344,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1050704,
+              "space_available_size": 24944,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "after": {
+          "pid": 3497,
+          "memory": {
+            "rss": 53088256,
+            "heapTotal": 11227136,
+            "heapUsed": 6225320,
+            "external": 1893977,
+            "arrayBuffers": 86682
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 4194304,
+              "space_used_size": 552,
+              "space_available_size": 2061272,
+              "physical_space_size": 1654784
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 5029888,
+              "space_used_size": 4436432,
+              "space_available_size": 282992,
+              "physical_space_size": 5242880
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 110336,
+              "space_available_size": 0,
+              "physical_space_size": 253952
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1051528,
+              "space_available_size": 0,
+              "physical_space_size": 1310720
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 2097152,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 643072,
+              "space_used_size": 627160,
+              "space_available_size": 0,
+              "physical_space_size": 643072
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ]
+        },
+        "ownership_counter": 524331
+      }
+    }
+  ]
+}
