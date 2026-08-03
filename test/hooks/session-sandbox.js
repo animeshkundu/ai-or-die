@@ -6,6 +6,33 @@ const path = require('path');
 const assert = require('assert');
 
 const realStore = path.join(os.homedir(), '.ai-or-die');
+
+// Normalize the temp root to its canonical long form BEFORE any test reads
+// os.tmpdir().
+//
+// On Windows CI, TEMP is an 8.3 short path (C:\Users\RUNNER~1\...). Tests build
+// fixture roots with mkdtempSync(path.join(os.tmpdir(), ...)), so their expected
+// paths inherit the short form — while FileWatcher canonicalizes its watchRoot
+// to the LONG form (mandatory: handing libuv a short name aborts the process,
+// see file-watcher.js _realpath). Both sides must be canonical or every emitted
+// path mismatches its expectation.
+//
+// This normalizes the harness only. The production canonicalization in
+// file-watcher.js / artifact-review.js is what protects a real user whose TEMP
+// is short, and is covered separately by file-watcher-shortpath.test.js, which
+// creates its own 8.3 alias rather than depending on this env.
+(function canonicalizeTempRoot() {
+  try {
+    const current = os.tmpdir();
+    let resolved = fs.realpathSync.native(current);
+    if (typeof resolved === 'string' && resolved.startsWith('\\\\?\\')) resolved = resolved.slice(4);
+    if (resolved && resolved !== current) {
+      for (const key of ['TEMP', 'TMP', 'TMPDIR']) {
+        if (process.env[key]) process.env[key] = resolved;
+      }
+    }
+  } catch (_) { /* best effort — a non-canonical temp only affects path compares */ }
+})();
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'ai-or-die-test-sessions-'));
 const processEvents = [
   'SIGINT',

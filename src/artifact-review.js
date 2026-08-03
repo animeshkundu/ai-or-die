@@ -859,8 +859,15 @@ function createArtifactReviewRouter(options) {
     let chokidar;
     try { chokidar = require('chokidar'); } catch (_) { return; }
     let watcher;
+    // Canonicalize before chokidar/libuv sees the path. A Windows 8.3 short
+    // name (artifacts live under os.tmpdir(), which is C:\Users\RUNNER~1\... on
+    // CI) fails libuv's LONG-name prefix compare and trips a native assertion
+    // that ABORTS the process. Shared helper so every watch site agrees.
+    let watchTarget = file;
+    try { watchTarget = require('./utils/file-watcher').canonicalizeForWatch(file); }
+    catch (_) { /* fall back to the raw path rather than lose the watcher */ }
     try {
-      watcher = chokidar.watch(file, {
+      watcher = chokidar.watch(watchTarget, {
         ignoreInitial: true,
         depth: 0,
         awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 30 },

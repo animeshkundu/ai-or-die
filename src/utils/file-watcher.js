@@ -843,3 +843,7 @@ class FileWatcher extends EventEmitter {
 module.exports = FileWatcher;
 module.exports.DEFAULT_IGNORE_DIRS = DEFAULT_IGNORE_DIRS;
 module.exports.HASH_MAX_BYTES = HASH_MAX_BYTES;
+// Exported so every chokidar/libuv call site canonicalizes identically. Any
+// path handed to a watcher MUST go through this first — see the 8.3 note on
+// _realpath; a short-name path aborts the process via a libuv assertion.
+module.exports.canonicalizeForWatch = _realpath;
