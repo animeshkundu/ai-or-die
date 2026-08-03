@@ -1,6 +1,6 @@
 # Model Host Process Specification
 
-Status: implemented (2026-08-02). See ADR-0039, ADR-0040, and ADR-0041.
+Status: implemented (2026-08-02). See ADR-0042, ADR-0043, and ADR-0044.
 
 ## Invariant
 

@@ -1,4 +1,4 @@
-# ADR-0041: Use a dedicated framed binary pipe for model payloads
+# ADR-0044: Use a dedicated framed binary pipe for model payloads
 
 ## Status
 

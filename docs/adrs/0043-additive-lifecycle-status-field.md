@@ -1,4 +1,4 @@
-# ADR-0040: Add lifecycle state without replacing legacy status
+# ADR-0043: Add lifecycle state without replacing legacy status
 
 ## Status
 
