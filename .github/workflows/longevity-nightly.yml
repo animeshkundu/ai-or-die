@@ -62,6 +62,21 @@ jobs:
           cache: 'npm'
       - run: npm ci
 
+      # Forensic retention probes — heap snapshots, real ConPTY create/exit
+      # churn, output-buffer flood, VS Code stdout retention. These attribute
+      # growth to named retainers rather than asserting a threshold, so they
+      # are slow by nature (~48s locally, more on shared runners).
+      #
+      # They previously ran in the PR-blocking longevity-smoke gate, whose own
+      # comments budget it at "< 2 min"; they pushed it to 176s and helped time
+      # smoke out on all three platforms. Nightly is where sustained-load and
+      # diagnostic work belongs per that same split. `continue-on-error` keeps a
+      # noisy probe from masking a real soak regression — the soak below is the
+      # signal this job exists for, and probe output is still visible in the log.
+      - name: Retention probes (diagnostic)
+        continue-on-error: true
+        run: npm run test:longevity:probes
+
       - name: Longevity nightly soak
         # SOAK-05z (2026-05-28): `shell: bash` for cross-shell line-continuation
         # compatibility. Matrix includes windows-latest, which defaults to

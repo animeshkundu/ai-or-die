@@ -29,6 +29,11 @@ describe('model-host fault isolation keeps live PTYs intact', function () {
       readinessTimeoutMs: 5000,
     });
     try {
+      // TerminalBridge resolves its shell lazily; without this `command` is
+      // empty and startSession fails with "File not found: " (nothing after
+      // the colon). Server-driven tests never hit this because the server
+      // awaits initCommand() during startup.
+      await bridge.initCommand();
       await bridge.startSession('live-shell', {
         workingDir: process.cwd(),
         cols: 100,
