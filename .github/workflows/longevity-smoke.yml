@@ -81,8 +81,16 @@ jobs:
       # --with-deps is a no-op on Windows/macOS but installs apt deps on Linux.
       # Round-5 (REL-04, dd9d4ad): test:longevity split into :server + :browser
       # surfaced this gap once browser tests actually started running in CI.
+      # Cached + bounded + instrumented. The previous bare
+      # `npx playwright install --with-deps chromium` had no cache, no retry
+      # and no timeout, and hung for the ENTIRE job budget on all three
+      # platforms across four consecutive commits — the gate below never ran.
+      # The shared action bounds each attempt and reports host-deps separately
+      # from the browser download so a hang is attributable.
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        uses: ./.github/actions/install-playwright
+        with:
+          browsers: chromium
 
       # Fast regression-test gate (< 2 min). Catches per-lane regression-
       # test failures before the expensive 5-min soak.

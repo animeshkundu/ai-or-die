@@ -1,0 +1,64 @@
+name: Install Playwright browsers
+description: >-
+  Cached, bounded, instrumented Playwright browser install. Replaces the inline
+  `for i in 1 2 3; do npx playwright install ...; done` loop that was copied
+  into ~17 jobs, and the bare unretried call in longevity-smoke that hung for a
+  full job budget on all three platforms across four consecutive commits.
+
+inputs:
+  browsers:
+    description: Space-separated browsers to install (e.g. "chromium" or "chromium webkit")
+    required: false
+    default: chromium
+  attempt-timeout-ms:
+    description: Hard per-attempt wall-clock budget. Bounds a HANG, which a retry loop alone cannot.
+    required: false
+    default: '240000'
+  skip-deps:
+    description: Set to "1" to skip the Linux host-dependency phase.
+    required: false
+    default: '0'
+
+runs:
+  using: composite
+  steps:
+    # Pin the browser location explicitly.
+    #
+    # Playwright's default cache path is DIFFERENT on every OS:
+    #   linux   ~/.cache/ms-playwright
+    #   macos   ~/Library/Caches/ms-playwright
+    #   windows %USERPROFILE%\AppData\Local\ms-playwright
+    # Caching only `~/.cache/ms-playwright` — as was proposed — would therefore
+    # be a Linux-only fix on a product whose PRIMARY target is Windows. Forcing
+    # one path makes the cache key portable and the cache actually effective
+    # where it matters most.
+    - name: Pin Playwright browser path
+      shell: bash
+      run: echo "PLAYWRIGHT_BROWSERS_PATH=${{ github.workspace }}/.pw-browsers" >> "$GITHUB_ENV"
+
+    # Key on OS + the resolved Playwright version, NOT on the lockfile hash
+    # alone. A lockfile-only key can restore a cache built for a different
+    # browser revision, which yields a half-present install that fails in a
+    # confusing way at test time rather than at install time.
+    - name: Resolve Playwright version
+      id: pwver
+      shell: bash
+      run: |
+        version="$(node -p "require('./node_modules/@playwright/test/package.json').version" 2>/dev/null || echo unknown)"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "Playwright version: $version"
+
+    - name: Cache Playwright browsers
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/.pw-browsers
+        key: pw-${{ runner.os }}-${{ steps.pwver.outputs.version }}-${{ inputs.browsers }}
+        # No loose restore-keys on purpose: a partial restore from a different
+        # revision is worse than a cold install, because it looks like a hit.
+
+    - name: Install browsers (bounded + instrumented)
+      shell: bash
+      env:
+        PLAYWRIGHT_INSTALL_ATTEMPT_TIMEOUT_MS: ${{ inputs.attempt-timeout-ms }}
+        PLAYWRIGHT_SKIP_DEPS: ${{ inputs.skip-deps }}
+      run: node scripts/ci-install-playwright.js ${{ inputs.browsers }}
