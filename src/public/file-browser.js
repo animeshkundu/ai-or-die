@@ -253,6 +253,28 @@
   //   2. _renderCodePlainFallback (CDN-blocked degraded path). The two
   //      paths emit identical structure so the visual fallback feels
   //      consistent regardless of how the user got there.
+  /**
+   * Mark a code preview as SETTLED — its DOM will not be replaced again.
+   *
+   * The preview deliberately renders a plain gutter+content DOM immediately so
+   * content is visible without waiting on Monaco's CDN fetch, then Monaco (or
+   * the fallback renderer) SWEEPS that DOM and replaces it. Anything reading
+   * the preview — a consumer, or a test asserting on it — can therefore land
+   * on either side of that swap depending purely on network latency, with no
+   * way to tell which it got.
+   *
+   * That is a genuine observability gap, not just a test problem: nothing
+   * signalled "this preview has stopped changing". This sets one marker, once,
+   * from whichever renderer wins, so readiness is a fact rather than a guess.
+   * `which` is 'monaco' or 'plain' so a reader can tell which DOM shape it has.
+   */
+  function _markPreviewSettled(host, which) {
+    try {
+      const target = (host && host.closest && host.closest('.fb-preview-container')) || host;
+      if (target && target.setAttribute) target.setAttribute('data-preview-settled', which);
+    } catch (_) { /* never break the viewer over a marker */ }
+  }
+
   function _buildPlainCodePreview(host, content) {
     var wrapper = document.createElement('div');
     wrapper.className = 'fb-code-preview';
@@ -2542,6 +2564,32 @@
         return;
       }
       resolvedHandle = handle;
+      // Re-apply the documented `.fb-code-gutter` / `.fb-code-content` contract
+      // onto Monaco's own DOM.
+      //
+      // _buildPlainCodePreview above emits those classes so content is visible
+      // instantly, but Monaco SWEEPS host before mounting — so once it resolves,
+      // both locators disappear. That made the contract depend on who won the
+      // race: slow Monaco (CDN cold) left the plain DOM in place and locators
+      // resolved; fast Monaco swept it first and they did not. Observed as an
+      // intermittent Windows CI failure on `.fb-code-gutter` while the earlier
+      // `.fb-code-content` assertion passed moments before.
+      //
+      // Monaco renders line numbers in `.margin` and text in `.view-lines`, so
+      // tag those rather than widening a timeout — the contract now holds in
+      // BOTH render modes instead of only the slow one. Guarded so the classes
+      // are applied at most once (Playwright strict mode fails on duplicates).
+      try {
+        var gutterEl = host.querySelector('.margin');
+        if (gutterEl && !gutterEl.classList.contains('fb-code-gutter')) {
+          gutterEl.classList.add('fb-code-gutter');
+        }
+        var contentEl = host.querySelector('.view-lines');
+        if (contentEl && !contentEl.classList.contains('fb-code-content')) {
+          contentEl.classList.add('fb-code-content');
+        }
+      } catch (_) { /* cosmetic aliasing only — never break the viewer */ }
+      _markPreviewSettled(host, 'monaco');
       // Expose the live Monaco editor instance on the panel so the
       // fs-watcher integration (and tests) can reach it for cursor /
       // selection / scroll preservation across silent reloads. Same
@@ -2591,6 +2639,7 @@
         host.innerHTML = '';
         self._renderCodePlainFallback(host, content);
       }
+      _markPreviewSettled(host, 'plain');
     });
   };
 

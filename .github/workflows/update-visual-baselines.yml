@@ -30,7 +30,7 @@ jobs:
         # persist-credentials (default true) keeps the token so we can push.
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '26'
           cache: 'npm'
       - run: npm ci
       - name: Cache Playwright browsers

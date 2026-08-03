@@ -99,8 +99,12 @@ describe('voice-binary: inbound binary voice frame', function () {
     server.sttEngine = {
       isReady: () => true,
       getStatus: () => 'ready',
+      getLifecycleState: () => 'ready',
+      getDiagnostics: () => ({ name: 'stt', state: 'ready', status: 'ready', pid: null }),
+      demand: async () => {},
       transcribePcm16: async () => 'ok-binary',
       transcribe: async () => 'ok-binary',
+      shutdown: async () => {},
     };
   });
 

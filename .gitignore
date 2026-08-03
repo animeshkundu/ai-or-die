@@ -26,3 +26,7 @@ test-results/
 e2e/.claude-attachments/
 # e2e artifact-panel test fixtures (created under repo root for validateArtifactPath)
 .tmp-e2e-artifact-*/
+
+# Verification artifacts from pipeline runs (screenshots, HTML reports)
+playwright-report/
+screenshots/

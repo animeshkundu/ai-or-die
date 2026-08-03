@@ -4,204 +4,181 @@ const assert = require('assert');
 const { EventEmitter } = require('events');
 const StickyNoteEngine = require('../src/sticky-note-engine');
 
-function tick() {
-  return new Promise((r) => setImmediate(r));
-}
-
-class FakeWorker extends EventEmitter {
-  constructor() {
-    super();
-    this.posted = [];
-    this.terminated = false;
-  }
-  postMessage(m) {
-    this.posted.push(m);
-    // Mirror the real worker: a graceful shutdown request -> exit.
-    if (m && m.type === 'shutdown') {
-      setImmediate(() => this.emit('exit', 0));
-    }
-  }
-  async terminate() {
-    this.terminated = true;
-    this.emit('exit', 0);
-  }
-  ready() {
-    this.emit('message', { type: 'ready' });
-  }
-  reply(id, text) {
-    this.emit('message', { type: 'result', id, text });
-  }
-  fail(code, message) {
-    this.emit('message', { type: 'error', code, message });
-  }
-  crash(code = 1) {
-    this.emit('exit', code);
-  }
-}
-
-const readyMM = {
+const readyModel = {
   isModelReady: async () => true,
   ensureModel: async () => {},
   getModelFile: () => '/tmp/model.gguf',
 };
 
-function makeEngine(opts = {}) {
-  const fake = new FakeWorker();
-  const engine = new StickyNoteEngine(
-    Object.assign(
-      {
-        enabled: true,
-        modelManager: opts.modelManager || readyMM,
-        createWorker: () => fake,
-        inferTimeoutMs: opts.inferTimeoutMs || 60000,
-      },
-      opts.engine || {}
-    )
-  );
-  return { engine, fake };
+class FakeHost extends EventEmitter {
+  constructor(options = {}) {
+    super();
+    this.state = 'idle';
+    this.requests = [];
+    this.runtimeInfo = options.runtimeInfo || { gpu: false, threads: 8 };
+    this.pending = !!options.pending;
+    this.failure = options.failure || null;
+    this.active = false;
+    this.terminateCalls = 0;
+    this.pid = 4321;
+  }
+  async demand() {
+    if (this.failure) throw this.failure;
+    this.state = 'ready';
+    this.emit('state', 'ready');
+  }
+  request(request) {
+    this.requests.push(request);
+    if (this.pending) return new Promise((resolve, reject) => this.requests[this.requests.length - 1].deferred = { resolve, reject });
+    return this.failure ? Promise.reject(this.failure) : Promise.resolve({ text: '{"title":"T"}' });
+  }
+  setActive(active) { this.active = active; }
+  async unload() {
+    if (this.state !== 'ready') return false;
+    this.state = 'idle';
+    this.emit('state', 'idle');
+    return true;
+  }
+  async shutdown() {
+    for (const request of this.requests) {
+      if (request.deferred) request.deferred.reject(new Error('sticky-note model host exited'));
+    }
+    this.state = 'idle';
+    this.emit('state', 'idle');
+  }
+  terminate() {
+    this.terminateCalls++;
+    throw new Error('terminate must never be called');
+  }
+  getState() { return this.state; }
+  getStatus() { return this.state === 'failed' ? 'unavailable' : 'ready'; }
+  getRuntimeInfo() { return this.state === 'ready' ? this.runtimeInfo : null; }
+  diagnostics() { return { name: 'sticky-note', state: this.state, status: this.getStatus(), pid: this.state === 'ready' ? this.pid : null }; }
+}
+
+function makeEngine(hostOptions = {}, engineOptions = {}) {
+  const host = new FakeHost(hostOptions);
+  const engine = new StickyNoteEngine({
+    enabled: true,
+    modelManager: readyModel,
+    hostFactory: () => host,
+    ...engineOptions,
+  });
+  return { engine, host };
 }
 
 describe('sticky-note engine', function () {
-  it('initializes to ready and runs an inference', async function () {
-    const { engine, fake } = makeEngine();
-    const initP = engine.initialize();
-    await tick(); // let model check resolve + worker spawn + listeners attach
-    fake.ready();
-    await initP;
+  it('initializes a host and runs inference through the binary-host boundary', async function () {
+    const { engine, host } = makeEngine();
+    await engine.initialize();
     assert.strictEqual(engine.isReady(), true);
-
-    const inferP = engine.infer('hello');
-    await tick();
-    assert.strictEqual(fake.posted.length, 1);
-    assert.strictEqual(fake.posted[0].type, 'infer');
-    fake.reply(fake.posted[0].id, '{"title":"T"}');
-    assert.strictEqual(await inferP, '{"title":"T"}');
-
-    await engine.shutdown();
+    assert.strictEqual(await engine.infer('hello'), '{"title":"T"}');
+    assert.strictEqual(host.requests[0].dtype, 'utf8');
+    assert.strictEqual(host.requests[0].payload.toString(), 'hello');
   });
 
-  it('defaults to a watchdog-grade 300s inference timeout (fits slow CPU inference)', function () {
-    const engine = new StickyNoteEngine({ enabled: true, modelManager: readyMM });
-    assert.strictEqual(engine._inferTimeoutMs, 300000);
+  it('does not construct a host until model preparation completes', async function () {
+    let release;
+    let hostCreated = 0;
+    const manager = {
+      isModelReady: async () => false,
+      ensureModel: () => new Promise((resolve) => { release = resolve; }),
+      getModelFile: () => '/tmp/model.gguf',
+    };
+    const host = new FakeHost();
+    const engine = new StickyNoteEngine({
+      enabled: true,
+      modelManager: manager,
+      hostFactory: () => {
+        hostCreated++;
+        return host;
+      },
+    });
+    const inference = engine.infer('wait for download');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(hostCreated, 0);
+    release();
+    assert.strictEqual(await inference, '{"title":"T"}');
+    assert.strictEqual(hostCreated, 1);
   });
 
-  it('treats numThreads as auto unless explicitly pinned (omits it from workerData)', function () {
-    // Auto: no numThreads given -> worker decides based on the GPU backend.
-    const auto = new StickyNoteEngine({ enabled: true, modelManager: readyMM });
+  it('defaults to a watchdog-grade 300s inference timeout', function () {
+    assert.strictEqual(makeEngine().engine._inferTimeoutMs, 300000);
+  });
+
+  it('omits auto thread selection from host data', function () {
+    const auto = makeEngine().engine;
     assert.strictEqual(auto._numThreadsExplicit, false);
-    assert.strictEqual(auto._numThreads, null);
-    assert.ok(!('numThreads' in auto._workerData()), 'auto must omit numThreads so the worker auto-picks');
+    assert.ok(!('numThreads' in auto._workerData()));
+  });
 
-    // Explicit pin (--sticky-notes-threads): forwarded verbatim.
-    const pinned = new StickyNoteEngine({ enabled: true, modelManager: readyMM, numThreads: 6 });
-    assert.strictEqual(pinned._numThreadsExplicit, true);
-    assert.strictEqual(pinned._numThreads, 6);
+  it('forwards an explicit thread pin', function () {
+    const pinned = makeEngine({}, { numThreads: 6 }).engine;
     assert.strictEqual(pinned._workerData().numThreads, 6);
+  });
 
-    // Bogus pins (0 / negative / NaN) fall back to auto.
-    for (const bad of [0, -1, NaN]) {
-      const e = new StickyNoteEngine({ enabled: true, modelManager: readyMM, numThreads: bad });
-      assert.strictEqual(e._numThreadsExplicit, false, `numThreads=${bad} must be treated as auto`);
-      assert.ok(!('numThreads' in e._workerData()));
+  it('forwards a numeric-string thread pin', function () {
+    const pinned = makeEngine({}, { numThreads: '8' }).engine;
+    assert.strictEqual(pinned._workerData().numThreads, 8);
+  });
+
+  it('ignores invalid thread pins', function () {
+    for (const value of [0, -1, NaN]) {
+      assert.ok(!('numThreads' in makeEngine({}, { numThreads: value }).engine._workerData()));
     }
   });
 
-  it('records the worker-reported runtime info ({gpu, threads}) on ready', async function () {
-    const { engine, fake } = makeEngine();
-    const initP = engine.initialize();
-    await tick();
-    fake.emit('message', { type: 'ready', gpu: false, threads: 8 });
-    await initP;
-    assert.deepStrictEqual(engine.getRuntimeInfo(), { gpu: false, threads: 8 });
-    await engine.shutdown();
+  it('reports runtime backend information from the ready host', async function () {
+    const { engine } = makeEngine({ runtimeInfo: { gpu: true, threads: 4 } });
+    await engine.initialize();
+    assert.deepStrictEqual(engine.getRuntimeInfo(), { gpu: true, threads: 4 });
   });
 
-  it('clears stale runtime info when the worker dies', async function () {
-    const { engine, fake } = makeEngine();
-    const initP = engine.initialize();
-    await tick();
-    fake.emit('message', { type: 'ready', gpu: false, threads: 8 });
-    await initP;
-    assert.ok(engine.getRuntimeInfo(), 'runtime info present while ready');
-    engine._stopping = true; // prevent the scheduled respawn from lingering
-    fake.crash(1);
-    await tick();
-    assert.strictEqual(engine.getRuntimeInfo(), null, 'must not report dead-worker backend/threads');
+  it('clears runtime information after host retirement', async function () {
+    const { engine, host } = makeEngine();
+    await engine.initialize();
+    host.state = 'restarting';
+    host.emit('state', 'restarting');
+    assert.strictEqual(engine.getRuntimeInfo(), null);
   });
 
-  it('forwards a numeric-string thread pin as an explicit override', function () {
-    const e = new StickyNoteEngine({ enabled: true, modelManager: readyMM, numThreads: '8' });
-    assert.strictEqual(e._numThreadsExplicit, true);
-    assert.strictEqual(e._numThreads, 8);
-    assert.strictEqual(e._workerData().numThreads, 8);
+  it('surfaces a permanent host load failure', async function () {
+    const error = new Error('node-llama-cpp is not installed');
+    error.code = 'MODULE_NOT_FOUND';
+    const { engine } = makeEngine({ failure: error });
+    await assert.rejects(engine.initialize(), /not installed/);
   });
 
-  it('degrades to unavailable when node-llama-cpp is missing', async function () {
-    const { engine, fake } = makeEngine();
-    const initP = engine.initialize();
-    await tick();
-    fake.fail('MODULE_NOT_FOUND', 'node-llama-cpp is not installed');
-    await assert.rejects(initP);
-    assert.strictEqual(engine.getStatus(), 'unavailable');
-    assert.strictEqual(engine._lastSpawnError, 'MODULE_NOT_FOUND');
-  });
-
-  it('rejects infer when not ready', async function () {
-    const engine = new StickyNoteEngine({ enabled: true, modelManager: readyMM, createWorker: () => new FakeWorker() });
+  it('rejects inference when disabled', async function () {
+    const engine = new StickyNoteEngine({ enabled: false, modelManager: readyModel });
     await assert.rejects(engine.infer('x'), /not ready/);
   });
 
-  it('rejects queued requests when the worker crashes', async function () {
-    const { engine, fake } = makeEngine();
-    const initP = engine.initialize();
-    await tick();
-    fake.ready();
-    await initP;
-
-    const inferP = engine.infer('work');
-    await tick();
-    const rejected = assert.rejects(inferP, /crashed/);
-    fake.crash(1);
-    await rejected;
-    assert.strictEqual(engine.getStatus(), 'loading'); // schedules a restart
-    engine._stopping = true; // prevent the scheduled respawn from lingering
+  it('rejects a request when its host crashes', async function () {
+    const { engine, host } = makeEngine({ pending: true });
+    await engine.initialize();
+    const inference = engine.infer('work');
+    await new Promise((resolve) => setImmediate(resolve));
+    host.requests[0].deferred.reject(new Error('sticky-note model host exited'));
+    await assert.rejects(inference, /exited/);
   });
 
-  it('rejects an inference that times out', async function () {
-    const { engine, fake } = makeEngine({ inferTimeoutMs: 30 });
-    const initP = engine.initialize();
-    await tick();
-    fake.ready();
-    await initP;
-    await assert.rejects(engine.infer('slow'), /timed out/);
-    await engine.shutdown();
-  });
-
-  it('rejects when the queue is full', async function () {
-    const { engine, fake } = makeEngine();
-    const initP = engine.initialize();
-    await tick();
-    fake.ready();
-    await initP;
-
-    const p1 = engine.infer('a').catch(() => {});
-    const p2 = engine.infer('b').catch(() => {});
-    const p3 = engine.infer('c').catch(() => {});
+  it('enforces the bounded request queue', async function () {
+    const { engine } = makeEngine({ pending: true });
+    await engine.initialize();
+    const pending = [engine.infer('a'), engine.infer('b'), engine.infer('c')];
+    pending.forEach((promise) => promise.catch(() => {}));
     await assert.rejects(engine.infer('d'), /busy/);
-    void p1;
-    void p2;
-    void p3;
     await engine.shutdown();
   });
 
   it('stays unavailable when disabled', async function () {
-    const engine = new StickyNoteEngine({ enabled: false, modelManager: readyMM });
-    await engine.initialize();
+    const engine = new StickyNoteEngine({ enabled: false, modelManager: readyModel });
+    await engine.ensureDownloaded();
     assert.strictEqual(engine.getStatus(), 'unavailable');
-    assert.strictEqual(engine.isReady(), false);
   });
 
-  it('does not check, download, or spawn a worker unless summaries are explicitly enabled', async function () {
+  it('does not check, download, or spawn a host unless summaries are explicitly enabled', async function () {
     let checked = 0;
     let downloaded = 0;
     let spawned = 0;
@@ -212,83 +189,52 @@ describe('sticky-note engine', function () {
         ensureModel: async () => { downloaded++; },
         getModelFile: () => '/tmp/model.gguf',
       },
-      createWorker: () => { spawned++; return new FakeWorker(); },
+      hostFactory: () => { spawned++; return new FakeHost(); },
     });
 
     await engine.initialize();
 
     assert.strictEqual(checked, 0, 'disabled engine must not probe the GGUF');
     assert.strictEqual(downloaded, 0, 'disabled engine must not download the GGUF');
-    assert.strictEqual(spawned, 0, 'disabled engine must not create a worker');
+    assert.strictEqual(spawned, 0, 'disabled engine must not create a model host');
   });
 
-  it('refuses to spawn under Bun (node-llama-cpp crashes Bun) without loading the worker', async function () {
+  it('refuses to load under Bun', async function () {
     const hadBun = Object.prototype.hasOwnProperty.call(process.versions, 'bun');
-    const prevBun = process.versions.bun;
-    Object.defineProperty(process.versions, 'bun', { value: '1.3.14', configurable: true, enumerable: true, writable: true });
+    const previous = process.versions.bun;
+    Object.defineProperty(process.versions, 'bun', { value: '1.3.14', configurable: true });
     try {
-      let spawned = 0;
-      const engine = new StickyNoteEngine({
-        enabled: true,
-        modelManager: readyMM,
-        createWorker: () => { spawned++; return new FakeWorker(); },
-      });
-      await engine.initialize();
-      assert.strictEqual(spawned, 0, 'no worker spawned under Bun');
+      const engine = new StickyNoteEngine({ enabled: true, modelManager: readyModel });
+      await engine.ensureDownloaded();
       assert.strictEqual(engine.getStatus(), 'unavailable');
-      assert.strictEqual(engine.isReady(), false);
       assert.strictEqual(engine._lastSpawnError, 'BUN_UNSUPPORTED');
     } finally {
-      if (hadBun) {
-        Object.defineProperty(process.versions, 'bun', { value: prevBun, configurable: true, enumerable: true, writable: true });
-      } else {
-        delete process.versions.bun;
-      }
+      if (hadBun) Object.defineProperty(process.versions, 'bun', { value: previous, configurable: true });
+      else delete process.versions.bun;
     }
   });
 
-  it('shuts the worker down gracefully (dispose before terminate)', async function () {
-    const { engine, fake } = makeEngine();
-    const initP = engine.initialize();
-    await tick();
-    fake.ready();
-    await initP;
-    await engine.shutdown();
-    assert.ok(fake.posted.some((m) => m.type === 'shutdown'), 'sent graceful shutdown to worker');
-    assert.strictEqual(engine.getStatus(), 'unavailable');
+  it('unload is effective only after the host is ready', async function () {
+    const { engine } = makeEngine();
+    assert.strictEqual(await engine.unload(), false);
+    await engine.initialize();
+    assert.strictEqual(await engine.unload(), true);
+    assert.strictEqual(engine.getLifecycleState(), 'idle');
   });
 
-  // Regression: Ctrl+C aborted the process (SIGABRT / exit 134) because the
-  // ggml-based worker was force-killed via worker.terminate() / process.exit()
-  // while its native model was live. shutdown() must stop the worker
-  // COOPERATIVELY (graceful message -> worker disposes + exits) and never call
-  // terminate(), which throws an uncaught Napi error during native teardown.
-  it('shutdown() stops the worker cooperatively and never calls terminate()', async function () {
-    const { engine, fake } = makeEngine();
-    const initP = engine.initialize();
-    await tick();
-    fake.ready();
-    await initP;
-    assert.strictEqual(engine.isReady(), true);
-    await engine.shutdown();
-    assert.ok(fake.posted.some((m) => m && m.type === 'shutdown'), 'sent graceful shutdown message');
-    assert.strictEqual(fake.terminated, false, 'must NOT call worker.terminate() (aborts the native worker)');
-    assert.strictEqual(engine.getStatus(), 'unavailable');
+  it('expansion warms and holds the host; collapse releases the hold', async function () {
+    const { engine, host } = makeEngine();
+    await engine.setActive(true);
+    assert.strictEqual(host.active, true);
+    await engine.setActive(false);
+    assert.strictEqual(host.active, false);
   });
 
-  // Regression: a worker that finishes loading AFTER shutdown began must not be
-  // adopted as the active worker (resurrecting a torn-down engine); it must be
-  // told to shut down instead.
-  it('shutdown() does not adopt a worker that becomes ready afterwards', async function () {
-    const { engine, fake } = makeEngine();
-    const initP = engine.initialize();
-    await tick(); // worker created + loading; not yet ready (tracked as pending)
-    const sd = engine.shutdown(); // shutdown begins before 'ready'
-    fake.ready(); // worker reports ready AFTER shutdown started
-    await sd;
-    await initP.catch(() => {});
-    assert.strictEqual(engine._worker, null, 'must not adopt a worker that readied post-shutdown');
-    assert.strictEqual(engine.getStatus(), 'unavailable');
-    assert.ok(fake.posted.some((m) => m && m.type === 'shutdown'), 'asked the late-ready worker to shut down');
+  it('shutdown retires the child without a worker-thread terminate path', async function () {
+    const { engine, host } = makeEngine();
+    await engine.initialize();
+    await engine.shutdown();
+    assert.strictEqual(engine.getLifecycleState(), 'idle');
+    assert.strictEqual(host.terminateCalls, 0);
   });
 });

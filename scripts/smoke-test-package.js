@@ -174,10 +174,15 @@ async function run() {
   // panzoom + nbviewer + 9 new file-browser modules pushed the count over 100.
   // Raised to 170 for the mobile-input work (key-encoder/keys-panel/terminal-copy
   // + keys-panel.css + 4 iOS splash PNGs + 2 PWA screenshot PNGs).
+  // Raised to 180 for model-host process isolation: +7 runtime modules
+  // (model-host{,-runtime,-protocol,-containment,-liveness}.js, stt-host.js,
+  // sticky-note-host.js) less the 2 worker files they replace = +5 net. The
+  // same change also stopped .docs/ shipping (10 files of local research that
+  // matched no .npmignore rule), so the real delta from main is 170 -> 175.
   // v0.1.51's 206-file regression was a separate issue (different file class);
-  // 170 leaves headroom for normal growth without re-tripping that.
+  // 180 stays well clear of it and leaves headroom for normal growth.
   const entryCount = entry.entryCount || 0;
-  assert(entryCount > 0 && entryCount <= 170, `Tarball file count ${entryCount} <= 170`);
+  assert(entryCount > 0 && entryCount <= 180, `Tarball file count ${entryCount} <= 180`);
 
   // Step 2: Install in temp directory
   console.log('\nStep 2: Installing tarball in temp directory');

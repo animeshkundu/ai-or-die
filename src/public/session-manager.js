@@ -574,7 +574,14 @@ class SessionTabManager {
             sessions.forEach((session, index) => {
                 console.log('[SessionManager.loadSessions] Adding tab for:', session.id);
                 // Don't auto-switch when loading existing sessions
-                this.addTab(session.id, session.name, session.active ? 'active' : 'idle', session.workingDir, false);
+                this.addTab(
+                    session.id,
+                    session.name,
+                    session.active ? 'active' : 'idle',
+                    session.workingDir,
+                    false,
+                    session.agent || null
+                );
                 // Set initial timestamps based on order (older sessions get older timestamps)
                 const sessionData = this.activeSessions.get(session.id);
                 if (sessionData) {

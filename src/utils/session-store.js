@@ -40,6 +40,13 @@ class SessionStore {
         this.storageDir = options.storageDir
             || process.env.AI_OR_DIE_SESSION_DIR
             || path.join(os.homedir(), '.ai-or-die');
+        if (process.env.AI_OR_DIE_TEST_SESSION_SANDBOX) {
+            const resolved = path.resolve(this.storageDir);
+            const realStore = path.resolve(os.homedir(), '.ai-or-die');
+            if (resolved === realStore || resolved.startsWith(realStore + path.sep)) {
+                throw new Error('Tests must not access the real ~/.ai-or-die session store');
+            }
+        }
         this.sessionsFile = path.join(this.storageDir, 'sessions.json');
         this._dirty = false;
         // DISK-03: surface the last save error to the server so it can

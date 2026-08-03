@@ -23,7 +23,7 @@
 //   • statSync called 500 * 10 = 5000 times (no cache).
 //   ⇒ both assertions fail.
 //
-// After the fix (cached (bytes, mtimeMs) pair, refresh only on mtime
+// After the fix (cached bytes + high-resolution directory fingerprint
 // advance — HOT-09):
 //   • statSync called ≤ 1000 across 10 calls (first scan populates +
 //     subsequent dir-freshness stats only).

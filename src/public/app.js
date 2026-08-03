@@ -554,6 +554,7 @@ class ClaudeCodeWebInterface {
     _setupBottomNav() {
         const navVoice = document.getElementById('navVoice');
         const navFiles = document.getElementById('navFiles');
+        const navSticky = document.getElementById('navSticky');
         const navMore = document.getElementById('navMore');
         const navSettings = document.getElementById('navSettings');
 
@@ -563,6 +564,9 @@ class ClaudeCodeWebInterface {
 
         if (navFiles) navFiles.addEventListener('click', () => {
             document.getElementById('browseFilesBtn')?.click();
+        });
+        if (navSticky) navSticky.addEventListener('click', () => {
+            document.getElementById('stickyNoteBtn')?.click();
         });
         if (navMore) navMore.addEventListener('click', () => {
             document.getElementById('mobileMenu')?.classList.add('active');
@@ -1478,6 +1482,10 @@ class ClaudeCodeWebInterface {
         // The card reports state changes (collapsed/hasNote/summarizing) so the
         // button can show aria-pressed + a status dot for the ACTIVE tab.
         this._stickyNoteCard.onStateChange = (s) => this._updateStickyNoteBtn(s);
+        if (this._modelLifecycle &&
+            typeof this._stickyNoteCard.setModelState === 'function') {
+            this._stickyNoteCard.setModelState(this._modelLifecycle.stickyNotes);
+        }
         // Hidden until the feature is both enabled AND ready (see _refreshStickyNoteBtnVisibility).
         this._refreshStickyNoteBtnVisibility();
         // Keyboard: Ctrl/Cmd+Shift+N toggles the status note.
@@ -1499,6 +1507,8 @@ class ClaudeCodeWebInterface {
         if (!btn) return;
         const show = this.stickyNotesEnabled === true && this._stickyNotesAvailable === true;
         btn.style.display = show ? '' : 'none';
+        const mobileBtn = document.getElementById('navSticky');
+        if (mobileBtn) mobileBtn.style.display = show ? '' : 'none';
     }
 
     /** Tell the server this browser has (or no longer has) a tab's card expanded. */
@@ -1506,6 +1516,17 @@ class ClaudeCodeWebInterface {
         if (!sessionId) return;
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.send({ type: 'set_sticky_active', sessionId, active: !!active });
+        }
+        if (this._stickyLeaseHeartbeat) {
+            clearInterval(this._stickyLeaseHeartbeat);
+            this._stickyLeaseHeartbeat = null;
+        }
+        if (active) {
+            this._stickyLeaseHeartbeat = setInterval(() => {
+                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    this.send({ type: 'set_sticky_active', sessionId, active: true });
+                }
+            }, 30000);
         }
     }
 
@@ -1524,6 +1545,13 @@ class ClaudeCodeWebInterface {
         else if (s.hasNote) label = 'Show status note (has updates)';
         btn.setAttribute('aria-label', label);
         btn.title = label;
+        const mobileBtn = document.getElementById('navSticky');
+        if (mobileBtn) {
+            mobileBtn.classList.toggle('active', !s.collapsed);
+            mobileBtn.setAttribute('aria-pressed', String(!s.collapsed));
+            mobileBtn.setAttribute('aria-label', label);
+            mobileBtn.title = label;
+        }
     }
 
     setupVoiceInput() {
@@ -1574,6 +1602,7 @@ class ClaudeCodeWebInterface {
                 return !self._voiceTranscriptionTimeout;
             },
             onRecordingStart: function () {
+                self.send({ type: 'voice_warm' });
                 self._playMicChime('on');
                 // Suspend the heartbeat pong-timeout while capturing: the main
                 // thread can be busy enough (esp. the ScriptProcessor fallback)
@@ -1963,7 +1992,10 @@ class ClaudeCodeWebInterface {
                         window.feedback.error('Voice model failed: ' + message.error);
                     }
                 }
-                this._applyVoiceAvailability();
+                // A warm request may transition the host from idle to loading
+                // after recording has already started. Never disable the same
+                // button the user must press to stop that live recording.
+                if (!this._voiceRecordingActive) this._applyVoiceAvailability();
                 break;
             }
         }
@@ -2620,6 +2652,10 @@ class ClaudeCodeWebInterface {
         switch (message.type) {
             case 'connected':
                 this.connectionId = message.connectionId;
+                this.send({
+                    type: 'client_capabilities',
+                    capabilities: ['model_host_lifecycle']
+                });
                 break;
                 
             case 'session_created':
@@ -3028,6 +3064,51 @@ class ClaudeCodeWebInterface {
                 // The toolbar toggle appears only once the engine is ready.
                 this._stickyNotesAvailable = message.status === 'ready';
                 this._refreshStickyNoteBtnVisibility();
+                break;
+            }
+
+            case 'model_lifecycle_status': {
+                this._modelLifecycle = {
+                    stt: message.stt,
+                    stickyNotes: message.stickyNotes
+                };
+                const stickyBtn = document.getElementById('stickyNoteBtn');
+                const stickyUsable = message.stickyNotes !== 'disabled' &&
+                    message.stickyNotes !== 'failed';
+                this._stickyNotesAvailable = stickyUsable;
+                this._refreshStickyNoteBtnVisibility();
+                if (this._stickyNoteCard &&
+                    typeof this._stickyNoteCard.setModelState === 'function') {
+                    this._stickyNoteCard.setModelState(message.stickyNotes);
+                }
+                if (stickyBtn) {
+                    stickyBtn.dataset.modelState = message.stickyNotes || '';
+                    if (message.stickyNotes === 'idle') {
+                        stickyBtn.title = 'Session status — model starts when opened';
+                    } else if (message.stickyNotes === 'restarting') {
+                        stickyBtn.title = 'Session status — model reconnecting';
+                    } else if (message.stickyNotes === 'failed') {
+                        stickyBtn.title = 'Session status unavailable — see server logs';
+                    } else {
+                        stickyBtn.title = 'Session status (Ctrl+Shift+N)';
+                    }
+                }
+                const voiceBtn = document.getElementById('voiceInputBtn');
+                if (voiceBtn) {
+                    voiceBtn.dataset.modelState = message.stt || '';
+                    const voiceTitles = {
+                        idle: 'Voice input — model starts when recording',
+                        loading: 'Voice model starting…',
+                        unloading: 'Voice input — model memory released; starts when recording',
+                        restarting: 'Voice model reconnecting…',
+                        failed: 'Voice model unavailable — see server logs'
+                    };
+                    if (voiceTitles[message.stt]) {
+                        voiceBtn.title = voiceTitles[message.stt];
+                    } else {
+                        this._applyVoiceAvailability();
+                    }
+                }
                 break;
             }
 

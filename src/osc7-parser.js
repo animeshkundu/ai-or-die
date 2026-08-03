@@ -170,8 +170,8 @@ class Osc7Parser {
  * hostname, not `localhost`).
  *
  * Background: the documented bash hook in docs/specs/file-browser.md and
- * the zsh / pwsh hooks all emit `file://$HOSTNAME$PWD` / `file://$HOST$PWD`
- * / `file://$env:COMPUTERNAME/$p` respectively. On POSIX (Linux + macOS),
+ * the zsh / pwsh hooks emit `file://$HOSTNAME$PWD`, `file://$HOST$PWD`,
+ * and the empty-host `file://$p` form respectively. On POSIX (Linux + macOS),
  * Node's url.fileURLToPath() throws ERR_INVALID_FILE_URL_HOST for any
  * host segment that isn't exactly `localhost` or empty — so the spec
  * hooks never produced a usable path until this fallback was added.

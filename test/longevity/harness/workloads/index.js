@@ -26,6 +26,7 @@ const { SessionStringifyWorkload } = require('./session-stringify-workload');
 const { MockClockWorkload } = require('./mock-clock-workload');
 const { DiskBloatJsonlWorkload } = require('./disk-bloat-jsonl-workload');
 const { DiskBloatQuotaWorkload } = require('./disk-bloat-quota-workload');
+const { OutputBufferFloodWorkload } = require('./output-buffer-flood-workload');
 
 const WORKLOADS = {
   'noop':              NoopWorkload,
@@ -39,6 +40,7 @@ const WORKLOADS = {
   'mock-clock':        MockClockWorkload,
   'disk-bloat-jsonl':  DiskBloatJsonlWorkload,
   'disk-bloat-quota':  DiskBloatQuotaWorkload,
+  'output-buffer-flood': OutputBufferFloodWorkload,
 };
 
 function getWorkload(name) {

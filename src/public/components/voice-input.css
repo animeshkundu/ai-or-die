@@ -24,15 +24,24 @@
     cursor: not-allowed;
 }
 
+.tab-voice-input[data-model-state="loading"],
+.tab-voice-input[data-model-state="restarting"] {
+    color: var(--status-warning, #d9a441);
+}
+
+.tab-voice-input[data-model-state="failed"] {
+    color: var(--status-error, #ef4444);
+}
+
 /* Recording state */
 .tab-voice-input.recording {
     color: var(--status-error, #ef4444);
-    animation: voice-pulse 1.5s ease-in-out infinite;
 }
 
 .tab-voice-input.recording svg {
     fill: currentColor;
     stroke: currentColor;
+    animation: voice-pulse 1.5s ease-in-out infinite;
 }
 
 @keyframes voice-pulse {
@@ -165,7 +174,7 @@
 
 /* Reduced motion */
 @media (prefers-reduced-motion: reduce) {
-    .tab-voice-input.recording {
+    .tab-voice-input.recording svg {
         animation: none;
     }
 

@@ -26,6 +26,7 @@ const { VSCodeTunnelManager } = require('./vscode-tunnel');
 const InstallAdvisor = require('./install-advisor');
 const SttEngine = require('./stt-engine');
 const StickyNoteEngine = require('./sticky-note-engine');
+const modelHostContainment = require('./model-host-containment');
 const StickyNoteSummarizer = require('./sticky-note-summarizer');
 const StickyNoteJsonl = require('./sticky-note-jsonl');
 const { redactSecrets } = require('./utils/secret-redact');
@@ -200,6 +201,7 @@ class ClaudeCodeWebServer {
     const underTest =
       /^test/.test(process.env.npm_lifecycle_event || '') ||
       typeof global.it === 'function';
+    this._underTest = underTest;
     // CI runners must not be kept awake: the assertion can't hold in a headless
     // CI session anyway, and spawning powershell.exe at startup races node-pty's
     // ConPTY setup on Windows (it flaked the binary smoke test's terminal echo).
@@ -229,6 +231,7 @@ class ClaudeCodeWebServer {
       options.stickyNotes === true && !underTest && !isBun() &&
       process.env.AIORDIE_DISABLE_STICKY_NOTES !== '1';
     this._foregroundSessionId = null;
+    this._sttPrepStarted = false;
     this._stickyInitStarted = false;
     this._stickyInitTimer = null;
     // Per-tab binding to a claude JSONL transcript: aiOrDieSessionId -> { file,
@@ -256,6 +259,9 @@ class ClaudeCodeWebServer {
     // browser can't leak a forever-running inference loop. The cheap ai-title
     // tail runs regardless, so collapsed tabs still get a fresh title.
     this._stickyActive = new Map();
+    this._stickyLeaseExpiries = new Map();
+    this._stickyLeaseSweep = setInterval(() => this._expireStickyLeases(), 15000);
+    if (this._stickyLeaseSweep.unref) this._stickyLeaseSweep.unref();
     // A bound tab follows an in-session /resume to a newer session only after its
     // own transcript has been quiet for this many poll ticks (~2s each), so a
     // third unrelated session can't steal a tab that is still actively working.
@@ -274,7 +280,16 @@ class ClaudeCodeWebServer {
       engine: this.stickyNoteEngine,
       redact: redactSecrets,
       getForeground: () => this._foregroundSessionId,
+      shouldInfer: (sessionId) => this._isStickyExpandedActive(sessionId),
       onResult: (sessionId, payload) => this._onStickyNoteResult(sessionId, payload),
+    });
+    this.sttEngine.on('lifecycle', () => {
+      this._broadcastVoiceStatus();
+      this._broadcastModelLifecycle();
+    });
+    this.stickyNoteEngine.on('lifecycle', () => {
+      this._broadcastStickyStatus();
+      this._broadcastModelLifecycle();
     });
 
     // Keep the host machine awake for as long as the server runs (Windows 11
@@ -421,11 +436,14 @@ class ClaudeCodeWebServer {
       this._sampleDiskUsage(150).catch(() => { /* ignore */ });
     }, 5 * 60 * 1000);
 
-    // Also save on process exit
-    process.on('SIGINT', () => this.handleShutdown());
-    process.on('SIGTERM', () => this.handleShutdown());
-    process.on('beforeExit', () => this.saveSessionsToDisk(true));
-    process.on('uncaughtException', (err) => {
+    // Also save on process exit. A real CLI spawned by a test runner inherits
+    // npm_lifecycle_event, so only suppress these process-global handlers inside
+    // the Mocha process itself; child servers still need graceful Ctrl+C.
+    if (typeof global.it !== 'function') this._processHandlers = {
+      SIGINT: () => this.handleShutdown(),
+      SIGTERM: () => this.handleShutdown(),
+      beforeExit: () => this.saveSessionsToDisk(true),
+      uncaughtException: (err) => {
       console.error('Uncaught exception:', err);
       // Synchronous save — async is unsafe after uncaught exception
       try {
@@ -442,27 +460,33 @@ class ClaudeCodeWebServer {
       // job; POSIX group-kills. Best-effort; never rethrows.
       try { this._reapAllPtySubtreesSync(); } catch (_) { /* ignore */ }
       process.exit(1);
-    });
-    process.on('unhandledRejection', (reason) => {
-      console.error('Unhandled rejection:', reason);
-      // Don't swallow — let it propagate to uncaughtException on Node 15+
-    });
+      },
+      unhandledRejection: (reason) => {
+        console.error('Unhandled rejection:', reason);
+      },
+    };
+    if (this._processHandlers) {
+      for (const [event, handler] of Object.entries(this._processHandlers)) {
+        process.on(event, handler);
+      }
+    }
   }
 
   setupIpcListener() {
     if (!this.supervised) return;
     // When running under the supervisor, listen for graceful shutdown via IPC
-    process.on('message', (msg) => {
+    this._ipcMessageHandler = (msg) => {
       if (msg && msg.type === 'shutdown') {
         console.log('Received shutdown request via IPC');
         this.handleShutdown();
       }
-    });
+    };
+    process.on('message', this._ipcMessageHandler);
     // If the supervisor's IPC channel drops, the supervisor died. Per the
     // "everything dies when the main process dies" contract, this server must NOT
     // keep running standalone (the old behavior) — it tears down its own PTY trees
     // (incl. the CLI's node/bun grandchildren) and shuts down.
-    process.on('disconnect', () => {
+    this._ipcDisconnectHandler = () => {
       // Expected channel close: a graceful shutdown / memory-restart we initiated is
       // already in flight (the supervisor sent {type:'shutdown'} or we exited 75). No-op.
       if (this.isShuttingDown) return;
@@ -473,7 +497,8 @@ class ClaudeCodeWebServer {
       // degraded-mode backstop.
       try { this._reapAllPtySubtreesSync(); } catch (_) { /* best-effort */ }
       this.handleShutdown(0);
-    });
+    };
+    process.on('disconnect', this._ipcDisconnectHandler);
   }
   
   setTunnelManager(tm) {
@@ -575,21 +600,15 @@ class ClaudeCodeWebServer {
     // the 15s force-exit budget, sessions would already be safe on disk. close()
     // saves again at the end of a normal shutdown.
     try { await this.saveSessionsToDisk(true); } catch (_) { /* ignore */ }
-    // Tear down the local-LLM summariser + worker so the model/worker thread
-    // don't keep the process alive (and don't hold a GGUF file lock on Windows).
+    // Tear down the summariser and its isolated model host so neither keeps the
+    // process alive or holds a GGUF file lock on Windows.
     if (this._stickyInitTimer) { clearTimeout(this._stickyInitTimer); this._stickyInitTimer = null; }
     if (this._stickyJsonlPoll) { clearInterval(this._stickyJsonlPoll); this._stickyJsonlPoll = null; }
     this._stickyJsonl.clear();
     try { this.stickyNoteSummarizer.shutdown(); } catch (_) { /* ignore */ }
-    // Tear down both local native worker engines (sticky-note = node-llama-cpp,
-    // STT = sherpa-onnx) concurrently. Each disposes its loaded model/recognizer
-    // on its worker thread before exiting; force-tearing them down via
-    // process.exit() while a model is loaded/loading aborts the process (SIGABRT)
-    // during native cleanup. Running them in parallel keeps total shutdown well
-    // inside the 15s force-exit budget above. STT shutdown was previously missing
-    // entirely. The CLI dev tunnel (only set in --tunnel mode) used to be stopped
-    // by a second SIGINT handler in bin/ai-or-die.js, now removed to avoid a
-    // shutdown race; its stop moves here onto the single graceful path.
+    // Tear down both native model hosts concurrently. Each host disposes its
+    // loaded model/recognizer cooperatively and has a process-isolated hard-kill
+    // backstop, so a wedged addon cannot abort the core during cleanup.
     await Promise.allSettled([
       Promise.resolve().then(() => this.stickyNoteEngine.shutdown()),
       Promise.resolve().then(() => this.sttEngine.shutdown()),
@@ -952,12 +971,12 @@ class ClaudeCodeWebServer {
    * Cache used by `_attachmentDirBytes` to avoid the O(N) `readdirSync` +
    * per-entry `statSync` scan on every `/api/files/upload` request. Keyed
    * by the input directory path (whatever the caller passed — typically
-   * the canonicalized path from `validatePath`). Value: `{bytes, mtimeMs}`
-   * where `mtimeMs` is the directory's last-modified time at the moment
-   * the byte count was computed.
+   * the canonicalized path from `validatePath`). Value: `{bytes, fingerprint}`.
+   * Directory mtime alone is insufficient on filesystems with coarse timestamp
+   * precision: a remove/recreate cycle can otherwise reuse a stale byte count.
    *
    * Freshness check is a single `fs.statSync(dir)` to read the dir's
-   * current mtime. On match → cache hit, return cached bytes (0 syscalls
+   * current fingerprint. On match → cache hit, return cached bytes (0 syscalls
    * beyond the stat). On mismatch or first-touch → re-scan + populate.
    *
    * Known-write paths in the upload handler use
@@ -972,7 +991,7 @@ class ClaudeCodeWebServer {
    * Closes the per-upload O(N) scan gap documented in
    * docs/audits/hot-04-attachment-scan.md (HOT-09).
    *
-   * @type {Map<string, {bytes:number, mtimeMs:number}>}
+   * @type {Map<string, {bytes:number, fingerprint:string}>}
    * @private
    */
   // Initialized lazily on first access since instance fields can't see
@@ -984,13 +1003,23 @@ class ClaudeCodeWebServer {
     return this._attachmentDirCache;
   }
 
+  _attachmentDirFingerprint(stat) {
+    return [
+      stat.dev,
+      stat.ino,
+      stat.mtimeNs,
+      stat.ctimeNs,
+      stat.birthtimeNs,
+    ].map(String).join(':');
+  }
+
   /**
    * Sum of bytes for all top-level files inside an attachments directory.
    * Top-level only — generic drop never creates subdirectories there, and
    * walking deep would let a user-side `ln -s /` symlink balloon the
    * computation. Robust to a missing directory (returns 0).
    *
-   * HOT-09: cached by `(canonicalDir, mtimeMs)`. The check pays one
+   * HOT-09: cached by `(canonicalDir, identity/timestamp fingerprint)`. The check pays one
    * `fs.statSync(dir)` to read the dir's current mtime; if it matches the
    * cached entry, returns the cached bytes (no readdir, no per-entry
    * stats). The previous unconditional O(N) scan blocked the event loop
@@ -1004,7 +1033,7 @@ class ClaudeCodeWebServer {
     // (ENOENT), drop any stale cache entry and return 0.
     let dirStat;
     try {
-      dirStat = fs.statSync(attachmentsDir);
+      dirStat = fs.statSync(attachmentsDir, { bigint: true });
     } catch (_) {
       cache.delete(attachmentsDir);
       return 0;
@@ -1015,7 +1044,8 @@ class ClaudeCodeWebServer {
     }
 
     const cached = cache.get(attachmentsDir);
-    if (cached && cached.mtimeMs === dirStat.mtimeMs) {
+    const fingerprint = this._attachmentDirFingerprint(dirStat);
+    if (cached && cached.fingerprint === fingerprint) {
       return cached.bytes; // fresh — skip the O(N) scan
     }
 
@@ -1035,7 +1065,7 @@ class ClaudeCodeWebServer {
         total += st.size;
       } catch (_) { /* file vanished mid-readdir — skip */ }
     }
-    cache.set(attachmentsDir, { bytes: total, mtimeMs: dirStat.mtimeMs });
+    cache.set(attachmentsDir, { bytes: total, fingerprint });
     return total;
   }
 
@@ -1054,11 +1084,11 @@ class ClaudeCodeWebServer {
     const cached = cache.get(attachmentsDir);
     if (!cached) return; // not populated → next read full-scans
     let dirStat;
-    try { dirStat = fs.statSync(attachmentsDir); }
+    try { dirStat = fs.statSync(attachmentsDir, { bigint: true }); }
     catch (_) { cache.delete(attachmentsDir); return; }
     cache.set(attachmentsDir, {
       bytes: cached.bytes + addedBytes,
-      mtimeMs: dirStat.mtimeMs,
+      fingerprint: this._attachmentDirFingerprint(dirStat),
     });
   }
 
@@ -3377,6 +3407,7 @@ class ClaudeCodeWebServer {
   }
 
   async start() {
+    modelHostContainment.sweepOrphanHosts();
     // Run session loading and command discovery in parallel
     await Promise.all([
       this._sessionsLoaded,
@@ -3395,17 +3426,15 @@ class ClaudeCodeWebServer {
     // the file-browser feature treats search as load-bearing.
     search.requireBackendAtStartup();
 
-    // STT model is pulled on startup (in the worker thread, off the event loop —
-    // the earlier "eager load hung the terminal" theory was disproven; the hang
-    // was a Bun/node-pty bug, not STT CPU load). The mic feature stays disabled
-    // on the client until the model is `ready`. Self-gates: a disabled/under-test
-    // engine no-ops without downloading. An external endpoint inits cheaply.
+    // Download preparation runs at boot, but native weights stay outside the core
+    // and are loaded only when voice input is warmed or submitted.
     this._ensureSttModel();
 
-    // An explicitly enabled sticky-note model is pulled on startup so it is `ready`
-    // by the time an AI tab opens. Self-gates: disabled / under-test / Bun → no-op (the
-    // engine never loads node-llama-cpp under Bun, which would crash it). Loads in
-    // its own worker thread, so the ~806MB pull never blocks the event loop.
+    // Sticky-note download preparation is also model-host-only, and the feature
+    // is opt-in (--sticky-notes). Self-gates: disabled / under-test / Bun → no-op
+    // (node-llama-cpp is never loaded under Bun, which would crash it). Expanding
+    // a card is the demand signal that loads its native weights, in a child
+    // process rather than the core.
     this._ensureStickyNoteEngine();
 
     let server;
@@ -3550,20 +3579,22 @@ class ClaudeCodeWebServer {
     this.wss.on('close', () => clearInterval(this._wsKeepalive));
 
     return new Promise((resolve, reject) => {
-      const onListen = (err) => {
-        if (err) {
-          reject(err);
-        } else {
-          this.server = server;
-          // Now listening — hold the OS awake for the server's lifetime
-          // (Windows only; no-op elsewhere; never throws).
-          this.keepaliveManager.start();
-          // Opt-in one-shot: disable hibernation (elevated) so a Hyper-V host
-          // can't hibernate us. Fire-and-forget; off by default; never throws.
-          this.hibernationGuard.run();
-          resolve(server);
-        }
+      const onError = (error) => {
+        server.off('listening', onListen);
+        reject(error);
       };
+      const onListen = () => {
+        server.off('error', onError);
+        this.server = server;
+        // Now listening — hold the OS awake for the server's lifetime
+        // (Windows only; no-op elsewhere; never throws).
+        this.keepaliveManager.start();
+        // Opt-in one-shot: disable hibernation (elevated) so a Hyper-V host
+        // can't hibernate us. Fire-and-forget; off by default; never throws.
+        this.hibernationGuard.run();
+        resolve(server);
+      };
+      server.once('error', onError);
       // bindHost null → all interfaces (default). Mesh pins 127.0.0.1.
       if (this.bindHost) server.listen(this.port, this.bindHost, onListen);
       else server.listen(this.port, onListen);
@@ -3588,7 +3619,8 @@ class ClaudeCodeWebServer {
       ws,
       claudeSessionId: null,
       created: new Date(),
-      secure: !!req.connection.encrypted
+      secure: !!req.connection.encrypted,
+      capabilities: new Set(),
     };
     this.webSocketConnections.set(wsId, wsInfo);
 
@@ -3847,7 +3879,17 @@ class ClaudeCodeWebServer {
         break;
 
       case 'ping':
+        this._renewStickyLeasesForWs(wsId);
         this.sendToWebSocket(wsInfo.ws, { type: 'pong' });
+        break;
+
+      case 'client_capabilities':
+        wsInfo.capabilities = new Set(
+          Array.isArray(data.capabilities)
+            ? data.capabilities.filter((value) => typeof value === 'string').slice(0, 32)
+            : []
+        );
+        this._sendModelLifecycle(wsInfo);
         break;
 
       case 'restart_server':
@@ -3877,6 +3919,10 @@ class ClaudeCodeWebServer {
 
       case 'voice_upload':
         await this.handleVoiceUpload(wsId, data);
+        break;
+
+      case 'voice_warm':
+        await this._handleVoiceWarm(wsId);
         break;
 
       case 'voice_download_model':
@@ -4809,7 +4855,13 @@ class ClaudeCodeWebServer {
           // authoritative there).
           try { this._controlRecordPtyOutput(sessionId); } catch (_) { /* isolate */ }
           this.sessionStore.markDirty();
-          try { if (this.stickyNoteSummarizer && this.stickyNoteSummarizer.isEnabled(sessionId)) this.stickyNoteSummarizer.feed(sessionId, data); } catch (_) { /* isolate */ }
+          try {
+            if (this.stickyNoteSummarizer &&
+                this.stickyNoteSummarizer.isEnabled(sessionId) &&
+                this._isStickyExpandedActive(sessionId)) {
+              this.stickyNoteSummarizer.feed(sessionId, data);
+            }
+          } catch (_) { /* isolate */ }
         },
         onExit: (code, signal) => {
           const s = this.claudeSessions.get(sessionId);
@@ -5495,7 +5547,7 @@ class ClaudeCodeWebServer {
           // buffers into a headless terminal + arms timers, never inference).
           // Isolated so a summariser/parser fault can never break the terminal
           // output pipeline.
-          if (this.stickyNoteSummarizer.isEnabled(sessionId)) {
+          if (this.stickyNoteSummarizer.isEnabled(sessionId) && this._isStickyExpandedActive(sessionId)) {
             try {
               this.stickyNoteSummarizer.feed(sessionId, data);
             } catch (e) {
@@ -5668,12 +5720,12 @@ class ClaudeCodeWebServer {
     return this._isAiAgent(toolName) || toolName === 'terminal';
   }
 
-  // Lazily download the model + spawn the worker on first need (deduped).
+  // Prepare the model download without loading native weights into a host.
   _ensureStickyNoteEngine() {
     if (!this.stickyNoteEngine._enabled || this._stickyInitStarted) return;
     this._stickyInitStarted = true;
     this.stickyNoteEngine
-      .initialize((progress) => {
+      .ensureDownloaded((progress) => {
         this.broadcastToAll({
           type: 'sticky_notes_model_progress',
           file: progress.file,
@@ -5715,6 +5767,7 @@ class ClaudeCodeWebServer {
       status: this.stickyNoteEngine.getStatus(),
       progress: this.stickyNoteEngine.getDownloadProgress(),
     });
+    this._broadcastModelLifecycle();
   }
 
   // Begin summarising a session if the feature is enabled for it (AI-agent tabs
@@ -6335,9 +6388,53 @@ class ClaudeCodeWebServer {
       if (!belongs) return;
       if (set) set.add(wsId);
       else this._stickyActive.set(sessionId, new Set([wsId]));
+      if (!this._stickyLeaseExpiries) this._stickyLeaseExpiries = new Map();
+      this._stickyLeaseExpiries.set(`${sessionId}:${wsId}`, {
+        sessionId,
+        wsId,
+        expiresAt: Date.now() + 45000,
+      });
+      Promise.resolve(this.stickyNoteEngine.setActive && this.stickyNoteEngine.setActive(true)).catch((error) => {
+        if (this.dev) console.error('[sticky-notes] warm failed:', error.message);
+      });
+      if (this.stickyNoteSummarizer && typeof this.stickyNoteSummarizer.focus === 'function') {
+        this.stickyNoteSummarizer.focus(sessionId);
+      }
     } else if (set) {
       set.delete(wsId);
       if (!set.size) this._stickyActive.delete(sessionId);
+      if (this._stickyLeaseExpiries) this._stickyLeaseExpiries.delete(`${sessionId}:${wsId}`);
+      Promise.resolve(
+        this.stickyNoteEngine.setActive && this.stickyNoteEngine.setActive(this._stickyActive.size > 0)
+      ).catch(() => {});
+    }
+  }
+
+  _expireStickyLeases() {
+    const now = Date.now();
+    let changed = false;
+    for (const [key, lease] of this._stickyLeaseExpiries) {
+      if (lease.expiresAt > now) continue;
+      this._stickyLeaseExpiries.delete(key);
+      const set = this._stickyActive.get(lease.sessionId);
+      if (set && set.delete(lease.wsId)) {
+        changed = true;
+        if (!set.size) this._stickyActive.delete(lease.sessionId);
+      }
+
+    }
+    if (changed) {
+      Promise.resolve(
+        this.stickyNoteEngine.setActive && this.stickyNoteEngine.setActive(this._stickyActive.size > 0)
+      ).catch(() => {});
+    }
+  }
+
+  _renewStickyLeasesForWs(wsId) {
+    if (!this._stickyLeaseExpiries) return;
+    const expiresAt = Date.now() + 45000;
+    for (const lease of this._stickyLeaseExpiries.values()) {
+      if (lease.wsId === wsId) lease.expiresAt = expiresAt;
     }
   }
 
@@ -6345,7 +6442,11 @@ class ClaudeCodeWebServer {
   _clearStickyActiveForWs(wsId) {
     for (const [sessionId, set] of this._stickyActive) {
       if (set.delete(wsId) && !set.size) this._stickyActive.delete(sessionId);
+      if (this._stickyLeaseExpiries) this._stickyLeaseExpiries.delete(`${sessionId}:${wsId}`);
     }
+    Promise.resolve(
+      this.stickyNoteEngine.setActive && this.stickyNoteEngine.setActive(this._stickyActive.size > 0)
+    ).catch(() => {});
   }
 
   _handleSetTabName(wsId, data) {
@@ -6753,15 +6854,171 @@ class ClaudeCodeWebServer {
    * for FD inspection.
    */
   _collectDiagnostics() {
+    const now = Date.now();
     const mem = process.memoryUsage();
     const handles = (process._getActiveHandles && process._getActiveHandles()) || [];
     const requests = (process._getActiveRequests && process._getActiveRequests()) || [];
+    const mapSize = (value) => value && typeof value.size === 'number' ? value.size : 0;
+    const byteLength = (value) => {
+      if (Buffer.isBuffer(value)) return value.length;
+      return Buffer.byteLength(typeof value === 'string' ? value : String(value || ''), 'utf8');
+    };
+    const listenerCount = (emitter, event) => (
+      emitter && typeof emitter.listenerCount === 'function' ? emitter.listenerCount(event) : 0
+    );
+    const outputBuffers = {
+      active: { sessions: 0, items: 0, bytes: 0, per_session: [] },
+      inactive: { sessions: 0, items: 0, bytes: 0, per_session: [] },
+    };
+    for (const session of this.claudeSessions.values()) {
+      if (!session) continue;
+      const buffer = session.outputBuffer;
+      const chunks = Array.isArray(buffer) ? buffer : [];
+      const items = buffer && typeof buffer.length === 'number' ? buffer.length : chunks.length;
+      const bytes = buffer && Number.isFinite(buffer.byteLength)
+        ? buffer.byteLength
+        : chunks.reduce((total, chunk) => total + byteLength(chunk), 0);
+      const bucket = session.active ? outputBuffers.active : outputBuffers.inactive;
+      bucket.sessions++;
+      bucket.items += items;
+      bucket.bytes += bytes;
+      bucket.per_session.push({ items, bytes });
+    }
+    let stickyPendingText;
+    let artifactReviews;
+    const byteMetricsCache = this._retentionByteMetricsCache;
+    if (byteMetricsCache && now - byteMetricsCache.at < 5000) {
+      ({ stickyPendingText, artifactReviews } = byteMetricsCache);
+    } else {
+      stickyPendingText = { sessions: 0, bytes: 0, per_session_bytes: [] };
+      const stickyStates = this.stickyNoteSummarizer && this.stickyNoteSummarizer._states;
+      if (stickyStates && typeof stickyStates.values === 'function') {
+        for (const state of stickyStates.values()) {
+          const bytes = byteLength(state && state.pendingText);
+          if (bytes === 0) continue;
+          stickyPendingText.sessions++;
+          stickyPendingText.bytes += bytes;
+          stickyPendingText.per_session_bytes.push(bytes);
+        }
+      }
+      artifactReviews = {
+        total: 0,
+        open: 0,
+        ended: 0,
+        events: 0,
+        chat_entries: 0,
+        chat_bytes: 0,
+        queued_prompt_bytes: 0,
+        dom_snapshot_bytes: 0,
+      };
+      const reviews = this.artifactReviews && this.artifactReviews._reviews;
+      if (reviews && typeof reviews.values === 'function') {
+        for (const review of reviews.values()) {
+          if (!review) continue;
+          artifactReviews.total++;
+          if (review.status === 'ended') artifactReviews.ended++;
+          else artifactReviews.open++;
+          artifactReviews.events += Array.isArray(review.events) ? review.events.length : 0;
+          artifactReviews.chat_entries += Array.isArray(review.chat) ? review.chat.length : 0;
+          for (const entry of review.chat || []) artifactReviews.chat_bytes += byteLength(entry && entry.text);
+          for (const prompt of review.queuedPrompts || []) {
+            artifactReviews.queued_prompt_bytes += byteLength(
+              typeof prompt === 'string' ? prompt : prompt && (prompt.prompt || prompt.text || '')
+            );
+          }
+          artifactReviews.dom_snapshot_bytes += byteLength(
+            typeof review.domSnapshot === 'string' ? review.domSnapshot : ''
+          );
+        }
+      }
+      this._retentionByteMetricsCache = {
+        at: now,
+        stickyPendingText,
+        artifactReviews,
+      };
+    }
+    const nestedMapSize = (map) => {
+      if (!map || typeof map.values !== 'function') return 0;
+      let size = 0;
+      for (const value of map.values()) size += value && typeof value.size === 'number' ? value.size : 0;
+      return size;
+    };
+    const activeHandleTypes = {};
+    for (const handle of handles) {
+      const name = handle && handle.constructor && handle.constructor.name || 'Unknown';
+      activeHandleTypes[name] = (activeHandleTypes[name] || 0) + 1;
+    }
+    const webSocketListeners = { message: 0, close: 0, error: 0, buffered_bytes: 0 };
+    for (const wsInfo of this.webSocketConnections.values()) {
+      const ws = wsInfo && wsInfo.ws;
+      for (const event of ['message', 'close', 'error']) {
+        webSocketListeners[event] += listenerCount(ws, event);
+      }
+      webSocketListeners.buffered_bytes += Number.isFinite(ws && ws.bufferedAmount) ? ws.bufferedAmount : 0;
+    }
+    const stickyTimers = { debounce: 0, stale: 0, retry: 0 };
+    const stickyStatesForTimers = this.stickyNoteSummarizer && this.stickyNoteSummarizer._states;
+    if (stickyStatesForTimers && typeof stickyStatesForTimers.values === 'function') {
+      for (const state of stickyStatesForTimers.values()) {
+        if (state && state.debounceTimer) stickyTimers.debounce++;
+        if (state && state.staleTimer) stickyTimers.stale++;
+        if (state && state.retryTimer) stickyTimers.retry++;
+      }
+    }
+    const sessionTimers = { output_flush: 0, control_idle: 0 };
+    for (const session of this.claudeSessions.values()) {
+      if (session && session._outputFlushTimer) sessionTimers.output_flush++;
+      if (session && session._ctlIdleTimer) sessionTimers.control_idle++;
+    }
+    const controlBus = this.controlEventBus;
+    let controlRetainedEvents = 0;
+    if (controlBus && controlBus._buckets && typeof controlBus._buckets.values === 'function') {
+      for (const events of controlBus._buckets.values()) {
+        controlRetainedEvents += Array.isArray(events) ? events.length : 0;
+      }
+    }
+    const vscodeOutput = {
+      tunnels: 0,
+      server_stdout_bytes: 0,
+      login_output_bytes: 0,
+    };
+    const vscodeTunnels = this.vscodeTunnel && this.vscodeTunnel.tunnels;
+    if (vscodeTunnels && typeof vscodeTunnels.values === 'function') {
+      for (const tunnel of vscodeTunnels.values()) {
+        vscodeOutput.tunnels++;
+        vscodeOutput.server_stdout_bytes += Number.isFinite(tunnel && tunnel._serverOutputBytes)
+          ? tunnel._serverOutputBytes : 0;
+        vscodeOutput.login_output_bytes += Number.isFinite(tunnel && tunnel._loginOutputBytes)
+          ? tunnel._loginOutputBytes : 0;
+      }
+    }
     let fdCount = null;
     try {
       if (process.platform === 'linux') {
         fdCount = fs.readdirSync('/proc/self/fd').length;
       }
     } catch (_) { /* ignore — /proc may be unavailable in sandboxes */ }
+    let windowsHandleCount = this._windowsHandleCount || null;
+    if (
+      process.platform === 'win32' &&
+      !this._windowsHandleCountPending &&
+      (!this._windowsHandleCountAt || now - this._windowsHandleCountAt >= 60000)
+    ) {
+      this._windowsHandleCountPending = true;
+      const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+      const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      execFile(
+        powershell,
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${process.pid}).HandleCount`],
+        { encoding: 'utf8', timeout: 1000, windowsHide: true, windowsVerbatimArguments: true },
+        (error, stdout) => {
+          const parsed = error ? NaN : Number.parseInt(String(stdout).trim(), 10);
+          this._windowsHandleCount = Number.isFinite(parsed) ? parsed : null;
+          this._windowsHandleCountAt = Date.now();
+          this._windowsHandleCountPending = false;
+        }
+      );
+    }
     return {
       uptime_seconds: Math.round(process.uptime()),
       node_version: process.version,
@@ -6778,6 +7035,15 @@ class ClaudeCodeWebServer {
         active_handles: handles.length,
         active_requests: requests.length,
         fd_count: fdCount,
+        windows_handle_count: windowsHandleCount,
+        active_handle_types: activeHandleTypes,
+        listener_counts: {
+          SIGINT: process.listenerCount('SIGINT'),
+          SIGTERM: process.listenerCount('SIGTERM'),
+          beforeExit: process.listenerCount('beforeExit'),
+          uncaughtException: process.listenerCount('uncaughtException'),
+          unhandledRejection: process.listenerCount('unhandledRejection'),
+        },
       },
       sessions: {
         total: this.claudeSessions.size,
@@ -6786,6 +7052,85 @@ class ClaudeCodeWebServer {
         voice_upload_counts: Array.from(this.claudeSessions.values())
           .filter(s => s._voiceUploadTimestamps && s._voiceUploadTimestamps.length).length,
         activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
+      },
+      retention: {
+        output_buffers: outputBuffers,
+        sticky_pending_text: stickyPendingText,
+        artifact_reviews: artifactReviews,
+        usage_reader: {
+          cache_present: !!(this.usageReader && this.usageReader.cache),
+          cache_entry_count: (this.usageReader && this.usageReader.cache && this.usageReader.cache.requests) || 0,
+          cache_age_ms: this.usageReader && this.usageReader.cacheTime
+            ? Math.max(0, Date.now() - this.usageReader.cacheTime)
+            : null,
+        },
+        usage_analytics: {
+          active_sessions: (this.usageAnalytics && this.usageAnalytics.activeSessions && this.usageAnalytics.activeSessions.size) || 0,
+          session_history: (this.usageAnalytics && this.usageAnalytics.sessionHistory && this.usageAnalytics.sessionHistory.length) || 0,
+          recent_usage: (this.usageAnalytics && this.usageAnalytics.recentUsage && this.usageAnalytics.recentUsage.length) || 0,
+          historical_data: (this.usageAnalytics && this.usageAnalytics.historicalData && this.usageAnalytics.historicalData.length) || 0,
+          burn_rate_history: (this.usageAnalytics && this.usageAnalytics.burnRateHistory && this.usageAnalytics.burnRateHistory.length) || 0,
+        },
+        bridge_state: {
+          claude_trust_prompts: mapSize(this.claudeBridge && this.claudeBridge._trustPromptHandled),
+          terminal_osc7_parsers: mapSize(this.terminalBridge && this.terminalBridge._osc7Parsers),
+          terminal_osc7_hooks: mapSize(this.terminalBridge && this.terminalBridge._osc7Hooks),
+          terminal_live_cwds: mapSize(this.terminalBridge && this.terminalBridge._liveCwd),
+          terminal_last_raw_osc7: mapSize(this.terminalBridge && this.terminalBridge._lastRawOsc7),
+          terminal_osc7_validation_cache: mapSize(this.terminalBridge && this.terminalBridge._osc7ValidationCache),
+        },
+        control_event_bus: {
+          bucket_sessions: mapSize(controlBus && controlBus._buckets),
+          retained_events: controlRetainedEvents,
+          evicted_session_watermarks: mapSize(controlBus && controlBus._evictedBySession),
+          event_listeners: listenerCount(controlBus, 'event'),
+        },
+        websocket: webSocketListeners,
+        vscode_tunnel_output: vscodeOutput,
+        timers: {
+          server_intervals: [
+            this.autoSaveInterval,
+            this.imageSweepInterval,
+            this.sessionEvictionInterval,
+            this.diagnosticsHeartbeatInterval,
+            this.diskCompactInterval,
+            this.diskUsageSampleInterval,
+            this._stickyJsonlPoll,
+            this._wsKeepalive,
+          ].filter(Boolean).length,
+          session: sessionTimers,
+          sticky: stickyTimers,
+        },
+        workers: {
+          sticky_note: {
+            status: this.stickyNoteEngine && this.stickyNoteEngine.getStatus
+              ? this.stickyNoteEngine.getStatus() : null,
+            queue_length: (this.stickyNoteEngine && this.stickyNoteEngine._queue && this.stickyNoteEngine._queue.length) || 0,
+            live: !!(this.stickyNoteEngine && this.stickyNoteEngine._worker),
+            spawning: !!(this.stickyNoteEngine && this.stickyNoteEngine._spawningWorker),
+            restart_attempts: (this.stickyNoteEngine && this.stickyNoteEngine._restartAttempts) || 0,
+          },
+          stt: {
+            status: this.sttEngine && this.sttEngine.getStatus ? this.sttEngine.getStatus() : null,
+            queue_length: (this.sttEngine && this.sttEngine._queue && this.sttEngine._queue.length) || 0,
+            live: !!(this.sttEngine && this.sttEngine._worker),
+            spawning: !!(this.sttEngine && this.sttEngine._spawningWorker),
+            restart_attempts: (this.sttEngine && this.sttEngine._restartAttempts) || 0,
+          },
+        },
+        maps: {
+          claude_notes: (this._claudeNotes && this._claudeNotes.size) || 0,
+          claude_offsets: (this._claudeOffsets && this._claudeOffsets.size) || 0,
+          sticky_jsonl: (this._stickyJsonl && this._stickyJsonl.size) || 0,
+          sticky_active: (this._stickyActive && this._stickyActive.size) || 0,
+          control_idempotency: (this._controlIdempotency && this._controlIdempotency.size) || 0,
+          activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
+          rate_limit_entries: nestedMapSize(this._rateLimitBuckets),
+          session_rate_limit_entries: nestedMapSize(this._sessionRateLimitBuckets),
+          control_session_seq: mapSize(this._controlSessionSeq),
+          attachment_dir_cache: mapSize(this._attachmentDirCache),
+          steering_queues: mapSize(this._steeringQueues),
+        },
       },
       // Deterministic-shutdown guard status. On win32, job_guard_active reflects whether
       // the supervisor established the kill-on-close Job Object (false ⇒ degraded:
@@ -6796,6 +7141,10 @@ class ClaudeCodeWebServer {
         job_guard_active: process.platform === 'win32' ? (process.env.AOD_JOB_GUARD === '1') : null,
         supervised: !!this.supervised,
       },
+      model_hosts: [
+        this.sttEngine.getDiagnostics(),
+        this.stickyNoteEngine.getDiagnostics(),
+      ],
       // DISK-02/03: cached disk usage sample (60 s TTL, never blocks the
       // event loop). Populated by _sampleDiskUsage() — see method
       // comment for the time-budget contract.
@@ -7071,25 +7420,43 @@ class ClaudeCodeWebServer {
   }
 
   async close() {
+    if (this._processHandlers) {
+      for (const [event, handler] of Object.entries(this._processHandlers)) {
+        process.off(event, handler);
+      }
+      this._processHandlers = null;
+    }
+    if (this._ipcMessageHandler) {
+      process.off('message', this._ipcMessageHandler);
+      this._ipcMessageHandler = null;
+    }
+    if (this._ipcDisconnectHandler) {
+      process.off('disconnect', this._ipcDisconnectHandler);
+      this._ipcDisconnectHandler = null;
+    }
+    if (this._stickyLeaseSweep) {
+      clearInterval(this._stickyLeaseSweep);
+      this._stickyLeaseSweep = null;
+    }
     // Save sessions before closing. Guarded so a save error can't abort close()
     // before the teardown below (incl. the keep-awake release at the end) runs;
     // handleShutdown already persisted sessions on the signal path, and wraps
     // its own save the same way.
     try { await this.saveSessionsToDisk(true); } catch (_) { /* ignore */ }
 
-    // Tear down the STT (sherpa-onnx) native worker. close() is the cleanup path
+    // Tear down both model hosts. close() is the cleanup path
     // shared by the signal handler (handleShutdown -> close) AND direct close()
     // callers (e.g. the e2e test servers, which construct a ClaudeCodeWebServer
     // and call server.close()). Without this, a server that has loaded the STT
-    // model leaks its worker thread past close() and keeps the process alive —
+    // model leaks its child host past close() and keeps the process alive —
     // this hung the Windows e2e jobs once the model was cached/present. The
-    // shutdown is cooperative (graceful message, no terminate()) so native
-    // teardown can't abort the process, and idempotent (handleShutdown already
-    // ran it on the signal path, so this is then a no-op). The sticky-note engine
-    // is torn down by handleShutdown only: it is disabled in the e2e test
-    // servers, and its teardown must precede close()'s session-output flush to
-    // avoid re-triggering a summary, so it stays out of this shared path.
-    try { await this.sttEngine.shutdown(); } catch (_) { /* ignore */ }
+    // shutdown is cooperative with a child-process hard-kill backstop, so native
+    // teardown cannot abort the core, and is idempotent (handleShutdown already
+    // ran it on the signal path, so this is then a no-op).
+    await Promise.allSettled([
+      Promise.resolve().then(() => this.sttEngine.shutdown()),
+      Promise.resolve().then(() => this.stickyNoteEngine.shutdown()),
+    ]);
 
     // Clear all intervals
     if (this.autoSaveInterval) {
@@ -7470,14 +7837,6 @@ class ClaudeCodeWebServer {
     }
     session._voiceUploadTimestamps.push(now);
 
-    if (!this.sttEngine.isReady()) {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'voice_transcription_error',
-        message: `Speech-to-text not ready (status: ${this.sttEngine.getStatus()})`
-      });
-      return;
-    }
-
     try {
       // Max 120s of 16kHz 16-bit mono PCM = 3,840,000 bytes
       if (pcmBuffer.length > MAX_VOICE_PCM_BYTES) {
@@ -7504,7 +7863,9 @@ class ClaudeCodeWebServer {
         return;
       }
 
-      // Raw int16 PCM -> the worker converts to Float32 off the event loop.
+      // A completed recording is never discarded merely because the local model
+      // was idle. Demand the host and wait within the bounded cold-start budget.
+      await this.sttEngine.demand();
       const text = await this.sttEngine.transcribePcm16(pcmBuffer);
 
       this.sendToWebSocket(wsInfo.ws, {
@@ -7521,18 +7882,15 @@ class ClaudeCodeWebServer {
   }
 
   /**
-   * Idempotent, non-blocking init of the LOCAL STT model. Downloads + loads in
-   * the worker thread (off the event loop), broadcasting progress + the final
-   * status so every client can enable the mic the moment the model is `ready`.
-   * Called on startup (pull-on-boot) and by the explicit voice_download_model
-   * retry. Self-gates: a disabled / under-test engine no-ops (initialize returns
-   * `unavailable` without downloading). An external endpoint inits cheaply.
+   * Idempotent, non-blocking preparation of the LOCAL STT model. Boot may
+   * download files, but native weights load only after voice_warm or a cold
+   * transcription request.
    */
   _ensureSttModel() {
-    const status = this.sttEngine.getStatus();
-    if (status === 'ready' || status === 'downloading' || status === 'loading') return;
+    if (this._sttPrepStarted) return;
+    this._sttPrepStarted = true;
     this.sttEngine
-      .initialize((progress) => {
+      .ensureDownloaded((progress) => {
         // Guard the percent math: a malformed/early progress event (fileCount 0,
         // missing fileIndex) must not emit NaN/Infinity (serialized as null),
         // which would break the client's 100%-based banner transitions.
@@ -7546,6 +7904,7 @@ class ClaudeCodeWebServer {
       })
       .then(() => this._broadcastVoiceStatus())
       .catch((err) => {
+        this._sttPrepStarted = false;
         if (this.dev) console.error('[STT] Init failed:', err.message);
         this._broadcastVoiceStatus(err.message);
       });
@@ -7565,6 +7924,54 @@ class ClaudeCodeWebServer {
       progress: this.sttEngine.getDownloadProgress(),
       ...(error ? { error } : {}),
     });
+    this._broadcastModelLifecycle();
+  }
+
+  async _handleVoiceWarm(wsId) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo || !this.sttEngine._enabled || this.sttEngine._sttEndpoint) return;
+    const session = wsInfo.claudeSessionId && this.claudeSessions.get(wsInfo.claudeSessionId);
+    if (!session || !session.active || !session.agent) return;
+    const now = Date.now();
+    session._voiceWarmTimestamps = (session._voiceWarmTimestamps || []).filter((at) => now - at < 60000);
+    if (session._voiceWarmTimestamps.length >= 4) return;
+    session._voiceWarmTimestamps.push(now);
+    try {
+      await this.sttEngine.warm();
+    } catch (error) {
+      this._broadcastVoiceStatus(error.message);
+    }
+  }
+
+  _sendModelLifecycle(wsInfo) {
+    if (!wsInfo || !wsInfo.capabilities || !wsInfo.capabilities.has('model_host_lifecycle')) return;
+    this.sendToWebSocket(wsInfo.ws, {
+      type: 'model_lifecycle_status',
+      stt: this.sttEngine.getLifecycleState(),
+      stickyNotes: this.stickyNoteEngine.getLifecycleState(),
+    });
+  }
+
+  _broadcastModelLifecycle() {
+    for (const [, wsInfo] of this.webSocketConnections) this._sendModelLifecycle(wsInfo);
+  }
+
+  async retireModelHostsForMemoryPressure() {
+    const retired = [];
+    for (const [name, engine] of [
+      ['sticky-note', this.stickyNoteEngine],
+      ['stt', this.sttEngine],
+    ]) {
+      if (engine && typeof engine.retireForMemoryPressure === 'function' &&
+          await engine.retireForMemoryPressure()) {
+        retired.push(name);
+      }
+    }
+    if (retired.length) {
+      console.warn(`[memory] Retired inactive model host${retired.length > 1 ? 's' : ''}: ${retired.join(', ')}`);
+      this._broadcastModelLifecycle();
+    }
+    return retired;
   }
 
   async handleVoiceDownloadModel(wsId) {

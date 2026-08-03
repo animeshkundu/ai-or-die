@@ -53,6 +53,41 @@ describe('Supervisor', function () {
     assert.ok(content.includes('--expose-gc'), 'should pass --expose-gc to child');
     assert.ok(content.includes('ipc'), 'should use IPC channel');
     assert.ok(content.includes('CIRCUIT_BREAKER'), 'should have circuit breaker logic');
+    assert.ok(content.includes('NON_RETRYABLE_EXIT_CODE'), 'should classify deliberate startup failures');
+  });
+
+  it('does not respawn a child that reports a non-retryable startup failure', function (done) {
+    const fs = require('fs');
+    const tmpDir = path.join(__dirname, 'temp-supervisor');
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const countFile = path.join(tmpDir, 'non-retryable-count.txt');
+    const mockFile = path.join(tmpDir, 'mock-non-retryable.js');
+    fs.writeFileSync(countFile, '0');
+    fs.writeFileSync(mockFile, `
+      const fs = require('fs');
+      const file = ${JSON.stringify(countFile)};
+      fs.writeFileSync(file, String(Number(fs.readFileSync(file, 'utf8')) + 1));
+      process.exit(78);
+    `);
+    tmpFiles.push(mockFile, countFile);
+
+    const supervisor = spawn(process.execPath, [supervisorScript], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        SUPERVISOR_CHILD_SCRIPT: mockFile,
+        RESTART_DELAY_MS: '10',
+        CRASH_RESTART_DELAY_MS: '10',
+      },
+    });
+    let output = '';
+    supervisor.stderr.on('data', (chunk) => { output += chunk.toString(); });
+    supervisor.on('exit', (code) => {
+      assert.strictEqual(code, 78);
+      assert.strictEqual(fs.readFileSync(countFile, 'utf8'), '1', 'child ran exactly once');
+      assert.match(output, /not respawning/);
+      done();
+    });
   });
 
   it('should restart child on exit code 75', function (done) {

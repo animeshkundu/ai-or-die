@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory retention diagnosis — verified</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#151b23; --panel2:#1c232c; --line:#2b3542;
+    --fg:#e6edf3; --dim:#9aa7b4; --faint:#6e7d8d;
+    --crit:#ff6b6b; --imp:#ffa657; --min:#7ee787; --ok:#58a6ff; --warn:#e3b341;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif;
+       padding:32px 28px 80px;}
+  .wrap{max-width:1060px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:24px}
+  h2{font-size:17px;margin:34px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line);letter-spacing:-.01em}
+  code,.mono{font-family:var(--mono);font-size:12.5px}
+  code{background:var(--panel2);padding:1.5px 5px;border-radius:4px;color:#a5d6ff}
+
+  .banner{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--warn);
+          border-radius:8px;padding:14px 16px;margin-bottom:22px;font-size:14px}
+  .banner b{color:var(--warn)}
+
+  table{width:100%;border-collapse:collapse;margin:8px 0 4px;font-size:13.5px}
+  th{text-align:left;color:var(--faint);font-weight:600;font-size:11px;letter-spacing:.07em;
+     text-transform:uppercase;padding:0 10px 8px;border-bottom:1px solid var(--line)}
+  td{padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  .rank{color:var(--faint);font-family:var(--mono);width:26px}
+  .sev{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+       padding:2.5px 7px;border-radius:4px;white-space:nowrap;display:inline-block}
+  .s-crit{background:rgba(255,107,107,.14);color:var(--crit)}
+  .s-imp{background:rgba(255,166,87,.14);color:var(--imp)}
+  .s-min{background:rgba(126,231,135,.12);color:var(--min)}
+  .vok{color:var(--min);font-weight:600;white-space:nowrap}
+  .loc{font-family:var(--mono);font-size:11.5px;color:#a5d6ff;display:block;margin-top:5px}
+  .note{color:var(--dim);font-size:12.5px;margin-top:5px}
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin:12px 0}
+  .card.add{border-left:3px solid var(--ok)}
+  .card h3{margin:0 0 8px;font-size:15px}
+  .chain{background:#0b0f14;border:1px solid var(--line);border-radius:6px;padding:10px 12px;
+         font-family:var(--mono);font-size:12px;color:#a5d6ff;overflow-x:auto;margin:10px 0}
+  ul{margin:8px 0;padding-left:20px}li{margin:5px 0}
+  .ruled td:first-child{color:var(--dim)}
+  .verdict{color:var(--min);font-weight:600}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin:14px 0}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:13px 15px}
+  .stat .n{font-size:21px;font-weight:700;font-family:var(--mono);letter-spacing:-.02em}
+  .stat .l{color:var(--faint);font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-top:3px}
+  footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--line);color:var(--faint);font-size:12.5px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>Memory retention diagnosis — independently verified</h1>
+<div class="sub">Source: factory <code>cheap-fast-feature</code> run 30719851520 · target <code>animeshkundu/ai-or-die</code> · reasoning xhigh</div>
+
+<div class="banner">
+  <b>The run failed, but only at the finish line.</b> The pipeline completed its diagnosis, wrote the report,
+  authored the probe tests and got 133 tests passing — then its own agent context hit 1,184,920 tokens against a
+  922,000 limit and the final model call was blocked before it could open the PR. No PR exists.
+  I recovered the complete work from the uploaded <code>workspace.patch</code> artifact (19 files, 92 KB).
+  Nothing was lost; 20 checkpoints are also on the run if you ever want to resume it.
+</div>
+
+<div class="banner" style="border-left-color:var(--crit)">
+  <b style="color:var(--crit)">CORRECTION — measured on the live instance, 2026-08-02.</b>
+  I queried <code>GET /api/diagnostics</code> on the actual running server (PID 15640, 8.9 days uptime, <code>--mesh --tunnel</code>):
+  <div class="chain">rss 2236.9 MB   heap_used 20 MB   heap_total 26.7 MB   external 6.3 MB   array_buffers 3.6 MB</div>
+  <b>The JS heap is 20 MB after nine days.</b> Roughly 30 MB of a 2237 MB process is JavaScript — <b>98.6% of RSS is native memory</b>,
+  which matches the model weights on disk almost exactly: LFM2-2.6B 1.46 GB + sherpa parakeet 0.64 GB = ~2.1 GB, both loaded in
+  <code>worker_threads</code> and therefore resident in this process.
+  <br><br>
+  Every one of the eight findings below is a <i>JS-heap retention</i> finding. They are all real, and I verified each one.
+  But they cannot be this instance's problem: there is no JS heap growth to explain. Fixing all eight would reclaim
+  single-digit megabytes here. <b>The memory is the models, not a leak.</b>
+</div>
+
+<div class="grid">
+  <div class="stat"><div class="n">8</div><div class="l">findings reported</div></div>
+  <div class="stat"><div class="n" style="color:var(--min)">8 / 8</div><div class="l">I verified as real</div></div>
+  <div class="stat"><div class="n" style="color:var(--ok)">+1</div><div class="l">gap it missed</div></div>
+  <div class="stat"><div class="n">10</div><div class="l">surfaces ruled out</div></div>
+</div>
+
+<h2>Verified findings, ranked</h2>
+<p class="sub" style="margin:0 0 10px">I re-checked every claim against the code at HEAD, not against the pipeline's own patched line numbers. All eight hold.</p>
+
+<table>
+<thead><tr><th class="rank">#</th><th style="width:88px">Severity</th><th>Finding</th><th style="width:96px">Verified</th></tr></thead>
+<tbody>
+<tr><td class="rank">1</td><td><span class="sev s-crit">Critical</span></td>
+<td><b>Output scrollback is byte-unbounded.</b> <code>CircularBuffer</code> caps <i>item count</i>, never bytes — <code>push()</code> accepts a coalesced PTY chunk of any size. "Last 1000 lines" is really "last 1000 writes". The 512 KiB cap runs only when serialising to disk and cannot release the live strings.
+<span class="loc">src/utils/circular-buffer.js:10-24 · src/base-bridge.js · src/server.js</span></td>
+<td class="vok">✓ confirmed</td></tr>
+
+<tr><td class="rank">2</td><td><span class="sev s-crit">Critical</span></td>
+<td><b>Dead sessions keep their full buffer for 7 days.</b> A PTY exit only marks the session inactive; <code>claudeSessions.delete()</code> fires in just two places — explicit DELETE and the eviction sweep. That sweep's cutoff is <code>Date.now() - 7*24*60*60*1000</code>. This is what turns finding 1 into multi-day growth.
+<span class="loc">src/server.js:6494 (sevenDaysAgo) · deletes only at :1572, :6585</span></td>
+<td class="vok">✓ confirmed</td></tr>
+
+<tr><td class="rank">3</td><td><span class="sev s-imp">Important</span></td>
+<td><b>Ended artifact reviews are permanent roots.</b> <code>end()</code> flips status but there is <i>no</i> <code>_reviews.delete()</code> anywhere in the file — I grepped every Map operation and found only <code>get</code> and <code>set</code>. Retains the DOM snapshot plus an uncapped chat log.
+<span class="loc">src/artifact-review.js:480 end() · :240 set · zero deletes</span></td>
+<td class="vok">✓ confirmed</td></tr>
+
+<tr><td class="rank">4</td><td><span class="sev s-imp">Important<br><span style="font-weight:400;font-size:11px">conditional</span></span></td>
+<td><b>Sticky-note <code>pendingText</code> has no failure budget.</b> Line 170 appends unconditionally; the only trim (323-324) requires a <i>successful</i> inference to consume the prefix. If the engine is unavailable or keeps failing, it grows without bound.
+<span class="loc">src/sticky-note-summarizer.js:170 append · :323 trim-on-success-only</span></td>
+<td class="vok">✓ confirmed</td></tr>
+
+<tr><td class="rank">5</td><td><span class="sev s-imp">Important<br><span style="font-weight:400;font-size:11px">conditional</span></span></td>
+<td><b>VS Code Server stdout accumulates forever.</b> The readiness listener does <code>outputBuffer += output</code> and is <i>never removed</i> once <code>readyResolved</code> is true — I read the whole handler. It keeps concatenating for the entire <code>code serve-web</code> lifetime, per tunnel.
+<span class="loc">src/vscode-tunnel.js:633 decl · :647 concat · no removeListener</span></td>
+<td class="vok">✓ confirmed</td></tr>
+
+<tr><td class="rank">6</td><td><span class="sev s-min">Minor</span></td>
+<td><b>Control-plane sequence map never forgets.</b> <code>_controlSessionSeq</code> has <code>get</code> and <code>set</code> and no <code>delete</code> on any path. Low bytes each, but every session ever created stays represented for the supervisor's life.
+<span class="loc">src/server.js:4437 get · :4443 set · no delete</span></td>
+<td class="vok">✓ confirmed</td></tr>
+
+<tr><td class="rank">7</td><td><span class="sev s-min">Minor</span></td>
+<td><b>Deleting an inactive session orphans subclass state.</b> The DELETE route guards <code>bridge.stopSession()</code> behind <code>if (session.active)</code> — but <code>TerminalBridge.stopSession()</code> is the <i>only</i> place <code>_osc7Parsers</code>/<code>_osc7Hooks</code> are deleted. Delete an already-exited terminal and those entries leak permanently. (The eviction sweep calls it unconditionally, so eviction is clean; explicit DELETE is not.)
+<span class="loc">src/server.js:1523 active-guard · src/terminal-bridge.js:232-233 only delete site</span></td>
+<td class="vok">✓ confirmed</td></tr>
+
+<tr><td class="rank">8</td><td><span class="sev s-min">Minor</span></td>
+<td><b>Usage analytics never calls its own expiry.</b> <code>cleanup()</code> is defined at :477 and has no caller — the <code>get_usage</code> route adds one <code>activeSessions</code> entry per distinct session ID and nothing ever removes them.
+<span class="loc">src/usage-analytics.js:477 cleanup() — zero callers</span></td>
+<td class="vok">✓ confirmed</td></tr>
+</tbody>
+</table>
+
+<h2>What the pipeline missed</h2>
+<div class="card add">
+  <h3><span class="sev s-crit">Critical</span> &nbsp;The memory safety valve is built but not wired up</h3>
+  <p style="margin:8px 0">This is the one that most directly contradicts "runs for days without crashing", and the report does not mention it.</p>
+  <p style="margin:8px 0"><code>RestartManager._checkMemory()</code> runs every 5 minutes. Past the GC threshold it schedules a GC; past the warn threshold it broadcasts <code>memory_warning</code> to clients, throttled to once every 30 minutes. That is all it does.</p>
+  <div class="chain">initiateRestart()  — defined at restart-manager.js:89
+  └─ only caller: server.js:3862, reason = 'user_requested'</div>
+  <p style="margin:8px 0">Meanwhile <code>bin/supervisor.js:184</code> already handles <code>RESTART_EXIT_CODE</code> (75) and respawns cleanly. So the entire self-healing path exists and works — the memory monitor simply never pulls the trigger. Under sustained growth the service warns every 30 minutes, forever, until the OS or V8 kills it.</p>
+  <p style="margin:8px 0 0" class="note">Fixing findings 1–8 slows the growth. Wiring this closes the failure mode. I'd fix both.</p>
+</div>
+
+<h2>The measured reproduction</h2>
+<div class="card">
+<p style="margin:0 0 8px">An isolated 8-second flood workload at 4 MiB/s failed the memory gate at <b>11,750 MB/h</b> against a 2.5 MB/h threshold, ending with <b>29.4 MiB across four inactive sessions</b>. V8 attributed <code>string +30,894,800</code> shallow bytes on this retained path:</p>
+<div class="chain">OutputBufferFloodWorkload → ClaudeCodeWebServer._server
+  → claudeSessions Map → Session → outputBuffer → CircularBuffer</div>
+<p class="note" style="margin:8px 0 0">That rate is a deliberately saturated probe, not a production forecast. What it establishes is the <i>retainer</i>, and it matches findings 1 and 2 exactly. Notably <code>external</code> stayed at 3.9 MB and <code>array_buffers</code> at 0.1 MB throughout — so this is JS-heap string retention, not node-pty native memory, not a Buffer leak, and not V8 fragmentation.</p>
+</div>
+
+<h2>Ruled out (so the fix pipeline doesn't re-investigate)</h2>
+<table class="ruled">
+<thead><tr><th>Surface</th><th style="width:150px">Verdict</th></tr></thead>
+<tbody>
+<tr><td>SessionStore disk buffers + 30s autosave</td><td class="verdict">not the live-heap root</td></tr>
+<tr><td>WebSocket listeners, maps, heartbeat</td><td class="verdict">ruled out</td></tr>
+<tr><td>PTY listeners, child procs, Windows Job Objects <span class="note">(20 real ConPTY cycles, fails if HandleCount rises &gt;5)</span></td><td class="verdict">ruled out</td></tr>
+<tr><td><code>fs.watch</code> / chokidar tailers</td><td class="verdict">ruled out <span class="note">except finding 4</span></td></tr>
+<tr><td><code>UsageReader.readAllEntries()</code></td><td class="verdict">transient peak, not a leak</td></tr>
+<tr><td><code>UsageAnalytics.historicalData</code></td><td class="verdict">ruled out</td></tr>
+<tr><td>Mesh / tunnel / keep-awake restart loops</td><td class="verdict">no stacking loop</td></tr>
+<tr><td>Server intervals, per-event timer rearming</td><td class="verdict">no unbounded stacking</td></tr>
+<tr><td>HTTP rate-limit maps <span class="note">(IP/session cap 10,000; control identities cap 2,000 with expiry)</span></td><td class="verdict">bounded</td></tr>
+<tr><td>Worker queues + MessagePorts <span class="note">(capped at 3)</span></td><td class="verdict">no main-thread retainer</td></tr>
+</tbody>
+</table>
+<p class="note"><b>One honest gap it flagged itself:</b> a main-thread V8 snapshot cannot attribute <code>node-llama-cpp</code> / sherpa model pages. Native RSS from the 1.56 GB sticky-note model is <i>not</i> cleared — it needs a Windows soak with the real model enabled to close.</p>
+
+<h2>Recommendation</h2>
+<div class="card">
+<p style="margin:0 0 8px">Dispatch <code>fast-feature-opus5</code> to fix, scoped to the verified list. My proposed brief:</p>
+<ul>
+<li><b>Findings 1 + 2 together</b> — one byte-accounted scrollback representation with both an item and a byte bound, splitting at safe output boundaries, with reconnect replay consuming that same bounded structure; plus shrinking raw scrollback at PTY exit instead of holding it for 7 days. These are one fix, not two.</li>
+<li><b>The missed finding</b> — wire <code>_checkMemory()</code> to <code>initiateRestart()</code> above a hard ceiling, reusing the existing 5-minute rate limit and the supervisor's exit-75 path.</li>
+<li><b>Findings 3–8</b> — bound review chat/snapshot bytes and expire ended reviews; byte-cap <code>pendingText</code> with a truncation marker; drop the VS Code readiness buffer once ready; delete <code>_controlSessionSeq</code> with its parent; add a BaseBridge subclass exit-cleanup hook invoked unconditionally from DELETE; call <code>UsageAnalytics.cleanup()</code>.</li>
+<li>Land the recovered probe tests as the regression gate, so each fix has to move a measured number.</li>
+</ul>
+<p style="margin:10px 0 0" class="note">The recovered patch is at <code>/tmp/ff-recover/workspace.patch</code>. It also touches <code>src/server.js</code>, <code>circular-buffer.js</code> and <code>vscode-tunnel.js</code> with diagnostics-only counters. Tell me if you want those instrumentation changes landed first as their own commit, or folded into the fix run.</p>
+</div>
+
+<footer>Verified against working tree at <code>C:\Users\anikundu\Software\ai-or-die</code>, branch main. Every cited location was opened and read; none were taken on the report's word.</footer>
+
+</div></body></html>

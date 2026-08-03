@@ -67,6 +67,16 @@
   animation: sticky-note-pulse 1.1s ease-in-out infinite;
 }
 
+.sticky-note-card[data-model-state="loading"] .sticky-note-dot,
+.sticky-note-card[data-model-state="restarting"] .sticky-note-dot {
+  background: var(--warning, #d9a441);
+  animation: sticky-note-pulse 1.1s ease-in-out infinite;
+}
+
+.sticky-note-card[data-model-state="failed"] .sticky-note-dot {
+  background: var(--danger, #e06c75);
+}
+
 @keyframes sticky-note-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.35; transform: scale(0.7); }

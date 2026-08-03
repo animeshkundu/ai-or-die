@@ -163,12 +163,23 @@ test.describe('File browser', () => {
     const previewTitle = page.locator('.fb-preview-title');
     await expect(previewTitle).toHaveText('sample.js');
 
+    // Wait for the preview to SETTLE before asserting anything.
+    //
+    // The preview renders a plain gutter+content DOM immediately, then Monaco
+    // loads from a CDN and sweeps it. Asserting without this barrier lands on
+    // whichever side of that swap won the race, so the failure moved between
+    // assertions run to run (.fb-code-gutter one build, .fb-code-content text
+    // the next) while passing locally every time. data-preview-settled is set
+    // once by whichever renderer wins, so this is deterministic.
+    await expect(previewContainer).toHaveAttribute('data-preview-settled', /monaco|plain/, { timeout: 20000 });
+
     // Wait for code content to load (the /api/files/content call)
     const codeContent = page.locator('.fb-code-content');
     await expect(codeContent).toBeVisible({ timeout: 10000 });
 
-    // Verify the actual file content is shown
-    const codeText = await codeContent.textContent();
+    // Verify the actual file content is shown. Monaco renders indentation with
+    // non-breaking spaces, so normalize before comparing.
+    const codeText = (await codeContent.textContent() || '').replace(/ /g, ' ');
     expect(codeText).toContain('const x = 42');
 
     // Verify line numbers are rendered

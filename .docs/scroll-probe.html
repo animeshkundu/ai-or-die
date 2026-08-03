@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Terminal scroll probe — Step 3</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c232c; --border:#30363d;
+    --fg:#e6edf3; --muted:#9aa7b4; --accent:#ff6b00; --accent2:#79c0ff;
+    --green:#7ee787; --yellow:#ffdf5d; --red:#ffa198;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box} html,body{margin:0}
+  body{background:var(--bg); color:var(--fg); font-family:var(--sans); line-height:1.55;
+    padding:28px 22px 60px; max-width:900px; margin:0 auto; -webkit-font-smoothing:antialiased;}
+  h1{font-size:20px; margin:0 0 4px} .sub{color:var(--muted); font-size:13.5px; margin:0 0 20px}
+  h2{font-size:14px; text-transform:uppercase; letter-spacing:.06em; color:var(--accent2); margin:24px 0 10px; font-weight:600}
+  ol.steps{margin:0 0 8px; padding-left:0; counter-reset:s; list-style:none}
+  ol.steps li{position:relative; padding:6px 0 6px 34px; font-size:14.5px}
+  ol.steps li::before{counter-increment:s; content:counter(s); position:absolute; left:0; top:5px;
+    width:22px; height:22px; border-radius:50%; background:var(--accent); color:#0d1117; font-weight:700;
+    font-size:12.5px; display:flex; align-items:center; justify-content:center; font-family:var(--mono);}
+  code.k{font-family:var(--mono); background:var(--panel2); border:1px solid var(--border); padding:1px 6px;
+    border-radius:5px; font-size:13px; color:var(--yellow)}
+  .codewrap{position:relative; margin:6px 0 4px}
+  .copybtn{position:absolute; top:10px; right:10px; z-index:2; background:var(--accent); color:#0d1117; border:0;
+    border-radius:6px; font-family:var(--sans); font-weight:600; font-size:12.5px; padding:6px 12px; cursor:pointer;}
+  .copybtn:active{transform:translateY(1px)} .copybtn.ok{background:var(--green)}
+  pre{background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px; overflow:auto; margin:0;
+    font-family:var(--mono); font-size:12.5px; line-height:1.5; color:var(--fg)}
+  pre::-webkit-scrollbar{height:10px;width:10px} pre::-webkit-scrollbar-thumb{background:#30363d;border-radius:6px}
+  table{border-collapse:collapse; width:100%; margin-top:6px; font-size:13.5px}
+  th,td{border:1px solid var(--border); padding:8px 11px; text-align:left; vertical-align:top}
+  th{background:var(--panel2); color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em}
+  td code{font-family:var(--mono); color:var(--accent2); font-size:12.5px}
+  .verdict{color:var(--green); font-weight:600} .kill{color:var(--red); font-weight:600}
+  .note{background:var(--panel); border-left:3px solid var(--accent); border-radius:0 8px 8px 0; padding:11px 14px; margin:14px 0; font-size:13.5px; color:var(--muted)}
+  .note b{color:var(--fg)}
+</style>
+</head>
+<body>
+  <h1>Step 3 — is it xterm, or the wheel delivery?</h1>
+  <p class="sub">Normal-buffer scrolling is dead on this machine but works elsewhere with identical code — so the cause is this machine's runtime. This probe runs a <b>programmatic</b> scroll that never touches the wheel, which splits the two possibilities cleanly.</p>
+
+  <h2>Get to a plain shell first</h2>
+  <ol class="steps">
+    <li>Leave the Claude TUI so the buffer is <code class="k">normal</code>: <code class="k">Ctrl+C</code> to a shell prompt (or open a plain shell tab).</li>
+    <li>Make scrollback: run <code class="k">seq 1 300</code> (Git-Bash) or <code class="k">1..300|%{$_}</code> (PowerShell) so the screen overflows.</li>
+    <li>Paste the probe, read the output.</li>
+    <li>Then <b>drag the scrollbar</b> on the right edge with the mouse/trackpad — note if that scrolls.</li>
+  </ol>
+
+  <div class="codewrap">
+    <button class="copybtn" id="copy">Copy</button>
+    <pre id="code">(() =&gt; {
+  const t = window.app.terminal;
+  const vp = document.querySelector('#terminal .xterm-viewport');
+  const a = t.buffer.active;
+  console.log('=== env ===');
+  console.log('UA       :', navigator.userAgent);
+  console.log('platform :', navigator.platform, ' dpr:', window.devicePixelRatio);
+  console.log('=== buffer ===');
+  console.log('type:', a.type, ' viewportY:', a.viewportY, ' baseY:', a.baseY, ' length:', a.length, ' rows:', t.rows);
+  console.log('viewport DOM:', vp &amp;&amp; { scrollTop: vp.scrollTop, scrollHeight: vp.scrollHeight, clientHeight: vp.clientHeight, overflowY: getComputedStyle(vp).overflowY });
+  console.log('=== programmatic scroll (bypasses the wheel entirely) ===');
+  const y0 = a.viewportY;
+  t.scrollLines(-5);
+  console.log('scrollLines(-5): viewportY', y0, '-&gt;', t.buffer.active.viewportY, ' | vp.scrollTop:', vp &amp;&amp; vp.scrollTop);
+  setTimeout(() =&gt; t.scrollToBottom(), 400);
+})();</pre>
+  </div>
+
+  <h2>What it splits</h2>
+  <table>
+    <thead><tr><th>Result</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>scrollLines(-5)</code> <b>moves</b> viewportY (and scrollbar-drag works)</td>
+          <td><span class="verdict">xterm can scroll fine</span> — the wheel just isn't driving it. Cause is wheel delivery on this machine: an extension, the browser, or a remote-desktop layer eating/altering wheel over the terminal.</td></tr>
+      <tr><td><code>scrollLines(-5)</code> does <b>not</b> move viewportY (scrollbar-drag also dead)</td>
+          <td><span class="kill">xterm's viewport itself can't scroll here</span> — deeper: renderer/layout/clientHeight on this box. Different fix (likely renderer or a viewport-metrics issue).</td></tr>
+      <tr><td><code>length</code> &le; <code>rows</code></td>
+          <td>No scrollback captured at all — the PTY/session isn't retaining lines (the node-pty-over-network angle).</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note"><b>Also tell me (can't be read from JS):</b> which <b>browser</b> this machine uses vs. the working machines, and whether you reach this machine/browser through <b>Remote Desktop / Citrix / a VM</b>. Those are the most common "one machine only" wheel culprits.</div>
+
+<script>
+  (function(){
+    var btn=document.getElementById('copy'), code=document.getElementById('code');
+    btn.addEventListener('click', function(){
+      var text=code.textContent, done=function(){btn.textContent='Copied';btn.classList.add('ok');setTimeout(function(){btn.textContent='Copy';btn.classList.remove('ok');},1400);};
+      if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done,function(){fb(text);done();});
+      else {fb(text);done();}
+    });
+    function fb(x){var ta=document.createElement('textarea');ta.value=x;document.body.appendChild(ta);ta.select();try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);}
+  })();
+</script>
+</body>
+</html>

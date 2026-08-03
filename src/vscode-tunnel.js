@@ -142,6 +142,10 @@ class VSCodeTunnelManager {
       _restartDelayTimer: null,
       _restartDelayResolve: null,
       _whichDied: null, // 'server' | 'tunnel' | null
+      // Diagnose-only counters for the startup stdout closures below. The
+      // buffers themselves intentionally remain untouched in this audit.
+      _serverOutputBytes: 0,
+      _loginOutputBytes: 0,
     };
     this.tunnels.set(sessionId, tunnel);
     this._reservedPorts.add(localPort);
@@ -512,6 +516,7 @@ class VSCodeTunnelManager {
 
     return new Promise((resolve) => {
       tunnel._loginProcess = spawn(this._devtunnelCommand, ['user', 'login'], spawnOptions);
+      tunnel._loginOutputBytes = 0;
 
       let outputBuffer = '';
       let resolved = false;
@@ -529,6 +534,7 @@ class VSCodeTunnelManager {
       tunnel._loginProcess.stdout.on('data', (data) => {
         const output = data.toString();
         outputBuffer += output;
+        tunnel._loginOutputBytes += Buffer.byteLength(output);
         if (this.dev) process.stdout.write(`  [devtunnel-login] ${output}`);
 
         // Check for Microsoft device code auth prompt
@@ -560,6 +566,7 @@ class VSCodeTunnelManager {
         const output = data.toString().trim();
         if (output) {
           outputBuffer += output;
+          tunnel._loginOutputBytes += Buffer.byteLength(output);
           if (this.dev) console.error(`  [devtunnel-login] ${output}`);
 
           // Also check stderr for auth URLs (devtunnel may use stderr)
@@ -577,6 +584,7 @@ class VSCodeTunnelManager {
 
       tunnel._loginProcess.on('error', (err) => {
         clearTimeout(timeout);
+        tunnel._loginOutputBytes = 0;
         if (!resolved) {
           resolved = true;
           console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: devtunnel login error: ${err.message}`);
@@ -587,6 +595,7 @@ class VSCodeTunnelManager {
 
       tunnel._loginProcess.on('exit', (code) => {
         clearTimeout(timeout);
+        tunnel._loginOutputBytes = 0;
         tunnel._loginProcess = null;
         if (!resolved) {
           resolved = true;
@@ -629,6 +638,7 @@ class VSCodeTunnelManager {
       }
 
       tunnel.serverProcess = spawn(this._command, args, spawnOptions);
+      tunnel._serverOutputBytes = 0;
 
       let readyResolved = false;
       let outputBuffer = '';
@@ -645,6 +655,7 @@ class VSCodeTunnelManager {
       tunnel.serverProcess.stdout.on('data', (data) => {
         const output = data.toString();
         outputBuffer += output;
+        tunnel._serverOutputBytes += Buffer.byteLength(output);
         if (this.dev) process.stdout.write(`  [vscode-server] ${output}`);
 
         // Parse "Web UI available at http://localhost:<port>"
@@ -700,6 +711,7 @@ class VSCodeTunnelManager {
 
       tunnel.serverProcess.on('exit', (code) => {
         clearTimeout(readyTimeout);
+        tunnel._serverOutputBytes = 0;
         tunnel.serverProcess = null;
 
         if (!readyResolved) {

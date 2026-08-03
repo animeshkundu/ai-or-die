@@ -13,6 +13,7 @@ try {
 } catch { open = null; }
 const { ClaudeCodeWebServer } = require('../src/server');
 const { isBun } = require('../src/utils/runtime');
+const { NON_RETRYABLE_EXIT_CODE } = require('../src/restart-manager');
 
 const program = new Command();
 
@@ -51,7 +52,13 @@ program
 
 // Auto-open is OFF by default and opt-in via --open. Legacy callers may still pass
 // --no-open (the old opt-out flag); filter it out so it parses harmlessly as a no-op.
-program.parse(process.argv.filter((arg) => arg !== '--no-open'));
+program.exitOverride();
+try {
+  program.parse(process.argv.filter((arg) => arg !== '--no-open'));
+} catch (error) {
+  if (error && error.exitCode === 0) process.exit(0);
+  process.exit(NON_RETRYABLE_EXIT_CODE);
+}
 
 const options = program.opts();
 
@@ -70,7 +77,7 @@ async function main() {
 
     if (isNaN(port) || port < 1 || port > 65535) {
       console.error('Error: Port must be a number between 1 and 65535');
-      process.exit(1);
+      process.exit(NON_RETRYABLE_EXIT_CODE);
     }
 
     // Bun: limited support. The app continues to run, but two native
@@ -245,7 +252,7 @@ async function main() {
 
   } catch (error) {
     console.error('Error starting server:', error.message);
-    process.exit(1);
+    process.exit(error && error.code === 'EADDRINUSE' ? NON_RETRYABLE_EXIT_CODE : 1);
   }
 }
 

@@ -11,13 +11,21 @@ class CircularBuffer {
   constructor(capacity) {
     this.capacity = capacity;
     this.buffer = new Array(capacity);
+    this._itemByteLengths = new Array(capacity).fill(0);
     this.head = 0;   // next write position
     this.size = 0;
+    this.byteLength = 0;
   }
 
   /** Add an item, evicting the oldest if at capacity. O(1). */
   push(item) {
+    const bytes = Buffer.isBuffer(item)
+      ? item.length
+      : Buffer.byteLength(typeof item === 'string' ? item : String(item || ''), 'utf8');
+    this.byteLength -= this._itemByteLengths[this.head];
     this.buffer[this.head] = item;
+    this._itemByteLengths[this.head] = bytes;
+    this.byteLength += bytes;
     this.head = (this.head + 1) % this.capacity;
     if (this.size < this.capacity) this.size++;
   }

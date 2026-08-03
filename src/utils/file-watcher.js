@@ -51,6 +51,45 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 
 let _chokidar = null;
+
+/**
+ * Canonicalize a path for watching/compare. Prefers `realpathSync.native`
+ * because the pure-JS `realpathSync` does NOT expand Windows 8.3 short names
+ * (`C:\Users\RUNNER~1\...`), and `.native` sometimes returns a `\\?\`-prefixed
+ * path that must be stripped before any lexical compare. Same strategy as
+ * validatePath in src/server.js.
+ *
+ * This is load-bearing, not cosmetic: chokidar/libuv compare the filename
+ * reported by ReadDirectoryChangesW (always the LONG name) against the
+ * directory we asked to watch. Handing libuv a short-name path makes that
+ * prefix compare fail and trips a native assertion that ABORTS the process:
+ *   Assertion failed: !_wcsnicmp(filename, dir, dirlen), file src\win\fs-event.c
+ * Observed as a mid-suite crash on Windows CI, where os.tmpdir() is a short
+ * name; it does not reproduce on dev boxes whose TEMP is already a long path.
+ * Returns the input unchanged when the path does not exist.
+ */
+function _realpath(p) {
+  try { return _realpathStrict(p); } catch (_) { return p; }
+}
+
+/**
+ * Same canonicalization, but THROWS when the path does not exist. Callers that
+ * need to distinguish "missing" from "canonical" (subscribe-before-create)
+ * depend on that signal, so it must not be swallowed.
+ */
+function _realpathStrict(p) {
+  let out;
+  try {
+    out = fs.realpathSync.native(p);
+  } catch (nativeErr) {
+    // .native can fail on paths the JS impl still resolves (rare, but seen on
+    // some network/virtual filesystems). Fall back rather than lose the path;
+    // 8.3 expansion is best-effort in that case.
+    out = fs.realpathSync(p);
+  }
+  return typeof out === 'string' && out.startsWith('\\\\?\\') ? out.slice(4) : out;
+}
+
 function _getChokidar() {
   if (!_chokidar) _chokidar = require('chokidar');
   return _chokidar;
@@ -166,7 +205,7 @@ class FileWatcher extends EventEmitter {
     // a watchRoot of `/var/...` would yield the wrong relPath because
     // chokidar walks the realpath and emits canonical paths.
     let resolvedRoot = path.resolve(opts.watchRoot);
-    try { resolvedRoot = fs.realpathSync(resolvedRoot); } catch (_) {}
+    resolvedRoot = _realpath(resolvedRoot);
     this._watchRoot = resolvedRoot;
     this._debounceMs = typeof opts.debounceMs === 'number' ? opts.debounceMs : 500;
     this._addChangeDedupMs = typeof opts.addChangeDedupMs === 'number' ? opts.addChangeDedupMs : 50;
@@ -294,7 +333,7 @@ class FileWatcher extends EventEmitter {
       // flakiness with sync writeFileSync; production stays on the
       // OS-native backend.
       usePolling: this._usePolling,
-      interval: this._usePolling ? 50 : undefined,
+      interval: this._usePolling ? this._pollIntervalMs : undefined,
       atomic: false,
       // depth: 0 confines chokidar to direct children of every watched
       // path (the watchRoot + anything later added via subscribe). The
@@ -347,7 +386,7 @@ class FileWatcher extends EventEmitter {
   _canonicalize(absPath) {
     let resolved = path.resolve(absPath);
     try {
-      return fs.realpathSync(resolved);
+      return _realpathStrict(resolved);
     } catch (_) {
       // Path doesn't exist yet — try parent realpath + basename so the
       // subscribe-before-create case still matches when chokidar later
@@ -406,6 +445,17 @@ class FileWatcher extends EventEmitter {
     if (this._depth === 0) {
       const target = isRecursive ? canonical : path.dirname(canonical);
       this._refWatchTarget(target);
+    }
+    if (this._usePolling) {
+      // Chokidar can emit its initial `ready` before the polling backend has
+      // crossed a post-subscription scan boundary. Returning 204 before that
+      // boundary lets an immediate same-tick create be mistaken for initial
+      // state and suppressed by ignoreInitial. Make subscribe() a real
+      // readiness barrier instead of forcing callers to guess a delay.
+      await new Promise((resolve) => setTimeout(
+        resolve,
+        Math.max(80, this._pollIntervalMs * 2)
+      ));
     }
   }
 
@@ -793,3 +843,7 @@ class FileWatcher extends EventEmitter {
 module.exports = FileWatcher;
 module.exports.DEFAULT_IGNORE_DIRS = DEFAULT_IGNORE_DIRS;
 module.exports.HASH_MAX_BYTES = HASH_MAX_BYTES;
+// Exported so every chokidar/libuv call site canonicalizes identically. Any
+// path handed to a watcher MUST go through this first — see the 8.3 note on
+// _realpath; a short-name path aborts the process via a libuv assertion.
+module.exports.canonicalizeForWatch = _realpath;

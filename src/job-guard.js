@@ -47,6 +47,17 @@ let _loadError = null;
 function _ensureApi() {
   if (_api || _loadError) return _api;
   if (!IS_WIN) { _loadError = new Error('not win32'); return null; }
+  // Refuse under Bun BEFORE the require. koffi's N-API usage panics the Bun
+  // runtime outright on Windows (`panic(main thread): napi_reference_unref`,
+  // reproduced on bun 1.3.14) — a hard crash of the whole process, not a
+  // catchable load failure, so try/catch below cannot save us. Every accessor
+  // funnels through here, so gating at the load site covers the callers that
+  // reach createKillOnCloseJob()/assignPid() without first asking isAvailable().
+  // Bun therefore always uses the degraded teardown path (killProcessTreeSync).
+  if (typeof process !== 'undefined' && process.versions && process.versions.bun) {
+    _loadError = new Error('koffi is unusable under Bun');
+    return null;
+  }
   try {
     _koffi = require('koffi');
 
@@ -105,9 +116,16 @@ function _ensureApi() {
 // In the SEA single-file binary koffi is externalized out of the bundle and there is no
 // node_modules, so it can never load — short-circuit to degraded mode without attempting
 // the require (keeps the PTY-start hot path free of a doomed module lookup).
+// Under Bun, koffi's N-API usage panics the runtime outright on Windows
+// (`panic(main thread): napi_reference_unref`, bun 1.3.x/1.4.x) — that is a hard
+// crash of the whole process, not a recoverable load failure, so it must be
+// refused BEFORE the require rather than caught. Bun therefore always runs in
+// the degraded teardown mode (killProcessTreeSync / taskkill), which is the same
+// path taken when koffi is unavailable for any other reason.
 function isAvailable() {
   if (process.env.AOD_DISABLE_JOB_GUARD === '1') return false;
   if (typeof global !== 'undefined' && global.__SEA_MODE__) return false;
+  if (typeof process !== 'undefined' && process.versions && process.versions.bun) return false;
   return !!_ensureApi();
 }
 
@@ -126,6 +144,7 @@ function createKillOnCloseJob() {
   if (!api) return null;
   let job = null;
   try {
+    // NULL SECURITY_ATTRIBUTES makes the returned HANDLE non-inheritable.
     job = api.CreateJobObjectW(null, null);
     if (_isNullHandle(job)) return null;
     const info = {

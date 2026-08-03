@@ -5,9 +5,11 @@
 Voice input allows users to speak instead of type. Two modes are supported:
 
 1. **Cloud mode** (Chrome/Edge): Uses the browser's built-in `SpeechRecognition` API. Instant, zero download. Audio is sent to Google servers (privacy tradeoff disclosed on first use).
-2. **Local mode** (`--stt` flag): Embedded Parakeet V3 INT8 via `sherpa-onnx-node`. Fully private, works offline. Requires a one-time ~670MB model download.
+2. **Local mode** (enabled by default; disable with `--no-stt`): Embedded Parakeet V3 INT8 via `sherpa-onnx-node`. Fully private, works offline. Requires a one-time ~670MB model download.
 
-Cloud mode is always available on Chromium browsers regardless of the `--stt` flag. Local mode requires the flag and a downloaded model.
+Cloud mode is available on Chromium browsers. Local mode is the default backend,
+downloads its model at boot when needed, and loads native weights only after a
+recording warm signal or a cold transcription request.
 
 ---
 
@@ -23,8 +25,8 @@ Browser (Chrome/Edge primary)              Node.js Server
 | Local mode:            |    binary WS    |  Main thread                 |
 |   Web Audio API        |---------------> |    |                         |
 |   16kHz PCM            |                 |  voice_upload handler        |
-|   (Chromium: native    |<--------------- |    |                    Worker|
-|    Others: resample)   |  transcription  |  stt-engine.js ---> stt-worker|
+|   (Chromium: native    |<--------------- |    |               Child host|
+|    Others: resample)   |  transcription  |  stt-engine.js ---> stt-host |
 +------------------------+                 |                    sherpa-onnx|
                                            |                    Parakeet V3|
                                            |  ~/.ai-or-die/models/ (670MB)|
@@ -73,20 +75,20 @@ Both click-to-toggle and push-to-talk are supported:
 
 ### STT Engine (`src/stt-engine.js`)
 
-Coordinates the model manager and worker thread:
+Coordinates the model manager and isolated model host:
 
 - **Concurrency queue**: Maximum 3 simultaneous transcriptions. Requests beyond the limit are rejected with "queue full".
-- **Worker thread** (`src/stt-worker.js`): Loads model via `sherpa-onnx-node`, runs inference. Crash recovery with exponential backoff (1s, 2s, 4s, max 15s).
+- **Child process** (`src/stt-host.js`): Loads `sherpa-onnx-node` outside the core and runs inference. Crash recovery uses exponential backoff (1s, 2s, 4s, 8s, max 15s).
 - **External endpoint**: Optional override via `--stt-endpoint` for OpenAI-compatible POST endpoints.
-- **Model preloading**: If the model is already cached, it is loaded at server startup in parallel with other initialization to eliminate the 5-15s first-click delay.
-- **Shutdown**: `ClaudeCodeWebServer.handleShutdown` tears the engine down
-  during server shutdown. The engine marks itself stopping, manages the worker
-  from spawn time (`_spawningWorker`), waits on a bounded shared deadline for any
-  in-flight model load, sends `{type:'shutdown'}`, and awaits the worker's clean
-  exit. It never calls `worker.terminate()` because force-tearing down a worker
-  while sherpa-onnx/ggml is loaded can abort the process. `sherpa-onnx-node`
-  exposes no dispose API, so the worker exits cleanly while idle after the
-  shutdown message.
+- **Lazy loading**: Boot performs download preparation only. `voice_warm` starts
+  a host when recording begins; a client that does not send warm still gets a
+  bounded 25 s cold-demand path. The host unloads after 10 minutes idle.
+- **Warm abuse bounds**: Warm requests require an active joined session, share a
+  session-scoped four-per-minute budget across sockets, and cannot extend one
+  active warm hold beyond two minutes.
+- **Shutdown**: The core sends a cooperative shutdown message, waits for observed
+  host exit, and uses a bounded hard-kill backstop. This cannot terminate a PTY.
+- **External endpoint**: Reports ready with no local child and is never unloaded.
 
 ### Model Management (`src/utils/model-manager.js`)
 
@@ -111,7 +113,9 @@ Downloads, caches, and validates the Parakeet V3 INT8 ONNX model:
 | `voice_transcription_error` | Server -> Client | `{ message }` | Transcription failure |
 | `voice_model_progress` | Server -> Client | `{ progress, total, eta }` | Model download progress |
 | `voice_download_model` | Client -> Server | `{}` | Request to start model download |
+| `voice_warm` | Client -> Server | `{}` | Rate-limited prefetch when recording starts |
 | `voice_status` | Server -> Client | `{ localStatus, cloudAvailable }` | STT engine availability |
+| `model_lifecycle_status` | Server -> negotiated client | `{ stt, stickyNotes }` | Additive model-host lifecycle |
 
 ### Binary Frame Protocol
 
@@ -129,7 +133,7 @@ the page; see ADR-0026). Framing (`src/utils/ws-voice-frame.js`):
   future inbound-binary features claim their own tag instead of forcing a wire break.
 - The server dispatcher routes inbound binary frames **before** the 1 MiB JSON guard and
   normalizes ws `Buffer[]` (fragmented) frames before validating.
-- The int16->float32 conversion runs in the STT **worker thread**
+- The int16->float32 conversion runs in the STT **child process**
   (`sttEngine.transcribePcm16`), never on the event loop.
 - The legacy `voice_upload` JSON message still works (thin shim that decodes base64 and
   shares the same validation/transcribe core); no current client emits it.
@@ -149,6 +153,8 @@ the page; see ADR-0026). Framing (`src/utils/ws-voice-frame.js`):
   instead of dead-ending; the heartbeat pong-timeout is suspended while recording (the
   busy capture thread can briefly miss a pong); a send on a non-OPEN socket fails fast
   instead of hanging the spinner.
+- A `voice_warm` transition to `loading` never disables the stop-recording
+  control while capture is active. Availability is re-applied after capture.
 
 ---
 
@@ -188,14 +194,14 @@ Non-blocking banner at top of terminal (`.app-tunnel-banner` pattern):
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--stt` | Enable local speech-to-text | disabled |
+| `--no-stt` | Disable local speech-to-text | enabled |
 | `--stt-endpoint <url>` | External STT endpoint (OpenAI-compatible) | |
 | `--stt-model-dir <path>` | Custom model directory | `~/.ai-or-die/models/` |
 | `--stt-threads <number>` | CPU threads for STT inference | auto (max 4) |
 
 ### Environment Variables
 
-`STT_ENABLED`, `STT_ENDPOINT`, `AI_OR_DIE_MODELS_DIR`, `STT_THREADS`
+`STT_DISABLED`, `STT_ENDPOINT`, `AI_OR_DIE_MODELS_DIR`, `STT_THREADS`
 
 ---
 
@@ -217,6 +223,9 @@ Non-blocking banner at top of terminal (`.app-tunnel-banner` pattern):
 - **Maximum recording**: 120 seconds (auto-stop).
 - **Minimum recording**: <0.5s recordings are silently discarded.
 - **Language**: English only (Parakeet V3 is English-only).
+- **Measured lazy behavior (2026-08-02)**: 53.5 MB core RSS with the model
+  download-ready and no host; 9.85 s cold start; 1480.2 MB child RSS while ready;
+  core remained 53.3 MB. The evidence supports keeping local STT enabled but lazy.
 
 ---
 
@@ -250,10 +259,10 @@ The cert is regenerated if IPs change or it expires (365 days).
 
 ## Testing
 
-Three-tier CI strategy (all on GitHub Actions, no local testing):
+Three-tier validation strategy, run locally before the Ubuntu/Windows CI matrix:
 
-1. **Unit tests** (`test/voice-input.test.js`): ModelManager SHA-256 verification, SttEngine queue/crash recovery, PTT timing logic, message validation, rate limiting.
-2. **Integration tests** (`test/voice-integration.test.js`): Real `sherpa-onnx-node` inference against test WAVs, WebSocket protocol, concurrency, error paths, worker recovery.
+1. **Unit tests** (`test/voice-input.test.js`): ModelManager verification, host queue/crash recovery, PTT timing logic, validation, and rate limiting.
+2. **Process tests** (`test/model-host*.test.js`, `test/longevity/process/model-host-isolation.test.js`): framed IPC, lifecycle, native boundary, host crash, and live-PTY survival.
 3. **E2E browser tests** (`test/e2e/voice.spec.js`): Playwright with Chromium fake audio — real audio through the full pipeline (AudioContext -> WebSocket -> sherpa-onnx -> transcription -> terminal injection).
 
 The 670MB Parakeet V3 model is cached across CI runs via `actions/cache`.
@@ -265,10 +274,10 @@ The 670MB Parakeet V3 model is cached across CI runs via `actions/cache`.
 | File | Role |
 |------|------|
 | `src/utils/model-manager.js` | Download, cache, validate Parakeet V3 model |
-| `src/utils/pcm.js` | Pure int16->float32 conversion (worker + unit tests) |
+| `src/utils/pcm.js` | Pure int16->float32 conversion (host + unit tests) |
 | `src/utils/ws-voice-frame.js` | Inbound binary frame normalize/classify (pure, unit-tested) |
-| `src/stt-worker.js` | Worker thread: load model, convert PCM, run inference |
-| `src/stt-engine.js` | Model + worker coordinator, concurrency queue, `transcribePcm16` |
+| `src/stt-host.js` | Isolated child: load model, convert PCM, run inference |
+| `src/stt-engine.js` | Download + model-host coordinator, bounded queue, `transcribePcm16` |
 | `src/public/voice-handler.js` | Browser recording (cloud + local modes) |
 | `src/public/voice-processor.js` | AudioWorklet processor |
 | `src/public/voice-frame.js` | Client frame builder + close-code classifier (pure) |

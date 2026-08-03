@@ -1,6 +1,6 @@
 // test/voice-eager-init.test.js
 //
-// Unit tests for the eager, pull-on-startup STT/sticky model init helpers on the
+// Unit tests for download-only startup preparation of STT/sticky models on the
 // server (_ensureSttModel, _broadcastVoiceStatus, _ensureStickyNoteEngine). These
 // replaced the lazy/deferred init (whose "eager load hung the terminal" premise
 // was disproven — the hang was a Bun/node-pty bug). Both load in worker threads,
@@ -30,33 +30,25 @@ function cleanup(tmp) {
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { /* ignore */ }
 }
 
-describe('server eager model init', function () {
-  it('_ensureSttModel calls initialize when not ready, no-ops while in-flight/ready', function () {
+describe('server lazy model preparation', function () {
+  it('_ensureSttModel starts download preparation once without demanding a host', function () {
     const { server, tmp } = makeServer();
     try {
       let calls = 0;
-      let status = 'unavailable';
       server.sttEngine = {
         _enabled: true, _sttEndpoint: null,
-        getStatus: () => status,
+        getStatus: () => 'ready',
         getDownloadProgress: () => null,
-        initialize: () => { calls++; status = 'downloading'; return Promise.resolve(); },
+        ensureDownloaded: () => { calls++; return Promise.resolve(); },
       };
       server.broadcastAll = () => {};
+      server._sttPrepStarted = false;
 
       server._ensureSttModel();
       assert.strictEqual(calls, 1, 'initialize called when unavailable');
 
-      server._ensureSttModel(); // status is now 'downloading'
-      assert.strictEqual(calls, 1, 'no-op while downloading');
-
-      status = 'loading';
       server._ensureSttModel();
-      assert.strictEqual(calls, 1, 'no-op while loading');
-
-      status = 'ready';
-      server._ensureSttModel();
-      assert.strictEqual(calls, 1, 'no-op when ready');
+      assert.strictEqual(calls, 1, 'preparation is deduplicated');
     } finally {
       cleanup(tmp);
     }
@@ -101,6 +93,29 @@ describe('server eager model init', function () {
     }
   });
 
+  it('voice warm requires an active joined session and shares its rate limit across sockets', async function () {
+    const { server, tmp } = makeServer();
+    try {
+      let warms = 0;
+      server.sttEngine = {
+        _enabled: true,
+        _sttEndpoint: null,
+        warm: async () => { warms++; },
+      };
+      server.claudeSessions.set('session-1', { active: true, agent: 'terminal' });
+      server.webSocketConnections.set('ws-1', { claudeSessionId: 'session-1' });
+      server.webSocketConnections.set('ws-2', { claudeSessionId: 'session-1' });
+      for (let i = 0; i < 4; i++) await server._handleVoiceWarm('ws-1');
+      await server._handleVoiceWarm('ws-2');
+      assert.strictEqual(warms, 4, 'a second socket cannot reset the session warm budget');
+      server.webSocketConnections.set('lobby', { claudeSessionId: null });
+      await server._handleVoiceWarm('lobby');
+      assert.strictEqual(warms, 4, 'a lobby socket cannot load the local model');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
   it('_ensureStickyNoteEngine triggers engine init once (deduped)', function () {
     const { server, tmp } = makeServer();
     try {
@@ -109,7 +124,7 @@ describe('server eager model init', function () {
         _enabled: true,
         getStatus: () => 'loading',
         getDownloadProgress: () => null,
-        initialize: () => { calls++; return Promise.resolve(); },
+        ensureDownloaded: () => { calls++; return Promise.resolve(); },
       };
       server.broadcastToAll = () => {};
       server._stickyInitStarted = false;

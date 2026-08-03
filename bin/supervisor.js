@@ -4,7 +4,7 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
-const { RESTART_EXIT_CODE } = require('../src/restart-manager');
+const { RESTART_EXIT_CODE, NON_RETRYABLE_EXIT_CODE } = require('../src/restart-manager');
 const jobGuard = require('../src/job-guard');
 
 // ---------------------------------------------------------------------------
@@ -185,6 +185,12 @@ function startServer() {
       // Restart requested — quick restart, don't count as crash
       console.log(`[supervisor] Restart requested, respawning in ${RESTART_DELAY_MS}ms...`);
       pendingRestartTimer = setTimeout(startServer, RESTART_DELAY_MS);
+      return;
+    }
+
+    if (code === NON_RETRYABLE_EXIT_CODE) {
+      console.error(`[supervisor] Server rejected startup (code ${code}); not respawning`);
+      process.exit(code);
       return;
     }
 

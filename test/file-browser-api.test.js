@@ -1977,14 +1977,19 @@ function encodeParam(val) {
       assert.strictEqual(sse.status, 200);
 
       // Subscribe recursive.
-      await postJson(port,
+      const subscribed = await postJson(port,
         `/api/files/watch/subscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}&recursive=1`);
+      assert.strictEqual(subscribed.status, 204);
 
       // Wrong-flavour unsubscribe (no recursive=1) → 204 but doesn't
       // affect the recursive subscription.
       const wrong = await postJson(port,
         `/api/files/watch/unsubscribe?session=${encodeParam(sessionId)}&path=${encodeParam(subDir)}`);
       assert.strictEqual(wrong.status, 204);
+      const liveEntry = server._fsWatchSessions.get(sessionId);
+      assert.ok(liveEntry && liveEntry.watcher, 'SSE watcher must remain registered');
+      assert.strictEqual(liveEntry.watcher.subscriptionCount, 1);
+      assert.strictEqual(liveEntry.watcher.hasSubscription(subDir), true);
 
       // Recursive sub should still fire.
       fs.writeFileSync(path.join(subDir, 'should-fire.txt'), 'still subscribed');

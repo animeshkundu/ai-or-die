@@ -121,6 +121,7 @@ function makeSummarizer(config, opts = {}) {
     redact: opts.redact || ((s) => s),
     onResult: (sessionId, payload) => results.push(Object.assign({ sessionId }, payload)),
     getForeground: opts.getForeground || (() => null),
+    shouldInfer: opts.shouldInfer || (() => true),
     now: () => clock.now(),
     timers: { set: (fn, ms) => clock.set(fn, ms), clear: (id) => clock.clear(id) },
     createTranscript: () => new FakeTranscript(),
@@ -169,6 +170,21 @@ describe('sticky-note summarizer scheduler', function () {
     assert.strictEqual(results[0].note.update, 'did p');
     assert.strictEqual(results[0].rev, 1);
     assert.strictEqual(results[0].autoTitle, 'g'); // derived from goal (no ai-title in scrape mode)
+  });
+
+  it('keeps pending work dormant while collapsed and runs it on focus after expansion', async function () {
+    let expanded = false;
+    const { sum, engine, clock } = makeSummarizer(FAST, {
+      shouldInfer: () => expanded,
+    });
+    sum.enable('s1');
+    sum.feed('s1', 'pending while collapsed\r\n');
+    await clock.advance(100);
+    assert.strictEqual(engine.calls.length, 0);
+    expanded = true;
+    sum.focus('s1');
+    await flush();
+    assert.strictEqual(engine.calls.length, 1);
   });
 
   it('does nothing when there is no new output', async function () {

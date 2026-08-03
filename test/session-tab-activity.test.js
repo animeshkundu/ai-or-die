@@ -194,3 +194,42 @@ describe('SessionTabManager.restoreTabTitle', () => {
     mgr.restoreTabTitle('unknown-id');
   });
 });
+
+describe('SessionTabManager.loadSessions', () => {
+  it('restores the persisted agent type before replayed output updates activity', async () => {
+    const mgr = Object.create(SessionTabManager.prototype);
+    mgr.tabs = new Map();
+    mgr.activeSessions = new Map();
+    mgr.claudeInterface = { isMobile: false };
+    const added = [];
+    mgr.addTab = (...args) => {
+      added.push(args);
+      mgr.activeSessions.set(args[0], { lastAccessed: 0, toolType: args[5] });
+    };
+
+    const originalFetch = global.fetch;
+    const originalWindow = global.window;
+    global.window = { ...(originalWindow || {}) };
+    global.fetch = async () => ({
+      json: async () => ({
+        sessions: [{
+          id: 'terminal-restored',
+          name: 'Terminal session',
+          active: true,
+          workingDir: '/workspace',
+          agent: 'terminal',
+        }],
+      }),
+    });
+    try {
+      await mgr.loadSessions();
+    } finally {
+      global.fetch = originalFetch;
+      global.window = originalWindow;
+    }
+
+    assert.strictEqual(added.length, 1);
+    assert.strictEqual(added[0][5], 'terminal');
+    assert.strictEqual(mgr.activeSessions.get('terminal-restored').toolType, 'terminal');
+  });
+});

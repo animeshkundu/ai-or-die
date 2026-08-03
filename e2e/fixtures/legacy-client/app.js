@@ -1,0 +1,6688 @@
+class ClaudeCodeWebInterface {
+    constructor() {
+        this.terminal = null;
+        this.fitAddon = null;
+        this.webLinksAddon = null;
+        this.socket = null;
+        this.connectionId = null;
+        this.currentClaudeSessionId = null;
+        this.currentClaudeSessionName = null;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 10;
+        this.reconnectDelay = 1000;
+        this._reconnecting = false;
+        this._socketGeneration = 0;
+        this._pongTimer = null;
+        this._heartbeatTimer = null;
+        this._reconnectTimer = null;
+        this._fitting = false;
+        this.folderMode = true; // Always use folder mode
+        this.currentFolderPath = null;
+        this.claudeSessions = [];
+        // Live CWD map (per ADR-0019): sessionId → most recent OSC-7-tracked
+        // working directory reported by the Terminal bridge. Populated by
+        // the WebSocket `cwd_changed` handler. Read by getCurrentWorkingDir()
+        // and the file-browser panel's notifyCwdChanged() flow. Map keeps
+        // dynamic add/delete cheap as sessions come and go.
+        this._liveCwd = new Map();
+        // Per-session workingDir cache. Source of truth for the terminal-
+        // path resolver's getWorkingDir callback (Part C). Populated
+        // SYNCHRONOUSLY from session_created / session_joined / *_started
+        // messages so the resolver chain has the right answer immediately —
+        // no waiting on loadSessions(). Closes two failure modes the
+        // post-PR-108 architect/PE diagnosis surfaced:
+        //   1. claudeSessions[] race: loadSessions() is async; a click
+        //      between session-join and list-refresh used to fall through
+        //      to currentFolderPath (silent wrong-dir → 404 toast).
+        //   2. Split-pane sessionId mismatch: the link provider's callbacks
+        //      now receive the SPLIT's session id (not this.currentClaudeSessionId),
+        //      so we need a per-session lookup that doesn't depend on which
+        //      tab is foregrounded.
+        // Cleanup contract: the `session_deleted` WS handler is the
+        // single place that removes the per-session entry from this Map
+        // (along with `_liveCwd`, `_repoRootCache`, `_repoRootInFlight`).
+        // Long-running tabs over weeks cycle through many sessions; the
+        // handler MUST drop the key so these Maps don't drift unboundedly.
+        // See handleMessage('session_deleted') below.
+        this._sessionWorkingDirs = new Map();
+        this.isCreatingNewSession = false;
+        Object.defineProperty(this, 'isMobile', {
+            get: () => this.detectMobile(),
+            configurable: true
+        });
+        this.currentMode = 'chat';
+        this._overlayExplicitlyHidden = false;
+        this.planDetector = null;
+        this.planModal = null;
+        this._latestPlan = null;
+        this._planLibsLoading = null;
+        // Aliases for assistants (populated from /api/config)
+        this.aliases = { claude: 'Claude', codex: 'Codex' };
+        // Available tools (populated from /api/config)
+        this.tools = {};
+        // Machine hostname (populated from /api/config)
+        this.hostname = '';
+        
+        
+        // Initialize the session tab manager
+        this.sessionTabManager = null;
+        
+        // Usage stats
+        this.usageStats = null;
+        this.usageUpdateTimer = null;
+        this.sessionStats = null;
+        this.sessionTimer = null;
+        this.sessionTimerInterval = null;
+        
+        this.splitContainer = null;
+
+        // Voice input
+        this.voiceController = null;
+        this.voiceMode = null;
+        this._voiceTimerInterval = null;
+        this._voiceTranscriptionTimeout = null;
+        this._voiceTarget = 'terminal';
+
+        // Input overlay
+        this._inputOverlay = null;
+        this._lastFocusedPaneIndex = 0;
+
+        // Cached TextDecoder for lazy string decode on hot path
+        this._textDecoder = new TextDecoder();
+
+        // Flow control state (xterm.js recommended callback-counting pattern)
+        this._pendingCallbacks = 0;
+        this._writtenBytes = 0;
+        this._CALLBACK_BYTE_LIMIT = 100 * 1024;  // Request callback every 100KB
+        this._HIGH_WATER = 5;   // Pending callback count threshold
+        this._LOW_WATER = 2;
+        this._outputPaused = false;
+
+        // Write coalescing: batch binary frames into a single terminal.write per rAF
+        this._pendingWrites = [];
+        this._rafPending = false;
+
+        // Input coalescing: batch keystrokes per animation frame, flush on breather
+        this._inputBuffer = '';
+        this._inputFlushScheduled = false;
+        this._INPUT_BUFFER_MAX = 64 * 1024; // 64KB safety cap
+
+        // Modal mutual exclusion: only one modal-class element open at a time
+        this._activeModal = null;
+
+        // Clipboard copy feedback badge timer
+        this._copyBadgeTimer = null;
+
+        // Deferred plan detection: accumulate binary data, decode after 100ms idle
+        this._planDetectChunks = [];
+        this._planDetectTimer = null;
+        this._planTextDecoder = new TextDecoder();
+
+        // PWA install state machine
+        this._installState = 'checking'; // checking | available | prompting | installed | unavailable-https | unavailable-ios | unavailable-browser | unavailable
+        this._deferredPrompt = null;
+
+        // Register beforeinstallprompt early — it fires once and can't be recaptured
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            this._deferredPrompt = e;
+            this._setInstallState('available');
+        });
+
+        window.addEventListener('appinstalled', () => {
+            this._deferredPrompt = null;
+            this._setInstallState('installed');
+        });
+
+        // Resolve initial install state after a short delay (give beforeinstallprompt time to fire)
+        this._isInstalled = this._isInstalledPWA();
+        if (this._isInstalled) {
+            this._installState = 'installed';
+        } else {
+            this._installCheckTimer = setTimeout(() => {
+                if (this._installState === 'checking') {
+                    if (this._isIOS()) {
+                        this._setInstallState('unavailable-ios');
+                    } else if (!this._isSecureContext()) {
+                        this._setInstallState('unavailable-https');
+                    } else if (this._isFirefox() || this._isSamsungInternet()) {
+                        this._setInstallState('unavailable-browser');
+                    } else {
+                        this._setInstallState('unavailable');
+                    }
+                }
+            }, 3000);
+        }
+
+        this.init();
+    }
+
+    // Helper method for authenticated fetch calls
+    async authFetch(url, options = {}) {
+        const authHeaders = window.authManager.getAuthHeaders();
+        const mergedOptions = {
+            ...options,
+            headers: {
+                ...authHeaders,
+                ...(options.headers || {})
+            }
+        };
+        const response = await fetch(url, mergedOptions);
+        
+        // If we get a 401, the token might be invalid or missing
+        if (response.status === 401 && window.authManager.authRequired) {
+            // Clear any invalid token
+            window.authManager.token = null;
+            sessionStorage.removeItem('cc-web-token');
+            // Show login prompt
+            window.authManager.showLoginPrompt();
+        }
+        
+        return response;
+    }
+
+    async init() {
+        // Check authentication first
+        const authenticated = await window.authManager.initialize();
+        if (!authenticated) {
+            // Auth prompt is shown, stop initialization
+            console.log('[Init] Authentication required, waiting for login...');
+            return;
+        }
+        
+        await this.loadConfig();
+        // Apply per-machine identity (`[HOST] ai-or-die`) to the tab/window
+        // title, mobile menu header, aria-label, and PWA meta tags now that
+        // this.hostname is populated. Must run before the first notification
+        // flash, which saves/restores the then-current document.title.
+        if (window.AppIdentity) {
+            const identity = window.AppIdentity.formatAppIdentity({ hostname: this.hostname });
+            window.AppIdentity.applyAppIdentity(identity);
+            // Surface the machine identity on the start screen too.
+            const spIdText = document.getElementById('startPromptIdentityText');
+            const spId = document.getElementById('startPromptIdentity');
+            if (spIdText && spId) { spIdText.textContent = identity; spId.hidden = false; }
+        }
+        this.setupTerminal();
+        this._setupExtraKeys();
+        this._setupOrientationHandler();
+        this._setupPwaStandaloneListener();
+        this.setupUI();
+        if (this.voiceInputConfig) this.setupVoiceInput();
+        this.setupPlanDetector();
+        if (window.InputOverlay) {
+            this._inputOverlay = new InputOverlay(this);
+            var overlayBtn = document.getElementById('inputOverlayBtn');
+            if (overlayBtn) overlayBtn.style.display = '';
+        }
+        this.applySettings(this.loadSettings());
+        this.applyAliasesToUI();
+        this.disablePullToRefresh();
+
+        // Show loading while we initialize
+        this.showOverlay('loadingSpinner');
+
+        // Establish WebSocket connection early — all subsequent operations
+        // (session creation, joining, tool start) depend on it being ready.
+        // Without this, fresh machines with no sessions would leave the
+        // socket null until the user completes the folder browser flow.
+        await this.connect();
+
+        // Initialize the session tab manager and wait for sessions to load
+        this.sessionTabManager = new SessionTabManager(this);
+        await this.sessionTabManager.init();
+
+        // Per-tab sticky-note card (local-LLM session summary overlay).
+        this.stickyNotesEnabled = this.loadSettings().enableSessionStickyNotes === true;
+        // The toolbar toggle only appears once the server reports the engine is
+        // 'ready' (model loaded) — not merely when the setting is on. Keeps the
+        // control out of the UI when the feature can't run (no model, Bun, CI).
+        this._stickyNotesAvailable = false;
+        try {
+            if (typeof StickyNoteCard !== 'undefined') {
+                this._stickyNoteCard = new StickyNoteCard(this);
+                this._setupStickyNoteToggle();
+            }
+        } catch (e) {
+            console.warn('[sticky-notes] card init failed:', e && e.message);
+        }
+
+        // Track A: per-tab artifact-review panel (ADR-0033). Mounts on the
+        // `artifact_review_opened` broadcast; degrades to nothing if the script
+        // failed to load.
+        try {
+            if (typeof ArtifactPanel !== 'undefined') {
+                this._artifactPanel = new ArtifactPanel(this);
+            }
+        } catch (e) {
+            console.warn('[artifact-review] panel init failed:', e && e.message);
+        }
+
+        // Listen for service worker notification clicks (Windows Notification Center)
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.addEventListener('message', (event) => {
+                if (event.data?.type === 'NOTIFICATION_CLICK' && event.data.sessionId) {
+                    this.sessionTabManager.switchToTab(event.data.sessionId);
+                }
+            });
+        }
+        
+        // Initialize split container
+        if (window.SplitContainer) {
+            this.splitContainer = new window.SplitContainer(this);
+            this.splitContainer.setupDropZones();
+        }
+        
+        // Show mode switcher and bottom nav on mobile
+        if (this.isMobile) {
+            this.showModeSwitcher();
+            this._setupBottomNav();
+            this._setupSwipeGestures();
+        }
+
+        // Dark mode auto-switching deferred — see docs/history/mobile-ux-overhaul-deferrals.md
+        
+        // Check if there are existing sessions
+        console.log('[Init] Checking sessions, tabs.size:', this.sessionTabManager.tabs.size);
+        // Clean up cached snapshots for sessions that no longer exist (deleted
+        // while away). Deferred so the IndexedDB hydrate has completed; reads the
+        // live tab set AT prune time (not now) so a tab created during the delay
+        // isn't mistaken for an orphan. Best-effort; LRU bounds growth regardless.
+        setTimeout(() => {
+            try {
+                this.snapshotCache?.pruneOrphans(Array.from(this.sessionTabManager.tabs.keys()));
+            } catch (_) { /* best-effort */ }
+        }, 3000);
+        if (this.sessionTabManager.tabs.size > 0) {
+            console.log('[Init] Found sessions, switching to first tab...');
+            // Sessions exist - switch to the last-active one (persisted across
+            // reloads) so a refresh returns to the tab you were on, not tab #1.
+            let restoreId = null;
+            try { restoreId = localStorage.getItem('cc-active-session'); } catch (_) { /* private mode */ }
+            const firstTabId = (restoreId && this.sessionTabManager.tabs.has(restoreId))
+                ? restoreId
+                : this.sessionTabManager.tabs.keys().next().value;
+            console.log('[Init] Switching to tab:', firstTabId);
+            await this.sessionTabManager.switchToTab(firstTabId);
+            // The session_joined handler decides the overlay state:
+            // - Active session → hideOverlay()
+            // - Inactive/new session → showOverlay('startPrompt') for tool selection
+            // Do NOT force-hide here — it overrides the handler's decision.
+        } else {
+            console.log('[Init] No sessions found, auto-creating first session');
+            // No sessions — auto-create one with the server's baseFolder (always valid)
+            const workingDir = this.selectedWorkingDir;
+            if (workingDir) {
+                try {
+                    const sep = workingDir.includes('\\') ? '\\' : '/';
+                    const folderName = workingDir.split(sep).filter(Boolean).pop() || 'Session';
+                    const name = `${folderName} ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                    const response = await this.authFetch('/api/sessions/create', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name, workingDir })
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.sessionTabManager.addTab(data.sessionId, name, 'idle', workingDir);
+                        await this.sessionTabManager.switchToTab(data.sessionId);
+                        // switchToTab handler will show startPrompt for tool selection
+                    } else {
+                        // Server rejected — fall back to folder browser
+                        this.hideOverlay();
+                        this.showFolderBrowser();
+                    }
+                } catch (err) {
+                    console.error('[Init] Auto-create session failed:', err);
+                    this.hideOverlay();
+                    this.showFolderBrowser();
+                }
+            } else {
+                // No baseFolder available — fall back to folder browser
+                this.hideOverlay();
+                this.showFolderBrowser();
+            }
+        }
+        
+        // All sessions go background when tab is hidden, restore on visible
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                // Mark all sessions as background
+                if (this.sessionTabManager) {
+                    const sessions = [];
+                    const allTabs = this.sessionTabManager.tabs || new Map();
+                    allTabs.forEach((_, sid) => {
+                        sessions.push({ sessionId: sid, priority: 'background' });
+                    });
+                    if (sessions.length > 0) {
+                        this.send({ type: 'set_priority', sessions });
+                    }
+                }
+            } else {
+                // Tab became visible — restore foreground for active session
+                if (this.currentClaudeSessionId) {
+                    this.sendSessionPriority(this.currentClaudeSessionId);
+                }
+                // Reconnect if the socket dropped while the tab was hidden
+                if (this.socket && this.socket.readyState === WebSocket.CLOSED) {
+                    this.reconnect();
+                } else if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    // Socket appears OPEN but may be a zombie (NAT rebind during
+                    // hidden tab). Re-arm the heartbeat so we ping immediately —
+                    // the standard 10s pong window will catch a dead socket.
+                    // Do NOT use a tighter probe window: cellular radio wake-up
+                    // is 1.5–3s, and a separate timer races with any in-flight
+                    // pong from before the tab was hidden.
+                    this.startHeartbeat();
+                }
+            }
+        });
+
+        // Network change handlers
+        window.addEventListener('online', () => {
+            if (window.feedback) window.feedback.success('Back online — reconnecting...');
+            if (this.socket?.readyState !== WebSocket.OPEN) this.reconnect();
+        });
+        window.addEventListener('offline', () => {
+            this.updateStatus('Offline');
+            if (window.feedback) window.feedback.warning('Connection lost — you are offline', { duration: 0 });
+        });
+
+        // bfcache restore (mobile back/forward swipe). The page may have been
+        // frozen with a stale socket; force a reconnect when restored.
+        // IMPORTANT: only act on `e.persisted === true`. `pageshow` ALSO fires
+        // on every normal page load with `e.persisted === false`, and in that
+        // case init() is already establishing the WebSocket — calling
+        // reconnect() here would race with init's connect and tear down the
+        // in-flight socket before it opens (caught by CI golden-path test).
+        window.addEventListener('pageshow', (e) => {
+            if (e.persisted) {
+                this.reconnect();
+            }
+        });
+
+        window.addEventListener('resize', () => {
+            // Skip during a soft-keyboard transition: the keyboard controller
+            // owns the (coalesced) fit. On layout-viewport-resizing browsers a
+            // window.resize fires mid-animation and would race a competing fit.
+            if (this._inKeyboardTransition) return;
+            this.fitTerminal();
+        });
+
+        window.addEventListener('beforeunload', () => {
+            this.disconnect();
+        });
+    }
+
+    async loadConfig() {
+        try {
+            const res = await this.authFetch('/api/config');
+            if (res.ok) {
+                const cfg = await res.json();
+                if (cfg?.aliases) {
+                    this.aliases = {
+                        claude: cfg.aliases.claude || 'Claude',
+                        codex: cfg.aliases.codex || 'Codex'
+                    };
+                }
+                if (typeof cfg.folderMode === 'boolean') {
+                    this.folderMode = cfg.folderMode;
+                }
+                this.tools = cfg.tools || {};
+                this.voiceInputConfig = cfg.voiceInput || null;
+                this._configPrerequisites = cfg.prerequisites || null;
+                this.hostname = cfg.hostname || '';
+                // Store baseFolder so first-run can auto-create a session
+                if (cfg.baseFolder) {
+                    this.selectedWorkingDir = this.selectedWorkingDir || cfg.baseFolder;
+                }
+            }
+        } catch (_) { /* best-effort */ }
+    }
+
+    getAlias(kind) {
+        if (this.aliases && this.aliases[kind]) {
+            return this.aliases[kind];
+        }
+        // Default aliases
+        const defaults = {
+            claude: 'Claude',
+            codex: 'Codex',
+            agent: 'Cursor',
+            copilot: 'Copilot',
+            gemini: 'Gemini',
+            terminal: 'Terminal'
+        };
+        return defaults[kind] || kind.charAt(0).toUpperCase() + kind.slice(1);
+    }
+
+    applyAliasesToUI() {
+        // Re-render tool cards to pick up any alias changes
+        this.renderToolCards();
+
+        // Plan modal title
+        const planTitle = document.querySelector('#planModal .modal-header h2');
+        if (planTitle) planTitle.innerHTML = `<span class=\"icon\" aria-hidden=\"true\">${window.icons?.clipboard?.(18) || ''}</span> ${this.getAlias('claude')}'s Plan`;
+    }
+    
+    detectMobile() {
+        // Check for touch capability and common mobile user agents
+        const hasTouchScreen = 'ontouchstart' in window || 
+                              navigator.maxTouchPoints > 0 || 
+                              navigator.msMaxTouchPoints > 0;
+        
+        const mobileUserAgent = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        
+        // Also check viewport width for tablets
+        const smallViewport = window.innerWidth <= 1024;
+        
+        return hasTouchScreen && (mobileUserAgent || smallViewport);
+    }
+    
+    disablePullToRefresh() {
+        // Prevent pull-to-refresh on touchmove
+        let lastY = 0;
+        
+        document.addEventListener('touchstart', (e) => {
+            lastY = e.touches[0].clientY;
+        }, { passive: false });
+        
+        document.addEventListener('touchmove', (e) => {
+            const y = e.touches[0].clientY;
+            const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+
+            // Skip preventDefault for scrollable containers that handle their own scroll
+            const target = e.target;
+            if (target && (target.closest('.xterm-viewport') || target.closest('.modal-body') || target.closest('.extra-keys-bar') || target.closest('.fb-file-list') || target.closest('.fb-content') || target.closest('.fb-preview-container'))) {
+                lastY = y;
+                return;
+            }
+
+            // Prevent pull-to-refresh when at the top and trying to scroll up
+            if (scrollTop === 0 && y > lastY) {
+                e.preventDefault();
+            }
+
+            lastY = y;
+        }, { passive: false });
+        
+        // Also prevent overscroll on the terminal element
+        const terminal = document.getElementById('terminal');
+        if (terminal) {
+            terminal.addEventListener('touchmove', (e) => {
+                e.stopPropagation();
+            }, { passive: false });
+        }
+    }
+    
+    showModeSwitcher() {
+        // Create mode switcher button if it doesn't exist
+        if (!document.getElementById('modeSwitcher')) {
+            const modeSwitcher = document.createElement('div');
+            modeSwitcher.id = 'modeSwitcher';
+            modeSwitcher.className = 'mode-switcher';
+            modeSwitcher.innerHTML = `
+                <button id="escapeBtn" class="escape-btn" title="Send Escape key">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="8" x2="12" y2="12"/>
+                        <line x1="12" y1="16" x2="12.01" y2="16"/>
+                    </svg>
+                </button>
+                <button id="modeSwitcherBtn" class="mode-switcher-btn" data-mode="${this.currentMode}" title="Switch mode (Shift+Tab)">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                        <line x1="9" y1="9" x2="15" y2="15"/>
+                        <line x1="15" y1="9" x2="9" y2="15"/>
+                    </svg>
+                </button>
+            `;
+            document.body.appendChild(modeSwitcher);
+            
+            // Add event listener for mode switcher
+            document.getElementById('modeSwitcherBtn').addEventListener('click', () => {
+                this.switchMode();
+            });
+            
+            // Add event listener for escape button
+            document.getElementById('escapeBtn').addEventListener('click', () => {
+                this.sendEscape();
+            });
+        }
+    }
+
+    _setupBottomNav() {
+        const navVoice = document.getElementById('navVoice');
+        const navFiles = document.getElementById('navFiles');
+        const navMore = document.getElementById('navMore');
+        const navSettings = document.getElementById('navSettings');
+
+        if (this.voiceController || document.getElementById('voiceInputBtn')?.style.display !== 'none') {
+            if (navVoice) navVoice.style.display = '';
+        }
+
+        if (navFiles) navFiles.addEventListener('click', () => {
+            document.getElementById('browseFilesBtn')?.click();
+        });
+        if (navMore) navMore.addEventListener('click', () => {
+            document.getElementById('mobileMenu')?.classList.add('active');
+        });
+        if (navSettings) navSettings.addEventListener('click', () => {
+            document.getElementById('settingsBtn')?.click();
+        });
+        if (navVoice) navVoice.addEventListener('click', () => {
+            document.getElementById('voiceInputBtn')?.click();
+        });
+    }
+
+    // Upload an image over HTTP (POST /api/images/upload) instead of the WS
+    // image_upload path. A real photo's base64 (~5.5 MB) exceeds the 1 MiB WS
+    // JSON guard, which force-closes the socket with 1009 — previously surfaced
+    // (wrongly) as "A voice message was rejected". HTTP has a 20 MB body limit.
+    // On success the returned temp path is injected into the terminal.
+    _uploadImage(imageData, sessionId) {
+        sessionId = sessionId || this.currentClaudeSessionId;
+        if (!sessionId) { this._imageError('No session joined'); return; }
+        const caption = imageData.caption || '';
+        const body = JSON.stringify({
+            sessionId: sessionId,
+            base64: imageData.base64,
+            mimeType: imageData.mimeType,
+            fileName: imageData.fileName || 'pasted-image.png',
+            caption: caption
+        });
+        this.authFetch('/api/images/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: body
+        }).then(async (resp) => {
+            if (!resp.ok) {
+                let msg = 'HTTP ' + resp.status;
+                try { const j = await resp.json(); if (j && j.error) msg = j.error; } catch (_) {}
+                this._imageError(msg);
+                return;
+            }
+            const data = await resp.json();
+            if (!data || !data.filePath) {
+                this._imageError('Upload succeeded but no file path was returned');
+                return;
+            }
+            this._injectImagePath(data.filePath, caption);
+        }).catch((e) => this._imageError((e && e.message) || 'Upload failed'));
+    }
+
+    // Inject an uploaded image's temp path into the active terminal (caption +
+    // quoted path), matching the legacy image_upload_complete behavior.
+    _injectImagePath(filePath, caption) {
+        if (!filePath) return;
+        const normalizedPath = filePath.replace(/\\/g, '/');
+        const quotedPath = '"' + normalizedPath + '"';
+        const inputText = caption ? caption + ' ' + quotedPath : quotedPath;
+        let normalized = attachClipboardHandler.normalizeLineEndings(inputText);
+        if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+            normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+        }
+        this.send({ type: 'input', data: normalized });
+    }
+
+    _imageError(msg) {
+        if (window.feedback) window.feedback.warning('Image upload failed: ' + msg);
+        if (this.terminal) {
+            this.terminal.write('\r\n\x1b[31m[Image upload error] ' + msg + '\x1b[0m\r\n');
+        }
+    }
+
+    sendEscape() {
+        // Send ESC key to terminal
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            // Send ESC key (ASCII 27 or \x1b)
+            this.send({ type: 'input', data: '\x1b' });
+        }
+        
+        // Add visual feedback
+        const btn = document.getElementById('escapeBtn');
+        if (btn) {
+            btn.classList.add('pressed');
+            setTimeout(() => {
+                btn.classList.remove('pressed');
+            }, 200);
+        }
+    }
+    
+    switchMode() {
+        // Toggle between modes
+        const modes = ['chat', 'code', 'plan'];
+        const currentIndex = modes.indexOf(this.currentMode);
+        const nextIndex = (currentIndex + 1) % modes.length;
+        this.currentMode = modes[nextIndex];
+        
+        // Update button data attribute for styling
+        const btn = document.getElementById('modeSwitcherBtn');
+        if (btn) {
+            btn.setAttribute('data-mode', this.currentMode);
+            btn.title = `Switch mode (Shift+Tab) - Current: ${this.currentMode.charAt(0).toUpperCase() + this.currentMode.slice(1)}`;
+        }
+        
+        // Send Shift+Tab to terminal to trigger actual mode switch in Claude Code
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            // Send Shift+Tab key combination (ESC[Z is the terminal sequence for Shift+Tab)
+            this.send({ type: 'input', data: '\x1b[Z' });
+        }
+        
+        // Add visual feedback
+        if (btn) {
+            btn.classList.add('switching');
+            setTimeout(() => {
+                btn.classList.remove('switching');
+            }, 300);
+        }
+    }
+
+    setupTerminal() {
+        // Adjust font size for mobile devices
+        const isMobile = this.detectMobile();
+        const fontSize = isMobile ? this._getMobileFontSize() : 14;
+        
+        this.terminal = new Terminal({
+            fontSize: fontSize,
+            fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--font-mono').trim()
+                || "'MesloLGS Nerd Font', 'Meslo Nerd Font', 'JetBrains Mono', monospace",
+            theme: {
+                background: '#0d1117',
+                foreground: '#f0f6fc',
+                cursor: '#ff6b00',
+                cursorAccent: '#0d1117',
+                selectionBackground: 'rgba(255, 107, 0, 0.2)',
+                black: '#484f58',
+                red: '#ff7b72',
+                green: '#7ee787',
+                yellow: '#ffa657',
+                blue: '#79c0ff',
+                magenta: '#d2a8ff',
+                cyan: '#a5f3fc',
+                white: '#b1bac4',
+                brightBlack: '#6e7681',
+                brightRed: '#ffa198',
+                brightGreen: '#56d364',
+                brightYellow: '#ffdf5d',
+                brightBlue: '#79c0ff',
+                brightMagenta: '#d2a8ff',
+                brightCyan: '#a5f3fc',
+                brightWhite: '#f0f6fc'
+            },
+            allowProposedApi: true,
+            scrollback: 10000,
+            rightClickSelectsWord: false,
+            allowTransparency: false,
+            // Disable focus tracking to prevent ^[[I and ^[[O sequences
+            windowOptions: {
+                reportFocus: false
+            }
+        });
+
+        this.fitAddon = new FitAddon.FitAddon();
+        this.webLinksAddon = new WebLinksAddon.WebLinksAddon();
+
+        this.terminal.loadAddon(this.fitAddon);
+        this.terminal.loadAddon(this.webLinksAddon);
+
+        // Load search addon if available
+        if (typeof SearchAddon !== 'undefined') {
+            this.searchAddon = new SearchAddon.SearchAddon();
+            this.terminal.loadAddon(this.searchAddon);
+        }
+
+        // Load Unicode11 addon for correct Nerd Font / powerline glyph widths
+        if (typeof Unicode11Addon !== 'undefined') {
+            this.unicode11Addon = new Unicode11Addon.Unicode11Addon();
+            this.terminal.loadAddon(this.unicode11Addon);
+            this.terminal.unicode.activeVersion = '11';
+        }
+
+        this.terminal.open(document.getElementById('terminal'));
+
+        // Trackpad/mouse-wheel policy: preempt xterm's alt-buffer wheel->arrow
+        // translation so scrolling doesn't hijack the Claude Code TUI. Reads the
+        // live setting via the cached `_wheelScrollMode` (default 'dontHijack').
+        if (typeof window.attachTerminalWheel === 'function') {
+            if (this._wheelHandler && this._wheelHandler.dispose) {
+                try { this._wheelHandler.dispose(); } catch (_) {}
+            }
+            this._wheelHandler = window.attachTerminalWheel(
+                this.terminal,
+                document.getElementById('terminal'),
+                () => this._wheelScrollMode || 'dontHijack'
+            );
+        }
+
+        // Faithful per-tab snapshot cache for instant tab-switch repaint.
+        // Guarded: if the serialize addon or the cache class failed to load
+        // (e.g. CDN blocked), snapshotCache stays null and every call site is
+        // ?.-guarded, degrading cleanly to server-only repaint (today's path).
+        this.snapshotCache = null;
+        if (typeof SerializeAddon !== 'undefined' && typeof TerminalSnapshotCache !== 'undefined') {
+            try {
+                this._serializeAddon = new SerializeAddon.SerializeAddon();
+                this.terminal.loadAddon(this._serializeAddon);
+                const snapLines = parseInt((this.loadSettings() || {}).tabSnapshotLines, 10);
+                this.snapshotCache = new TerminalSnapshotCache({
+                    terminal: this.terminal,
+                    serializeAddon: this._serializeAddon,
+                    maxLines: Number.isFinite(snapLines) ? snapLines : 500,
+                });
+                // Fire-and-forget: in-memory tier works immediately; the disk
+                // hydrate (for reload-restore) completes asynchronously.
+                this.snapshotCache.init();
+            } catch (e) {
+                this.snapshotCache = null;
+                try { console.warn('[snapshot-cache] init failed:', e && e.message); } catch (_) {}
+            }
+        }
+
+        // WebGL renderer: 3-10x faster than DOM (0.7ms vs 5-10ms per frame)
+        this._loadGpuRenderer();
+
+        this.fitTerminal();
+
+        // Re-render terminal when fonts finish loading
+        if (document.fonts) {
+            // One-shot: handle initial font load
+            document.fonts.ready.then(() => {
+                const loaded = document.fonts.check('14px "MesloLGS Nerd Font"');
+                console.log(loaded ? '[Font] MesloLGS Nerd Font loaded' : '[Font] Using fallback font');
+                this.terminal.clearTextureAtlas();
+                this.terminal.refresh(0, this.terminal.rows - 1);
+                this.fitTerminal();
+            });
+            // Persistent: handle late-loading Bold/Italic variants
+            // document.fonts.ready is a one-shot promise that won't fire again
+            // when Bold loads after output coalescing delay triggers bold rendering
+            document.fonts.addEventListener('loadingdone', () => {
+                this.terminal.clearTextureAtlas();
+                this.terminal.refresh(0, this.terminal.rows - 1);
+                this.fitTerminal();
+            });
+        }
+
+        // Debounced ResizeObserver — catches all layout changes (sidebar,
+        // browser zoom, DevTools toggle) and refits all terminals
+        const termContainerEl = document.querySelector('.terminal-container');
+        if (termContainerEl && typeof ResizeObserver !== 'undefined') {
+            let resizeTimeout;
+            new ResizeObserver(() => {
+                // During a soft-keyboard transition the dedicated keyboard
+                // controller owns the (single, coalesced) fit — skip here so we
+                // don't fire a second competing fit mid-animation (flicker).
+                if (this._inKeyboardTransition) return;
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(() => {
+                    this.fitTerminal();
+                    if (this.splitContainer && this.splitContainer.splits) {
+                        this.splitContainer.splits.forEach(s => { try { s.fit(); } catch (_) {} });
+                    }
+                }, 50);
+            }).observe(termContainerEl);
+        }
+
+        // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
+        attachClipboardHandler(this.terminal, (data) => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.send({ type: 'input', data });
+            }
+        });
+
+        // Attach image paste/drop handler
+        const termContainer = document.getElementById('terminal');
+        if (window.imageHandler && termContainer) {
+            this._imageHandler = window.imageHandler.attachImageHandler(
+                this.terminal, termContainer, {
+                    onImageReady: (imageData) => {
+                        this._uploadImage(imageData);
+                    },
+                    // Non-image files pasted from a file manager (clipboardData
+                    // carries File objects) — route through the generic pipeline.
+                    // Fires only AFTER the image branch declines, so image paste
+                    // precedence is unchanged.
+                    onFilesPaste: (files) => this._attachFiles(files)
+                }
+            );
+        }
+
+        // Generic file drop (Part D). Sibling to the image handler — runs
+        // in capture phase so it can preempt xterm's drop handler. Image
+        // MIMEs delegate to attachImageHandler (above) via onImageDrop;
+        // anything else uploads to <workingDir>/.claude-attachments/ and
+        // injects `@<absolute-path>` as bracketed paste (Claude's native
+        // file-reference syntax).
+        if (window.genericDropHandler && termContainer) {
+            this._genericDropHandler = window.genericDropHandler.attachGenericDropHandler({
+                containerEl: termContainer,
+                getWorkingDir: () => this.getCurrentWorkingDir(),
+                getAuthToken: () => (window.authManager && window.authManager.getToken
+                    ? window.authManager.getToken() : null),
+                onImageDrop: (files) => {
+                    // Re-dispatch to the image handler's drop pipeline. We
+                    // can't easily hand it a constructed DataTransfer in
+                    // a JSDOM-portable way, so we route the FIRST file
+                    // through the image-preview modal it already exposes.
+                    if (window.imageHandler && typeof window.imageHandler.showImagePreview === 'function' &&
+                        files && files.length) {
+                        try {
+                            window.imageHandler.showImagePreview(files[0], (imageData) => {
+                                this._uploadImage(imageData);
+                            });
+                        } catch (_) { /* ignore */ }
+                    }
+                },
+                injectAtPath: (atPath) => {
+                    if (!atPath) return;
+                    let normalized = attachClipboardHandler.normalizeLineEndings(atPath + ' ');
+                    if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+                        normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                    }
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.send({ type: 'input', data: normalized });
+                    }
+                },
+                onError: (basename, msg) => {
+                    if (window.feedback && typeof window.feedback.error === 'function') {
+                        window.feedback.error(basename + ': ' + msg);
+                    }
+                },
+            });
+        }
+
+        this.setupTerminalSearch();
+        this.setupTerminalContextMenu();
+        this._setupTerminalLinking(this.terminal);
+
+        this.terminal.onData((data) => {
+            if (this._ctrlModifierPending) {
+                if (data.length === 1) {
+                    const charCode = data.charCodeAt(0);
+                    if (charCode >= 97 && charCode <= 122) {
+                        data = String.fromCharCode(charCode - 96);
+                    } else if (charCode >= 65 && charCode <= 90) {
+                        data = String.fromCharCode(charCode - 64);
+                    }
+                }
+                this._ctrlModifierPending = false;
+                if (this.extraKeys) {
+                    // Use the shared consume so the sticky-Ctrl 5s timeout is
+                    // cleared too (a stale timeout could otherwise cancel a
+                    // later Ctrl press).
+                    this.extraKeys._consumeCtrl();
+                }
+            }
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                // Filter out focus tracking sequences before sending
+                const filteredData = data.replace(/\x1b\[\[?[IO]/g, '');
+                if (filteredData) {
+                    // Accumulate keystrokes, flush per animation frame (breather-flush pattern)
+                    this._inputBuffer += filteredData;
+                    // Safety cap: flush immediately if buffer exceeds 64KB (e.g., large paste)
+                    if (this._inputBuffer.length > this._INPUT_BUFFER_MAX) {
+                        this._flushInput();
+                        return;
+                    }
+                    if (!this._inputFlushScheduled) {
+                        this._inputFlushScheduled = true;
+                        requestAnimationFrame(() => this._flushInput());
+                    }
+                }
+            }
+        });
+
+        this.terminal.onResize(({ cols, rows }) => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.send({ type: 'resize', cols, rows });
+            }
+        });
+
+        // Sync terminal colors AND any live Monaco instances when the CSS
+        // theme changes (data-theme attribute on documentElement).
+        const themeObserver = new MutationObserver((mutations) => {
+            for (const m of mutations) {
+                if (m.attributeName === 'data-theme') {
+                    if (this.terminal) this.syncTerminalTheme();
+                    // Editor pane + read-only code preview re-theme live so
+                    // they don't get stuck on whatever theme was active when
+                    // they were created. Loader reads the new data-theme via
+                    // resolveMonacoTheme() internally.
+                    if (window.fileViewerMonaco &&
+                        typeof window.fileViewerMonaco.applyThemeToAll === 'function') {
+                        try { window.fileViewerMonaco.applyThemeToAll(); } catch (_) { /* swallow */ }
+                    }
+                }
+            }
+        });
+        themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    }
+
+    _getMobileFontSize() {
+        const width = window.innerWidth;
+        if (width <= 360) return 12;
+        if (width <= 414) return 13;
+        return 14;
+    }
+
+    _setupOrientationHandler() {
+        if (!this.isMobile) return;
+
+        const handleOrientationChange = () => {
+            setTimeout(() => {
+                this.fitTerminal();
+                this._polyfillSafeAreaInsets();
+                // Re-evaluate keyboard state
+                if (window.visualViewport && this._keyboardOpen !== undefined) {
+                    const heightDiff = window.innerHeight - window.visualViewport.height;
+                    const threshold = Math.max(window.screen.height * 0.25, 100);
+                    if (heightDiff <= threshold && this._keyboardOpen) {
+                        this._keyboardOpen = false;
+                        this._restoreTerminalFromKeyboard();
+                        document.body.classList.remove('keyboard-open');
+                    }
+                }
+            }, 300);
+        };
+
+        if (screen.orientation) {
+            screen.orientation.addEventListener('change', handleOrientationChange);
+        }
+        window.addEventListener('orientationchange', handleOrientationChange);
+    }
+
+    _setupExtraKeys() {
+        if (!this.isMobile || typeof ExtraKeys === 'undefined') return;
+
+        document.body.classList.add('is-mobile');
+        this.extraKeys = new ExtraKeys({ app: this });
+        // Control-mode "all keys" panel (keyboard-down). Launcher FAB is shown
+        // via the .is-mobile body class. See keys-panel.js / ADR-0037.
+        if (typeof KeysPanel !== 'undefined') {
+            this.keysPanel = new KeysPanel({ app: this });
+        }
+        this._keyboardOpen = false;
+
+        // Browsers without visualViewport (Firefox Android, Samsung Internet):
+        // Initialize extra-keys but skip viewport-based keyboard detection.
+        // The extra-keys bar is still usable via manual show/hide.
+        if (!window.visualViewport) return;
+
+        // Thrashing detection: if >3 resize events in 500ms, fall back to fixed threshold
+        const resizeTimestamps = [];
+        let useFallbackThreshold = false;
+
+        // Debounce timer for body class toggle
+        let classDebounceTimer = null;
+
+        // Safari fallback: poll viewport height if no resize fires after focus
+        let safariFallbackStarted = false;
+        this._safariPollInterval = null;
+
+        const getThreshold = () => {
+            if (useFallbackThreshold) return 150;
+            return Math.max(window.screen.height * 0.25, 100);
+        };
+
+        const checkKeyboard = () => {
+            const currentHeight = window.visualViewport.height;
+            const heightDiff = window.innerHeight - currentHeight;
+            const threshold = getThreshold();
+
+            if (heightDiff > threshold && !this._keyboardOpen) {
+                this._keyboardOpen = true;
+                // Apply class immediately — CSS transitions handle visual smoothing
+                document.body.classList.add('keyboard-open');
+                this._adjustTerminalForKeyboard(currentHeight);
+            } else if (heightDiff <= threshold && this._keyboardOpen) {
+                this._keyboardOpen = false;
+                document.body.classList.remove('keyboard-open');
+                this._restoreTerminalFromKeyboard();
+            } else if (heightDiff > threshold && this._keyboardOpen) {
+                // Keyboard already open but the viewport height changed (final
+                // animation frame, or rotation while open) — re-apply the size so
+                // the terminal isn't left fit against a stale intermediate height.
+                this._updateKeyboardHeight(currentHeight);
+            }
+        };
+
+        window.visualViewport.addEventListener('resize', () => {
+            // Thrashing guard
+            const now = Date.now();
+            resizeTimestamps.push(now);
+            // Keep only events within the last 500ms
+            while (resizeTimestamps.length > 0 && now - resizeTimestamps[0] > 500) {
+                resizeTimestamps.shift();
+            }
+            if (resizeTimestamps.length > 3) {
+                useFallbackThreshold = true;
+            } else if (resizeTimestamps.length <= 1) {
+                useFallbackThreshold = false;
+            }
+
+            // Cancel any pending Safari fallback since resize is firing
+            if (this._safariPollInterval) {
+                clearInterval(this._safariPollInterval);
+                this._safariPollInterval = null;
+            }
+
+            checkKeyboard();
+        });
+
+        // Safari fallback: if terminal receives focus but no visualViewport resize fires,
+        // start polling viewport height to detect soft keyboard
+        {
+            const termEl = document.getElementById('terminal');
+            if (termEl) {
+                let fallbackTimeout = null;
+
+                termEl.addEventListener('focusin', () => {
+                    // If polling was previously proven needed, restart the interval
+                    if (safariFallbackStarted) {
+                        if (!this._safariPollInterval) {
+                            this._safariPollInterval = setInterval(checkKeyboard, 200);
+                        }
+                        return;
+                    }
+                    // First-time detection: wait 1s for a resize event
+                    if (fallbackTimeout) return;
+                    fallbackTimeout = setTimeout(() => {
+                        fallbackTimeout = null;
+                        // No resize event fired within 1s of focus — start polling
+                        safariFallbackStarted = true;
+                        this._safariPollInterval = setInterval(checkKeyboard, 200);
+                    }, 1000);
+                    // If a resize fires, cancel the fallback
+                    const cancelFallback = () => {
+                        clearTimeout(fallbackTimeout);
+                        fallbackTimeout = null;
+                        window.visualViewport.removeEventListener('resize', cancelFallback);
+                    };
+                    window.visualViewport.addEventListener('resize', cancelFallback);
+                });
+
+                termEl.addEventListener('focusout', () => {
+                    // Clear the poll interval when the terminal loses focus to save battery
+                    if (this._safariPollInterval) {
+                        clearInterval(this._safariPollInterval);
+                        this._safariPollInterval = null;
+                    }
+                    // Also cancel any pending first-time detection timeout
+                    if (fallbackTimeout) {
+                        clearTimeout(fallbackTimeout);
+                        fallbackTimeout = null;
+                    }
+                });
+            }
+        }
+    }
+
+    _adjustTerminalForKeyboard(availableHeight) {
+        if (this.extraKeys) {
+            this.extraKeys.show();
+            this.extraKeys._updateRow2Visibility();
+        }
+        this._updateKeyboardHeight(availableHeight);
+    }
+
+    // Apply (or re-apply) the terminal size for the current keyboard-open
+    // viewport height. Called on the first threshold crossing AND on every later
+    // visualViewport frame while the keyboard stays open (final animation frame,
+    // or rotation) so the terminal never fits against a stale intermediate
+    // height and extends under the keyboard. Style writes are cheap; the xterm
+    // fit is coalesced into one rAF below.
+    _updateKeyboardHeight(availableHeight) {
+        this._inKeyboardTransition = true;
+        document.documentElement.style.setProperty('--visual-viewport-height', availableHeight + 'px');
+        const termEl = document.getElementById('terminal');
+        if (termEl) {
+            const barH = (this.extraKeys && this.extraKeys.container)
+                ? (this.extraKeys.container.offsetHeight || 44) : 0;
+            termEl.style.height = (availableHeight - barH) + 'px';
+        }
+        this._scheduleKeyboardFit();
+        this._endKeyboardTransitionSoon();
+    }
+
+    _restoreTerminalFromKeyboard() {
+        this._inKeyboardTransition = true;
+        if (this.extraKeys) this.extraKeys.hide();
+        document.documentElement.style.removeProperty('--visual-viewport-height');
+        const termEl = document.getElementById('terminal');
+        if (termEl) termEl.style.height = '';
+        this._scheduleKeyboardFit();
+        this._endKeyboardTransitionSoon();
+    }
+
+    // Coalesce fits during a keyboard transition into a single rAF. Uses
+    // fitTerminal() (which applies the mobile row/column adjustments) and refits
+    // split panes — NOT a raw fitAddon.fit() that would bypass both.
+    _scheduleKeyboardFit() {
+        if (this._kbFitRaf) cancelAnimationFrame(this._kbFitRaf);
+        this._kbFitRaf = requestAnimationFrame(() => {
+            this._kbFitRaf = null;
+            this.fitTerminal();
+            if (this.splitContainer && this.splitContainer.splits) {
+                this.splitContainer.splits.forEach(s => { try { s.fit(); } catch (_) {} });
+            }
+        });
+    }
+
+    // End the transition window after the CSS chrome-collapse would have settled,
+    // then do one final measured fit to reconcile the resting layout.
+    _endKeyboardTransitionSoon() {
+        if (this._kbTransitionTimer) clearTimeout(this._kbTransitionTimer);
+        this._kbTransitionTimer = setTimeout(() => {
+            this._kbTransitionTimer = null;
+            this._inKeyboardTransition = false;
+            this._scheduleKeyboardFit();
+        }, 320);
+    }
+
+    showSessionSelectionModal() {
+        // Create a simple modal to show existing sessions
+        const modal = document.createElement('div');
+        modal.className = 'session-modal active';
+        modal.id = 'sessionSelectionModal';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Select a Session</h2>
+                    <button class="close-btn" id="closeSessionSelection">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="session-list">
+                        ${this.claudeSessions.map(session => {
+                            const statusIcon = `<span class=\"dot ${session.active ? 'dot-on' : 'dot-idle'}\" aria-hidden=\"true\"></span><span class=\"sr-only\">${session.active ? 'Active' : 'Idle'}</span>`;
+                            const clientsText = session.connectedClients === 1 ? '1 client' : `${session.connectedClients} clients`;
+                            return `
+                                <div class="session-item" data-session-id="${session.id}">
+                                    <div class="session-info">
+                                        <span class="session-status">${statusIcon}</span>
+                                        <div class="session-details">
+                                            <div class="session-name">${this._escapeHtml(session.name)}</div>
+                                            <div class="session-meta">${clientsText} • ${new Date(session.created).toLocaleString()}</div>
+                                            ${session.workingDir ? `<div class=\"session-folder\" title=\"${this._escapeHtml(session.workingDir)}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${this._escapeHtml(session.workingDir)}</div>` : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                    <div style="margin-top: 20px; text-align: center;">
+                        <button class="btn btn-secondary" id="selectSessionNewFolder">Load a New Folder Instead</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        
+        // Add event listeners
+        modal.querySelectorAll('.session-item').forEach(item => {
+            item.addEventListener('click', async () => {
+                const sessionId = item.dataset.sessionId;
+                await this.joinSession(sessionId);
+                modal.remove();
+            });
+        });
+        
+        document.getElementById('closeSessionSelection').addEventListener('click', () => {
+            modal.remove();
+            this.hideOverlay();
+            this.showFolderBrowser();
+        });
+        
+        document.getElementById('selectSessionNewFolder').addEventListener('click', () => {
+            modal.remove();
+            this.hideOverlay();
+            this.showFolderBrowser();
+        });
+        
+        // Close on background click
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                modal.remove();
+                this.hideOverlay();
+                this.showFolderBrowser();
+            }
+        });
+    }
+    
+    setupUI() {
+        const settingsBtn = document.getElementById('settingsBtn');
+        const retryBtn = document.getElementById('retryBtn');
+
+        // Mobile menu buttons (keeping for mobile support)
+        const closeMenuBtn = document.getElementById('closeMenuBtn');
+        const settingsBtnMobile = document.getElementById('settingsBtnMobile');
+
+        // Render dynamic tool cards from config
+        this.renderToolCards();
+
+        if (settingsBtn) settingsBtn.addEventListener('click', () => this.showSettings());
+        if (retryBtn) retryBtn.addEventListener('click', () => this.reconnect());
+
+        // Clipboard copy feedback badge — wired as callback for clipboard-handler.js
+        window.showCopiedFeedback = () => {
+            const badge = document.getElementById('copyFeedbackBadge');
+            if (!badge) return;
+            badge.textContent = 'Copied';
+            badge.classList.remove('error');
+            badge.classList.add('visible');
+            clearTimeout(this._copyBadgeTimer);
+            this._copyBadgeTimer = setTimeout(() => badge.classList.remove('visible'), 1500);
+        };
+
+        window.showClipboardError = (msg) => {
+            const badge = document.getElementById('copyFeedbackBadge');
+            if (!badge) return;
+            badge.textContent = msg || 'Clipboard denied';
+            badge.classList.add('visible', 'error');
+            clearTimeout(this._copyBadgeTimer);
+            this._copyBadgeTimer = setTimeout(() => {
+                badge.classList.remove('visible', 'error');
+                badge.textContent = 'Copied';
+            }, 3000);
+        };
+
+        // Attach File button (id is historical: attachImageBtn). Opens a picker
+        // for ANY file type — images go through the preview flow, other files
+        // upload to .claude-attachments/ and inject `@<path>`.
+        const attachBtn = document.getElementById('attachImageBtn');
+        if (attachBtn && window.genericDropHandler
+                && typeof window.genericDropHandler.triggerFilePicker === 'function') {
+            attachBtn.addEventListener('click', () => {
+                window.genericDropHandler.triggerFilePicker(
+                    (files) => this._attachFiles(files),
+                    { multiple: true }
+                );
+            });
+        } else if (attachBtn && window.imageHandler) {
+            // Fallback: generic handler unavailable — keep the legacy image-only picker.
+            attachBtn.addEventListener('click', () => {
+                window.imageHandler.triggerFilePicker((imageData) => {
+                    this._uploadImage(imageData);
+                });
+            });
+        }
+        
+        // File Browser button
+        const browseFilesBtn = document.getElementById('browseFilesBtn');
+        if (browseFilesBtn) {
+            browseFilesBtn.addEventListener('click', () => this.toggleFileBrowser());
+        }
+
+        // Ctrl+B shortcut for file browser
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+                e.preventDefault();
+                this.toggleFileBrowser();
+            }
+        });
+
+        // App Tunnel button
+        const appTunnelBtn = document.getElementById('appTunnelBtn');
+        if (appTunnelBtn) {
+            appTunnelBtn.addEventListener('click', () => this.toggleAppTunnel());
+        }
+
+        // VS Code Tunnel button
+        const vscodeTunnelBtn = document.getElementById('vscodeTunnelBtn');
+        if (vscodeTunnelBtn) {
+            vscodeTunnelBtn.addEventListener('click', () => this.toggleVSCodeTunnel());
+        }
+
+        // Ctrl+Shift+V shortcut for VS Code tunnel
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'V') {
+                e.preventDefault();
+                this.toggleVSCodeTunnel();
+            }
+        });
+
+        // Ctrl/Cmd+Shift+F → toggle the file browser's cross-file search panel.
+        // Opens the file browser (if closed) and the search panel together so
+        // the user can hit one shortcut from anywhere in the app and start
+        // typing a query immediately. Mirrors the VS Code/JetBrains binding.
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+                // Don't steal the shortcut from a focused editor that owns
+                // its own find — Monaco's find-in-files for the editor pane
+                // is handled inside the editor surface; the file-browser
+                // search is for the project-wide case.
+                const tag = (e.target && e.target.tagName) || '';
+                const isEditableField = (tag === 'INPUT' || tag === 'TEXTAREA' ||
+                    (e.target && e.target.isContentEditable));
+                // Allow the shortcut when typing in our OWN search panel
+                // input (it'll just refocus); skip for any other text field.
+                const insideSearchPanel = e.target &&
+                    typeof e.target.closest === 'function' &&
+                    e.target.closest('.fb-search-panel');
+                if (isEditableField && !insideSearchPanel) return;
+
+                e.preventDefault();
+                const panel = this._ensureFileBrowser ? this._ensureFileBrowser() : this._fileBrowserPanel;
+                if (!panel) return;
+                if (!panel.isOpen()) panel.open();
+                if (typeof panel.toggleSearchPanel === 'function') panel.toggleSearchPanel();
+            }
+        });
+
+        // Ctrl/Cmd+P → toggle the Cmd-P "Go to File" panel (per ADR-0019
+        // Part B). Global shortcut: works whether or not the file browser
+        // is open. Steals the browser's print binding intentionally — file
+        // navigation in a coding tool wins over the OS print dialog. We
+        // don't steal when the focus is in a text input (so users can
+        // type 'p' freely), with one exception: our own find input, where
+        // re-pressing should just refocus.
+        document.addEventListener('keydown', (e) => {
+            if (!(e.ctrlKey || e.metaKey)) return;
+            if (e.shiftKey || e.altKey) return;
+            if (e.key !== 'p' && e.key !== 'P') return;
+            const tag = (e.target && e.target.tagName) || '';
+            const isEditable = (tag === 'INPUT' || tag === 'TEXTAREA' ||
+                (e.target && e.target.isContentEditable));
+            const insideFindPanel = e.target &&
+                typeof e.target.closest === 'function' &&
+                e.target.closest('.fb-find-panel');
+            if (isEditable && !insideFindPanel) return;
+            e.preventDefault();
+            this.toggleFindPanel();
+        });
+
+        // Header overflow menu (tablet/mobile three-dot button)
+        this._setupOverflowMenu();
+
+        // Tile view toggle
+        // Mobile menu event listeners
+        if (closeMenuBtn) closeMenuBtn.addEventListener('click', () => this.closeMobileMenu());
+        if (settingsBtnMobile) {
+            settingsBtnMobile.addEventListener('click', () => {
+                this.showSettings();
+                this.closeMobileMenu();
+            });
+        }
+
+        // Mobile image attach — the desktop attach button is hidden on mobile,
+        // so this is the mobile entry point. The file picker offers Photo Library
+        // / Take Photo / Files on iOS; the picked image goes through the preview
+        // modal and the HTTP upload path (_uploadImage).
+        const attachImageBtnMobile = document.getElementById('attachImageBtnMobile');
+        if (attachImageBtnMobile) {
+            attachImageBtnMobile.addEventListener('click', () => {
+                this.closeMobileMenu();
+                if (window.imageHandler && typeof window.imageHandler.triggerFilePicker === 'function') {
+                    window.imageHandler.triggerFilePicker((imageData) => this._uploadImage(imageData));
+                } else if (window.feedback) {
+                    window.feedback.warning('Image upload is unavailable');
+                }
+            });
+        }
+        
+        // Mobile sessions button
+        const sessionsBtnMobile = document.getElementById('sessionsBtnMobile');
+        if (sessionsBtnMobile) {
+            sessionsBtnMobile.addEventListener('click', () => {
+                this.showMobileSessionsModal();
+                this.closeMobileMenu();
+            });
+        }
+        
+        this.setupSettingsModal();
+        this.setupFolderBrowser();
+        this.setupNewSessionModal();
+        this.setupMobileSessionsModal();
+
+        // Custom prompts dropdown removed
+    }
+
+    _setupOverflowMenu() {
+        const btn = document.getElementById('overflowMenuBtn');
+        const panel = document.getElementById('overflowMenuPanel');
+        if (!btn || !panel) return;
+
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = panel.classList.toggle('open');
+            btn.setAttribute('aria-expanded', String(isOpen));
+        });
+
+        // Close on click outside
+        document.addEventListener('click', (e) => {
+            if (!panel.classList.contains('open')) return;
+            if (!panel.contains(e.target) && e.target !== btn) {
+                panel.classList.remove('open');
+                btn.setAttribute('aria-expanded', 'false');
+            }
+        });
+
+        // Close on Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && panel.classList.contains('open')) {
+                panel.classList.remove('open');
+                btn.setAttribute('aria-expanded', 'false');
+                btn.focus();
+            }
+        });
+    }
+
+    /** Wire the toolbar sticky-note toggle button to the card. */
+    _setupStickyNoteToggle() {
+        const btn = document.getElementById('stickyNoteBtn');
+        if (!btn || !this._stickyNoteCard) return;
+        btn.addEventListener('click', () => {
+            if (this._stickyNoteCard) this._stickyNoteCard.toggleCollapse();
+        });
+        // The card reports state changes (collapsed/hasNote/summarizing) so the
+        // button can show aria-pressed + a status dot for the ACTIVE tab.
+        this._stickyNoteCard.onStateChange = (s) => this._updateStickyNoteBtn(s);
+        // Hidden until the feature is both enabled AND ready (see _refreshStickyNoteBtnVisibility).
+        this._refreshStickyNoteBtnVisibility();
+        // Keyboard: Ctrl/Cmd+Shift+N toggles the status note.
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'N' || e.key === 'n')) {
+                const b = document.getElementById('stickyNoteBtn');
+                if (b && b.style.display !== 'none') {
+                    e.preventDefault();
+                    b.click();
+                }
+            }
+        });
+        this._updateStickyNoteBtn({ collapsed: this._stickyNoteCard.isCollapsed(), hasNote: false, summarizing: false });
+    }
+
+    /** Show the toolbar toggle only when the feature is enabled AND ready. */
+    _refreshStickyNoteBtnVisibility() {
+        const btn = document.getElementById('stickyNoteBtn');
+        if (!btn) return;
+        const show = this.stickyNotesEnabled === true && this._stickyNotesAvailable === true;
+        btn.style.display = show ? '' : 'none';
+    }
+
+    /** Tell the server this browser has (or no longer has) a tab's card expanded. */
+    _reportStickyActive(sessionId, active) {
+        if (!sessionId) return;
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.send({ type: 'set_sticky_active', sessionId, active: !!active });
+        }
+    }
+
+    /** Reflect the active tab's note state on the toolbar button (dot + aria). */
+    _updateStickyNoteBtn(state) {
+        const btn = document.getElementById('stickyNoteBtn');
+        if (!btn) return;
+        const s = state || {};
+        btn.setAttribute('aria-pressed', String(!s.collapsed));
+        btn.classList.toggle('summarizing', !!s.summarizing);
+        const badge = btn.querySelector('.sticky-note-badge');
+        if (badge) badge.hidden = !(s.hasNote || s.summarizing);
+        let label = 'Show status note';
+        if (!s.collapsed) label = 'Hide status note';
+        else if (s.summarizing) label = 'Status note: summarizing…';
+        else if (s.hasNote) label = 'Show status note (has updates)';
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
+    }
+
+    setupVoiceInput() {
+        const voiceCfg = this.voiceInputConfig;
+        if (!voiceCfg) return;
+
+        const btn = document.getElementById('voiceInputBtn');
+        if (!btn) return;
+
+        // Microphone APIs require a secure context (HTTPS or localhost)
+        if (typeof window !== 'undefined' && !window.isSecureContext) {
+            btn.style.display = '';
+            btn.disabled = true;
+            btn.title = 'Microphone unavailable \u2014 this page must be served over HTTPS';
+            btn.setAttribute('aria-disabled', 'true');
+            return;
+        }
+
+        // The mic is local-first and the model is pulled on startup. Create the
+        // controller whenever a backend is possible (local enabled/ready, or
+        // cloud) — even while the local model is still downloading — so a later
+        // "ready" status has a controller to enable. _applyVoiceAvailability()
+        // then enables the button only once the model is ready (disabled, with a
+        // "downloading" hint, while it pulls).
+        const localReady = voiceCfg.localStatus === 'ready';
+        const localEnabled = !!voiceCfg.localEnabled;
+        const cloudAvailable = typeof window !== 'undefined' &&
+            !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+
+        if (!localReady && !localEnabled && !cloudAvailable) {
+            // No backend possible — keep button hidden
+            return;
+        }
+
+        // Initial mode: local whenever local is the intended backend; cloud only
+        // when local isn't available at all.
+        this.voiceMode = (localReady || localEnabled) ? 'local' : 'cloud';
+
+        const self = this;
+        const timerEl = btn.querySelector('.voice-timer');
+
+        this.voiceController = new window.VoiceHandler.VoiceInputController({
+            mode: this.voiceMode,
+            // Refuse a new recording while a previous transcription is still
+            // pending (single timeout slot + no correlation id — overlapping
+            // uploads would clobber each other's spinner/timeout).
+            canStart: function () {
+                return !self._voiceTranscriptionTimeout;
+            },
+            onRecordingStart: function () {
+                self._playMicChime('on');
+                // Suspend the heartbeat pong-timeout while capturing: the main
+                // thread can be busy enough (esp. the ScriptProcessor fallback)
+                // to miss a pong, which would otherwise force a spurious reconnect.
+                self._voiceRecordingActive = true;
+                if (self._heartbeat) self._heartbeat.pause();
+                btn.classList.add('recording');
+                btn.classList.remove('processing');
+                btn.setAttribute('aria-pressed', 'true');
+                btn.title = 'Stop Recording (Ctrl+Shift+M)';
+                if (timerEl) {
+                    timerEl.style.display = '';
+                    timerEl.textContent = '0:00';
+                }
+                // Capture the active session at the moment recording starts
+                self._voiceRecordingSessionId = self.sessionTabManager
+                    ? self.sessionTabManager.activeTabId
+                    : null;
+                // Start timer
+                self._voiceTimerInterval = setInterval(function () {
+                    if (self.voiceController && timerEl) {
+                        var secs = self.voiceController.elapsed;
+                        var m = Math.floor(secs / 60);
+                        var s = secs % 60;
+                        timerEl.textContent = m + ':' + (s < 10 ? '0' : '') + s;
+                    }
+                }, 1000);
+                // Announce to screen reader
+                var srEl = document.getElementById('srAnnounce');
+                if (srEl) srEl.textContent = 'Recording. Speak now.';
+            },
+            onRecordingStop: function (result) {
+                self._playMicChime('off');
+                self._voiceRecordingActive = false;
+                if (self._heartbeat) self._heartbeat.resume();
+                btn.classList.remove('recording');
+                btn.setAttribute('aria-pressed', 'false');
+                btn.title = 'Voice Input (Ctrl+Shift+M)';
+                if (timerEl) timerEl.style.display = 'none';
+                if (self._voiceTimerInterval) {
+                    clearInterval(self._voiceTimerInterval);
+                    self._voiceTimerInterval = null;
+                }
+
+                if (self.voiceMode === 'local' && result && result.samples) {
+                    // Guard against a zero-sample recording (would send a
+                    // header-only frame the server rejects as "too short").
+                    if (!result.samples.byteLength || result.samples.byteLength < 2) {
+                        btn.classList.remove('processing');
+                        if (window.feedback) window.feedback.error('No audio captured');
+                        return;
+                    }
+
+                    btn.classList.add('processing');
+
+                    // Send raw Int16 PCM as a tagged binary WS frame (no base64 —
+                    // base64's 33% inflation is what pushed long clips past the
+                    // 1 MiB frame guard and crashed the page).
+                    var frame = window.VoiceFrame.buildVoiceFrame(result.samples);
+                    var sent = self.sendBinary(frame);
+
+                    if (!sent) {
+                        // Socket not OPEN (e.g. mid-reconnect): fail fast instead of
+                        // silently dropping the frame and hanging the spinner 90 s.
+                        btn.classList.remove('processing');
+                        var notSentMsg = 'Connection not ready — recording not sent';
+                        if (window.feedback) window.feedback.error(notSentMsg);
+                        if (self.terminal) {
+                            self.terminal.write('\r\n\x1b[31m[Voice error] ' + notSentMsg + '\x1b[0m\r\n');
+                        }
+                        return;
+                    }
+
+                    // Client-side timeout for transcription processing (90 seconds)
+                    self._voiceTranscriptionTimeout = setTimeout(function () {
+                        self._voiceTranscriptionTimeout = null;
+                        btn.classList.remove('processing');
+                        var errorMsg = 'Transcription timed out';
+                        // Show error toast via FeedbackManager
+                        if (window.feedback) {
+                            window.feedback.error(errorMsg);
+                        }
+                        if (self.terminal) {
+                            self.terminal.write('\r\n\x1b[31m[Voice error] ' + errorMsg + '\x1b[0m\r\n');
+                        }
+                    }, 90000);
+                }
+                // Cloud mode: text comes via onTranscription, no processing state needed
+            },
+            onTranscription: function (text) {
+                btn.classList.remove('processing');
+                // Clear transcription timeout
+                if (self._voiceTranscriptionTimeout) {
+                    clearTimeout(self._voiceTranscriptionTimeout);
+                    self._voiceTranscriptionTimeout = null;
+                }
+                self._deliverVoiceTranscription(text);
+            },
+            onError: function (err) {
+                self._voiceRecordingActive = false;
+                if (self._heartbeat) self._heartbeat.resume();
+                btn.classList.remove('recording', 'processing');
+                btn.setAttribute('aria-pressed', 'false');
+                btn.title = 'Voice Input (Ctrl+Shift+M)';
+                if (timerEl) timerEl.style.display = 'none';
+                if (self._voiceTimerInterval) {
+                    clearInterval(self._voiceTimerInterval);
+                    self._voiceTimerInterval = null;
+                }
+                // Clear transcription timeout on error
+                if (self._voiceTranscriptionTimeout) {
+                    clearTimeout(self._voiceTranscriptionTimeout);
+                    self._voiceTranscriptionTimeout = null;
+                }
+                console.error('[Voice] Error:', err);
+                var errorMessage = err.message || String(err);
+                if (self.terminal) {
+                    self.terminal.write('\r\n\x1b[31m[Voice error] ' + errorMessage + '\x1b[0m\r\n');
+                }
+                // Show error toast (reuse existing toast pattern)
+                var toastMsg = errorMessage;
+                if (errorMessage.indexOf('HTTPS') !== -1 || errorMessage.indexOf('secure connection') !== -1 || errorMessage.indexOf('Secure context') !== -1) {
+                    toastMsg = 'Microphone requires HTTPS. Restart server with --https or --tunnel.';
+                } else if (errorMessage.indexOf('not-allowed') !== -1 || errorMessage.indexOf('Permission') !== -1 || errorMessage.indexOf('permission') !== -1) {
+                    toastMsg = errorMessage + '. Check browser permissions';
+                }
+                if (window.feedback) {
+                    window.feedback.error(toastMsg);
+                }
+            },
+            onCancel: function () {
+                self._voiceRecordingActive = false;
+                if (self._heartbeat) self._heartbeat.resume();
+                btn.classList.remove('recording', 'processing');
+                btn.setAttribute('aria-pressed', 'false');
+                btn.title = 'Voice Input (Ctrl+Shift+M)';
+                if (timerEl) timerEl.style.display = 'none';
+                if (self._voiceTimerInterval) {
+                    clearInterval(self._voiceTimerInterval);
+                    self._voiceTimerInterval = null;
+                }
+                var srEl = document.getElementById('srAnnounce');
+                if (srEl) srEl.textContent = 'Recording cancelled.';
+            }
+        });
+
+        // Button click: toggle recording
+        btn.addEventListener('click', function () {
+            self.voiceController.toggleRecording();
+        });
+
+        // Attach keyboard listeners (Ctrl+Shift+M, Escape)
+        this.voiceController.attachKeyboardListeners();
+
+        // Download banner dismiss
+        var dismissBtn = document.getElementById('voiceDownloadDismiss');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', function () {
+                var banner = document.getElementById('voiceDownloadBanner');
+                if (banner) {
+                    banner.classList.remove('visible');
+                    banner.style.display = 'none';
+                }
+            });
+        }
+
+        // Reflect current readiness now (and on every voice_status update):
+        // enabled when the local model is ready (or cloud fallback), disabled
+        // while the model is still downloading/loading.
+        this._applyVoiceAvailability();
+    }
+
+    /**
+     * Show/enable/disable the mic button based on the current STT backend status.
+     * Local-first: the button is ENABLED only when the local model is `ready`
+     * (local mode), DISABLED with a "downloading" hint while the model is being
+     * pulled (localEnabled but not ready), and falls back to cloud mode only when
+     * local STT is not the intended backend at all. Hidden when no backend exists.
+     * Idempotent — safe to call on setup and on each voice_status message.
+     */
+    _applyVoiceAvailability() {
+        var btn = document.getElementById('voiceInputBtn');
+        if (!btn) return;
+
+        var cfg = this.voiceInputConfig || {};
+        var methodEl = typeof document !== 'undefined' && document.getElementById('voiceMethod');
+        var VH = (typeof window !== 'undefined' && window.VoiceHandler) || null;
+        if (!VH || typeof VH.computeMicButtonState !== 'function') {
+            // Fail closed: without the decision helper we can't know readiness, so
+            // never leave the mic enabled. Hide it (the voice feature can't work
+            // without VoiceHandler anyway).
+            btn.style.display = 'none';
+            btn.disabled = true;
+            return;
+        }
+
+        var state = VH.computeMicButtonState({
+            secureContext: !(typeof window !== 'undefined' && !window.isSecureContext),
+            localStatus: cfg.localStatus,
+            localEnabled: !!cfg.localEnabled,
+            cloudAvailable: typeof window !== 'undefined' &&
+                !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+            voiceMethod: (methodEl && methodEl.value) || 'auto',
+        });
+
+        if (!state.visible) {
+            btn.style.display = 'none';
+            return;
+        }
+        btn.style.display = '';
+        btn.disabled = !state.enabled;
+        if (state.enabled) {
+            btn.removeAttribute('aria-disabled');
+        } else {
+            btn.setAttribute('aria-disabled', 'true');
+        }
+        btn.title = state.title;
+        if (state.mode && this.voiceMode !== state.mode) {
+            this.voiceMode = state.mode;
+            if (this.voiceController && typeof this.voiceController.setMode === 'function') {
+                this.voiceController.setMode(state.mode);
+            }
+        }
+    }
+
+    _showMemoryWarning(message) {
+        const banner = document.getElementById('memoryWarningBanner');
+        if (!banner || banner.style.display !== 'none') return;
+
+        const supervised = !!message.supervised;
+        const text = supervised
+            ? 'Memory usage is high (' + message.rss + '). Save your work \u2014 you can restart now to keep things running smoothly.'
+            : 'Memory usage is high (' + message.rss + '). Save your work, then stop the server (Ctrl+C) and run \u201cnpm start\u201d again to free memory.';
+
+        let actionsHtml = '';
+        if (supervised) {
+            actionsHtml = '<div class="vst-actions"><button class="vst-btn primary vst-restart-btn">Restart Now</button></div>';
+        }
+
+        banner.innerHTML = `
+            <span class="vst-icon error">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+            </span>
+            <span class="vst-message">${text}</span>
+            ${actionsHtml}
+            <button class="vst-close vst-dismiss-btn" title="Dismiss">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+        `;
+
+        // Show banner
+        banner.style.display = '';
+        banner.classList.add('visible');
+
+        // Bind events
+        const self = this;
+        const restartBtn = banner.querySelector('.vst-restart-btn');
+        if (restartBtn) {
+            restartBtn.addEventListener('click', () => {
+                if (this._memoryWarningTimer) {
+                    clearTimeout(this._memoryWarningTimer);
+                    this._memoryWarningTimer = null;
+                }
+                self.send({ type: 'restart_server' });
+                banner.classList.remove('visible');
+                banner.style.display = 'none';
+            });
+        }
+
+        const dismissBtn = banner.querySelector('.vst-dismiss-btn');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', () => {
+                if (this._memoryWarningTimer) {
+                    clearTimeout(this._memoryWarningTimer);
+                    this._memoryWarningTimer = null;
+                }
+                banner.classList.remove('visible');
+                banner.style.display = 'none';
+            });
+        }
+
+        // Auto-dismiss: 20s when supervised (has action buttons), 5s when unsupervised
+        const autoDismissMs = supervised ? 20000 : 5000;
+        this._memoryWarningRemaining = autoDismissMs;
+        this._memoryWarningStart = Date.now();
+        this._memoryWarningTimer = setTimeout(() => {
+            this._memoryWarningTimer = null;
+            this._memoryWarningRemaining = 0;
+            banner.classList.remove('visible');
+            banner.style.display = 'none';
+        }, autoDismissMs);
+
+        // Hover-pause: pause auto-dismiss while hovering
+        banner.addEventListener('mouseenter', () => {
+            if (this._memoryWarningTimer && this._memoryWarningRemaining > 0) {
+                clearTimeout(this._memoryWarningTimer);
+                this._memoryWarningTimer = null;
+                var elapsed = Date.now() - (this._memoryWarningStart || Date.now());
+                this._memoryWarningRemaining = Math.max(0, this._memoryWarningRemaining - elapsed);
+            }
+        });
+        banner.addEventListener('mouseleave', () => {
+            if (this._memoryWarningRemaining > 0 && !this._memoryWarningTimer) {
+                this._memoryWarningStart = Date.now();
+                this._memoryWarningTimer = setTimeout(() => {
+                    this._memoryWarningTimer = null;
+                    this._memoryWarningRemaining = 0;
+                    banner.classList.remove('visible');
+                    banner.style.display = 'none';
+                }, this._memoryWarningRemaining);
+            }
+        });
+    }
+
+    _handleVoiceMessage(message) {
+        var btn = document.getElementById('voiceInputBtn');
+        switch (message.type) {
+            case 'voice_transcription': {
+                if (btn) btn.classList.remove('processing');
+                // Clear client-side transcription timeout
+                if (this._voiceTranscriptionTimeout) {
+                    clearTimeout(this._voiceTranscriptionTimeout);
+                    this._voiceTranscriptionTimeout = null;
+                }
+                this._deliverVoiceTranscription(message.text || '');
+                break;
+            }
+            case 'voice_transcription_error': {
+                if (btn) btn.classList.remove('processing');
+                // Clear client-side transcription timeout
+                if (this._voiceTranscriptionTimeout) {
+                    clearTimeout(this._voiceTranscriptionTimeout);
+                    this._voiceTranscriptionTimeout = null;
+                }
+                if (this.terminal) {
+                    this.terminal.write('\r\n\x1b[31m[Voice error] ' + (message.message || 'Transcription failed') + '\x1b[0m\r\n');
+                }
+                break;
+            }
+            case 'voice_model_progress': {
+                var banner = document.getElementById('voiceDownloadBanner');
+                var fill = document.getElementById('voiceDownloadFill');
+                var pct = document.getElementById('voiceDownloadPercent');
+                var percent = message.percent || 0;
+
+                if (banner) {
+                    if (percent >= 100) {
+                        // Download finished — hide the banner. The model may still
+                        // be loading; the mic is enabled (and switched to local
+                        // mode) only when a `voice_status: ready` arrives, handled
+                        // centrally by _applyVoiceAvailability().
+                        banner.classList.remove('visible');
+                        banner.style.display = 'none';
+                    } else {
+                        banner.style.display = '';
+                        banner.classList.add('visible');
+                    }
+                }
+                if (fill) fill.style.width = Math.min(percent, 100) + '%';
+                if (pct) pct.textContent = Math.round(percent) + '%';
+                break;
+            }
+            case 'voice_status': {
+                // Update cached voice config from the message, then re-evaluate the
+                // mic button (enabled only once the local model is `ready`).
+                if (message.voiceInput) {
+                    this.voiceInputConfig = message.voiceInput;
+                } else if (message.status) {
+                    this.voiceInputConfig = Object.assign({}, this.voiceInputConfig, { localStatus: message.status });
+                }
+                // Surface a model init/download failure (e.g. load failed after the
+                // download reached 100%) — otherwise the user only sees a disabled
+                // tooltip. Also clear any stuck download banner.
+                if (message.error) {
+                    var failBanner = document.getElementById('voiceDownloadBanner');
+                    if (failBanner) {
+                        failBanner.classList.remove('visible');
+                        failBanner.style.display = 'none';
+                    }
+                    if (window.feedback && typeof window.feedback.error === 'function') {
+                        window.feedback.error('Voice model failed: ' + message.error);
+                    }
+                }
+                this._applyVoiceAvailability();
+                break;
+            }
+        }
+    }
+
+    /**
+     * Deliver transcribed voice text to the terminal.
+     * Validates terminal/socket state, detects session switches since
+     * recording started, and provides visual feedback via toast + screen reader.
+     * Shared by both cloud-mode (onTranscription) and local-mode (_handleVoiceMessage).
+     *
+     * @param {string} text - The transcribed text to insert
+     */
+    _deliverVoiceTranscription(text) {
+        var srEl = document.getElementById('srAnnounce');
+
+        // Nothing to deliver
+        if (!text) {
+            if (srEl) srEl.textContent = 'Transcription complete (empty).';
+            return;
+        }
+
+        // Redirect to input overlay if active
+        if (this._voiceTarget === 'overlay' && this._inputOverlay && this._inputOverlay._open) {
+            var ta = document.getElementById('inputOverlayText');
+            if (ta) {
+                var pos = ta.selectionStart;
+                ta.value = ta.value.slice(0, pos) + text + ta.value.slice(pos);
+                ta.selectionStart = ta.selectionEnd = pos + text.length;
+                ta.focus();
+                if (this._inputOverlay) this._inputOverlay._updateCharCount();
+            }
+            if (srEl) srEl.textContent = 'Voice text inserted into overlay.';
+            return;
+        }
+
+        // Edge case: overlay closed between recording start and transcription delivery
+        if (this._voiceTarget === 'overlay' && (!this._inputOverlay || !this._inputOverlay._open)) {
+            this._voiceTarget = 'terminal';
+            this._showVoiceToast('Voice text delivered to terminal');
+        }
+
+        // Gate: WebSocket must be open
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            if (srEl) srEl.textContent = 'Voice text discarded: not connected.';
+            this._showVoiceToast('Voice text discarded — not connected');
+            return;
+        }
+
+        // Gate: terminal must exist and not be disposed
+        if (!this.terminal || (typeof this.terminal.element !== 'undefined' && !this.terminal.element)) {
+            if (srEl) srEl.textContent = 'Voice text discarded: terminal not ready.';
+            this._showVoiceToast('Voice text discarded — terminal not ready');
+            return;
+        }
+
+        // Detect session switch: compare active tab now vs when recording began
+        var currentSessionId = this.sessionTabManager
+            ? this.sessionTabManager.activeTabId
+            : null;
+        var recordingSessionId = this._voiceRecordingSessionId || null;
+        var sessionSwitched = recordingSessionId &&
+            currentSessionId &&
+            recordingSessionId !== currentSessionId;
+
+        if (sessionSwitched) {
+            // Warn the user via toast, but still deliver to the CURRENT session
+            // (the user is looking at it; routing to a background session would be
+            // more surprising than delivering to what is visible)
+            var sessionData = this.sessionTabManager
+                ? this.sessionTabManager.activeSessions.get(recordingSessionId)
+                : null;
+            var oldName = sessionData ? sessionData.name : 'another session';
+            this._showVoiceToast('Session changed since recording — inserting into current session (was: ' + oldName + ')');
+        }
+
+        // Normalize and wrap for bracketed paste if needed
+        var normalized = text;
+        if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.normalizeLineEndings) {
+            normalized = attachClipboardHandler.normalizeLineEndings(text);
+        }
+        if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+            if (typeof attachClipboardHandler !== 'undefined' && attachClipboardHandler.wrapBracketedPaste) {
+                normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+            }
+        }
+
+        // Send as terminal input
+        this.send({ type: 'input', data: normalized });
+
+        // Visual feedback: brief toast with text preview
+        var preview = text.length > 60 ? text.substring(0, 57) + '...' : text;
+        this._showVoiceToast('Voice: ' + preview);
+
+        // Screen reader announcement
+        if (srEl) srEl.textContent = 'Voice text inserted: ' + preview;
+
+        // Clear the recorded session id
+        this._voiceRecordingSessionId = null;
+    }
+
+    /**
+     * Show a brief toast message for voice input feedback.
+     * Delegates to the FeedbackManager toast system.
+     * @param {string} msg - The message to display
+     */
+    _showVoiceToast(msg) {
+        if (window.feedback) {
+            window.feedback.info(msg);
+        }
+    }
+
+    setupSettingsModal() {
+        const modal = document.getElementById('settingsModal');
+        const closeBtn = document.getElementById('closeSettingsBtn');
+        const saveBtn = document.getElementById('saveSettingsBtn');
+        const cancelBtn = document.getElementById('cancelSettingsBtn');
+        const resetBtn = document.getElementById('resetSettingsBtn');
+        const fontSizeSlider = document.getElementById('fontSize');
+        const fontSizeValue = document.getElementById('fontSizeValue');
+
+        closeBtn.addEventListener('click', () => this.hideSettings());
+        if (cancelBtn) cancelBtn.addEventListener('click', () => this.hideSettings());
+        saveBtn.addEventListener('click', () => this.saveSettings());
+        if (resetBtn) resetBtn.addEventListener('click', () => this.resetSettings());
+
+        fontSizeSlider.addEventListener('input', (e) => {
+            fontSizeValue.textContent = e.target.value + 'px';
+        });
+
+        const terminalPaddingSlider = document.getElementById('terminalPadding');
+        const terminalPaddingValue = document.getElementById('terminalPaddingValue');
+        if (terminalPaddingSlider && terminalPaddingValue) {
+            terminalPaddingSlider.addEventListener('input', (e) => {
+                terminalPaddingValue.textContent = e.target.value + 'px';
+            });
+        }
+
+        const notifVolumeSlider = document.getElementById('notifVolume');
+        const notifVolumeValue = document.getElementById('notifVolumeValue');
+        if (notifVolumeSlider && notifVolumeValue) {
+            notifVolumeSlider.addEventListener('input', (e) => {
+                notifVolumeValue.textContent = e.target.value + '%';
+            });
+        }
+
+        // Two-pane settings nav (ARIA tablist): switch panes, roving tabindex,
+        // arrow/Home/End keyboard support. Replaces the old collapsible sections.
+        const settingsTabs = Array.from(modal.querySelectorAll('.settings-tab'));
+        const selectSettingsTab = (tab, focus = true) => {
+            settingsTabs.forEach((t) => {
+                const selected = t === tab;
+                t.setAttribute('aria-selected', String(selected));
+                t.tabIndex = selected ? 0 : -1;
+                const pane = document.getElementById(t.getAttribute('aria-controls'));
+                if (pane) pane.hidden = !selected;
+            });
+            if (focus && tab) tab.focus();
+        };
+        settingsTabs.forEach((tab) => {
+            tab.addEventListener('click', () => selectSettingsTab(tab, false));
+            tab.addEventListener('keydown', (e) => {
+                // Navigate among VISIBLE tabs only (the Install tab is hidden
+                // when running as an installed PWA) so focus never lands on an
+                // invisible element and escapes the modal focus trap.
+                const visible = settingsTabs.filter((t) => t.style.display !== 'none' && !t.hidden);
+                const idx = visible.indexOf(tab);
+                if (idx === -1) return;
+                let next = null;
+                if (e.key === 'ArrowDown' || e.key === 'ArrowRight') next = visible[(idx + 1) % visible.length];
+                else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') next = visible[(idx - 1 + visible.length) % visible.length];
+                else if (e.key === 'Home') next = visible[0];
+                else if (e.key === 'End') next = visible[visible.length - 1];
+                if (next) { e.preventDefault(); selectSettingsTab(next); }
+            });
+        });
+
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                this.hideSettings();
+            }
+        });
+    }
+
+    // setupCommandsMenu removed
+
+    // populateCommandsDropdown removed
+
+    // appendCustomCommandItem removed
+
+    // runCommandFromPath removed
+
+    // setupCustomCommandModal removed
+
+    // openCustomCommandModal removed
+
+    // closeCustomCommandModal removed
+
+    connect(sessionId = null) {
+        return new Promise((resolve, reject) => {
+            const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+            let wsUrl = `${protocol}//${location.host}`;
+            if (sessionId) {
+                wsUrl += `?sessionId=${sessionId}`;
+            }
+            
+            // Add auth token if required
+            wsUrl = window.authManager.getWebSocketUrl(wsUrl);
+            
+            this.updateStatus('Connecting...');
+            // Only show loading spinner if overlay is already visible
+            // Don't force it to show if we're handling restored sessions
+            if (document.getElementById('overlay').style.display !== 'none') {
+                this.showOverlay('loadingSpinner');
+            }
+            
+            try {
+                this._socketGeneration += 1;
+                const gen = this._socketGeneration;
+                const ws = new WebSocket(wsUrl);
+                ws.binaryType = 'arraybuffer';
+                this.socket = ws;
+                const isCurrent = () => ws === this.socket && gen === this._socketGeneration;
+
+                ws.onopen = () => {
+                    if (!isCurrent()) return;
+                    // Arm heartbeat BEFORE any awaited work so liveness detection
+                    // is in place even if loadSessions stalls.
+                    this.startHeartbeat();
+                    this.reconnectAttempts = 0;
+                    // Clear server restart state if we were reconnecting after a restart
+                    if (this._serverRestarting) {
+                        this._serverRestarting = false;
+                        this._restartReconnectAttempts = 0;
+                        if (this._restartTimeout) {
+                            clearTimeout(this._restartTimeout);
+                            this._restartTimeout = null;
+                        }
+                    }
+                    this.updateStatus('Connected');
+                    console.log('Connected to server');
+                    
+                    // Load available sessions
+                    this.loadSessions();
+
+                    // Ask for the current sticky-note engine status so the toolbar
+                    // toggle can appear if the model is already ready (broadcasts
+                    // only fire on init; a reload/late-join needs to request it).
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.send({ type: 'sticky_notes_status' });
+                    }
+                    // Re-assert the card's expanded/active state — the server drops
+                    // a socket's "expanded viewer" leases on disconnect.
+                    if (this._stickyNoteCard && typeof this._stickyNoteCard.reportActiveState === 'function') {
+                        this._stickyNoteCard.reportActiveState();
+                    }
+                    
+                    // Only show start prompt if sessionTabManager is initialized and has no sessions
+                    // During early init(), sessionTabManager is null — let init() handle the overlay
+                    if (this.sessionTabManager && !this.currentClaudeSessionId && this.sessionTabManager.tabs.size === 0) {
+                        this.showOverlay('startPrompt');
+                    }
+                    
+                    // Show close session button if we have a selected working directory
+                    if (this.selectedWorkingDir) {
+                        // Close session buttons removed with header
+                    }
+
+                    // Request app tunnel status
+                    this.send({ type: 'app_tunnel_status' });
+
+                    // Auto-rejoin the previously active session. After a
+                    // reconnect the new WebSocket is alive but server-side
+                    // it isn't joined to anything — without this the
+                    // terminal sits frozen until the user manually clicks a
+                    // tab. On the very first connect, currentClaudeSessionId
+                    // is null (it's set later by session_joined arriving
+                    // from the explicit init-time join), so this only fires
+                    // on RE-connects.
+                    if (this.currentClaudeSessionId) {
+                        this.send({ type: 'join_session', sessionId: this.currentClaudeSessionId });
+                    }
+
+                    resolve();
+                };
+            
+            ws.onmessage = (event) => {
+                if (!isCurrent()) return;
+                if (event.data instanceof ArrayBuffer) {
+                    // Binary frame — pass raw ArrayBuffer to handleBinaryOutput
+                    this.handleBinaryOutput(event.data);
+                } else {
+                    // Text frame = JSON control message
+                    this.handleMessage(JSON.parse(event.data));
+                }
+            };
+            
+            ws.onclose = (event) => {
+                // Stale-socket fence: an old socket's onclose firing after we've
+                // already moved on must NOT schedule another reconnect.
+                if (!isCurrent()) return;
+                if (this._heartbeat) { this._heartbeat.stop(); this._heartbeat = null; }
+                if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
+                if (this._pongTimer) { clearTimeout(this._pongTimer); this._pongTimer = null; }
+
+                // A close mid-transcription must not leave the mic spinner + its
+                // 90 s timeout hanging.
+                if (this._voiceTranscriptionTimeout) {
+                    clearTimeout(this._voiceTranscriptionTimeout);
+                    this._voiceTranscriptionTimeout = null;
+                }
+                this._voiceRecordingActive = false;
+                const voiceBtn = document.getElementById('voiceInputBtn');
+                if (voiceBtn) voiceBtn.classList.remove('processing');
+
+                // Log the close code so field reports can tell a server frame
+                // rejection (1009/1003, at stop) from a heartbeat pong-timeout
+                // (4000, mid-recording).
+                console.warn('[ws] closed', event.code, event.reason || '');
+
+                // 1009/1003 are server-initiated CLEAN closes (wasClean=true): the
+                // server rejected our frame. Surface a specific message and still
+                // reconnect below, instead of dead-ending on "refresh the page".
+                const voiceClose = (window.VoiceFrame && window.VoiceFrame.classifyVoiceClose)
+                    ? window.VoiceFrame.classifyVoiceClose(event.code)
+                    : { rejected: false, message: null };
+                if (voiceClose.rejected && window.feedback) {
+                    window.feedback.error(voiceClose.message);
+                }
+
+                // During server restart, don't count failures against reconnect budget
+                // but still use backoff to avoid thundering herd
+                if (this._serverRestarting) {
+                    this.updateStatus('Restarting \u2014 reconnecting\u2026');
+                    const restartBackoff = Math.min(2000 * Math.pow(1.5, this._restartReconnectAttempts || 0), 15000) * (0.7 + Math.random() * 0.6);
+                    this._restartReconnectAttempts = (this._restartReconnectAttempts || 0) + 1;
+                    if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+                    const restartGen = this._socketGeneration;
+                    this._reconnectTimer = setTimeout(() => {
+                        this._reconnectTimer = null;
+                        if (restartGen !== this._socketGeneration) return;
+                        this.reconnect();
+                    }, restartBackoff);
+                // Reconnect decision extracted to WsReconnect.isReconnectableClose
+                // (unit-tested): abnormal close, our own heartbeat pong-timeout
+                // (code 4000 — a clean close that MUST still reconnect, or a single
+                // transient pong-timeout strands the client on "Disconnected"), or a
+                // server frame-rejection (1009/1003). Inline fallback keeps reconnect
+                // working even if the tiny module failed to load.
+                } else if (
+                    ((window.WsReconnect && window.WsReconnect.isReconnectableClose)
+                        ? window.WsReconnect.isReconnectableClose(event, voiceClose.rejected)
+                        : (!event.wasClean || event.code === 4000 || voiceClose.rejected))
+                    && this.reconnectAttempts < this.maxReconnectAttempts) {
+                    this.updateStatus('Reconnecting (' + (this.reconnectAttempts + 1) + '/' + this.maxReconnectAttempts + ')...');
+                    // First attempt is fast (250ms covers a server-process restart window);
+                    // subsequent attempts use exponential backoff with jitter.
+                    const delay = this.reconnectAttempts === 0
+                        ? 250
+                        : Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000) * (0.7 + Math.random() * 0.6);
+                    if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
+                    // Fence the deferred reconnect with the current generation: a
+                    // user-initiated connect (setSession etc.) will increment the
+                    // generation, so a stale timer firing later must be a no-op
+                    // \u2014 otherwise it spawns a parallel WebSocket and orphans the
+                    // active one. (Caught by gemini-3.1-pro-preview review.)
+                    const onCloseGen = this._socketGeneration;
+                    this._reconnectTimer = setTimeout(() => {
+                        this._reconnectTimer = null;
+                        if (onCloseGen !== this._socketGeneration) return;
+                        this.reconnect();
+                    }, delay);
+                    this.reconnectAttempts++;
+                } else {
+                    this.updateStatus('Disconnected');
+                    const n = this.reconnectAttempts;
+                    const lead = n > 0
+                        ? `Connection lost after ${n} reconnect attempt${n === 1 ? '' : 's'}.`
+                        : 'Disconnected from the server.';
+                    this.showError(`${lead}\n\nYour session data is preserved on the server.\n\u2022 Check your network connection\n\u2022 The server may have restarted \u2014 try refreshing the page`);
+                }
+            };
+            
+            ws.onerror = (error) => {
+                if (!isCurrent()) return;
+                console.error('WebSocket error:', error);
+                this.showError('Failed to connect to the server.\n\n\u2022 Check that the server is running\n\u2022 Verify your network connection\n\u2022 Try refreshing the page');
+                reject(error);
+            };
+            
+        } catch (error) {
+            console.error('Failed to create WebSocket:', error);
+            this.showError('Failed to create connection.\n\n\u2022 Check that the server URL is correct\n\u2022 Try refreshing the page');
+            reject(error);
+        }
+        });
+    }
+
+    disconnect() {
+        // Cancel any deferred reconnect from a prior onclose so it cannot fire
+        // after a user-initiated reconnect/setSession (which advances the
+        // socket generation) and spawn a parallel socket.
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
+        if (this._heartbeat) {
+            this._heartbeat.stop();
+            this._heartbeat = null;
+        }
+        if (this.socket) {
+            this.socket.close();
+            this.socket = null;
+        }
+        if (this._safariPollInterval) {
+            clearInterval(this._safariPollInterval);
+            this._safariPollInterval = null;
+        }
+        if (this._heartbeatTimer) {
+            clearInterval(this._heartbeatTimer);
+            this._heartbeatTimer = null;
+        }
+        if (this._pongTimer) {
+            clearTimeout(this._pongTimer);
+            this._pongTimer = null;
+        }
+        if (this.usageUpdateTimer) {
+            clearInterval(this.usageUpdateTimer);
+            this.usageUpdateTimer = null;
+        }
+    }
+
+    reconnect() {
+        if (this._reconnecting) return;
+        this._reconnecting = true;
+        this.disconnect();
+        // Reset overlay flag so session_joined can show start prompt if terminal
+        // exited during the disconnect (fixes stuck blank screen after reconnect)
+        this._overlayExplicitlyHidden = false;
+        // Reset flow control state so stale pause signals aren't sent on new connection
+        this._outputPaused = false;
+        this._pendingCallbacks = 0;
+        this._writtenBytes = 0;
+        this._pendingWrites = [];
+        this._rafPending = false;
+        // Clear stale input buffer to prevent ghost keystrokes after reconnect
+        this._inputBuffer = '';
+        this._inputFlushScheduled = false;
+        this._ctrlModifierPending = false;
+        this._planDetectChunks = [];
+        if (this._planDetectTimer) {
+            clearTimeout(this._planDetectTimer);
+            this._planDetectTimer = null;
+        }
+        setTimeout(() => {
+            try {
+                const connectTimeout = new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Connection timeout')), 10000)
+                );
+                Promise.race([this.connect(), connectTimeout])
+                    .catch(err => console.error('Reconnection failed:', err))
+                    .finally(() => { this._reconnecting = false; });
+            } catch (err) {
+                console.error('Reconnection failed synchronously:', err);
+                this._reconnecting = false;
+            }
+        }, 0);
+    }
+
+    send(data) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify(data));
+        }
+    }
+
+    // Send a binary WS frame (e.g. a voice PCM frame). Returns true if it was
+    // handed to an OPEN socket, false otherwise so the caller can react to a
+    // closed/closing socket instead of silently dropping the frame.
+    sendBinary(view) {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(view);
+            return true;
+        }
+        return false;
+    }
+
+    _handleStickyNoteUpdate(message) {
+        if (!message || !message.sessionId) return;
+        const sm = this.sessionTabManager;
+        if (sm && sm.activeSessions.has(message.sessionId)) {
+            const s = sm.activeSessions.get(message.sessionId);
+            // Drop stale / out-of-order updates by monotonic rev.
+            const incomingRev = (message.stickyNote && message.stickyNote.rev) || 0;
+            const currentRev = (s.stickyNote && s.stickyNote.rev) || 0;
+            if (s.stickyNote && incomingRev <= currentRev) return;
+            s.stickyNote = message.stickyNote || null;
+            // Auto tab title — only when the user hasn't manually renamed the tab.
+            if (message.autoTitle && !s.nameIsUserSet && typeof sm.applyAutoTitle === 'function') {
+                sm.applyAutoTitle(message.sessionId, message.autoTitle);
+            }
+        }
+        if (this._stickyNoteCard && message.sessionId === this.currentClaudeSessionId) {
+            this._stickyNoteCard.render(message.stickyNote || null);
+        }
+    }
+
+    // Apply the sticky-notes on/off preference: tell the server (authoritative)
+    // for the current session and reflect it in the card.
+    _applyStickyNotesSetting(enabled) {
+        this.stickyNotesEnabled = enabled;
+        if (this.currentClaudeSessionId) {
+            this.send({ type: 'set_sticky_notes', sessionId: this.currentClaudeSessionId, enabled });
+        }
+        if (this._stickyNoteCard) {
+            if (!enabled) this._stickyNoteCard.hide();
+            else this._stickyNoteCard.notifyActiveSessionChanged(this.currentClaudeSessionId);
+        }
+        const sbtn = document.getElementById('stickyNoteBtn');
+        if (sbtn) this._refreshStickyNoteBtnVisibility();
+    }
+
+    // Flush accumulated input buffer to server as a single batched message
+    _flushInput() {
+        this._inputFlushScheduled = false;
+        if (this._inputBuffer.length > 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.send({ type: 'input', data: this._inputBuffer });
+            this._inputBuffer = '';
+        }
+    }
+
+    // True iff the shared terminal is stably displaying this session — no switch
+    // in flight, and the active tab, the joined session, and `sid` all agree.
+    // Capturing a snapshot is only correctly attributed when this holds.
+    _terminalStablyShowsSession(sid) {
+        if (!sid || this.pendingJoinSessionId) return false;
+        if (this.currentClaudeSessionId !== sid) return false;
+        if (this.sessionTabManager && this.sessionTabManager.activeTabId !== sid) return false;
+        return true;
+    }
+
+    handleBinaryOutput(data) {
+        const chunk = new Uint8Array(data);
+
+        // 1. Queue the chunk for coalesced terminal write
+        this._pendingWrites.push(chunk);
+        if (!this._rafPending) {
+            this._rafPending = true;
+            requestAnimationFrame(() => this._flushWrites());
+        }
+
+        // 2. Session activity tracking (cheap — runs per frame)
+        if (this.sessionTabManager && this.currentClaudeSessionId) {
+            const text = this._textDecoder.decode(data, { stream: true });
+            this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
+        }
+
+        // 3. Deferred plan detection — accumulate chunks, decode after 100ms idle
+        if (this.planDetector) {
+            this._planDetectChunks.push(chunk);
+            if (this._planDetectTimer) clearTimeout(this._planDetectTimer);
+            this._planDetectTimer = setTimeout(() => this._flushPlanDetection(), 100);
+        }
+
+        // 4. Keep the active tab's snapshot fresh after output settles (never
+        // per frame). Debounced so a burst captures once when it quiets. Only
+        // captures while the terminal STABLY shows this session (no switch in
+        // flight; active tab + joined session agree), so a switch can never
+        // store one tab's screen under another tab's id.
+        if (this.snapshotCache && this._terminalStablyShowsSession(this.currentClaudeSessionId)) {
+            const sid = this.currentClaudeSessionId;
+            if (this._snapCaptureTimer) clearTimeout(this._snapCaptureTimer);
+            this._snapCaptureTimer = setTimeout(() => {
+                this._snapCaptureTimer = null;
+                if (this._terminalStablyShowsSession(sid)) this.snapshotCache?.capture(sid);
+            }, 400);
+        }
+    }
+
+    // Concatenate all queued chunks and write to terminal once per animation frame
+    _flushWrites() {
+        this._rafPending = false;
+        const chunks = this._pendingWrites;
+        this._pendingWrites = [];
+        if (chunks.length === 0) return;
+
+        // Concatenate into a single Uint8Array
+        let combined;
+        if (chunks.length === 1) {
+            combined = chunks[0];
+        } else {
+            let totalLen = 0;
+            for (let i = 0; i < chunks.length; i++) totalLen += chunks[i].byteLength;
+            combined = new Uint8Array(totalLen);
+            let offset = 0;
+            for (let i = 0; i < chunks.length; i++) {
+                combined.set(chunks[i], offset);
+                offset += chunks[i].byteLength;
+            }
+        }
+
+        this._writeToTerminal(combined);
+    }
+
+    // Decode accumulated binary chunks and run plan detection
+    _flushPlanDetection() {
+        this._planDetectTimer = null;
+        const chunks = this._planDetectChunks;
+        this._planDetectChunks = [];
+        if (chunks.length === 0 || !this.planDetector) return;
+
+        // Concatenate then decode once
+        let combined;
+        if (chunks.length === 1) {
+            combined = chunks[0];
+        } else {
+            let totalLen = 0;
+            for (let i = 0; i < chunks.length; i++) totalLen += chunks[i].byteLength;
+            combined = new Uint8Array(totalLen);
+            let offset = 0;
+            for (let i = 0; i < chunks.length; i++) {
+                combined.set(chunks[i], offset);
+                offset += chunks[i].byteLength;
+            }
+        }
+
+        const text = this._planTextDecoder.decode(combined, { stream: true });
+        this.planDetector.processOutput(text);
+    }
+
+    // Flow control using xterm.js callback-counting watermark pattern
+    // (recommended by xterm.js docs, used by ttyd and Tabby)
+    _writeToTerminal(data) {
+        this._writtenBytes += data.byteLength || data.length;
+        if (this._writtenBytes > this._CALLBACK_BYTE_LIMIT) {
+            this.terminal.write(data, () => {
+                this._pendingCallbacks = Math.max(this._pendingCallbacks - 1, 0);
+                if (this._outputPaused && this._pendingCallbacks < this._LOW_WATER) {
+                    this._outputPaused = false;
+                    this.send({ type: 'flow_control', action: 'resume' });
+                }
+            });
+            this._pendingCallbacks++;
+            this._writtenBytes = 0;
+            if (!this._outputPaused && this._pendingCallbacks > this._HIGH_WATER) {
+                this._outputPaused = true;
+                this.send({ type: 'flow_control', action: 'pause' });
+            }
+        } else {
+            this.terminal.write(data);  // Fast path — no callback overhead
+        }
+    }
+
+    handleMessage(message) {
+        switch (message.type) {
+            case 'connected':
+                this.connectionId = message.connectionId;
+                break;
+                
+            case 'session_created':
+                this.currentClaudeSessionId = message.sessionId;
+                this.currentClaudeSessionName = message.sessionName;
+                this.updateWorkingDir(message.workingDir);
+                // Cache the per-session workingDir SYNCHRONOUSLY so the
+                // terminal-path resolver's getWorkingDir callback hits
+                // immediately — without this, the resolver falls through
+                // to claudeSessions[] (populated by the async loadSessions
+                // call below) and a fast-fingered click in between misses.
+                if (message.sessionId && message.workingDir && this._sessionWorkingDirs) {
+                    this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
+                }
+                this.updateSessionButton(message.sessionName);
+                this.loadSessions();
+                
+                // Add tab for the new session if using tab manager
+                if (this.sessionTabManager) {
+                    this.sessionTabManager.addTab(message.sessionId, message.sessionName, 'idle', message.workingDir);
+                    this.sessionTabManager.switchToTab(message.sessionId);
+                }
+                
+                this.showOverlay('startPrompt');
+                break;
+                
+            case 'session_joined':
+                console.log('[session_joined] Message received, active:', message.active, 'tabs:', this.sessionTabManager?.tabs.size);
+                this.currentClaudeSessionId = message.sessionId;
+                this.currentClaudeSessionName = message.sessionName;
+                this.updateWorkingDir(message.workingDir);
+                // Learn the sticky-note engine status on join so the toolbar
+                // toggle reliably shows once the model is ready (robust against a
+                // missed broadcast / reconnect / stale cache).
+                if (typeof message.stickyNotesStatus === 'string') {
+                    this._stickyNotesAvailable = message.stickyNotesStatus === 'ready';
+                    this._refreshStickyNoteBtnVisibility();
+                }
+                // Cache the per-session workingDir SYNCHRONOUSLY — see the
+                // matching comment in session_created above. Page-reload-
+                // then-immediately-click is the canonical race we close
+                // here; session_joined fires before loadSessions completes.
+                if (message.sessionId && message.workingDir && this._sessionWorkingDirs) {
+                    this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
+                }
+                this.updateSessionButton(message.sessionName);
+
+                // Re-root the (singleton) file-browser panel to the newly
+                // active session's dir. open() short-circuits when already
+                // open, so without this an open panel would keep showing the
+                // previous tab's directory after a tab switch. Fires only when
+                // the panel is open and the session actually changed.
+                if (this._fileBrowserPanel &&
+                    typeof this._fileBrowserPanel.notifyActiveSessionChanged === 'function') {
+                    this._fileBrowserPanel.notifyActiveSessionChanged(message.sessionId);
+                }
+
+                // Hydrate the sticky-note card for the (re)joined session and tell
+                // the server this client's enable preference (server-authoritative).
+                if (this.sessionTabManager && this.sessionTabManager.activeSessions.has(message.sessionId)) {
+                    const sdata = this.sessionTabManager.activeSessions.get(message.sessionId);
+                    if (Object.prototype.hasOwnProperty.call(message, 'stickyNote')) {
+                        sdata.stickyNote = message.stickyNote || null;
+                    }
+                    if (message.autoTitle && !sdata.nameIsUserSet &&
+                        typeof this.sessionTabManager.applyAutoTitle === 'function') {
+                        this.sessionTabManager.applyAutoTitle(message.sessionId, message.autoTitle);
+                    }
+                }
+                // Tell the server only if THIS client wants the session OFF.
+                // Never push an "enable" on join — that would let a default-on
+                // browser re-enable a session another browser deliberately
+                // disabled (server state is authoritative + persisted).
+                if (this.stickyNotesEnabled === false) {
+                    this.send({ type: 'set_sticky_notes', sessionId: message.sessionId, enabled: false });
+                }
+                if (this._stickyNoteCard) {
+                    this._stickyNoteCard.notifyActiveSessionChanged(message.sessionId);
+                }
+                if (this._artifactPanel) {
+                    this._artifactPanel.notifyActiveSessionChanged(message.sessionId);
+                }
+                
+                // Update tab status
+                if (this.sessionTabManager) {
+                    this.sessionTabManager.updateTabStatus(message.sessionId, message.active ? 'active' : 'idle');
+                }
+                
+                // Notify split container of session change
+                if (this.splitContainer) {
+                    this.splitContainer.onTabSwitch(message.sessionId);
+                }
+                
+                // Resolve pending join promise if it exists
+                if (this.pendingJoinResolve && this.pendingJoinSessionId === message.sessionId) {
+                    this.pendingJoinResolve();
+                    this.pendingJoinResolve = null;
+                    this.pendingJoinSessionId = null;
+                }
+                
+                // Repaint on (re)join — but only if this join is still the tab
+                // the user has selected. A rapid A→B→C switch can deliver a stale
+                // join (in EITHER arrival order); repainting it would paint the
+                // wrong tab. activeTabId is the user's selection and is immune to
+                // the join ordering/timeout races that make pendingJoinSessionId
+                // unreliable here.
+                const targetTabId = this.sessionTabManager ? this.sessionTabManager.activeTabId : message.sessionId;
+                const isStaleJoin = targetTabId && targetTabId !== message.sessionId;
+                if (!isStaleJoin) {
+                    // For a LIVE session, replay the raw outputBuffer (real ANSI +
+                    // cursor codes) so the agent's live TUI redraw aligns. The
+                    // server's renderedSnapshot is rendered PLAIN TEXT (no cursor/
+                    // SGR/scroll-region state); writing it under a live TUI leaves
+                    // the cursor on the wrong row and the next redraw collides
+                    // with stale content (the #131 regression). So the plain-text
+                    // snapshot is used ONLY for non-live (exited/idle) sessions.
+                    // See join-repaint.js for the decision matrix.
+                    const replayBuffer = () => {
+                        this.terminal.clear();
+                        message.outputBuffer.forEach(data => {
+                            // Filter out focus tracking sequences (^[[I and ^[[O)
+                            this.terminal.write(data.replace(/\x1b\[\[?[IO]/g, ''));
+                        });
+                    };
+                    const action = chooseJoinRepaint(message);
+                    // Did the instant cache paint already show THIS session for
+                    // this switch? If so, a 'clear' verdict (the server has nothing
+                    // to replay) must NOT blank the good cached view.
+                    const cacheAlreadyPainted = this._cachePaintedForSession === message.sessionId;
+                    if (action === 'buffer') {
+                        replayBuffer();
+                    } else if (action === 'snapshot') {
+                        this.terminal.clear();
+                        this.terminal.write(message.renderedSnapshot.replace(/\n/g, '\r\n'));
+                    } else if (!cacheAlreadyPainted) {
+                        // Empty-state guard: clear so a cold join never leaves the
+                        // previous tab's content lingering on the shared terminal.
+                        this.terminal.clear();
+                    }
+
+                    // Refresh the cache from the authoritative repaint, but only
+                    // AFTER xterm has drained the writes above. terminal.write('',
+                    // cb) fires its callback once all prior writes are parsed — a
+                    // reliable drain barrier (a single rAF is not). Guard against a
+                    // re-switch landing before the drain completes.
+                    if (this.snapshotCache && message.sessionId && action !== 'clear') {
+                        const sid = message.sessionId;
+                        this.terminal.write('', () => {
+                            if (this._terminalStablyShowsSession(sid)) this.snapshotCache?.capture(sid);
+                        });
+                    }
+                    this._cachePaintedForSession = null;
+                }
+
+                // Show appropriate UI based on session state
+                console.log('[session_joined] Checking if should show overlay. Active:', message.active, 'toolStartPending:', !!this._toolStartPending);
+                if (this._toolStartPending) {
+                    // A tool start is in flight — don't overwrite the loading spinner
+                    console.log('[session_joined] Tool start pending, preserving overlay');
+                } else if (message.active) {
+                    console.log('[session_joined] Session is active, hiding overlay');
+                    this.hideOverlay();
+                } else if (this._overlayExplicitlyHidden) {
+                    console.log('[session_joined] Overlay explicitly hidden, skipping show');
+                } else {
+                    // Session exists but Claude is not running
+                    // Check if this is a brand new session (empty output buffer indicates new)
+                    const isNewSession = !message.outputBuffer || message.outputBuffer.length === 0;
+
+                    if (isNewSession) {
+                        console.log('[session_joined] New session detected, showing start prompt');
+                        this.showOverlay('startPrompt');
+                    } else if (message.wasActive && message.agent) {
+                        console.log('[session_joined] Session was active before server restart, agent:', message.agent);
+                        const toolAlias = this.getAlias(message.agent) || message.agent;
+                        this.terminal.writeln(`\r\n\x1b[33mThe server was restarted and ${toolAlias} was stopped. Your session history is preserved \u2014 click \u201cStart ${toolAlias}\u201d below to pick up where you left off.\x1b[0m`);
+                        this.showOverlay('startPrompt');
+                    } else {
+                        console.log('[session_joined] Existing session with stopped tool, showing restart prompt');
+                        this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} has stopped in this session. Click "Start ${this.getAlias('claude')}" to restart.\x1b[0m`);
+                        this.showOverlay('startPrompt');
+                    }
+                }
+                break;
+                
+            case 'session_left':
+                this.currentClaudeSessionId = null;
+                this.currentClaudeSessionName = null;
+                this.updateSessionButton('Sessions');
+                // During a tab switch the server emits session_left (for the
+                // outgoing session) immediately before session_joined (for the
+                // incoming one). Skip the clear ONLY when we already painted the
+                // incoming tab from cache — clearing would wipe that instant
+                // repaint. If there was NO cache paint, the shared terminal is
+                // still showing the OUTGOING session, so we MUST clear it;
+                // otherwise its content lingers into the incoming tab
+                // (cross-session bleed). session_joined repaints authoritatively.
+                if (!this._cachePaintedForSession) {
+                    this.terminal.clear();
+                }
+                
+                // Update tab status
+                if (this.sessionTabManager && message.sessionId) {
+                    this.sessionTabManager.updateTabStatus(message.sessionId, 'disconnected');
+                }
+                
+                // Only show start prompt if we don't have any tabs
+                // When switching tabs, we leave one and join another, so don't show prompt
+                if (!this.sessionTabManager || this.sessionTabManager.tabs.size === 0) {
+                    this.showOverlay('startPrompt');
+                }
+                break;
+                
+            case 'claude_started':
+            case 'codex_started':
+            case 'agent_started':
+            case 'copilot_started':
+            case 'gemini_started':
+            case 'terminal_started': {
+                this._toolStartPending = false;
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
+                this.hideOverlay();
+                // When the server enriches *_started with workingDir
+                // (SE's complementary change), seed the resolver-chain
+                // cache here too — belt-and-braces against any path
+                // where the client receives *_started before session_joined
+                // (e.g. reconnect-mid-tool flows). The map already has the
+                // value from session_created/joined; this is idempotent.
+                if (message.sessionId && message.workingDir && this._sessionWorkingDirs) {
+                    this._sessionWorkingDirs.set(message.sessionId, message.workingDir);
+                }
+                this.loadSessions();
+                this.requestUsageStats();
+                const startedTool = message.type.replace('_started', '');
+                if (this.sessionTabManager && this.currentClaudeSessionId) {
+                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'active');
+                    this.sessionTabManager.setTabToolType(this.currentClaudeSessionId, startedTool === 'agent' ? 'claude' : startedTool);
+                }
+                const srStarted = document.getElementById('srAnnounce');
+                if (srStarted) srStarted.textContent = `${this.getAlias(startedTool)} started`;
+                break;
+            }
+
+            case 'claude_stopped':
+            case 'codex_stopped':
+            case 'agent_stopped':
+            case 'copilot_stopped':
+            case 'gemini_stopped':
+            case 'terminal_stopped': {
+                const stoppedTool = message.type.replace('_stopped', '');
+                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias(stoppedTool)} stopped\x1b[0m`);
+                const srStopped = document.getElementById('srAnnounce');
+                if (srStopped) srStopped.textContent = `${this.getAlias(stoppedTool)} stopped`;
+                // If terminal was opened for installation, refresh config to pick up newly installed tools
+                if (this._pendingInstallToolId) {
+                    const pendingTool = this._pendingInstallToolId;
+                    this._pendingInstallToolId = null;
+                    this.refreshConfig().then(() => {
+                        // Auto-recheck the specific tool that was being installed
+                        fetch(`/api/tools/${pendingTool}/recheck`, { method: 'POST' })
+                            .then(r => r.json())
+                            .then(() => this.refreshConfig())
+                            .catch(() => {});
+                    });
+                }
+                this.showOverlay('startPrompt');
+                this.loadSessions();
+                if (this.sessionTabManager && this.currentClaudeSessionId) {
+                    this.sessionTabManager.updateTabStatus(this.currentClaudeSessionId, 'idle');
+                }
+                break;
+            }
+                
+            case 'output':
+                // Filter out focus tracking sequences (^[[I and ^[[O)
+                const filteredData = message.data.replace(/\x1b\[\[?[IO]/g, '');
+                this.terminal.write(filteredData);
+                
+                // Update session activity indicator with output data
+                if (this.sessionTabManager && this.currentClaudeSessionId) {
+                    this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, message.data);
+                }
+                
+                // Pass output to plan detector
+                if (this.planDetector) {
+                    this.planDetector.processOutput(message.data);
+                }
+                break;
+                
+            case 'exit':
+                this._toolStartPending = false;
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
+                this.terminal.writeln(`\r\n\x1b[33m${this.getAlias('claude')} exited with code ${message.code}\x1b[0m`);
+                
+                // Mark session as error if non-zero exit code
+                if (this.sessionTabManager && this.currentClaudeSessionId && message.code !== 0) {
+                    this.sessionTabManager.markSessionError(this.currentClaudeSessionId, true);
+                }
+                
+                this.showOverlay('startPrompt');
+                this.loadSessions(); // Refresh session list
+                break;
+                
+            case 'error':
+                this._toolStartPending = false;
+                if (this._startToolTimeout) { clearTimeout(this._startToolTimeout); this._startToolTimeout = null; }
+                this.showError(message.message);
+                
+                // Mark session as having an error
+                if (this.sessionTabManager && this.currentClaudeSessionId) {
+                    this.sessionTabManager.markSessionError(this.currentClaudeSessionId, true);
+                }
+                break;
+                
+            case 'info':
+                // Info message - show the start prompt if Claude is not running
+                if (message.message.includes('not running')) {
+                    this.showOverlay('startPrompt');
+                }
+                break;
+                
+            case 'session_deleted': {
+                const deletedId = message.sessionId;
+                const isUserInitiated = this.sessionTabManager
+                    && deletedId
+                    && this.sessionTabManager.isUserDeletion(deletedId);
+                if (isUserInitiated) {
+                    this.sessionTabManager.clearUserDeletion(deletedId);
+                } else {
+                    this.showError(message.message);
+                }
+                this.currentClaudeSessionId = null;
+                this.currentClaudeSessionName = null;
+                this.updateSessionButton('Sessions');
+                if (this.sessionTabManager && deletedId) {
+                    this.sessionTabManager.closeSession(deletedId, { skipServerRequest: true });
+                }
+                // Drop per-session cache entries to prevent unbounded
+                // Map growth in long-running tabs. _repoRootCache and
+                // _repoRootInFlight are lazy-initialised inside
+                // _getRepoRootCached() and may legitimately not exist
+                // yet. See cleanup contract on _sessionWorkingDirs init.
+                if (deletedId) {
+                    if (this._sessionWorkingDirs) this._sessionWorkingDirs.delete(deletedId);
+                    if (this._liveCwd) this._liveCwd.delete(deletedId);
+                    if (this._repoRootCache) this._repoRootCache.delete(deletedId);
+                    if (this._repoRootInFlight) this._repoRootInFlight.delete(deletedId);
+                }
+                this.loadSessions();
+                break;
+            }
+                
+            case 'pong':
+                if (this._heartbeat) this._heartbeat.onPong();
+                break;
+
+            case 'sticky_note_update':
+                this._handleStickyNoteUpdate(message);
+                break;
+
+            case 'artifact_review_opened':
+                if (this._artifactPanel) this._artifactPanel.open(message);
+                break;
+
+            case 'artifact_review_ended':
+                if (this._artifactPanel) this._artifactPanel.endReview(message);
+                break;
+
+            case 'artifact_review_reload':
+                if (this._artifactPanel) this._artifactPanel.reloadReview(message);
+                break;
+
+            case 'artifact_review_dismissed':
+                if (this._artifactPanel) this._artifactPanel.dismissedByServer(message);
+                break;
+
+            // NOTE: artifact_agent_reply WS render was removed (C-P0-1). Agent
+            // replies render via the SSE /events stream only, so they can never
+            // double-render. The server no longer broadcasts that message.
+
+            case 'sticky_notes_model_progress': {
+                const banner = document.getElementById('stickyNotesDownloadBanner');
+                const fill = document.getElementById('stickyNotesDownloadFill');
+                const pct = document.getElementById('stickyNotesDownloadPercent');
+                const percent = message.percent || 0;
+                if (banner) {
+                    if (percent >= 100) {
+                        banner.classList.remove('visible');
+                        banner.style.display = 'none';
+                    } else {
+                        banner.style.display = '';
+                        banner.classList.add('visible');
+                    }
+                }
+                if (fill) fill.style.width = Math.min(percent, 100) + '%';
+                if (pct) pct.textContent = Math.round(percent) + '%';
+                break;
+            }
+
+            case 'sticky_notes_status': {
+                const banner = document.getElementById('stickyNotesDownloadBanner');
+                if (banner && message.status !== 'downloading') {
+                    banner.classList.remove('visible');
+                    banner.style.display = 'none';
+                }
+                // The toolbar toggle appears only once the engine is ready.
+                this._stickyNotesAvailable = message.status === 'ready';
+                this._refreshStickyNoteBtnVisibility();
+                break;
+            }
+
+            case 'cwd_changed': {
+                // OSC 7 in-band CWD update from a Terminal-bridge session
+                // (per ADR-0019). Record the new cwd in the per-session
+                // _liveCwd map; notify the file-browser panel so it can
+                // re-root if its _followsTerminal flag is on for this
+                // session. Defensive against missing fields — silent drop
+                // beats a thrown handler that breaks subsequent frames.
+                if (message.sessionId && message.cwd) {
+                    if (!this._liveCwd) this._liveCwd = new Map();
+                    this._liveCwd.set(message.sessionId, message.cwd);
+                    if (this._fileBrowserPanel &&
+                        typeof this._fileBrowserPanel.notifyCwdChanged === 'function') {
+                        try {
+                            this._fileBrowserPanel.notifyCwdChanged(message.sessionId, message.cwd);
+                        } catch (_) { /* never let a panel error break the WS pipe */ }
+                    }
+                }
+                break;
+            }
+
+            case 'image_upload_complete': {
+                const { filePath } = message;
+                const caption = this._pendingImageCaption || '';
+                // Normalize path: forward slashes for cross-platform safety
+                const normalizedPath = filePath.replace(/\\/g, '/');
+                // Always quote the path to handle spaces
+                const quotedPath = '"' + normalizedPath + '"';
+                // Build input text
+                const inputText = caption ? caption + ' ' + quotedPath : quotedPath;
+                // Send as terminal input with bracketed paste wrapping
+                let normalized = attachClipboardHandler.normalizeLineEndings(inputText);
+                if (this.terminal && this.terminal.modes && this.terminal.modes.bracketedPasteMode) {
+                    normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+                }
+                this.send({ type: 'input', data: normalized });
+                this._pendingImageCaption = null;
+                break;
+            }
+
+            case 'image_upload_error': {
+                console.error('Image upload error:', message.message);
+                // Write error to terminal as fallback notification
+                if (this.terminal) {
+                    this.terminal.write('\r\n\x1b[31m[Image upload error] ' + message.message + '\x1b[0m\r\n');
+                }
+                break;
+            }
+
+            case 'usage_update':
+                this.updateUsageDisplay(
+                    message.sessionStats, 
+                    message.dailyStats, 
+                    message.sessionTimer,
+                    message.analytics,
+                    message.burnRate,
+                    message.plan,
+                    message.limits
+                );
+                break;
+                
+            // Background session activity events (from broadcastSessionActivity)
+            // These handlers must never touch this.terminal or this.showOverlay
+            case 'session_activity':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    this.sessionTabManager.markSessionActivity(message.sessionId, true, '');
+                }
+                break;
+
+            case 'session_exit':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    if (message.code !== 0) {
+                        this.sessionTabManager.markSessionError(message.sessionId, true);
+                    }
+                    this.sessionTabManager.updateTabStatus(message.sessionId, 'idle');
+                }
+                this.loadSessions();
+                break;
+
+            case 'session_error':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    this.sessionTabManager.markSessionError(message.sessionId, true);
+                }
+                break;
+
+            case 'session_started':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    this.sessionTabManager.updateTabStatus(message.sessionId, 'active');
+                }
+                this.loadSessions();
+                break;
+
+            case 'session_stopped':
+                if (this.sessionTabManager && message.sessionId &&
+                    message.sessionId !== this.currentClaudeSessionId) {
+                    this.sessionTabManager.updateTabStatus(message.sessionId, 'idle');
+                }
+                this.loadSessions();
+                break;
+
+            // VS Code Tunnel events
+            case 'vscode_tunnel_started':
+            case 'vscode_tunnel_status':
+            case 'vscode_tunnel_auth':
+            case 'vscode_tunnel_error':
+                if (this._vscodeTunnelUI) {
+                    this._vscodeTunnelUI.handleMessage(message);
+                } else if (window.VSCodeTunnelUI) {
+                    this._vscodeTunnelUI = new window.VSCodeTunnelUI({ app: this });
+                    this._vscodeTunnelUI.handleMessage(message);
+                }
+                break;
+
+            // App-level tunnel events
+            case 'app_tunnel_status':
+            case 'app_tunnel_restarting':
+                if (this._appTunnelUI) {
+                    this._appTunnelUI.handleMessage(message);
+                } else if (window.AppTunnelUI) {
+                    this._appTunnelUI = new window.AppTunnelUI({ app: this });
+                    this._appTunnelUI.handleMessage(message);
+                }
+                // Reset reconnect budget on tunnel restart
+                if (message.type === 'app_tunnel_restarting') {
+                    this.reconnectAttempts = 0;
+                }
+                break;
+
+            // Voice input events
+            case 'voice_transcription':
+            case 'voice_transcription_error':
+            case 'voice_model_progress':
+            case 'voice_status':
+                this._handleVoiceMessage(message);
+                break;
+
+            // Server memory and restart events
+            case 'memory_warning':
+                this._showMemoryWarning(message);
+                break;
+
+            case 'server_restarting':
+                console.log('[server_restarting] Server restart imminent');
+                this._serverRestarting = true;
+                this._restartReconnectAttempts = 0;
+                this.reconnectAttempts = 0;
+                this.updateStatus('Restarting \u2014 please wait\u2026');
+                // Start a 60-second timeout — if server doesn't come back, show error
+                if (this._restartTimeout) clearTimeout(this._restartTimeout);
+                this._restartTimeout = setTimeout(() => {
+                    if (this._serverRestarting) {
+                        this._serverRestarting = false;
+                        this.updateStatus('Disconnected');
+                        this.showError('The server did not come back after restarting.\n\n\u2022 Refresh this page to try reconnecting\n\u2022 If the problem persists, restart the server manually with \u201cnpm start\u201d');
+                    }
+                }, 60000);
+                break;
+
+            default:
+                console.log('Unknown message type:', message.type);
+        }
+    }
+
+    renderToolCards() {
+        const container = document.getElementById('toolCards');
+        if (!container) return;
+        container.innerHTML = '';
+
+        const toolMeta = {
+            terminal: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>',
+                gradient: 'linear-gradient(135deg, #52525b, #71717a)',
+                desc: 'System shell (bash / powershell)',
+            },
+            claude: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 16.8l-6.2 4.5 2.4-7.4L2 9.4h7.6z"/></svg>',
+                gradient: 'linear-gradient(135deg, #d97706, #b45309)',
+                desc: 'AI coding assistant by Anthropic',
+            },
+            codex: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+                gradient: 'linear-gradient(135deg, #059669, #047857)',
+                desc: 'AI coding agent by OpenAI',
+            },
+            copilot: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="12" r="3"/><circle cx="15" cy="12" r="3"/><path d="M9 9V6a3 3 0 0 1 6 0v3"/></svg>',
+                gradient: 'linear-gradient(135deg, #6366f1, #4f46e5)',
+                desc: 'AI pair programmer by GitHub',
+            },
+            gemini: {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2C6.5 8 6.5 16 12 22c5.5-6 5.5-14 0-20z"/><path d="M2 12c6-5.5 14-5.5 20 0-6 5.5-14 5.5-20 0z"/></svg>',
+                gradient: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                desc: 'AI coding assistant by Google',
+            }
+        };
+
+        // Sort: terminal first, then available tools, then unavailable
+        const sortedEntries = Object.entries(this.tools)
+            .filter(([, tool]) => tool.alias)
+            .sort((a, b) => {
+                if (a[0] === 'terminal') return -1;
+                if (b[0] === 'terminal') return 1;
+                if (a[1].available && !b[1].available) return -1;
+                if (!a[1].available && b[1].available) return 1;
+                return 0;
+            });
+
+        let cardIndex = 0;
+        let addedDivider = false;
+        for (const [toolId, tool] of sortedEntries) {
+            const meta = toolMeta[toolId] || {
+                icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+                gradient: 'linear-gradient(135deg, #6b7280, #4b5563)',
+                desc: '',
+            };
+
+            // Add divider between available and unavailable tools
+            if (!tool.available && !addedDivider) {
+                const hasAvailable = sortedEntries.some(([, t]) => t.available);
+                if (hasAvailable) {
+                    const divider = document.createElement('div');
+                    divider.className = 'tool-cards-divider';
+                    divider.innerHTML = '<span>More tools</span>';
+                    container.appendChild(divider);
+                    addedDivider = true;
+                }
+            }
+
+            const isInstallable = !tool.available && toolId !== 'terminal';
+            const card = document.createElement('div');
+            card.className = 'tool-card' + (tool.available ? '' : (isInstallable ? ' installable' : ' disabled'));
+            card.dataset.tool = toolId;
+            card.style.animationDelay = `${cardIndex * 50}ms`;
+            card.classList.add('tool-card-enter');
+
+            // Escape alias to prevent XSS from server-provided config
+            const safeAlias = (tool.alias || '').replace(/[&<>"']/g, c =>
+                ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+            if (tool.available) {
+                card.setAttribute('tabindex', '0');
+                card.setAttribute('role', 'button');
+                card.setAttribute('aria-label', `Start ${safeAlias} — ${meta.desc}`);
+            } else if (isInstallable) {
+                card.setAttribute('tabindex', '0');
+                card.setAttribute('role', 'button');
+                card.setAttribute('aria-expanded', 'false');
+                card.setAttribute('aria-label', `${safeAlias} — Not installed. Click to see install options.`);
+            } else {
+                card.setAttribute('tabindex', '-1');
+                card.setAttribute('role', 'button');
+                card.setAttribute('aria-disabled', 'true');
+                card.setAttribute('aria-label', `${safeAlias} — Not installed`);
+            }
+
+            const statusHtml = tool.available
+                ? '<svg class="tool-card-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>'
+                : `<span class="tool-card-status">Not installed${isInstallable ? ' <span class="expand-chevron">&#x25BE;</span>' : ''}</span>`;
+
+            card.innerHTML = `
+                <div class="tool-card-icon" style="background: ${meta.gradient}">${meta.icon}</div>
+                <div class="tool-card-info">
+                    <div class="tool-card-name">${safeAlias}</div>
+                    <div class="tool-card-desc">${meta.desc}</div>
+                </div>
+                ${statusHtml}
+            `;
+
+            if (tool.available) {
+                card.addEventListener('click', () => this.startToolSession(toolId));
+                card.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.startToolSession(toolId);
+                    }
+                });
+            } else if (isInstallable) {
+                card.addEventListener('click', () => this.toggleInstallExpansion(toolId, card));
+                card.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        this.toggleInstallExpansion(toolId, card);
+                    }
+                });
+            }
+
+            container.appendChild(card);
+
+            // Create expansion panel (hidden by default)
+            if (isInstallable) {
+                const expansion = document.createElement('div');
+                expansion.className = 'tool-card-expansion';
+                expansion.id = `install-expansion-${toolId}`;
+                container.appendChild(expansion);
+            }
+
+            cardIndex++;
+        }
+    }
+
+    toggleInstallExpansion(toolId, card) {
+        const expansion = document.getElementById(`install-expansion-${toolId}`);
+        if (!expansion) return;
+
+        const isExpanded = card.getAttribute('aria-expanded') === 'true';
+
+        // Collapse any other expanded cards (accordion)
+        document.querySelectorAll('.tool-card.installable[aria-expanded="true"]').forEach(otherCard => {
+            if (otherCard !== card) {
+                otherCard.setAttribute('aria-expanded', 'false');
+                const otherId = otherCard.dataset.tool;
+                const otherExpansion = document.getElementById(`install-expansion-${otherId}`);
+                if (otherExpansion) otherExpansion.classList.remove('expanded');
+            }
+        });
+
+        if (isExpanded) {
+            card.setAttribute('aria-expanded', 'false');
+            expansion.classList.remove('expanded');
+        } else {
+            card.setAttribute('aria-expanded', 'true');
+            this.renderInstallExpansion(toolId, expansion);
+            expansion.classList.add('expanded');
+        }
+    }
+
+    renderInstallExpansion(toolId, container) {
+        const tool = this.tools[toolId];
+        const installInfo = tool && tool.install;
+        const prereqs = this._configPrerequisites;
+
+        if (!installInfo) {
+            container.innerHTML = '<p style="color: var(--text-muted); font-size: var(--text-sm);">Install information unavailable.</p>';
+            return;
+        }
+
+        let html = '';
+
+        // Prerequisite warnings
+        if (prereqs && !prereqs.npm.available) {
+            const npmMethods = installInfo.methods.filter(m => m.requiresNpm);
+            if (npmMethods.length > 0) {
+                html += `<div class="install-prereq-warning">
+                    <span>&#x26A0;</span>
+                    <span>npm is not available. <a href="https://nodejs.org/" target="_blank" rel="noopener">Install Node.js</a> to enable npm-based installation.</span>
+                </div>`;
+            }
+        } else if (prereqs && prereqs.npm.available && !prereqs.npm.userMode) {
+            html += `<div class="install-prereq-warning">
+                <span>&#x26A0;</span>
+                <span>npm global installs may require admin. Run <code>npm config set prefix ~/.npm-global</code> first.</span>
+            </div>`;
+        }
+
+        // Install methods
+        for (const method of installInfo.methods) {
+            if (method.command) {
+                const escapedCmd = this._escapeHtml(method.command);
+                html += `<div class="install-cmd-block">
+                    <code>${escapedCmd}</code>
+                    <button class="btn-copy" data-cmd="${escapedCmd}" title="Copy command">Copy</button>
+                </div>`;
+                if (method.note) {
+                    html += `<div class="install-method-note">${this._escapeHtml(method.note)}</div>`;
+                }
+            } else if (method.url) {
+                html += `<div class="install-cmd-block">
+                    <code><a href="${this._escapeHtml(method.url)}" target="_blank" rel="noopener">${this._escapeHtml(method.label)}</a></code>
+                    <button class="btn-copy" data-cmd="${this._escapeHtml(method.url)}" title="Copy URL">Copy</button>
+                </div>`;
+                if (method.note) {
+                    html += `<div class="install-method-note">${this._escapeHtml(method.note)}</div>`;
+                }
+            }
+        }
+
+        // Auth steps
+        if (installInfo.authSteps && installInfo.authSteps.length > 0) {
+            html += '<div class="install-auth-steps"><div class="auth-label">After installing</div>';
+            for (const step of installInfo.authSteps) {
+                if (step.type === 'command') {
+                    html += `<div class="install-auth-step">
+                        <span>${this._escapeHtml(step.label)}:</span>
+                        <code>${this._escapeHtml(step.command)}</code>
+                    </div>`;
+                } else if (step.type === 'url') {
+                    html += `<div class="install-auth-step">
+                        <a href="${this._escapeHtml(step.url)}" target="_blank" rel="noopener">${this._escapeHtml(step.label)}</a>
+                    </div>`;
+                } else if (step.type === 'env') {
+                    html += `<div class="install-auth-step">
+                        <span>${this._escapeHtml(step.label)}:</span>
+                        <code>${this._escapeHtml(step.command || step.variable)}</code>
+                    </div>`;
+                } else if (step.type === 'info') {
+                    html += `<div class="install-auth-step">
+                        <span>${this._escapeHtml(step.label)}</span>
+                    </div>`;
+                }
+            }
+            html += '</div>';
+        }
+
+        // Action buttons
+        const primaryMethod = installInfo.methods.find(m => m.command);
+        html += '<div class="install-actions">';
+        if (primaryMethod) {
+            html += `<button class="btn-install-terminal" data-tool="${toolId}" data-method="${primaryMethod.id}">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                Open Terminal
+            </button>`;
+        }
+        html += `<button class="btn-verify" data-tool="${toolId}">Verify Install</button>`;
+        html += '</div>';
+
+        // Docs link
+        if (installInfo.docsUrl) {
+            html += `<div class="install-docs-link"><a href="${this._escapeHtml(installInfo.docsUrl)}" target="_blank" rel="noopener">Documentation &#x2197;</a></div>`;
+        }
+
+        container.innerHTML = html;
+
+        // Wire up event handlers
+        container.querySelectorAll('.btn-copy').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const cmd = btn.dataset.cmd;
+                navigator.clipboard.writeText(cmd).then(() => {
+                    btn.textContent = 'Copied!';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.textContent = 'Copy';
+                        btn.classList.remove('copied');
+                    }, 2000);
+                });
+            });
+        });
+
+        const terminalBtn = container.querySelector('.btn-install-terminal');
+        if (terminalBtn) {
+            terminalBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._pendingInstallToolId = toolId;
+                this.send({
+                    type: 'open_install_terminal',
+                    toolId: toolId,
+                    method: terminalBtn.dataset.method,
+                    cols: this.terminal ? this.terminal.cols : 80,
+                    rows: this.terminal ? this.terminal.rows : 24,
+                });
+            });
+        }
+
+        const verifyBtn = container.querySelector('.btn-verify');
+        if (verifyBtn) {
+            verifyBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                verifyBtn.textContent = 'Checking...';
+                verifyBtn.disabled = true;
+                try {
+                    const resp = await fetch(`/api/tools/${toolId}/recheck`, { method: 'POST' });
+                    const result = await resp.json();
+                    if (result.available) {
+                        verifyBtn.textContent = 'Installed!';
+                        verifyBtn.classList.add('success');
+                        // Refresh the config and re-render cards
+                        setTimeout(() => this.refreshConfig(), 500);
+                    } else {
+                        verifyBtn.textContent = 'Not found';
+                        setTimeout(() => {
+                            verifyBtn.textContent = 'Verify Install';
+                            verifyBtn.disabled = false;
+                        }, 2000);
+                    }
+                } catch {
+                    verifyBtn.textContent = 'Error';
+                    setTimeout(() => {
+                        verifyBtn.textContent = 'Verify Install';
+                        verifyBtn.disabled = false;
+                    }, 2000);
+                }
+            });
+        }
+    }
+
+    async refreshConfig() {
+        try {
+            const resp = await this.authFetch('/api/config');
+            const config = await resp.json();
+            this.tools = config.tools || {};
+            this.voiceInputConfig = config.voiceInput || null;
+            this._configPrerequisites = config.prerequisites || null;
+            this.renderToolCards();
+        } catch {
+            // Silently fail — config will refresh on next page load
+        }
+    }
+
+    _escapeHtml(str) {
+        return (str || '').replace(/[&<>"']/g, c =>
+            ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    }
+
+    startToolSession(toolId) {
+        if (!this.currentClaudeSessionId) {
+            console.warn('[startToolSession] No active session, cannot start tool:', toolId);
+            return;
+        }
+        this._toolStartPending = true;
+        const settings = JSON.parse(localStorage.getItem('cc-web-settings') || '{}');
+        const dangerousMode = settings.dangerousMode || false;
+        const options = {};
+        if (dangerousMode && this.tools[toolId]?.hasDangerousMode) {
+            options.dangerouslySkipPermissions = true;
+        }
+        this.showOverlay('loadingSpinner');
+        const toolAlias = this.tools[toolId]?.alias || toolId;
+        const loadingText = options.dangerouslySkipPermissions
+            ? `Starting ${toolAlias} (skipping permissions)...`
+            : `Starting ${toolAlias}...`;
+        document.getElementById('loadingSpinner').querySelector('p').textContent = loadingText;
+
+        // Safety net: dismiss spinner if server never responds
+        if (this._startToolTimeout) clearTimeout(this._startToolTimeout);
+        this._startToolTimeout = setTimeout(() => {
+            const overlay = document.getElementById('overlay');
+            const spinner = document.getElementById('loadingSpinner');
+            if (overlay && overlay.style.display !== 'none' &&
+                spinner && spinner.style.display !== 'none') {
+                const toolCmd = toolId === 'terminal' ? 'shell' : toolId;
+                this.showError(`${toolAlias} did not start within 45 seconds.\n\nTroubleshooting:\n\u2022 Check that ${toolAlias} CLI is installed (run '${toolCmd} --version')\n\u2022 Ensure it's in your PATH\n\u2022 Try restarting the session`);
+            }
+        }, 45000);
+
+        // Inform plan detector which tool is being started so it uses the
+        // correct detection heuristics (Claude vs Copilot vs Codex).
+        if (this.planDetector) {
+            this.planDetector.setTool(toolId);
+        }
+
+        this.send({
+            type: `start_${toolId}`,
+            options,
+            cols: this.terminal ? this.terminal.cols : 80,
+            rows: this.terminal ? this.terminal.rows : 24
+        });
+    }
+
+    clearTerminal() {
+        this.terminal.clear();
+    }
+
+    toggleMobileMenu() {
+        const mobileMenu = document.getElementById('mobileMenu');
+        const hamburgerBtn = document.getElementById('hamburgerBtn');
+        mobileMenu.classList.toggle('active');
+        hamburgerBtn.classList.toggle('active');
+    }
+
+    closeMobileMenu() {
+        const mobileMenu = document.getElementById('mobileMenu');
+        const hamburgerBtn = document.getElementById('hamburgerBtn');
+        mobileMenu.classList.remove('active');
+        hamburgerBtn.classList.remove('active');
+    }
+
+    _loadGpuRenderer() {
+        // The Canvas renderer was removed in xterm 6.0. Mobile keeps using the
+        // reliable default DOM renderer (WebGL was historically avoided there for
+        // context-loss/memory reasons); desktop uses WebGL and falls back to the
+        // DOM renderer on failure or context loss.
+        if (this.isMobile) {
+            console.log('[Renderer] Mobile detected, using DOM renderer for reliability');
+            return;
+        }
+        if (typeof WebglAddon !== 'undefined') {
+            try {
+                this.webglAddon = new WebglAddon.WebglAddon();
+                this.webglAddon.onContextLoss(() => {
+                    const addon = this.webglAddon;
+                    this.webglAddon = null;
+                    try { if (addon) addon.dispose(); } catch (_) {}
+                    console.log('[Renderer] WebGL context lost, using DOM renderer');
+                });
+                this.terminal.loadAddon(this.webglAddon);
+            } catch (e) {
+                this.webglAddon = null;
+                console.log('[Renderer] WebGL unavailable, using DOM renderer');
+            }
+        } else {
+            console.log('[Renderer] WebGL unavailable, using DOM renderer');
+        }
+    }
+
+    fitTerminal() {
+        if (this._fitting) return;
+        if (this.fitAddon) {
+            this._fitting = true;
+            try {
+                this.fitAddon.fit();
+
+                // Mobile needs fewer adjustments — no scrollbar, thinner tab bar
+                const rowAdjust = this.isMobile ? 1 : 2;
+                const colAdjust = this.isMobile ? 0 : 6;
+                const adjustedRows = Math.max(1, this.terminal.rows - rowAdjust);
+                const adjustedCols = Math.max(1, this.terminal.cols - colAdjust);
+                if (adjustedRows !== this.terminal.rows || adjustedCols !== this.terminal.cols) {
+                    this.terminal.resize(adjustedCols, adjustedRows);
+                }
+
+                // On mobile, ensure terminal doesn't exceed viewport width
+                if (this.isMobile) {
+                    const terminalElement = document.querySelector('.xterm');
+                    if (terminalElement) {
+                        const viewportWidth = window.innerWidth;
+                        const currentWidth = terminalElement.offsetWidth;
+
+                        if (currentWidth > viewportWidth) {
+                            // Reduce columns to fit viewport
+                            const charWidth = currentWidth / this.terminal.cols;
+                            const maxCols = Math.floor((viewportWidth - 20) / charWidth);
+                            this.terminal.resize(maxCols, this.terminal.rows);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Error fitting terminal:', error);
+            } finally {
+                this._fitting = false;
+            }
+        }
+    }
+
+    setupTerminalSearch() {
+        const bar = document.getElementById('terminalSearchBar');
+        const input = document.getElementById('termSearchInput');
+        const countEl = document.getElementById('termSearchCount');
+        const prevBtn = document.getElementById('termSearchPrev');
+        const nextBtn = document.getElementById('termSearchNext');
+        const caseBtn = document.getElementById('termSearchCase');
+        const regexBtn = document.getElementById('termSearchRegex');
+        const closeBtn = document.getElementById('termSearchClose');
+        if (!bar || !input || !this.searchAddon) return;
+
+        let caseSensitive = false;
+        let useRegex = false;
+
+        const doSearch = (direction = 'next') => {
+            const query = input.value;
+            if (!query) { countEl.textContent = ''; return; }
+            const opts = { caseSensitive, regex: useRegex };
+            if (direction === 'prev') {
+                this.searchAddon.findPrevious(query, opts);
+            } else {
+                this.searchAddon.findNext(query, opts);
+            }
+        };
+
+        const openSearch = () => {
+            bar.style.display = 'flex';
+            input.focus();
+            input.select();
+        };
+
+        const closeSearch = () => {
+            bar.style.display = 'none';
+            input.value = '';
+            countEl.textContent = '';
+            this.searchAddon.clearDecorations();
+            this.terminal.focus();
+        };
+
+        // Ctrl+F opens search (capture phase to intercept before xterm)
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+                e.preventDefault();
+                e.stopPropagation();
+                openSearch();
+            }
+        }, true);
+
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                doSearch(e.shiftKey ? 'prev' : 'next');
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                closeSearch();
+            }
+        });
+
+        input.addEventListener('input', () => doSearch('next'));
+        prevBtn.addEventListener('click', () => doSearch('prev'));
+        nextBtn.addEventListener('click', () => doSearch('next'));
+        closeBtn.addEventListener('click', () => closeSearch());
+
+        caseBtn.addEventListener('click', () => {
+            caseSensitive = !caseSensitive;
+            caseBtn.classList.toggle('active', caseSensitive);
+            caseBtn.setAttribute('aria-pressed', String(caseSensitive));
+            doSearch('next');
+        });
+
+        regexBtn.addEventListener('click', () => {
+            useRegex = !useRegex;
+            regexBtn.classList.toggle('active', useRegex);
+            regexBtn.setAttribute('aria-pressed', String(useRegex));
+            doSearch('next');
+        });
+    }
+
+    /**
+     * Wire up clickable file paths in a terminal:
+     *   1. xterm registerLinkProvider for hover-underline + click-to-open
+     *      (synchronous regex only — NO network I/O on render).
+     *   2. TerminalPathDetector for the right-click "Open in File Viewer /
+     *      Edit / Download" context menu (selection-driven).
+     *
+     * Safe to call multiple times for the same terminal — each call returns a
+     * disposable that we track on the terminal object so we can clean up if
+     * the terminal is destroyed.
+     */
+    _setupTerminalLinking(terminal, getSessionId) {
+        if (!terminal || !window.fileBrowser) return;
+
+        // The link-provider callbacks need to know WHICH session the
+        // terminal belongs to. The main terminal follows the app-global
+        // active session (changes on tab switch). Split panes pass
+        // `() => split.sessionId` so a click in the split resolves
+        // against the SPLIT's working directory, not whichever tab is
+        // foregrounded in the main terminal. (Bug: prior code always
+        // read this.currentClaudeSessionId, which collapsed all panes
+        // onto the foreground session — clicks in a backgrounded split
+        // resolved against the wrong workingDir → 404 or silent
+        // wrong-file open.)
+        const sessionIdSource = (typeof getSessionId === 'function')
+            ? getSessionId
+            : () => this.currentClaudeSessionId;
+
+        // 1) Link provider — clickable links for paths/filenames in output.
+        if (typeof window.fileBrowser.attachLinkProvider === 'function' &&
+            typeof terminal.registerLinkProvider === 'function' &&
+            !terminal._fbLinkProvider) {
+            try {
+                terminal._fbLinkProvider = window.fileBrowser.attachLinkProvider({
+                    terminal: terminal,
+                    authFetch: (url, opts) => this.authFetch(url, opts),
+                    openInViewer: (path, line, col) => this.openFileInViewer(path, line, col),
+                    // Part C resolver-chain callbacks. liveCwd is the OSC 7
+                    // tracked cwd (null for non-Terminal-bridge sessions);
+                    // workingDir is the session spawn dir; repoRoot is the
+                    // cached git toplevel for the active session.
+                    //
+                    // NOTE: the legacy `getCwd` callback was intentionally
+                    // removed from this wiring (architect Layer-2 rip).
+                    // attachLinkProvider only falls back to `getCwd` when
+                    // NEITHER getLiveCwd nor getWorkingDir was supplied —
+                    // a condition we never hit. Wiring it here would have
+                    // re-introduced the silent global-folder-picker
+                    // fallback for any branch that returns null from
+                    // getWorkingDir (e.g. very first paint before
+                    // _sessionWorkingDirs is populated).
+                    getLiveCwd: () => {
+                        const sid = sessionIdSource();
+                        if (!sid || !this._liveCwd) return null;
+                        return this._liveCwd.get(sid) || null;
+                    },
+                    getWorkingDir: () => {
+                        // getSessionWorkingDir returns null on miss
+                        // (NOT currentFolderPath) — that's the whole
+                        // point of the Layer 2 fix.
+                        return this.getSessionWorkingDir(sessionIdSource());
+                    },
+                    getRepoRoot: () => this._getRepoRootCached(sessionIdSource()),
+                    // Layer 5 (architect-spec'd structured failure toast):
+                    // bridgeType picks the right copy block when the
+                    // resolver returns no hit. Read from claudeSessions[]
+                    // — populated by /api/sessions/list (with `agent`
+                    // field) on init + after each session/tool event.
+                    // Returns null if claudeSessions hasn't loaded yet
+                    // or the session isn't found; resolverFailure treats
+                    // null as Block C per spec.
+                    getBridgeType: () => {
+                        const sid = sessionIdSource();
+                        if (!sid || !this.claudeSessions) return null;
+                        const s = this.claudeSessions.find(x => x.id === sid);
+                        return (s && s.agent) ? s.agent : null;
+                    },
+                    onAmbiguous: (info) => this._showAmbiguityPicker(info),
+                    feedback: window.feedback,
+                });
+            } catch (err) {
+                console.warn('[file-browser] link provider attach failed:', err);
+            }
+        }
+
+        // 2) Right-click selection-based context menu (lazy panel via getter).
+        if (typeof window.fileBrowser.TerminalPathDetector === 'function' &&
+            !terminal._fbPathDetector) {
+            try {
+                terminal._fbPathDetector = new window.fileBrowser.TerminalPathDetector({
+                    getFileBrowserPanel: () => this._ensureFileBrowser(),
+                    authFetch: (url, opts) => this.authFetch(url, opts),
+                    terminal: terminal,
+                    app: this,
+                    // Same sessionIdSource thread as the link provider —
+                    // splits' right-click "Open in File Viewer" / "Edit"
+                    // / "Download" now uses the SPLIT's session id, not
+                    // app-global currentClaudeSessionId. (Layer 4 audit
+                    // ask from architect on the detector path.)
+                    getSessionId: sessionIdSource,
+                });
+                terminal._fbPathDetector.init();
+            } catch (err) {
+                console.warn('[file-browser] path detector init failed:', err);
+            }
+        }
+
+        // 3) Lifecycle: on terminal disposal, release the link provider, the
+        //    path-detector handlers, and the floating menu DOM node. Without
+        //    this, splitting + closing terminals leaks document-level
+        //    listeners and orphaned <div class="fb-terminal-context-menu">
+        //    nodes (peer-review MEDIUM-1 on commit 9a05963).
+        if (typeof terminal.onDispose === 'function' && !terminal._fbLinkingDisposeWired) {
+            terminal._fbLinkingDisposeWired = true;
+            try {
+                terminal.onDispose(() => {
+                    try {
+                        if (terminal._fbLinkProvider && typeof terminal._fbLinkProvider.dispose === 'function') {
+                            terminal._fbLinkProvider.dispose();
+                        }
+                    } catch (_) {}
+                    try {
+                        if (terminal._fbPathDetector && typeof terminal._fbPathDetector.destroy === 'function') {
+                            terminal._fbPathDetector.destroy();
+                        }
+                    } catch (_) {}
+                    terminal._fbLinkProvider = null;
+                    terminal._fbPathDetector = null;
+                });
+            } catch (err) {
+                console.warn('[file-browser] onDispose wiring failed:', err);
+            }
+        }
+    }
+
+    setupTerminalContextMenu() {
+        const menu = document.getElementById('termContextMenu');
+        if (!menu) return;
+
+        // Track which terminal triggered the context menu (supports split panes)
+        let activeTerminal = null;
+        let activeSendFn = null;
+        let activeSocket = null;
+
+        const menuItems = Array.from(menu.querySelectorAll('.ctx-item'));
+
+        // Helper: get the terminal and sendFn for a right-click target
+        const resolveTerminal = (target) => {
+            // Check if click is inside a split pane terminal
+            const splitPane = target.closest('.split-pane');
+            if (splitPane && this.splitContainer) {
+                const index = parseInt(splitPane.dataset.splitIndex, 10);
+                const split = this.splitContainer.splits[index];
+                if (split && split.terminal) {
+                    return {
+                        terminal: split.terminal,
+                        socket: split.socket,
+                        sendFn: (data) => {
+                            if (split.socket && split.socket.readyState === WebSocket.OPEN) {
+                                split.socket.send(JSON.stringify({ type: 'input', data }));
+                            }
+                        }
+                    };
+                }
+            }
+            // Default: main terminal
+            return {
+                terminal: this.terminal,
+                socket: this.socket,
+                sendFn: (data) => {
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.send({ type: 'input', data });
+                    }
+                }
+            };
+        };
+
+        // Helper: send paste data with line ending normalization + bracketed paste
+        const sendPasteData = (text, sendFn, terminal) => {
+            let normalized = attachClipboardHandler.normalizeLineEndings(text);
+            if (terminal.modes && terminal.modes.bracketedPasteMode) {
+                normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
+            }
+            sendFn(normalized);
+        };
+
+        // Helper: show clipboard error via inline badge
+        const showClipboardError = () => {
+            if (window.showClipboardError) {
+                window.showClipboardError('Clipboard denied');
+            }
+        };
+
+        // Right-click handler — listen on <main> for event delegation (covers splits)
+        const mainEl = document.querySelector('.main');
+        mainEl.addEventListener('contextmenu', (e) => {
+            // Only trigger on terminal areas (xterm elements)
+            if (!e.target.closest('.xterm')) return;
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            const resolved = resolveTerminal(e.target);
+            activeTerminal = resolved.terminal;
+            activeSendFn = resolved.sendFn;
+            activeSocket = resolved.socket;
+
+            // Position menu: bottom sheet on mobile, cursor-anchored on desktop
+            if (this.isMobile) {
+                menu.style.left = '';
+                menu.style.top = '';
+                menu.style.display = 'block';
+            } else {
+                const x = Math.min(e.clientX, window.innerWidth - menu.offsetWidth - 8);
+                const y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 8);
+                menu.style.left = x + 'px';
+                menu.style.top = y + 'px';
+                menu.style.display = 'block';
+            }
+
+            // Disable copy if no selection
+            const copyItem = menu.querySelector('[data-action="copy"]');
+            if (copyItem) {
+                const hasSelection = activeTerminal.hasSelection();
+                copyItem.classList.toggle('disabled', !hasSelection);
+                copyItem.setAttribute('aria-disabled', !hasSelection);
+            }
+
+            // Disable "Paste Image" if clipboard.read() is not available
+            const pasteImageItem = menu.querySelector('[data-action="pasteImage"]');
+            if (pasteImageItem) {
+                if (!navigator.clipboard || typeof navigator.clipboard.read !== 'function') {
+                    pasteImageItem.classList.add('disabled');
+                } else {
+                    pasteImageItem.classList.remove('disabled');
+                }
+            }
+
+            // Focus first non-disabled item for keyboard navigation
+            const firstEnabled = menuItems.find(el => !el.classList.contains('disabled'));
+            if (firstEnabled) firstEnabled.focus();
+        });
+
+        // Handle menu item clicks
+        menu.addEventListener('click', async (e) => {
+            const item = e.target.closest('.ctx-item');
+            if (!item || item.classList.contains('disabled')) return;
+            const action = item.dataset.action;
+            if (!action) return;
+            menu.style.display = 'none';
+
+            switch (action) {
+                case 'copy': {
+                    const sel = activeTerminal.getSelection();
+                    if (sel) {
+                        try {
+                            await navigator.clipboard.writeText(sel);
+                            if (window.attachClipboardHandler?.showCopiedToast) {
+                                window.attachClipboardHandler.showCopiedToast();
+                            }
+                        } catch { showClipboardError(); }
+                    }
+                    break;
+                }
+                case 'paste': {
+                    try {
+                        const text = await navigator.clipboard.readText();
+                        if (text) sendPasteData(text, activeSendFn, activeTerminal);
+                    } catch { showClipboardError(); }
+                    break;
+                }
+                case 'pastePlain': {
+                    try {
+                        const text = await navigator.clipboard.readText();
+                        if (text) sendPasteData(text, activeSendFn, activeTerminal);
+                    } catch { showClipboardError(); }
+                    break;
+                }
+                case 'pasteImage': {
+                    try {
+                        if (navigator.clipboard && typeof navigator.clipboard.read === 'function') {
+                            const items = await navigator.clipboard.read();
+                            for (const item of items) {
+                                const imageType = item.types.find(t =>
+                                    ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(t)
+                                );
+                                if (imageType) {
+                                    const blob = await item.getType(imageType);
+                                    window.imageHandler.showImagePreview(blob, (imageData) => {
+                                        this._uploadImage(imageData);
+                                    });
+                                    return;
+                                }
+                            }
+                            // No image found
+                            if (activeTerminal) {
+                                activeTerminal.write('\r\n\x1b[33mNo image found in clipboard.\x1b[0m\r\n');
+                            }
+                        } else {
+                            if (activeTerminal) {
+                                activeTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach File instead.\x1b[0m\r\n');
+                            }
+                        }
+                    } catch (err) {
+                        console.error('Paste Image failed:', err);
+                    }
+                    break;
+                }
+                case 'attachImage': {
+                    // Generalized to any file type (action id is historical).
+                    if (window.genericDropHandler
+                            && typeof window.genericDropHandler.triggerFilePicker === 'function') {
+                        window.genericDropHandler.triggerFilePicker(
+                            (files) => this._attachFiles(files),
+                            { multiple: true }
+                        );
+                    } else if (window.imageHandler) {
+                        window.imageHandler.triggerFilePicker((imageData) => {
+                            this._uploadImage(imageData);
+                        });
+                    }
+                    break;
+                }
+                case 'selectAll':
+                    activeTerminal.selectAll();
+                    break;
+                case 'clear':
+                    activeTerminal.clear();
+                    break;
+            }
+            if (activeTerminal) activeTerminal.focus();
+        });
+
+        // Keyboard navigation within menu
+        menu.addEventListener('keydown', (e) => {
+            const items = menuItems.filter(el => !el.classList.contains('disabled'));
+            const currentIndex = items.indexOf(document.activeElement);
+
+            switch (e.key) {
+                case 'ArrowDown':
+                    e.preventDefault();
+                    items[(currentIndex + 1) % items.length].focus();
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    items[(currentIndex - 1 + items.length) % items.length].focus();
+                    break;
+                case 'Home':
+                    e.preventDefault();
+                    if (items.length) items[0].focus();
+                    break;
+                case 'End':
+                    e.preventDefault();
+                    if (items.length) items[items.length - 1].focus();
+                    break;
+                case 'Enter':
+                case ' ':
+                    e.preventDefault();
+                    if (document.activeElement.classList.contains('ctx-item')) {
+                        document.activeElement.click();
+                    }
+                    break;
+                case 'Escape':
+                case 'Tab':
+                    e.preventDefault();
+                    menu.style.display = 'none';
+                    if (activeTerminal) activeTerminal.focus();
+                    break;
+            }
+        });
+
+        // Dismiss menu on click outside
+        document.addEventListener('click', (e) => {
+            if (!menu.contains(e.target)) menu.style.display = 'none';
+        });
+    }
+
+    updateStatus(status) {
+        console.log('Status:', status);
+        const indicator = document.getElementById('connectionStatus');
+        if (indicator) {
+            const isConnected = status === 'Connected';
+            const isReconnecting = status === 'Connecting...' || status === 'Reconnecting...';
+            if (isConnected) {
+                indicator.className = 'connection-status connected';
+                indicator.title = 'Connected to server';
+                indicator.setAttribute('aria-label', 'Connected to server');
+            } else if (isReconnecting) {
+                indicator.className = 'connection-status reconnecting';
+                indicator.title = 'Reconnecting...';
+                indicator.setAttribute('aria-label', 'Reconnecting to server');
+            } else {
+                indicator.className = 'connection-status disconnected';
+                indicator.title = 'Disconnected';
+                indicator.setAttribute('aria-label', 'Disconnected from server');
+            }
+        }
+        const srAnnounce = document.getElementById('srAnnounce');
+        if (srAnnounce) srAnnounce.textContent = status;
+    }
+
+    updateWorkingDir(dir) {
+        // Working dir display removed with header - shown in tab titles
+        console.log('Working directory:', dir);
+    }
+
+    showOverlay(contentId) {
+        this._overlayExplicitlyHidden = false;
+        const overlay = document.getElementById('overlay');
+        const contents = ['loadingSpinner', 'startPrompt', 'errorMessage'];
+
+        contents.forEach(id => {
+            document.getElementById(id).style.display = id === contentId ? 'block' : 'none';
+        });
+
+        overlay.style.display = 'flex';
+
+        // Keep the tab bar above the overlay so users can switch sessions
+        const tabBar = document.getElementById('sessionTabsBar');
+        if (tabBar) tabBar.style.zIndex = '301';
+    }
+
+    hideOverlay() {
+        this._overlayExplicitlyHidden = true;
+        const overlay = document.getElementById('overlay');
+        if (overlay) {
+            console.log('[hideOverlay] Hiding overlay, current display:', overlay.style.display);
+            overlay.style.display = 'none';
+            console.log('[hideOverlay] Overlay hidden, new display:', overlay.style.display);
+        } else {
+            console.error('[hideOverlay] Overlay element not found!');
+        }
+
+        // Restore tab bar z-index to default
+        const tabBar = document.getElementById('sessionTabsBar');
+        if (tabBar) tabBar.style.zIndex = '';
+    }
+
+    hideModal(overlayId) {
+        const overlay = document.getElementById(overlayId);
+        if (!overlay) return;
+        if (this._activeModal === overlayId) this._activeModal = null;
+        if (window.focusTrap) window.focusTrap.deactivate();
+        const content = overlay.querySelector('.modal-content');
+        if (content) {
+            content.classList.add('closing');
+            overlay.classList.add('closing');
+            setTimeout(() => {
+                content.classList.remove('closing');
+                overlay.classList.remove('closing');
+                overlay.classList.remove('active');
+                // Clear (don't set) the inline display so the modal hides via its
+                // base CSS rule (.<modal> { display: none }). Setting an inline
+                // display:none would win over `.active { display: flex }` and
+                // permanently block reopening the modal.
+                overlay.style.removeProperty('display');
+            }, 150);
+        } else {
+            overlay.classList.remove('active');
+            overlay.style.removeProperty('display');
+        }
+    }
+
+    showError(message) {
+        const errorText = document.getElementById('errorText');
+        errorText.style.whiteSpace = 'pre-line';
+        errorText.textContent = message;
+        const srAnnounce = document.getElementById('srAnnounce');
+        if (srAnnounce) srAnnounce.textContent = message;
+        this.showOverlay('errorMessage');
+    }
+
+    showSettings() {
+        // Modal mutex: close any open modal before opening a new one
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'settingsModal';
+        const modal = document.getElementById('settingsModal');
+        modal.classList.add('active');
+
+        // Prevent body scroll on mobile when modal is open
+        if (this.isMobile) {
+            document.body.style.overflow = 'hidden';
+        }
+
+        this._populateSettingsForm(this.loadSettings());
+        if (window.focusTrap) window.focusTrap.activate(modal);
+    }
+
+    _populateSettingsForm(settings) {
+        document.getElementById('fontSize').value = settings.fontSize;
+        document.getElementById('fontSizeValue').textContent = settings.fontSize + 'px';
+        const themeSelect = document.getElementById('themeSelect');
+        if (themeSelect) themeSelect.value = settings.theme || 'midnight';
+        const fontFamily = document.getElementById('fontFamily');
+        if (fontFamily) fontFamily.value = settings.fontFamily || "'MesloLGS Nerd Font', 'Meslo Nerd Font', monospace";
+        const cursorStyle = document.getElementById('cursorStyle');
+        if (cursorStyle) cursorStyle.value = settings.cursorStyle || 'block';
+        const cursorBlink = document.getElementById('cursorBlink');
+        if (cursorBlink) cursorBlink.checked = settings.cursorBlink ?? true;
+        const scrollback = document.getElementById('scrollback');
+        if (scrollback) scrollback.value = String(settings.scrollback || 1000);
+        const tabSnapshotLines = document.getElementById('tabSnapshotLines');
+        if (tabSnapshotLines) tabSnapshotLines.value = String(settings.tabSnapshotLines ?? 500);
+        const terminalPadding = document.getElementById('terminalPadding');
+        if (terminalPadding) terminalPadding.value = String(settings.terminalPadding ?? 8);
+        const terminalPaddingValue = document.getElementById('terminalPaddingValue');
+        if (terminalPaddingValue) terminalPaddingValue.textContent = (settings.terminalPadding ?? 8) + 'px';
+        document.getElementById('showTokenStats').checked = settings.showTokenStats;
+        document.getElementById('dangerousMode').checked = settings.dangerousMode || false;
+
+        // Voice settings
+        const voiceRecordingMode = document.getElementById('voiceRecordingMode');
+        if (voiceRecordingMode) voiceRecordingMode.value = settings.voiceRecordingMode || 'push-to-talk';
+        const voiceMethod = document.getElementById('voiceMethod');
+        if (voiceMethod) voiceMethod.value = settings.voiceMethod || 'auto';
+        const micSounds = document.getElementById('micSounds');
+        if (micSounds) micSounds.checked = settings.micSounds ?? true;
+
+        // Notification settings
+        const notifSound = document.getElementById('notifSound');
+        if (notifSound) notifSound.checked = settings.notifSound ?? true;
+        const notifVolume = document.getElementById('notifVolume');
+        if (notifVolume) notifVolume.value = String(settings.notifVolume ?? 30);
+        const notifVolumeValue = document.getElementById('notifVolumeValue');
+        if (notifVolumeValue) notifVolumeValue.textContent = (settings.notifVolume ?? 30) + '%';
+        const notifDesktop = document.getElementById('notifDesktop');
+        if (notifDesktop) notifDesktop.checked = settings.notifDesktop ?? true;
+
+        const enableSessionStickyNotes = document.getElementById('enableSessionStickyNotes');
+        if (enableSessionStickyNotes) enableSessionStickyNotes.checked = settings.enableSessionStickyNotes ?? false;
+
+        const wheelScrollMode = document.getElementById('wheelScrollMode');
+        if (wheelScrollMode) wheelScrollMode.value = settings.wheelScrollMode || 'dontHijack';
+
+        // Update install section
+        this._updateInstallSection();
+    }
+
+    // --- PWA Install State Machine ---
+
+    _isInstalledPWA() {
+        return window.matchMedia('(display-mode: standalone)').matches
+            || window.matchMedia('(display-mode: window-controls-overlay)').matches
+            || window.matchMedia('(display-mode: minimal-ui)').matches
+            || window.matchMedia('(display-mode: fullscreen)').matches
+            || navigator.standalone === true;
+    }
+
+    // Shared attachment router for the non-drop surfaces (attach button,
+    // context-menu, paste). Partitions the selected files: anything that passes
+    // the image allowlist goes through the EXISTING image preview → image_upload
+    // path (unchanged), everything else is routed to the generic drop pipeline
+    // (upload to .claude-attachments/ + `@<path>` injection). Drag-and-drop does
+    // NOT use this — it already partitions internally in generic-drop-handler.
+    _attachFiles(files) {
+        if (!files) return;
+        const list = Array.prototype.slice.call(files);
+        if (!list.length) return;
+        const ih = window.imageHandler;
+        const isImg = (f) => !!(ih && typeof ih.isAcceptedImageType === 'function'
+            && ih.isAcceptedImageType(f.type));
+        const images = list.filter(isImg);
+        const others = list.filter((f) => !isImg(f));
+
+        // Capture the socket at attach-initiation time. The image preview modal
+        // is async (user-driven); the active session/socket can change while it
+        // Images: reuse the existing single-preview flow. The modal handles one
+        // image at a time, so if several images are selected we attach the first
+        // and tell the user rather than silently dropping the rest.
+        if (images.length && ih && typeof ih.showImagePreview === 'function') {
+            if (images.length > 1 && window.feedback && typeof window.feedback.info === 'function') {
+                window.feedback.info('Only the first image is attached — attach images one at a time.');
+            }
+            ih.showImagePreview(images[0], (imageData) => {
+                this._uploadImage(imageData);
+            });
+        }
+
+        // Non-images: shared generic pipeline (upload + @path inject).
+        if (others.length && this._genericDropHandler
+                && typeof this._genericDropHandler.dispatchFiles === 'function') {
+            this._genericDropHandler.dispatchFiles(others);
+        } else if (others.length && window.feedback && typeof window.feedback.error === 'function') {
+            window.feedback.error('File upload is not available right now.');
+        }
+    }
+
+    _setupPwaStandaloneListener() {
+        const apply = () => {
+            const standalone = this._isInstalledPWA();
+            document.documentElement.classList.toggle('pwa-standalone', standalone);
+            if (standalone) this._polyfillSafeAreaInsets();
+        };
+        apply();
+        try {
+            const queries = [
+                '(display-mode: standalone)',
+                '(display-mode: fullscreen)',
+                '(display-mode: minimal-ui)',
+                '(display-mode: window-controls-overlay)',
+            ];
+            queries.forEach((q) => {
+                const mql = window.matchMedia(q);
+                if (mql.addEventListener) mql.addEventListener('change', apply);
+                else if (mql.addListener) mql.addListener(apply);
+            });
+        } catch (_) { /* ignore */ }
+    }
+
+    _polyfillSafeAreaInsets() {
+        // WebKit bug: env(safe-area-inset-top|bottom) sometimes returns 0px in
+        // iOS PWA standalone on Dynamic Island / notched devices. Probe the
+        // actual env() value per axis; if zero on a notch-class iOS device in
+        // portrait, substitute the known defaults (59px island, 34px home
+        // indicator). Results are exposed as the --safe-area-inset-* variables
+        // that tokens.css (--sa-top/--sa-bottom) and the gated rules consume.
+        if (!document.body) return;
+
+        const root = document.documentElement;
+
+        // Only ever set fake insets in installed-PWA standalone mode. In a
+        // normal browser tab env() is authoritative (and legitimately 0 at the
+        // top), so forcing a fallback there would push content down for no
+        // reason — and the converted `var(--sa-*)` consumers are ungated, so a
+        // stray value WOULD change non-PWA layout. Clear and bail when not PWA.
+        if (!this._isInstalledPWA()) {
+            root.style.removeProperty('--safe-area-inset-top');
+            root.style.removeProperty('--safe-area-inset-bottom');
+            return;
+        }
+
+        const measure = (axis) => {
+            const probe = document.createElement('div');
+            probe.style.cssText = 'position:fixed;left:0;width:1px;pointer-events:none;visibility:hidden;'
+                + (axis === 'top' ? 'top:0;' : 'bottom:0;')
+                + 'height:env(safe-area-inset-' + axis + ');';
+            document.body.appendChild(probe);
+            const px = probe.offsetHeight;
+            document.body.removeChild(probe);
+            return px;
+        };
+
+        const isPortrait = window.matchMedia('(orientation: portrait)').matches;
+        // Notch / Dynamic-Island iPhones are tall (aspect > 2); home-button
+        // iPhones (SE, 8) are ~1.78 and iPads ~1.33. Only those tall devices
+        // have a top cutout + bottom home indicator, so only they get the
+        // fallback when env() reports a (buggy) 0. This keeps the SE/iPad from
+        // gaining a phantom inset.
+        const longSide = Math.max(window.innerWidth, window.innerHeight);
+        const shortSide = Math.min(window.innerWidth, window.innerHeight);
+        const tall = shortSide > 0 && (longSide / shortSide) > 2;
+        const notchClass = isPortrait && this._isIOS() && tall;
+
+        const apply = (axis, fallback) => {
+            const measured = measure(axis);
+            const prop = '--safe-area-inset-' + axis;
+            if (measured > 0) {
+                root.style.setProperty(prop, measured + 'px');
+            } else if (notchClass) {
+                root.style.setProperty(prop, fallback);
+            } else {
+                root.style.removeProperty(prop);
+            }
+        };
+
+        apply('top', '59px');
+        apply('bottom', '34px');
+    }
+
+    _isIOS() {
+        return /iPad|iPhone|iPod/.test(navigator.userAgent)
+            || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+
+    _isSecureContext() {
+        return window.isSecureContext;
+    }
+
+    _isFirefox() {
+        return /Firefox/.test(navigator.userAgent) && !/Seamonkey/.test(navigator.userAgent);
+    }
+
+    _isSamsungInternet() {
+        return /SamsungBrowser/.test(navigator.userAgent);
+    }
+
+    _setInstallState(state) {
+        this._installState = state;
+
+        // Update floating button
+        const existingBtn = document.getElementById('installBtn');
+        if (state === 'available') {
+            if (!existingBtn) {
+                const installBtn = document.createElement('button');
+                installBtn.id = 'installBtn';
+                installBtn.className = 'install-btn';
+                installBtn.innerHTML = '<span class="icon" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/></svg></span> Install App';
+                installBtn.addEventListener('click', () => this._triggerInstall());
+                document.body.appendChild(installBtn);
+            }
+        } else if (existingBtn) {
+            existingBtn.remove();
+        }
+
+        // Update settings section (idempotent — safe to call whether settings is open or not)
+        this._updateInstallSection();
+    }
+
+    _updateInstallSection() {
+        const statusText = document.getElementById('installStatusText');
+        const installBtn = document.getElementById('settingsInstallBtn');
+        const iosInstructions = document.getElementById('installIOSInstructions');
+
+        if (!statusText) return; // settings DOM not ready
+
+        // Bind click handler once
+        if (installBtn && !installBtn._installBound) {
+            installBtn.addEventListener('click', () => this._triggerInstall());
+            installBtn._installBound = true;
+        }
+
+        // Hide all optional elements by default
+        if (installBtn) installBtn.style.display = 'none';
+        if (iosInstructions) iosInstructions.style.display = 'none';
+
+        // If running inside an installed PWA, hide the Install tab + pane.
+        const installTab = document.getElementById('settingsTab-install');
+        const installPane = document.getElementById('settingsPane-install');
+        if (installTab) installTab.style.display = this._isInstalled ? 'none' : '';
+        if (installPane && this._isInstalled) installPane.hidden = true;
+        // If the Install tab was the active one and is now hidden, fall back to
+        // the first visible tab so the pane area is never left blank/unreachable.
+        if (this._isInstalled && installTab && installTab.getAttribute('aria-selected') === 'true') {
+            const firstVisible = Array.from(document.querySelectorAll('.settings-tab'))
+                .find((t) => t.style.display !== 'none');
+            if (firstVisible) firstVisible.click();
+        }
+
+        switch (this._installState) {
+            case 'checking':
+                statusText.textContent = 'Checking install availability...';
+                break;
+            case 'available':
+                statusText.textContent = 'Ready to install as a standalone app.';
+                if (installBtn) {
+                    installBtn.style.display = '';
+                    installBtn.disabled = false;
+                }
+                break;
+            case 'prompting':
+                statusText.textContent = 'Installing...';
+                if (installBtn) {
+                    installBtn.style.display = '';
+                    installBtn.disabled = true;
+                }
+                break;
+            case 'installed':
+                statusText.textContent = 'Already installed.';
+                break;
+            case 'unavailable-ios':
+                statusText.textContent = '';
+                if (iosInstructions) iosInstructions.style.display = '';
+                break;
+            case 'unavailable-https':
+                statusText.textContent = 'Requires a secure connection. Use localhost or restart with --https.';
+                break;
+            case 'unavailable-browser':
+                statusText.textContent = 'Use your browser\'s menu to add this app to your home screen.';
+                break;
+            case 'dismissed':
+                statusText.textContent = 'Install was cancelled. Reload the page to try again.';
+                break;
+            case 'unavailable':
+                // Chromium-family browser in a secure context, but beforeinstallprompt
+                // hasn't fired yet (engagement-gated, or already consumed). The app can't
+                // trigger install itself, but the browser's own menu can — and the
+                // beforeinstallprompt listener stays active, so this upgrades to 'available'
+                // if the event fires later.
+                statusText.textContent = 'If no install button appears, use your browser menu → "Install this site as an app".';
+                break;
+            default:
+                statusText.textContent = 'Not available in this browser.';
+                break;
+        }
+    }
+
+    async _triggerInstall() {
+        if (!this._deferredPrompt) return;
+
+        this._setInstallState('prompting');
+        const prompt = this._deferredPrompt;
+        this._deferredPrompt = null; // null out BEFORE calling to prevent double-invoke
+
+        try {
+            prompt.prompt();
+            const { outcome } = await prompt.userChoice;
+            if (outcome === 'dismissed') {
+                // Prompt is consumed — can't re-prompt without a page reload
+                this._setInstallState('dismissed');
+            }
+            // If accepted, appinstalled event will fire and set state to 'installed'
+        } catch (err) {
+            console.error('Install prompt error:', err);
+            this._setInstallState('unavailable');
+        }
+    }
+
+    hideSettings() {
+        this.hideModal('settingsModal');
+
+        // Restore body scroll
+        if (this.isMobile) {
+            document.body.style.overflow = '';
+        }
+    }
+
+    _getDefaultSettings() {
+        return {
+            fontSize: 14,
+            fontFamily: "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
+            cursorStyle: 'block',
+            cursorBlink: true,
+            scrollback: 1000,
+            terminalPadding: 8,
+            showTokenStats: true,
+            theme: 'midnight',
+            dangerousMode: false,
+            voiceRecordingMode: 'push-to-talk',
+            voiceMethod: 'auto',
+            micSounds: true,
+            notifSound: true,
+            notifVolume: 30,
+            notifDesktop: true,
+            enableSessionStickyNotes: false,
+            tabSnapshotLines: 500,
+            // Trackpad/mouse-wheel behaviour inside full-screen (alt-buffer) apps:
+            //   'dontHijack' - wheel does nothing there (no menu hijack in the Claude Code TUI)
+            //   'altScroll'  - wheel sends Up/Down arrows (pagers like `less` scroll)
+            wheelScrollMode: 'dontHijack'
+        };
+    }
+
+    loadSettings() {
+        const defaults = this._getDefaultSettings();
+
+        try {
+            const saved = localStorage.getItem('cc-web-settings');
+            if (!saved) return defaults;
+            const settings = { ...defaults, ...JSON.parse(saved) };
+            // Migrate old fontFamily values that lack MesloLGS Nerd Font fallback
+            if (settings.fontFamily && !settings.fontFamily.includes('MesloLGS Nerd Font')) {
+                settings.fontFamily = settings.fontFamily.replace(
+                    /,\s*monospace\s*$/,
+                    ", 'MesloLGS Nerd Font', monospace"
+                );
+            }
+            return settings;
+        } catch (error) {
+            console.error('Failed to load settings:', error);
+            return defaults;
+        }
+    }
+
+    saveSettings() {
+        const settings = {
+            fontSize: parseInt(document.getElementById('fontSize').value),
+            fontFamily: document.getElementById('fontFamily')?.value || "'MesloLGS Nerd Font', 'MesloLGS NF', 'Meslo Nerd Font', monospace",
+            cursorStyle: document.getElementById('cursorStyle')?.value || 'block',
+            cursorBlink: document.getElementById('cursorBlink')?.checked ?? true,
+            scrollback: parseInt(document.getElementById('scrollback')?.value || '1000'),
+            terminalPadding: parseInt(document.getElementById('terminalPadding')?.value || '8'),
+            showTokenStats: document.getElementById('showTokenStats').checked,
+            theme: (document.getElementById('themeSelect')?.value) || 'midnight',
+            dangerousMode: document.getElementById('dangerousMode').checked,
+            voiceRecordingMode: document.getElementById('voiceRecordingMode')?.value || 'push-to-talk',
+            voiceMethod: document.getElementById('voiceMethod')?.value || 'auto',
+            micSounds: document.getElementById('micSounds')?.checked ?? true,
+            notifSound: document.getElementById('notifSound')?.checked ?? true,
+            notifVolume: parseInt(document.getElementById('notifVolume')?.value || '30'),
+            notifDesktop: document.getElementById('notifDesktop')?.checked ?? true,
+            enableSessionStickyNotes: document.getElementById('enableSessionStickyNotes')?.checked ?? false,
+            tabSnapshotLines: parseInt(document.getElementById('tabSnapshotLines')?.value || '500', 10),
+            wheelScrollMode: document.getElementById('wheelScrollMode')?.value || 'dontHijack'
+        };
+
+        try {
+            localStorage.setItem('cc-web-settings', JSON.stringify(settings));
+            this.applySettings(settings);
+            this._applyStickyNotesSetting(settings.enableSessionStickyNotes === true);
+
+            // Flash save button green briefly
+            const saveBtn = document.getElementById('saveSettingsBtn');
+            if (saveBtn) {
+                const origText = saveBtn.textContent;
+                saveBtn.classList.add('btn-save-success');
+                saveBtn.textContent = '\u2713 Saved';
+                setTimeout(() => {
+                    saveBtn.classList.remove('btn-save-success');
+                    saveBtn.textContent = origText;
+                    this.hideSettings();
+                }, 1500);
+            } else {
+                this.hideSettings();
+            }
+        } catch (error) {
+            console.error('Failed to save settings:', error);
+        }
+    }
+
+    resetSettings() {
+        const defaults = this._getDefaultSettings();
+        localStorage.removeItem('cc-web-settings');
+        this._populateSettingsForm(defaults);
+        this.applySettings(defaults);
+    }
+
+    applySettings(settings) {
+        // Apply theme — 'midnight' is default (no attribute), others set data-theme
+        if (settings.theme && settings.theme !== 'midnight') {
+            document.documentElement.setAttribute('data-theme', settings.theme);
+        } else {
+            document.documentElement.removeAttribute('data-theme');
+        }
+
+        // Apply terminal settings
+        this.terminal.options.fontSize = settings.fontSize;
+        if (settings.fontFamily) this.terminal.options.fontFamily = settings.fontFamily;
+        if (settings.cursorStyle) this.terminal.options.cursorStyle = settings.cursorStyle;
+        this.terminal.options.cursorBlink = settings.cursorBlink ?? true;
+        if (settings.scrollback) this.terminal.options.scrollback = settings.scrollback;
+
+        // Cache the wheel-scroll policy for the capture-phase wheel handler
+        // (read live per wheel event without touching localStorage each notch).
+        this._wheelScrollMode = settings.wheelScrollMode || 'dontHijack';
+
+        // Push the instant-snapshot line cap to the cache (0 disables capture+paint).
+        if (this.snapshotCache && settings.tabSnapshotLines !== undefined) {
+            this.snapshotCache.setMaxLines(settings.tabSnapshotLines);
+        }
+
+        // Apply terminal padding
+        const terminalEl = document.getElementById('terminal');
+        if (terminalEl) {
+            terminalEl.style.padding = (settings.terminalPadding ?? 8) + 'px';
+        }
+
+        // Apply voice recording mode
+        if (this.voiceController) {
+            if (settings.voiceRecordingMode) {
+                this.voiceController._forcedMode = settings.voiceRecordingMode;
+            }
+            // Re-evaluate the mic backend/button: _applyVoiceAvailability honors
+            // the saved voiceMethod (auto/local/cloud) and current readiness.
+            this._applyVoiceAvailability();
+        }
+
+        this.syncTerminalTheme();
+    }
+
+    syncTerminalTheme() {
+        const style = getComputedStyle(document.documentElement);
+        this.terminal.options.theme = {
+            background: style.getPropertyValue('--terminal-bg').trim() || style.getPropertyValue('--surface-primary').trim(),
+            foreground: style.getPropertyValue('--terminal-fg').trim() || style.getPropertyValue('--text-primary').trim(),
+            cursor: style.getPropertyValue('--terminal-cursor').trim() || style.getPropertyValue('--accent-default').trim(),
+            selectionBackground: style.getPropertyValue('--terminal-selection').trim() || undefined,
+        };
+
+        this.terminal.clearTextureAtlas();
+        this.fitTerminal();
+    }
+
+    startHeartbeat() {
+        // Delegate to HeartbeatWatchdog (loaded via index.html before app.js).
+        // The watchdog encapsulates ping cadence, pong-timeout, per-socket
+        // fencing, and idempotent restart — see src/public/heartbeat-watchdog.js.
+        if (this._heartbeat) this._heartbeat.stop();
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+        this._heartbeat = new HeartbeatWatchdog({
+            socket: this.socket,
+            generation: this._socketGeneration,
+            currentGeneration: () => this._socketGeneration,
+            currentSocket: () => this.socket,
+            log: (m) => console.warn('[heartbeat]', m),
+        });
+        this._heartbeat.start();
+        // If a recording is in progress (e.g. this heartbeat was re-created after
+        // a reconnect mid-recording), keep pong-timeout enforcement suspended.
+        if (this._voiceRecordingActive) this._heartbeat.pause();
+        // Keep _heartbeatTimer/_pongTimer references in sync for legacy code
+        // (disconnect() still nulls them defensively); the watchdog owns the
+        // real timer lifecycle via stop().
+        this._heartbeatTimer = null;
+        this._pongTimer = null;
+    }
+
+    // File Browser Methods
+    _ensureFileBrowser() {
+        if (!this._fileBrowserPanel && window.fileBrowser) {
+            this._fileBrowserPanel = new window.fileBrowser.FileBrowserPanel({
+                app: this,
+                authFetch: (url, opts) => this.authFetch(url, opts),
+                // initialPath kept as a back-compat fallback; getCwd is the
+                // source of truth on each open() so a session switch between
+                // opens picks up the new cwd (per ADR-0016 / task #14).
+                initialPath: this.getCurrentWorkingDir(),
+                getCwd: () => this.getCurrentWorkingDir(),
+                // Active session id → sent as ?session on /api/files so the
+                // server can resolve the per-tab default root even when the
+                // client cwd cache is cold (e.g. just after a page reload).
+                getSessionId: () => this.currentClaudeSessionId,
+            });
+        }
+        return this._fileBrowserPanel;
+    }
+
+    toggleFileBrowser() {
+        const panel = this._ensureFileBrowser();
+        if (panel) panel.toggle();
+    }
+
+    /**
+     * Idempotent open — guarantees the file browser is OPEN after
+     * the call, never toggles closed. Required by the Layer 5
+     * resolver-failure toast's "Open file browser →" CTA: a user
+     * clicking the CTA expects the browser to appear, not vanish
+     * if it happened to be open already. (Round-2 peer review #1.)
+     */
+    openFileBrowser() {
+        const panel = this._ensureFileBrowser();
+        if (!panel) return;
+        if (typeof panel.isOpen === 'function' && panel.isOpen()) return;
+        if (typeof panel.open === 'function') panel.open();
+        else panel.toggle();   // defensive: hosts/tests without .open()/.isOpen()
+    }
+
+    // Cmd-P "Go to File" panel (per ADR-0019 + Part B of file-browser-v2).
+    // Mounted lazily on first Cmd/Ctrl+P press; reused thereafter.
+    _ensureFindPanel() {
+        if (this._findPanel || !window.fileFind) return this._findPanel || null;
+        // The panel mounts itself into the supplied container — we reuse
+        // <body> so it floats above the terminal regardless of the file
+        // browser's open/closed state.
+        try {
+            this._findPanel = new window.fileFind.FindPanel({
+                containerEl: document.body,
+                getAuthToken: () => (window.authManager && window.authManager.getToken
+                    ? window.authManager.getToken()
+                    : null),
+                getSearchPath: () => this.getCurrentWorkingDir(),
+                getSession: () => this.currentClaudeSessionId || null,
+                onResultClick: (hit) => {
+                    // Delegate to fileFind.dispatchFindHit — encapsulates
+                    // the editor-vs-preview branch in a regression-tested
+                    // helper. Editor mode force-bootstraps the panel's
+                    // tab manager via _ensureTabManager() (was a sync race
+                    // against the lazy init before QA #6) and skips
+                    // openToFile entirely so we don't end up with a
+                    // duplicate preview tab. Preview mode hands off to
+                    // openToFile (which carries QA #5's rebase-on-open
+                    // semantics).
+                    const panel = this._ensureFileBrowser();
+                    if (!panel || !window.fileFind ||
+                        typeof window.fileFind.dispatchFindHit !== 'function') return;
+                    window.fileFind.dispatchFindHit(panel, hit);
+                },
+            });
+        } catch (e) {
+            console.warn('[file-find] panel init failed:', e);
+            return null;
+        }
+        return this._findPanel;
+    }
+
+    toggleFindPanel() {
+        const panel = this._ensureFindPanel();
+        if (!panel) return;
+        if (panel.isOpen()) panel.close(); else panel.open();
+    }
+
+    // VS Code Tunnel Methods
+    toggleVSCodeTunnel() {
+        if (!this._vscodeTunnelUI && window.VSCodeTunnelUI) {
+            this._vscodeTunnelUI = new window.VSCodeTunnelUI({ app: this });
+        }
+        if (this._vscodeTunnelUI) {
+            this._vscodeTunnelUI.toggle();
+        }
+    }
+
+    stopVSCodeTunnel() {
+        if (this._vscodeTunnelUI) {
+            this._vscodeTunnelUI.stop();
+        }
+    }
+
+    copyVSCodeTunnelUrl() {
+        if (this._vscodeTunnelUI) {
+            this._vscodeTunnelUI.copyUrl();
+        }
+    }
+
+    // App Tunnel Methods
+    toggleAppTunnel() {
+        if (!this._appTunnelUI && window.AppTunnelUI) {
+            this._appTunnelUI = new window.AppTunnelUI({ app: this });
+        }
+        if (this._appTunnelUI) {
+            this._appTunnelUI.toggle();
+        }
+    }
+
+    restartAppTunnel() {
+        if (!this._appTunnelUI && window.AppTunnelUI) {
+            this._appTunnelUI = new window.AppTunnelUI({ app: this });
+        }
+        if (this._appTunnelUI) {
+            this._appTunnelUI.restart();
+        }
+    }
+
+    openFileInViewer(filePath, line, col) {
+        const panel = this._ensureFileBrowser();
+        if (panel) {
+            panel.openToFile(filePath);
+            // Future: pass {line, col} to Monaco viewer for cursor placement
+            // (Stage 1.5 work — for now we just open the file).
+            if (line && this._fileBrowserPanel) {
+                this._fileBrowserPanel._pendingJumpTo = { line: line, col: col || 1 };
+            }
+        }
+    }
+
+    /**
+     * Return the SPAWN WorkingDir for a specific session (the directory
+     * the PTY was spawned in). Used by the terminal-path resolver chain's
+     * step 3 (`stat(path.join(workingDir, hint))`).
+     *
+     * IMPORTANT: this helper deliberately does NOT consult `_liveCwd`.
+     * The resolver chain's step 2 already tests `path.join(liveCwd, hint)`;
+     * having step 3 ALSO prefer liveCwd would collapse the two candidates
+     * into one (the chain dedupes them via `seen`), and step 3's whole
+     * purpose per spec line 525 is "Always tried even when liveCwd is
+     * set, to catch paths emitted by tools that haven't followed cd."
+     * (Cross-lab peer review HIGH-1 finding — codex_critic and
+     * gemini_critic flagged independently.)
+     *
+     * Resolution order:
+     *   1. `_sessionWorkingDirs` cache (synchronous from session_created/
+     *      joined/*_started events).
+     *   2. `claudeSessions[]` (asynchronously populated by loadSessions).
+     *   3. null (caller decides what "no session context" means — the
+     *      resolver chain skips step 3 silently; `getCurrentWorkingDir`
+     *      bottoms out at `currentFolderPath` for panel-default callers).
+     *
+     * @param {string} sid Session id. Returns null when sid is falsy.
+     * @returns {string|null}
+     */
+    getSessionWorkingDir(sid) {
+        if (!sid) return null;
+        if (this._sessionWorkingDirs && this._sessionWorkingDirs.has(sid)) {
+            const wd = this._sessionWorkingDirs.get(sid);
+            if (wd) return wd;
+        }
+        if (this.claudeSessions) {
+            const s = this.claudeSessions.find(x => x.id === sid);
+            if (s && s.workingDir) {
+                // Back-fill the cache so the next call short-circuits.
+                if (this._sessionWorkingDirs) this._sessionWorkingDirs.set(sid, s.workingDir);
+                return s.workingDir;
+            }
+        }
+        return null;
+    }
+
+    getCurrentWorkingDir() {
+        // Panel-default "where am I now" answer. Prefers liveness
+        // (OSC 7-tracked cwd, for Terminal-bridge sessions that have a
+        // shell hook installed) → spawn dir → global folder fallback.
+        // The resolver-chain callback in _setupTerminalLinking does NOT
+        // use this method — it consumes getSessionWorkingDir() directly
+        // so resolver step 2 (liveCwd) and step 3 (workingDir) stay
+        // distinct. (See getSessionWorkingDir docstring HIGH-1 note.)
+        const sid = this.currentClaudeSessionId;
+        if (sid) {
+            if (this._liveCwd && this._liveCwd.has(sid)) {
+                const live = this._liveCwd.get(sid);
+                if (live) return live;
+            }
+            const spawnWd = this.getSessionWorkingDir(sid);
+            if (spawnWd) return spawnWd;
+        }
+        return this.currentFolderPath || null;
+    }
+
+    /**
+     * Return the cached git repo-root for the active session, kicking off
+     * a one-shot fetch if not yet cached. Reads `null` until the first
+     * fetch resolves; subsequent calls return the cached value (cached
+     * for the session's lifetime per the spec). Used by the link
+     * provider's resolver chain (Part C).
+     *
+     * @param {string} [sid] Optional session id. Defaults to the app-global
+     *   active session for back-compat; the link provider passes the
+     *   sessionIdSource value so split panes resolve against THEIR own
+     *   session's repo root, not whatever tab is foregrounded.
+     */
+    _getRepoRootCached(sid) {
+        if (!sid) sid = this.currentClaudeSessionId;
+        if (!sid) return null;
+        if (!this._repoRootCache) this._repoRootCache = new Map();
+        if (!this._repoRootInFlight) this._repoRootInFlight = new Map();
+        if (this._repoRootCache.has(sid)) return this._repoRootCache.get(sid);
+        // Kick off the fetch (idempotent — concurrent callers all get the
+        // same in-flight promise). Returns null synchronously while the
+        // fetch is pending; the resolver chain still has liveCwd /
+        // workingDir candidates to fall back on.
+        if (!this._repoRootInFlight.has(sid)) {
+            var self = this;
+            var p = this.authFetch('/api/sessions/' + encodeURIComponent(sid) + '/repo-root')
+                .then(function (resp) {
+                    if (!resp.ok) return null;
+                    return resp.json();
+                })
+                .then(function (data) {
+                    var root = (data && typeof data.root === 'string') ? data.root : null;
+                    self._repoRootCache.set(sid, root);
+                    self._repoRootInFlight.delete(sid);
+                    return root;
+                })
+                .catch(function () {
+                    self._repoRootCache.set(sid, null);
+                    self._repoRootInFlight.delete(sid);
+                    return null;
+                });
+            this._repoRootInFlight.set(sid, p);
+        }
+        return null;
+    }
+
+    /**
+     * Render the inline ambiguity picker for terminal-link clicks that
+     * resolve to multiple files (Part C). Anchored near the active
+     * terminal — xterm doesn't surface the originating click event in
+     * `activate`, so we float the lozenge near the terminal cursor or
+     * top-left of the terminal container as a fallback. Keyboard nav
+     * (Up/Down/Enter/Esc); cancels on outside click.
+     */
+    _showAmbiguityPicker(info) {
+        if (!info || !Array.isArray(info.candidates) || !info.candidates.length) return;
+        // Tear down any prior picker first (stacking would be confusing).
+        if (this._ambiguityPickerEl && this._ambiguityPickerEl.parentNode) {
+            this._ambiguityPickerEl.parentNode.removeChild(this._ambiguityPickerEl);
+        }
+
+        var picker = document.createElement('div');
+        picker.className = 'fb-ambiguity-picker';
+        picker.setAttribute('role', 'listbox');
+        picker.setAttribute('aria-label', info.candidates.length + ' matches for ' + info.hint);
+
+        var header = document.createElement('div');
+        header.className = 'fb-ambiguity-header';
+        header.textContent = info.candidates.length + ' matches — pick one';
+        picker.appendChild(header);
+
+        var rows = [];
+        var focusedIdx = 0;
+
+        info.candidates.forEach(function (path, idx) {
+            var row = document.createElement('button');
+            row.type = 'button';
+            row.className = 'fb-ambiguity-row' + (idx === focusedIdx ? ' focused' : '');
+            row.setAttribute('role', 'option');
+            row.setAttribute('aria-selected', idx === focusedIdx ? 'true' : 'false');
+
+            // Split path into basename + parent (VS Code convention).
+            var lastSep = -1;
+            for (var i = path.length - 1; i >= 0; i--) {
+                var c = path.charCodeAt(i);
+                if (c === 47 || c === 92) { lastSep = i; break; }
+            }
+            var basename = lastSep === -1 ? path : path.slice(lastSep + 1);
+            var parent = lastSep === -1 ? '' : path.slice(0, lastSep);
+
+            var bn = document.createElement('span');
+            bn.className = 'fb-ambiguity-basename';
+            bn.textContent = basename;
+            row.appendChild(bn);
+            if (parent) {
+                var pn = document.createElement('span');
+                pn.className = 'fb-ambiguity-parent';
+                pn.textContent = ' ' + parent;
+                row.appendChild(pn);
+            }
+
+            row.addEventListener('click', function () { choose(idx); });
+            picker.appendChild(row);
+            rows.push(row);
+        });
+
+        function setFocus(idx) {
+            if (idx < 0) idx = 0;
+            if (idx >= rows.length) idx = rows.length - 1;
+            rows[focusedIdx].classList.remove('focused');
+            rows[focusedIdx].setAttribute('aria-selected', 'false');
+            focusedIdx = idx;
+            rows[focusedIdx].classList.add('focused');
+            rows[focusedIdx].setAttribute('aria-selected', 'true');
+            try { rows[focusedIdx].scrollIntoView({ block: 'nearest' }); } catch (_) {}
+        }
+
+        var self = this;
+        function close() {
+            try { document.removeEventListener('keydown', onKey, true); } catch (_) {}
+            try { document.removeEventListener('click', onClickOutside, true); } catch (_) {}
+            if (picker.parentNode) picker.parentNode.removeChild(picker);
+            self._ambiguityPickerEl = null;
+        }
+        function choose(idx) {
+            var p = info.candidates[idx];
+            close();
+            try { info.choose(p); } catch (_) {}
+        }
+        function onKey(e) {
+            if (e.key === 'ArrowDown') { e.preventDefault(); setFocus(focusedIdx + 1); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); setFocus(focusedIdx - 1); }
+            else if (e.key === 'Enter') { e.preventDefault(); choose(focusedIdx); }
+            else if (e.key === 'Escape') { e.preventDefault(); close(); }
+        }
+        function onClickOutside(e) {
+            if (e.target && picker.contains(e.target)) return;
+            close();
+        }
+
+        // Anchor — top-left of the active terminal as a sane default.
+        var termEl = (this.terminal && this.terminal.element) ||
+            document.querySelector('.terminal-container') ||
+            document.body;
+        var rect = (termEl.getBoundingClientRect && termEl.getBoundingClientRect()) ||
+            { left: 80, top: 80 };
+        picker.style.position = 'fixed';
+        picker.style.left = (rect.left + 16) + 'px';
+        picker.style.top = (rect.top + 16) + 'px';
+        document.body.appendChild(picker);
+        this._ambiguityPickerEl = picker;
+
+        document.addEventListener('keydown', onKey, true);
+        // Defer the outside-click listener to next tick so the click that
+        // opened the picker (xterm's link click) doesn't immediately close it.
+        setTimeout(function () {
+            document.addEventListener('click', onClickOutside, true);
+        }, 0);
+    }
+
+    // Folder Browser Methods
+    setupFolderBrowser() {
+        const modal = document.getElementById('folderBrowserModal');
+        const upBtn = document.getElementById('folderUpBtn');
+        const homeBtn = document.getElementById('folderHomeBtn');
+        const selectBtn = document.getElementById('selectFolderBtn');
+        const cancelBtn = document.getElementById('cancelFolderBtn');
+        const showHiddenCheckbox = document.getElementById('showHiddenFolders');
+        const createFolderBtn = document.getElementById('createFolderBtn');
+        const confirmCreateBtn = document.getElementById('confirmCreateFolderBtn');
+        const cancelCreateBtn = document.getElementById('cancelCreateFolderBtn');
+        const newFolderInput = document.getElementById('newFolderNameInput');
+        
+        upBtn.addEventListener('click', () => this.navigateToParent());
+        homeBtn.addEventListener('click', () => this.navigateToHome());
+        selectBtn.addEventListener('click', () => this.selectCurrentFolder());
+        cancelBtn.addEventListener('click', () => this.closeFolderBrowser());
+        showHiddenCheckbox.addEventListener('change', () => this.loadFolders(this.currentFolderPath));
+        createFolderBtn.addEventListener('click', () => this.showCreateFolderInput());
+        confirmCreateBtn.addEventListener('click', () => this.createFolder());
+        cancelCreateBtn.addEventListener('click', () => this.hideCreateFolderInput());
+        
+        // Allow Enter key to create folder
+        newFolderInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                this.createFolder();
+            } else if (e.key === 'Escape') {
+                this.hideCreateFolderInput();
+            }
+        });
+        
+        // Close modal when clicking outside
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                this.closeFolderBrowser();
+            }
+        });
+    }
+
+    async showFolderBrowser() {
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'folderBrowserModal';
+        const modal = document.getElementById('folderBrowserModal');
+        modal.classList.add('active');
+
+        // Prevent body scroll on mobile when modal is open
+        if (this.isMobile) {
+            document.body.style.overflow = 'hidden';
+        }
+
+        // Load home directory by default
+        await this.loadFolders();
+        if (window.focusTrap) window.focusTrap.activate(modal);
+    }
+
+    closeFolderBrowser() {
+        this.hideModal('folderBrowserModal');
+
+        // Reset the explicit-hide flag so session_joined can show the overlay
+        // if needed (the folder browser flow set it via hideOverlay)
+        this._overlayExplicitlyHidden = false;
+
+        // Restore body scroll
+        if (this.isMobile) {
+            document.body.style.overflow = '';
+        }
+        
+        // Reset the creating new session flag if canceling
+        this.isCreatingNewSession = false;
+        
+        // If no folder selected, show error
+        if (!this.currentFolderPath) {
+            this.showError('You must select a folder to continue');
+        }
+    }
+
+    async loadFolders(path = null) {
+        const showHidden = document.getElementById('showHiddenFolders').checked;
+        const params = new URLSearchParams();
+        if (path) params.append('path', path);
+        if (showHidden) params.append('showHidden', 'true');
+        
+        try {
+            const response = await this.authFetch(`/api/folders?${params}`);
+            if (!response.ok) {
+                // Handle 401 specifically - show auth prompt
+                if (response.status === 401) {
+                    console.log('Authentication required - showing login prompt');
+                    window.authManager.showLoginPrompt();
+                    return;
+                }
+                const error = await response.json();
+                throw new Error(error.message || 'Failed to load folders');
+            }
+            
+            const data = await response.json();
+            this.currentFolderPath = data.currentPath;
+            this.renderFolders(data);
+        } catch (error) {
+            console.error('Failed to load folders:', error);
+            this.showError(`Failed to load folders: ${error.message}`);
+        }
+    }
+
+    renderFolders(data) {
+        const pathInput = document.getElementById('currentPathInput');
+        const folderList = document.getElementById('folderList');
+        const upBtn = document.getElementById('folderUpBtn');
+        
+        // Update path display
+        pathInput.value = data.currentPath;
+        
+        // Enable/disable up button
+        upBtn.disabled = !data.parentPath;
+        
+        // Clear and populate folder list
+        folderList.innerHTML = '';
+        
+        if (data.folders.length === 0) {
+            folderList.innerHTML = '<div class="empty-folder-message">No folders found</div>';
+            return;
+        }
+        
+        data.folders.forEach(folder => {
+            const folderItem = document.createElement('div');
+            folderItem.className = 'folder-item';
+            folderItem.innerHTML = `
+                <svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+                </svg>
+                <span class="folder-name">${folder.name}</span>
+            `;
+            folderItem.addEventListener('click', () => this.loadFolders(folder.path));
+            folderList.appendChild(folderItem);
+        });
+    }
+
+    async navigateToParent() {
+        if (this.currentFolderPath) {
+            const parentPath = this.currentFolderPath.split('/').slice(0, -1).join('/') || '/';
+            await this.loadFolders(parentPath);
+        }
+    }
+
+    async navigateToHome() {
+        await this.loadFolders();
+    }
+
+    showCreateFolderInput() {
+        const createBar = document.getElementById('folderCreateBar');
+        const input = document.getElementById('newFolderNameInput');
+        createBar.style.display = 'flex';
+        input.value = '';
+        input.focus();
+    }
+
+    hideCreateFolderInput() {
+        const createBar = document.getElementById('folderCreateBar');
+        const input = document.getElementById('newFolderNameInput');
+        createBar.style.display = 'none';
+        input.value = '';
+    }
+
+    async createFolder() {
+        const input = document.getElementById('newFolderNameInput');
+        const folderName = input.value.trim();
+        
+        if (!folderName) {
+            this.showError('Please enter a folder name');
+            return;
+        }
+        
+        if (folderName.includes('/') || folderName.includes('\\')) {
+            this.showError('Folder name cannot contain path separators');
+            return;
+        }
+        
+        try {
+            const response = await this.authFetch('/api/create-folder', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    parentPath: this.currentFolderPath || '/',
+                    folderName: folderName
+                })
+            });
+            
+            if (!response.ok) {
+                // Handle 401 specifically - show auth prompt
+                if (response.status === 401) {
+                    console.log('Authentication required - showing login prompt');
+                    window.authManager.showLoginPrompt();
+                    return;
+                }
+                const error = await response.json();
+                throw new Error(error.message || 'Failed to create folder');
+            }
+            
+            // Hide the input and reload the folder list
+            this.hideCreateFolderInput();
+            await this.loadFolders(this.currentFolderPath);
+        } catch (error) {
+            console.error('Failed to create folder:', error);
+            this.showError(`Failed to create folder: ${error.message}`);
+        }
+    }
+
+    async selectCurrentFolder() {
+        if (!this.currentFolderPath) {
+            this.showError('No folder selected');
+            return;
+        }
+        
+        // Store the selected working directory
+        this.selectedWorkingDir = this.currentFolderPath;
+        
+        // If not connected yet, connect first with the selected directory
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            try {
+                // Set the working directory on the server
+                const response = await this.authFetch('/api/folders/select', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ path: this.currentFolderPath })
+                });
+                
+                if (!response.ok) throw new Error('Failed to set working directory');
+                
+                const data = await response.json();
+                this.selectedWorkingDir = data.workingDir;
+                
+                // Update UI - working dir now shown in tab titles
+                
+                // Close folder browser
+                this.closeFolderBrowser();
+                
+                // Connect to the server
+                await this.connect();
+                
+                // Show new session modal with folder name pre-filled
+                this.showNewSessionModal();
+                const folderName = this.selectedWorkingDir.split('/').pop() || 'Session';
+                document.getElementById('sessionName').value = folderName;
+                document.getElementById('sessionWorkingDir').value = this.selectedWorkingDir;
+                return;
+            } catch (error) {
+                console.error('Failed to set working directory:', error);
+                this.showError('Failed to set working directory.\n\n\u2022 The folder may not exist or be inaccessible\n\u2022 Try selecting a different folder');
+                return;
+            }
+        }
+        
+        // If we're creating a new session (either no active session OR explicitly creating new)
+        if (!this.currentClaudeSessionId || this.isCreatingNewSession) {
+            this.closeFolderBrowser();
+            this.showNewSessionModal();
+            // Pre-fill the session name with folder name and working directory
+            const folderName = this.currentFolderPath.split('/').pop() || 'Session';
+            document.getElementById('sessionName').value = folderName;
+            document.getElementById('sessionWorkingDir').value = this.currentFolderPath;
+            this.isCreatingNewSession = false; // Reset the flag
+            return;
+        }
+        
+        // Otherwise, set working directory for current session
+        try {
+            const response = await this.authFetch('/api/set-working-dir', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ path: this.currentFolderPath })
+            });
+            
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.message || 'Failed to set working directory');
+            }
+            
+            const result = await response.json();
+            console.log('Working directory set to:', result.workingDir);
+            
+            // Close folder browser and connect
+            this.closeFolderBrowser();
+            await this.connect();
+        } catch (error) {
+            console.error('Failed to set working directory:', error);
+            this.showError(`Failed to set working directory: ${error.message}`);
+        }
+    }
+    
+    async closeSession() {
+        try {
+            // Send close session message via WebSocket if connected
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.send({ type: 'close_session' });
+            }
+            
+            // Clear the working directory on the server
+            const response = await this.authFetch('/api/close-session', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            if (!response.ok) {
+                const error = await response.json();
+                throw new Error(error.message || 'Failed to close session');
+            }
+            
+            // Reset the local state
+            this.selectedWorkingDir = null;
+            this.currentFolderPath = null;
+            
+            // Hide the close session button
+            // Close session buttons removed with header
+            
+            // Disconnect WebSocket
+            this.disconnect();
+            
+            // Clear terminal
+            this.clearTerminal();
+            
+            // Show folder browser again
+            this.showFolderBrowser();
+            
+        } catch (error) {
+            console.error('Failed to close session:', error);
+            this.showError(`Failed to close session: ${error.message}`);
+        }
+    }
+
+    // Session Management Methods
+    toggleSessionDropdown() {
+        // Session dropdown removed with header - using tabs instead
+    }
+    
+    showMobileSessionsModal() {
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'mobileSessionsModal';
+        const modal = document.getElementById('mobileSessionsModal');
+        modal.classList.add('active');
+
+        // Prevent body scroll on mobile when modal is open
+        if (this.isMobile) {
+            document.body.style.overflow = 'hidden';
+        }
+
+        this.loadMobileSessions();
+        if (window.focusTrap) window.focusTrap.activate(modal);
+    }
+    
+    hideMobileSessionsModal() {
+        this.hideModal('mobileSessionsModal');
+
+        // Restore body scroll
+        if (this.isMobile) {
+            document.body.style.overflow = '';
+        }
+    }
+    
+    async loadMobileSessions() {
+        try {
+            const response = await this.authFetch('/api/sessions/list');
+            if (!response.ok) throw new Error('Failed to load sessions');
+            
+            const data = await response.json();
+            this.claudeSessions = data.sessions;
+            this.renderMobileSessionList();
+        } catch (error) {
+            console.error('Failed to load sessions:', error);
+        }
+    }
+    
+    renderMobileSessionList() {
+        const sessionList = document.getElementById('mobileSessionList');
+        sessionList.innerHTML = '';
+        
+        if (this.claudeSessions.length === 0) {
+            sessionList.innerHTML = '<div class="no-sessions">No active sessions</div>';
+            return;
+        }
+        
+        this.claudeSessions.forEach(session => {
+            const sessionItem = document.createElement('div');
+            sessionItem.className = 'session-item';
+            if (session.id === this.currentClaudeSessionId) {
+                sessionItem.classList.add('active');
+            }
+            
+            const statusIcon = `<span class="dot ${session.active ? 'dot-on' : 'dot-idle'}" aria-hidden="true"></span><span class="sr-only">${session.active ? 'Active' : 'Idle'}</span>`;
+            const clientsText = session.connectedClients === 1 ? '1 client' : `${session.connectedClients} clients`;
+
+            sessionItem.innerHTML = `
+                <div class="session-info">
+                    <span class="session-status">${statusIcon}</span>
+                    <div class="session-details">
+                        <div class="session-name">${this._escapeHtml(session.name)}</div>
+                        <div class="session-meta">${clientsText} • ${new Date(session.created).toLocaleTimeString()}</div>
+                        ${session.workingDir ? `<div class=\"session-folder\" title=\"${this._escapeHtml(session.workingDir)}\"><span class=\"icon\" aria-hidden=\"true\">${window.icons?.folder?.(14) || ''}</span> ${this._escapeHtml(session.workingDir.split('/').pop() || '/')}</div>` : ''}
+                    </div>
+                </div>
+                <div class="session-actions">
+                    ${session.id === this.currentClaudeSessionId ? 
+                        '<button class="btn-icon" title="Leave session" data-action="leave"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg></button>' :
+                        '<button class="btn-icon" title="Join session" data-action="join"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg></button>'
+                    }
+                    <button class="btn-icon" title="Delete session" data-action="delete">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"/>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                    </button>
+                </div>
+            `;
+            
+            sessionItem.querySelectorAll('button').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    const action = btn.dataset.action;
+                    if (action === 'join') {
+                        this.joinSession(session.id);
+                        this.hideMobileSessionsModal();
+                    } else if (action === 'leave') {
+                        this.leaveSession(session.id);
+                        this.hideMobileSessionsModal();
+                    } else if (action === 'delete') {
+                        if (confirm(`Delete session "${(session.name || '').replace(/[<>"]/g, '')}"?`)) {
+                            this.deleteSession(session.id);
+                        }
+                    }
+                });
+            });
+            
+            sessionList.appendChild(sessionItem);
+        });
+    }
+    
+    async loadSessions() {
+        try {
+            const response = await this.authFetch('/api/sessions/list');
+            if (!response.ok) throw new Error('Failed to load sessions');
+
+            const data = await response.json();
+            this.claudeSessions = data.sessions;
+            // Backfill the per-session workingDir cache for any sessions
+            // we learned about via /api/sessions/list but never received
+            // a session_created/joined/*_started event for (e.g. sessions
+            // restored from disk on a fresh page load). Don't overwrite —
+            // event-sourced values may be fresher than the disk snapshot.
+            if (this._sessionWorkingDirs && Array.isArray(data.sessions)) {
+                for (const s of data.sessions) {
+                    if (s && s.id && s.workingDir && !this._sessionWorkingDirs.has(s.id)) {
+                        this._sessionWorkingDirs.set(s.id, s.workingDir);
+                    }
+                }
+            }
+            this.renderSessionList();
+        } catch (error) {
+            console.error('Failed to load sessions:', error);
+        }
+    }
+    
+    renderSessionList() {
+        // This method is deprecated - sessions are now displayed as tabs
+        // The sessionList element no longer exists as we use tabs instead
+        // Keeping empty method to avoid errors from old code references
+        return;
+    }
+    
+    handleSessionAction(action, sessionId) {
+        switch (action) {
+            case 'join':
+                this.joinSession(sessionId);
+                break;
+            case 'leave':
+                this.leaveSession();
+                break;
+            case 'delete':
+                this.deleteSession(sessionId);
+                break;
+        }
+    }
+    
+    _cleanupVoiceState() {
+        // Cancel any active recording and clear processing state on session switch
+        if (this.voiceController && this.voiceController.isRecording) {
+            this.voiceController.cancelRecording();
+        }
+        // Clear processing spinner and transcription timeout
+        var btn = document.getElementById('voiceInputBtn');
+        if (btn) {
+            btn.classList.remove('recording', 'processing');
+            btn.setAttribute('aria-pressed', 'false');
+            btn.title = 'Voice Input (Ctrl+Shift+M)';
+        }
+        var timerEl = btn ? btn.querySelector('.voice-timer') : null;
+        if (timerEl) timerEl.style.display = 'none';
+        if (this._voiceTimerInterval) {
+            clearInterval(this._voiceTimerInterval);
+            this._voiceTimerInterval = null;
+        }
+        if (this._voiceTranscriptionTimeout) {
+            clearTimeout(this._voiceTranscriptionTimeout);
+            this._voiceTranscriptionTimeout = null;
+        }
+    }
+
+    async joinSession(sessionId) {
+        // Clean up any active voice state before switching sessions
+        this._cleanupVoiceState();
+
+        // Clean up plan and overlay state from previous session
+        this._stopPlanPolling();
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        const planBtn = document.getElementById('planIndicatorBtn');
+        if (planBtn) {
+            planBtn.style.display = 'none';
+            planBtn.classList.remove('plan-pulse');
+        }
+        this._latestPlan = null;
+        if (this.planDetector) {
+            this.planDetector.clearBuffer();
+            this.planDetector.planModeActive = false;
+        }
+
+        // Ensure we're connected first
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+            // Check if we're already connecting (readyState === 0 means CONNECTING)
+            if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
+                // Wait for existing connection to complete
+                await new Promise((resolve) => {
+                    const checkConnection = setInterval(() => {
+                        if (this.socket.readyState === WebSocket.OPEN) {
+                            clearInterval(checkConnection);
+                            resolve();
+                        }
+                    }, 50);
+                    // Timeout after 5 seconds
+                    setTimeout(() => {
+                        clearInterval(checkConnection);
+                        resolve();
+                    }, 5000);
+                });
+            } else {
+                // No socket or socket is closed, create new connection
+                await this.connect();
+                // Wait a bit for connection to establish
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+        }
+        
+        // Create a promise that resolves when we receive session_joined message
+        return new Promise((resolve) => {
+            // Store the resolve function to call when we get the response
+            this.pendingJoinResolve = resolve;
+            this.pendingJoinSessionId = sessionId;
+            
+            // Reset overlay flag before joining a new session so that
+            // session_joined can correctly show/hide the overlay based on
+            // the NEW session's state, not a stale flag from the previous tab.
+            this._overlayExplicitlyHidden = false;
+
+            // Send the join request
+            this.send({ type: 'join_session', sessionId });
+
+            // Signal session priority — joined session is foreground, others background
+            this.sendSessionPriority(sessionId);
+
+            // Request usage stats when joining a session
+            this.requestUsageStats();
+            
+            // Set a timeout in case the response never comes
+            setTimeout(() => {
+                // Only clear if THIS join is still the pending one. A newer
+                // joinSession() may have replaced it; nulling the newer join's
+                // pending state would corrupt the cache/repaint guards that rely
+                // on it. resolve() is idempotent, so always settle this promise.
+                if (this.pendingJoinResolve === resolve) {
+                    this.pendingJoinResolve = null;
+                    this.pendingJoinSessionId = null;
+                }
+                resolve(); // Resolve anyway after timeout
+            }, 2000);
+        });
+    }
+    
+    leaveSession() {
+        this.send({ type: 'leave_session' });
+        // Session dropdown removed - using tabs
+    }
+
+    sendSessionPriority(foregroundSessionId) {
+        if (!this.sessionTabManager) return;
+        const allTabs = this.sessionTabManager.tabs || new Map();
+        const sessions = [];
+        // Collect visible split pane session IDs
+        const splitSessionIds = new Set();
+        if (this.splitContainer && this.splitContainer.splits) {
+            this.splitContainer.splits.forEach(split => {
+                if (split.sessionId) splitSessionIds.add(split.sessionId);
+            });
+        }
+        allTabs.forEach((_, sid) => {
+            const isForeground = sid === foregroundSessionId || splitSessionIds.has(sid);
+            sessions.push({ sessionId: sid, priority: isForeground ? 'foreground' : 'background' });
+        });
+        if (sessions.length > 0) {
+            this.send({ type: 'set_priority', sessions });
+        }
+    }
+    
+    async deleteSession(sessionId) {
+        if (!confirm('Are you sure you want to delete this session? This will stop any running Claude process.')) {
+            return;
+        }
+        
+        try {
+            const response = await this.authFetch(`/api/sessions/${sessionId}`, {
+                method: 'DELETE'
+            });
+            
+            if (!response.ok) throw new Error('Failed to delete session');
+            
+            this.loadSessions();
+            
+            if (sessionId === this.currentClaudeSessionId) {
+                this.currentClaudeSessionId = null;
+                this.currentClaudeSessionName = null;
+                this.updateSessionButton('Sessions');
+                this.terminal.clear();
+                this._stopPlanPolling();
+                if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+                const delPlanBtn = document.getElementById('planIndicatorBtn');
+                if (delPlanBtn) {
+                    delPlanBtn.style.display = 'none';
+                    delPlanBtn.classList.remove('plan-pulse');
+                }
+                this._latestPlan = null;
+                this.showOverlay('startPrompt');
+            }
+        } catch (error) {
+            console.error('Failed to delete session:', error);
+            this.showError('Failed to delete session.\n\n\u2022 The session may have already been removed\n\u2022 Try refreshing the page');
+        }
+    }
+    
+    updateSessionButton(text) {
+        // Session button removed with header - using tabs instead
+        console.log('Session:', text);
+    }
+    
+    setupNewSessionModal() {
+        const modal = document.getElementById('newSessionModal');
+        const closeBtn = document.getElementById('closeNewSessionBtn');
+        const cancelBtn = document.getElementById('cancelNewSessionBtn');
+        const createBtn = document.getElementById('createSessionBtn');
+        const nameInput = document.getElementById('sessionName');
+        const dirInput = document.getElementById('sessionWorkingDir');
+        
+        closeBtn.addEventListener('click', () => this.hideNewSessionModal());
+        cancelBtn.addEventListener('click', () => this.hideNewSessionModal());
+        createBtn.addEventListener('click', () => this.createNewSession());
+        
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) {
+                this.hideNewSessionModal();
+            }
+        });
+        
+        // Allow Enter key to create session
+        [nameInput, dirInput].forEach(input => {
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.createNewSession();
+                }
+            });
+        });
+    }
+    
+    setupMobileSessionsModal() {
+        const closeMobileSessionsBtn = document.getElementById('closeMobileSessionsModal');
+        const newSessionBtnMobile = document.getElementById('newSessionBtnMobile');
+        
+        if (closeMobileSessionsBtn) {
+            closeMobileSessionsBtn.addEventListener('click', () => this.hideMobileSessionsModal());
+        }
+        if (newSessionBtnMobile) {
+            newSessionBtnMobile.addEventListener('click', () => {
+                this.hideMobileSessionsModal();
+                // Show folder picker for new session
+                this.isCreatingNewSession = true;
+                this.selectedWorkingDir = null;
+                this.currentFolderPath = null;
+                this.showFolderBrowser();
+            });
+        }
+    }
+    
+    showNewSessionModal() {
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'newSessionModal';
+        const modal = document.getElementById('newSessionModal');
+        modal.classList.add('active');
+
+        // Prevent body scroll on mobile when modal is open
+        if (this.isMobile) {
+            document.body.style.overflow = 'hidden';
+        }
+
+        document.getElementById('sessionName').focus();
+        if (window.focusTrap) window.focusTrap.activate(modal);
+    }
+    
+    hideNewSessionModal() {
+        this.hideModal('newSessionModal');
+
+        // Restore body scroll
+        if (this.isMobile) {
+            document.body.style.overflow = '';
+        }
+
+        document.getElementById('sessionName').value = '';
+        document.getElementById('sessionWorkingDir').value = '';
+    }
+    
+    async createNewSession() {
+        const name = document.getElementById('sessionName').value.trim() || `Session ${new Date().toLocaleString()}`;
+        const workingDir = document.getElementById('sessionWorkingDir').value.trim() || this.selectedWorkingDir;
+        
+        if (!workingDir) {
+            this.showError('Please select a working directory first');
+            return;
+        }
+        
+        try {
+            const response = await this.authFetch('/api/sessions/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, workingDir })
+            });
+            
+            if (!response.ok) throw new Error('Failed to create session');
+            
+            const data = await response.json();
+            
+            // Hide the modal
+            this.hideNewSessionModal();
+
+            // Add tab for the new session
+            if (this.sessionTabManager) {
+                this.sessionTabManager.addTab(data.sessionId, name, 'idle', workingDir);
+                // switchToTab will handle joining the session
+                await this.sessionTabManager.switchToTab(data.sessionId);
+            } else {
+                // No tab manager, join directly
+                await this.joinSession(data.sessionId);
+            }
+
+            const srCreated = document.getElementById('srAnnounce');
+            if (srCreated) srCreated.textContent = `Session created: ${name}`;
+            
+            // Update sessions list
+            this.loadSessions();
+        } catch (error) {
+            console.error('Failed to create session:', error);
+            this.showError('Failed to create session.\n\n\u2022 Check that the working directory exists\n\u2022 The server may be unreachable \u2014 try refreshing');
+        }
+    }
+    
+    setupPlanDetector() {
+        // Initialize plan detector
+        this.planDetector = new PlanDetector();
+        this.planModal = document.getElementById('planModal');
+        
+        // Set up callbacks
+        this.planDetector.onPlanDetected = (plan) => {
+            // Store plan but do NOT auto-open modal — user clicks indicator to view
+            this._latestPlan = plan;
+            const btn = document.getElementById('planIndicatorBtn');
+            if (btn) btn.classList.add('plan-pulse');
+        };
+
+        // Show plan indicator button when plan mode activates
+        this.planDetector.onPlanModeChange = (isActive) => {
+            this.updatePlanModeIndicator(isActive);
+            const btn = document.getElementById('planIndicatorBtn');
+            if (btn) btn.style.display = isActive ? '' : 'none';
+
+            // Start/stop file-based plan polling for tools that write plan files
+            const tool = this.planDetector.currentTool;
+            if (isActive && tool && tool !== 'copilot') {
+                const planPaths = {
+                    claude: '.claude/plan.md',
+                    codex: '.codex/plan.json',
+                    gemini: '.gemini/plan.md'
+                };
+                const planPath = planPaths[tool];
+                if (planPath) {
+                    this._startPlanPolling(planPath, 'workspace');
+                }
+            } else if (!isActive) {
+                this._stopPlanPolling();
+            }
+        };
+
+        // Plan indicator click shows modal
+        document.getElementById('planIndicatorBtn')?.addEventListener('click', () => {
+            this._openPlanViewer();
+        });
+
+        // Ctrl+Shift+P keyboard shortcut to open plan viewer
+        document.addEventListener('keydown', (e) => {
+            if (e.ctrlKey && e.shiftKey && e.key === 'P') {
+                e.preventDefault();
+                e.stopPropagation();
+                this._openPlanViewer();
+            }
+        }, true);
+
+        // Set up modal buttons
+        const acceptBtn = document.getElementById('acceptPlanBtn');
+        const rejectBtn = document.getElementById('rejectPlanBtn');
+        const closeBtn = document.getElementById('closePlanBtn');
+        
+        acceptBtn.addEventListener('click', () => this.acceptPlan());
+        rejectBtn.addEventListener('click', () => this.rejectPlan());
+        closeBtn.addEventListener('click', () => this.hidePlanModal());
+        
+        // Start monitoring
+        this.planDetector.startMonitoring();
+    }
+    
+    _renderCodexPlan(json) {
+        const esc = (s) => {
+            const d = document.createElement('div');
+            d.textContent = s || '';
+            return d.innerHTML;
+        };
+        let html = '';
+        if (json.context) html += '<p>' + esc(json.context) + '</p>';
+        if (json.scope) {
+            html += '<h3>Scope</h3>';
+            if (json.scope.in) html += '<p><strong>In:</strong> ' + esc(json.scope.in.join(', ')) + '</p>';
+            if (json.scope.out) html += '<p><strong>Out:</strong> ' + esc(json.scope.out.join(', ')) + '</p>';
+        }
+        if (json.action_items) {
+            html += '<h3>Action Items</h3><ol>';
+            json.action_items.forEach(function(item) {
+                var check = item.status === 'done' ? '\u2713' : '\u25CB';
+                html += '<li>' + check + ' ' + esc(item.step) + '</li>';
+            });
+            html += '</ol>';
+        }
+        if (json.open_questions && json.open_questions.length) {
+            html += '<h3>Open Questions</h3><ul>';
+            json.open_questions.forEach(function(q) {
+                html += '<li>' + esc(q) + '</li>';
+            });
+            html += '</ul>';
+        }
+        if (typeof DOMPurify !== 'undefined') {
+            return DOMPurify.sanitize(html);
+        } else {
+            // Safe fallback: strip all HTML, render as plain text
+            const temp = document.createElement('div');
+            temp.textContent = html;
+            return temp.innerHTML;
+        }
+    }
+
+    async _loadPlanLibraries() {
+        if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+            return true; // Already loaded
+        }
+        if (this._planLibsLoading) return this._planLibsLoading;
+
+        this._planLibsLoading = new Promise((resolve) => {
+            let loaded = 0;
+            const check = () => { if (++loaded >= 2) resolve(true); };
+            const fail = () => { if (++loaded >= 2) resolve(false); };
+
+            const s1 = document.createElement('script');
+            s1.src = 'vendor/marked.min.js';
+            s1.onload = check;
+            s1.onerror = fail;
+            document.head.appendChild(s1);
+
+            const s2 = document.createElement('script');
+            s2.src = 'vendor/purify.min.js';
+            s2.onload = check;
+            s2.onerror = fail;
+            document.head.appendChild(s2);
+        });
+
+        return this._planLibsLoading;
+    }
+
+    async showPlanModal(plan) {
+        if (this._inputOverlay && this._inputOverlay._open) this._inputOverlay.hide();
+        if (this._activeModal) this.hideModal(this._activeModal);
+        this._activeModal = 'planModal';
+        const modal = document.getElementById('planModal');
+        const content = document.getElementById('planContent');
+
+        // Lazy-load marked + DOMPurify on first use
+        await this._loadPlanLibraries();
+
+        // Clean ANSI codes
+        let cleaned = plan.content
+            .replace(/\x1b\[[0-9;]*m/g, '')
+            .replace(/\x1b\[[0-9]*[A-Za-z]/g, '')
+            .replace(/\x1b\].*?(?:\x07|\x1b\\)/g, '');  // OSC sequences
+
+        // Try to detect JSON plan (Codex format)
+        try {
+            const jsonPlan = JSON.parse(cleaned);
+            if (jsonPlan && (jsonPlan.action_items || jsonPlan.scope)) {
+                content.innerHTML = this._renderCodexPlan(jsonPlan);
+                content.classList.remove('plan-content--raw');
+                modal.classList.add('active');
+                if (window.focusTrap) window.focusTrap.activate(modal);
+                this.playNotificationSound();
+                return;
+            }
+        } catch (e) {
+            // Not JSON, continue with markdown rendering
+        }
+
+        // Render markdown with sanitization
+        if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+            content.innerHTML = DOMPurify.sanitize(marked.parse(cleaned));
+            content.classList.remove('plan-content--raw');
+        } else {
+            // Fallback: escaped pre-formatted text
+            content.textContent = cleaned;
+            content.classList.add('plan-content--raw');
+        }
+
+        modal.classList.add('active');
+        if (window.focusTrap) window.focusTrap.activate(modal);
+        this.playNotificationSound();
+    }
+    
+    _openPlanViewer() {
+        const plan = this._latestPlan || (this.planDetector && this.planDetector.currentPlan);
+        if (plan) {
+            this.showPlanModal(plan);
+            const btn = document.getElementById('planIndicatorBtn');
+            if (btn) btn.classList.remove('plan-pulse');
+        }
+    }
+
+    hidePlanModal() {
+        this.hideModal('planModal');
+    }
+    
+    acceptPlan() {
+        // Send acceptance to Claude
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({
+                type: 'input',
+                data: 'y\n' // Send 'y' to accept the plan
+            }));
+        }
+        
+        this.hidePlanModal();
+        this.planDetector.clearBuffer();
+        
+        // Show confirmation
+        if (window.feedback) window.feedback.success('Plan accepted! Claude will begin implementation.');
+    }
+    
+    rejectPlan() {
+        // Send rejection to Claude
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({
+                type: 'input',
+                data: 'n\n' // Send 'n' to reject the plan
+            }));
+        }
+        
+        this.hidePlanModal();
+        this.planDetector.clearBuffer();
+        
+        // Show confirmation
+        if (window.feedback) window.feedback.info('Plan rejected. You can provide feedback to Claude.');
+    }
+    
+    updatePlanModeIndicator(isActive) {
+        const statusElement = document.getElementById('status');
+        if (!statusElement) return; // No explicit status area in current UI
+        if (isActive) {
+            statusElement.innerHTML = `<span class="icon" style="color: var(--success);">${window.icons?.clipboard?.(14) || ''}</span> Plan Mode Active`;
+        } else {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                statusElement.textContent = 'Connected';
+                statusElement.className = 'status connected';
+            }
+        }
+    }
+
+    _startPlanPolling(planPath, scope) {
+        this._stopPlanPolling();
+        this._planPollPath = planPath;
+        this._planPollScope = scope || 'workspace';
+        this._planPollLastMtime = null;
+        this._planPollStableCount = 0;
+        this._planPollTimer = null;
+        // Generation counter: incremented on each start, checked after each await
+        // in _pollPlanFile to abandon stale poll chains.
+        this._planPollGeneration = (this._planPollGeneration || 0) + 1;
+        this._pollPlanFile(this._planPollGeneration);
+    }
+
+    _stopPlanPolling() {
+        if (this._planPollTimer) {
+            clearTimeout(this._planPollTimer);
+            this._planPollTimer = null;
+        }
+        // Bump generation to invalidate any in-flight poll
+        this._planPollGeneration = (this._planPollGeneration || 0) + 1;
+    }
+
+    async _pollPlanFile(generation) {
+        if (!this._planPollPath) return;
+        // Bail if this poll chain was superseded by a newer start/stop
+        if (generation !== this._planPollGeneration) return;
+        try {
+            const fetchFn = this.authFetch ? this.authFetch.bind(this) : fetch;
+            const url = this._planPollScope === 'global'
+                ? '/api/plans/content?name=' + encodeURIComponent(this._planPollPath) + '&scope=global'
+                : '/api/files/stat?path=' + encodeURIComponent(this._planPollPath);
+            const res = await fetchFn(url);
+            if (generation !== this._planPollGeneration) return;
+            if (!res.ok) {
+                // File doesn't exist yet or was deleted — poll again
+                this._planPollTimer = setTimeout(() => this._pollPlanFile(generation), 3000);
+                return;
+            }
+            const data = await res.json();
+            if (generation !== this._planPollGeneration) return;
+            const mtime = data.modified || data.mtime;
+            if (mtime !== this._planPollLastMtime) {
+                this._planPollLastMtime = mtime;
+                this._planPollStableCount = 0;
+            } else {
+                this._planPollStableCount++;
+            }
+            // Wait for mtime stability (2 consecutive same = 6 seconds)
+            if (this._planPollStableCount >= 2 && this._planPollScope !== 'global') {
+                // Stable — fetch content
+                const contentRes = await fetchFn('/api/files/content?path=' + encodeURIComponent(this._planPollPath));
+                if (generation !== this._planPollGeneration) return;
+                if (contentRes.ok) {
+                    const contentData = await contentRes.json();
+                    if (generation !== this._planPollGeneration) return;
+                    if (contentData.content && this.planDetector) {
+                        this._latestPlan = { content: contentData.content, timestamp: Date.now(), raw: contentData.content };
+                        const btn = document.getElementById('planIndicatorBtn');
+                        if (btn) btn.classList.add('plan-pulse');
+                        // Update modal if open
+                        if (this._activeModal === 'planModal') {
+                            this.showPlanModal(this._latestPlan);
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            // Ignore fetch errors during polling
+        }
+        // Schedule next poll (only if this generation is still active)
+        if (generation === this._planPollGeneration) {
+            this._planPollTimer = setTimeout(() => this._pollPlanFile(generation), 3000);
+        }
+    }
+
+    requestUsageStats() {
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({ type: 'get_usage' }));
+        }
+        
+        // Start periodic updates if not already running
+        if (!this.usageUpdateTimer) {
+            this.usageUpdateTimer = setInterval(() => {
+                this.requestUsageStats();
+            }, 10000); // Update every 10 seconds for more real-time stats
+        }
+    }
+
+    startSessionTimerUpdate() {
+        // Token usage timer removed - no UI elements to update
+        return;
+    }
+
+    updateUsageDisplay(sessionStats, dailyStats, sessionTimer, analytics, burnRate, plan, limits) {
+        // Token usage display removed - no UI elements to update
+        return;
+        
+        // Container is already visible by default
+        
+        // Check if mobile screen
+        const isMobile = this.isMobile;
+        const isSmallMobile = window.innerWidth <= 480;
+        
+        // Format tokens (K/M notation)
+        const formatTokens = (tokens) => {
+            if (tokens >= 1000000) {
+                return (tokens / 1000000).toFixed(1) + 'M';
+            } else if (tokens >= 1000) {
+                return (tokens / 1000).toFixed(1) + 'K';
+            }
+            return tokens.toString();
+        };
+        
+        // Update display for current Claude session
+        // If session is expired (remainingMs === 0), still show the stats but with 0 time
+        if (sessionStats && sessionTimer && !sessionTimer.isExpired) {
+            // Show session timer - just time remaining
+            let sessionText;
+            if (sessionTimer.remainingMs > 0) {
+                const remainingHours = Math.floor(sessionTimer.remainingMs / (1000 * 60 * 60));
+                const remainingMinutes = Math.floor((sessionTimer.remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+                sessionText = `${remainingHours}h ${remainingMinutes}m`;
+            } else {
+                // Session expired or no active session - show zeros
+                sessionText = '0h 0m';
+            }
+            
+            // Just show the time, no burn rate indicator in session field
+            document.getElementById('usageTitle').textContent = sessionText;
+            
+            // Display tokens - on mobile just show percentage
+            const actualTokens = sessionStats.totalTokens || 0;
+            let tokenDisplay = actualTokens.toLocaleString();
+            let percentUsed = 0;
+            
+            // Get the actual limit for custom plans (P90 based)
+            let tokenLimit = this.planLimits?.tokens;
+            if (!tokenLimit && this.currentPlan === 'custom') {
+                // Default P90 limit for custom plans
+                tokenLimit = 188026;
+            }
+            
+            if (tokenLimit) {
+                percentUsed = (actualTokens / tokenLimit) * 100;
+                // Mobile: just percentage, Desktop: full display
+                if (isMobile) {
+                    tokenDisplay = `${percentUsed.toFixed(1)}%`;
+                } else {
+                    tokenDisplay = `${actualTokens.toLocaleString()} (${percentUsed.toFixed(1)}%)`;
+                }
+                
+                // Update progress bar
+                const progressBar = document.getElementById('usageProgressBar');
+                const progressText = document.getElementById('usageProgressText');
+                const progressContainer = document.getElementById('usageProgress');
+                
+                if (progressBar && progressText && progressContainer) {
+                    progressContainer.style.display = 'block';
+                    progressBar.style.width = Math.min(100, percentUsed) + '%';
+                    progressText.textContent = percentUsed.toFixed(1) + '%';
+                    
+                    // Change color based on usage
+                    progressBar.className = 'usage-progress-bar';
+                    if (percentUsed >= 90) {
+                        progressBar.classList.add('danger');
+                    } else if (percentUsed >= 70) {
+                        progressBar.classList.add('warning');
+                    } else {
+                        progressBar.classList.add('success');
+                    }
+                }
+            }
+            document.getElementById('usageTokens').textContent = tokenDisplay;
+            
+            // Start the live timer update
+            this.startSessionTimerUpdate();
+            
+            // Format cost - CSS handles hiding on mobile
+            const cost = sessionStats.totalCost || 0;
+            const costText = cost > 0 ? `$${cost.toFixed(2)}` : '$0.00';
+            document.getElementById('usageCost').textContent = costText;
+            
+            // Show burn rate - on mobile just show icon
+            if (sessionTimer.burnRate && sessionTimer.burnRate > 0) {
+                const burnRate = Math.round(sessionTimer.burnRate);
+                let rateDisplay;
+                
+                if (isMobile) {
+                    rateDisplay = `<span class="icon" aria-hidden="true">${window.icons?.chartLine?.(12) || ''}</span> ${burnRate}`;
+                } else {
+                    const burnRateText = `${burnRate} tok/min`;
+                    rateDisplay = `<span class="icon" aria-hidden="true">${window.icons?.chartLine?.(12) || ''}</span> ${burnRateText}`;
+                }
+                
+                document.getElementById('usageRate').innerHTML = rateDisplay;
+                
+                // Add depletion time if available
+                if (sessionTimer.depletionTime && sessionTimer.depletionConfidence > 0.5) {
+                    const depletionDate = new Date(sessionTimer.depletionTime);
+                    const now = new Date();
+                    const minutesToDepletion = Math.max(0, (depletionDate - now) / 1000 / 60);
+                    
+                    if (minutesToDepletion < 60) {
+                        document.getElementById('usageRate').title = `Tokens depleting in ~${Math.round(minutesToDepletion)} minutes`;
+                    } else {
+                        const hoursToDepletion = Math.floor(minutesToDepletion / 60);
+                        document.getElementById('usageRate').title = `Tokens depleting in ~${hoursToDepletion}h ${Math.round(minutesToDepletion % 60)}m`;
+                    }
+                }
+            } else {
+                // Fallback to simple rate
+                const hours = sessionTimer.hours + (sessionTimer.minutes / 60) + (sessionTimer.seconds / 3600);
+                const rate = hours > 0 ? sessionStats.requests / hours : 0;
+                document.getElementById('usageRate').innerHTML = rate > 0 ? `<span class="icon" aria-hidden="true">${window.icons?.chartLine?.(12) || ''}</span> ${rate.toFixed(1)}/h` : '-';
+            }
+            
+            // Show model distribution
+            if (sessionStats.models) {
+                const models = sessionStats.models;
+                let totalTokens = 0;
+                let opusTokens = 0;
+                let sonnetTokens = 0;
+                
+                // Calculate totals
+                for (const [model, data] of Object.entries(models)) {
+                    const modelTokens = (data.inputTokens || 0) + (data.outputTokens || 0);
+                    totalTokens += modelTokens;
+                    
+                    if (model.toLowerCase().includes('opus')) {
+                        opusTokens += modelTokens;
+                    } else if (model.toLowerCase().includes('sonnet')) {
+                        sonnetTokens += modelTokens;
+                    }
+                }
+                
+                // Calculate percentages
+                let modelText = '';
+                if (totalTokens > 0) {
+                    const opusPercent = (opusTokens / totalTokens) * 100;
+                    const sonnetPercent = (sonnetTokens / totalTokens) * 100;
+                    const isMobile = this.isMobile;
+
+                    // Use short names on mobile, full names on desktop
+                    const opusName = isMobile ? 'O' : 'Opus';
+                    const sonnetName = isMobile ? 'S' : 'Sonnet';
+                    
+                    if (opusPercent > 0 && sonnetPercent > 0) {
+                        modelText = `${opusName} ${opusPercent.toFixed(0)}% / ${sonnetName} ${sonnetPercent.toFixed(0)}%`;
+                    } else if (opusPercent > 0) {
+                        modelText = `${opusName} ${opusPercent.toFixed(0)}%`;
+                    } else if (sonnetPercent > 0) {
+                        modelText = `${sonnetName} ${sonnetPercent.toFixed(0)}%`;
+                    } else {
+                        modelText = 'Unknown';
+                    }
+                } else {
+                    modelText = 'No usage';
+                }
+                
+                document.getElementById('usageModel').textContent = modelText;
+            }
+        } else {
+            // No active session or expired session - show zeros
+            const isMobile = this.isMobile;
+            
+            document.getElementById('usageTitle').textContent = '0h 0m';
+            document.getElementById('usageTokens').textContent = isMobile ? '0%' : '0';
+            document.getElementById('usageCost').textContent = '$0.00';
+            document.getElementById('usageRate').textContent = '-';
+            document.getElementById('usageModel').textContent = 'No usage';
+            
+            // Stop the timer update
+            if (this.sessionTimerInterval) {
+                clearInterval(this.sessionTimerInterval);
+                this.sessionTimerInterval = null;
+            }
+            
+            // Hide progress bar when no session
+            const progressContainer = document.getElementById('usageProgress');
+            if (progressContainer) {
+                progressContainer.style.display = 'none';
+            }
+        }
+        
+        // Removed model breakdown and projections - compact view doesn't need them
+    }
+
+    getBurnRateIndicator(rate) {
+        // Minimalist indicator using a line chart icon and label
+        const icon = window.icons?.chartLine?.(12) || '';
+        if (rate > 1000) return `<span class="icon" aria-hidden="true">${icon}</span> Very high`;
+        if (rate > 500) return `<span class="icon" aria-hidden="true">${icon}</span> High`;
+        if (rate > 100) return `<span class="icon" aria-hidden="true">${icon}</span> Moderate`;
+        if (rate > 50) return `<span class="icon" aria-hidden="true">${icon}</span> Low`;
+        return `<span class="icon" aria-hidden="true">${icon}</span> Very low`;
+    }
+    
+    _playMicChime(type) {
+        const settings = this.loadSettings();
+        if (!settings.micSounds) return;
+        const volume = typeof settings.notifVolume === 'number'
+            ? (settings.notifVolume / 100) * 0.3
+            : 0.3;
+        if (volume <= 0) return;
+
+        try {
+            if (!this._micAudioCtx) {
+                this._micAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            const ctx = this._micAudioCtx;
+            if (ctx.state === 'suspended') ctx.resume();
+            const t = ctx.currentTime;
+
+            const playTone = (startTime, freq, dur) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+                gain.gain.setValueAtTime(volume, startTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, startTime + dur);
+                osc.start(startTime);
+                osc.stop(startTime + dur);
+            };
+
+            if (type === 'on') {
+                // Ascending: 440Hz -> 660Hz
+                playTone(t, 440, 0.075);
+                playTone(t + 0.075, 660, 0.075);
+            } else {
+                // Descending: 660Hz -> 440Hz
+                playTone(t, 660, 0.075);
+                playTone(t + 0.075, 440, 0.075);
+            }
+        } catch (e) {
+            // Audio not available
+        }
+    }
+
+    playNotificationSound() {
+        // Optional: Play a subtle sound when plan is detected
+        // You can add an audio element to play a notification sound
+        try {
+            const audio = new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBRld0Oy9diMFl2+z2e7NeSgFxYvg+8SEIwW3we6eVg0FqOTupjMBSanLvV0OBba37J5QCgU4cLvfvn0cBUCd1Oq2yFSvvayILgm359+2pw8HVqfu3LNDCEij59+NLwBarvfZN20aBVGU4OyrdR0Ff5/i5paFFDGD0+ylVBYF3NTaz38nBThl4fDbmU0NF1PD5uyqUBcIJJDO5buGNggMoNvyx08FB1er/OykQRIKrau3mHs0BQ5azvfZx30VBbDe3LVmFAVK0PC1vnoPC42S4ObNozsJB1Ox58+TYyAKL5zN9r19JAWFz9P6s4s6C2uz+L2VJwUUncflwpdMC0HD5d5sFAVWv+PYiEQIDXq16eyxlSAK57vi75NkBqOZ88WzlnAHl9TmsS8JBaLj4rQ8BigO1/rPuIMtBjGI1PG+kCcFxoTg+bxnMwfSfOL55LVeCn/R+Mltbw8FBpP48KBwKgtDqPDfnzsLCJDZ/dpTWRUHo+S6+M9+lQdRp/DdnysJFXG559GdWwgTgN7z04k2Be/B8d2AUAILJLTy2Y8xBZmduvneOxYFy6H24LhpGgWunuznm0sTDbXm9bldBQuK6u7LfxUIPLH74Z5CBRt37uWmTRgB7ez+0ogeCi+J0Oe4X');
+            audio.volume = 0.3;
+            audio.play();
+        } catch (e) {
+            // Ignore sound errors
+        }
+    }
+
+    _setupSwipeGestures() {
+        if (!this.isMobile) return;
+        let startX = 0, startY = 0, startTime = 0;
+        const container = document.querySelector('.terminal-container');
+        if (!container) return;
+        container.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
+            startX = e.touches[0].clientX;
+            startY = e.touches[0].clientY;
+            startTime = Date.now();
+        }, { passive: true });
+        container.addEventListener('touchend', (e) => {
+            if (!startTime) return;
+            const dx = e.changedTouches[0].clientX - startX;
+            const dy = e.changedTouches[0].clientY - startY;
+            const elapsed = Date.now() - startTime;
+            if (elapsed < 300 && Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 2) {
+                if (dx > 0) this.sessionTabManager?.switchToPreviousTab();
+                else this.sessionTabManager?.switchToNextTab();
+            }
+            startTime = 0;
+        }, { passive: true });
+    }
+
+    // _setupDarkModeListener removed — was a no-op skeleton.
+    // Dark mode auto-switching deferred: see docs/history/mobile-ux-overhaul-deferrals.md
+    _setupDarkModeListener() {
+        // Intentionally empty — feature deferred. Placeholder preserved for
+        // E2E test compatibility (49-mobile-sprint23-fixes.spec.js checks method exists).
+    }
+
+}
+
+// Add animation keyframes
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideIn {
+        from { transform: translateX(100%); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes slideOut {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(100%); opacity: 0; }
+    }
+`;
+document.head.appendChild(style);
+
+// Focus trap utility for modal dialogs
+window.focusTrap = {
+    _active: null,
+    _previousFocus: null,
+    _handler: null,
+
+    activate(modalEl) {
+        this._previousFocus = document.activeElement;
+        this._active = modalEl;
+
+        const getFocusable = () => {
+            return Array.from(modalEl.querySelectorAll(
+                'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            )).filter(el => el.offsetParent !== null);
+        };
+
+        this._handler = (e) => {
+            if (e.key !== 'Tab') return;
+            const focusable = getFocusable();
+            if (!focusable.length) return;
+
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+
+            if (e.shiftKey) {
+                if (document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                }
+            } else {
+                if (document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
+        };
+        modalEl.addEventListener('keydown', this._handler);
+
+        // Focus the first focusable element (or close button)
+        requestAnimationFrame(() => {
+            const focusable = getFocusable();
+            if (focusable.length) focusable[0].focus();
+        });
+    },
+
+    deactivate() {
+        if (this._active && this._handler) {
+            this._active.removeEventListener('keydown', this._handler);
+        }
+        this._active = null;
+        this._handler = null;
+        if (this._previousFocus && typeof this._previousFocus.focus === 'function') {
+            this._previousFocus.focus();
+        }
+        this._previousFocus = null;
+    }
+};
+
+document.addEventListener('DOMContentLoaded', () => {
+    const app = new ClaudeCodeWebInterface();
+    window.app = app;
+    app.startHeartbeat();
+});
+
+// CLIENT-03 (stability-hardening-2026): browser-side diagnostics surface.
+// Mirrors the server `/api/diagnostics` shape so SUP-SOAK's browser soak
+// can sample uniformly. Installed at module level so it is callable from
+// the moment app.js finishes loading — independent of when `window.app`
+// is constructed or whether a session has been joined. All sub-collectors
+// are wrapped in try/catch so the function never throws; safe to call
+// pre-session. Returns a Promise (the optional
+// `performance.measureUserAgentSpecificMemory()` call is async).
+// Idempotent: re-loading app.js (e.g. HMR) overwrites the previous
+// install — last loader wins.
+// Spec: docs/specs/client-longevity.md
+window.__diagnostics = async function __diagnostics() {
+    const ts = Date.now();
+    const snap = {
+        ts: ts,
+        dom: { total_nodes: 0 },
+        buffers: { plan_detector_bytes: 0, xterm_scrollback_lines: 0 },
+        ws: { state: null, url: null },
+        sse: { connected: false, streams: 0 },
+        memory: null
+    };
+
+    // dom.total_nodes
+    try {
+        snap.dom.total_nodes = document.querySelectorAll('*').length;
+    } catch (_) { /* leave 0 */ }
+
+    // dom.listeners_tracked — only emit if a tracker exists. No tracker
+    // ships today; SUP-SOAK must tolerate absence per spec v1.
+    try {
+        if (typeof window.__listenerCount === 'number') {
+            snap.dom.listeners_tracked = window.__listenerCount;
+        }
+    } catch (_) { /* leave omitted */ }
+
+    // buffers.plan_detector_bytes — prefer the CLIENT-01 `bufferBytes`
+    // field; fall back to inline sum if running against an older detector.
+    try {
+        const pd = window.app && window.app.planDetector;
+        if (pd) {
+            if (typeof pd.bufferBytes === 'number') {
+                snap.buffers.plan_detector_bytes = pd.bufferBytes;
+            } else if (Array.isArray(pd.outputBuffer)) {
+                let sum = 0;
+                for (let i = 0; i < pd.outputBuffer.length; i++) {
+                    const e = pd.outputBuffer[i];
+                    if (e && typeof e.data === 'string') sum += e.data.length;
+                }
+                snap.buffers.plan_detector_bytes = sum;
+            }
+        }
+    } catch (_) { /* leave 0 */ }
+
+    // buffers.xterm_scrollback_lines — xterm.js buffer line count.
+    try {
+        const term = window.app && window.app.terminal;
+        if (term && term.buffer && term.buffer.active
+                && typeof term.buffer.active.length === 'number') {
+            snap.buffers.xterm_scrollback_lines = term.buffer.active.length;
+        }
+    } catch (_) { /* leave 0 */ }
+
+    // ws.state / ws.url
+    try {
+        const sock = window.app && window.app.socket;
+        if (sock) {
+            if (typeof sock.readyState === 'number') snap.ws.state = sock.readyState;
+            if (typeof sock.url === 'string') snap.ws.url = sock.url;
+        }
+    } catch (_) { /* leave null */ }
+
+    // sse — best-effort walk of known holders. No global EventSource count
+    // is exposed by browsers, so this is a lower bound.
+    try {
+        let streams = 0;
+        const candidates = [
+            window.app && window.app._fileBrowserPanel
+                && window.app._fileBrowserPanel._fileWatcher
+                && window.app._fileBrowserPanel._fileWatcher._eventSource,
+            window.app && window.app._fileSearchPanel
+                && window.app._fileSearchPanel._eventSource,
+            window.app && window.app._fileWatcher
+                && window.app._fileWatcher._eventSource,
+        ];
+        for (let i = 0; i < candidates.length; i++) {
+            const es = candidates[i];
+            // EventSource.OPEN === 1; CONNECTING === 0; CLOSED === 2.
+            if (es && typeof es.readyState === 'number' && es.readyState !== 2) {
+                streams++;
+            }
+        }
+        snap.sse.streams = streams;
+        snap.sse.connected = streams > 0;
+    } catch (_) { /* leave defaults */ }
+
+    // memory — cross-origin-isolated Chrome only; fall back to
+    // navigator.deviceMemory; else null.
+    try {
+        if (typeof performance !== 'undefined'
+                && typeof performance.measureUserAgentSpecificMemory === 'function') {
+            try {
+                snap.memory = await performance.measureUserAgentSpecificMemory();
+            } catch (_) {
+                if (typeof navigator !== 'undefined' && typeof navigator.deviceMemory === 'number') {
+                    snap.memory = { deviceMemoryGB: navigator.deviceMemory };
+                }
+            }
+        } else if (typeof navigator !== 'undefined' && typeof navigator.deviceMemory === 'number') {
+            snap.memory = { deviceMemoryGB: navigator.deviceMemory };
+        }
+    } catch (_) { /* leave null */ }
+
+    return snap;
+};
