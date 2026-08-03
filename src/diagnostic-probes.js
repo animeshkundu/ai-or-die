@@ -276,7 +276,11 @@ function collectCounters(server) {
       })(),
     },
     bridges: collectBridges(server),
-    persistence: server.sessionStore && server.sessionStore._diagnostics || null,
+    persistence: server.sessionStore ? {
+      ...(server.sessionStore._diagnostics || {}),
+      writes_disabled: server._diagnosticPersistenceDisabled === true,
+      auto_save_ticks: Number(server._diagnosticAutoSaveTicks) || 0,
+    } : null,
     artifact_reviews: collectArtifactReviews(server.artifactReviews),
     sticky_notes: collectSticky(server),
     usage: {
@@ -340,14 +344,42 @@ function canonicalizeProspectivePath(candidate) {
   return path.join(canonicalBase, ...missing);
 }
 
+function deleteSnapshotFile(file, io = fs) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      io.unlinkSync(file);
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return;
+      lastError = error;
+    }
+    if (!io.existsSync(file)) return;
+  }
+  const error = new Error('over-cap heap snapshot could not be deleted');
+  error.code = lastError && lastError.code || 'SNAPSHOT_CLEANUP_FAILED';
+  throw error;
+}
+
 function installDiagnosticRoutes(server) {
   if (process.env.AOD_DIAG_ENABLED !== '1') return false;
   const token = process.env.AOD_DIAG_TOKEN;
   if (typeof token !== 'string' || token.length < 16) return false;
 
+  server._diagnosticPersistenceDisabled =
+    process.env.AOD_DIAG_DISABLE_PERSISTENCE === '1';
+  server._diagnosticAutoSaveTicks = 0;
   const snapshotRoot = process.env.AOD_DIAG_SNAPSHOT_DIR
     ? path.resolve(process.env.AOD_DIAG_SNAPSHOT_DIR)
     : null;
+  const snapshotHeapCeilingMb =
+    Number(process.env.AOD_DIAG_SNAPSHOT_HEAP_CEILING_MB) ||
+    DEFAULT_SNAPSHOT_HEAP_CEILING_MB;
+  const snapshotCountCap =
+    Number(process.env.AOD_DIAG_SNAPSHOT_COUNT_CAP) ||
+    DEFAULT_SNAPSHOT_COUNT_CAP;
+  const snapshotBytesCap =
+    Number(process.env.AOD_DIAG_SNAPSHOT_BYTES_CAP) ||
+    DEFAULT_SNAPSHOT_BYTES_CAP;
   const state = {
     snapshot_count: 0,
     snapshot_bytes: 0,
@@ -394,19 +426,15 @@ function installDiagnosticRoutes(server) {
       return res.status(503).json({ error: 'AOD_DIAG_SNAPSHOT_DIR is required' });
     }
     const usedMb = v8.getHeapStatistics().used_heap_size / MB;
-    const ceilingMb = Number(process.env.AOD_DIAG_SNAPSHOT_HEAP_CEILING_MB) ||
-      DEFAULT_SNAPSHOT_HEAP_CEILING_MB;
-    if (usedMb > ceilingMb) {
+    if (usedMb > snapshotHeapCeilingMb) {
       return res.status(413).json({
         error: 'heap snapshot preflight ceiling exceeded',
         used_heap_mb: +usedMb.toFixed(1),
-        ceiling_mb: ceilingMb,
+        ceiling_mb: snapshotHeapCeilingMb,
       });
     }
 
-    const countCap = Number(process.env.AOD_DIAG_SNAPSHOT_COUNT_CAP) || DEFAULT_SNAPSHOT_COUNT_CAP;
-    const bytesCap = Number(process.env.AOD_DIAG_SNAPSHOT_BYTES_CAP) || DEFAULT_SNAPSHOT_BYTES_CAP;
-    if (state.snapshot_count >= countCap || state.snapshot_bytes >= bytesCap) {
+    if (state.snapshot_count >= snapshotCountCap || state.snapshot_bytes >= snapshotBytesCap) {
       return res.status(429).json({ error: 'heap snapshot artifact cap reached' });
     }
 
@@ -432,6 +460,15 @@ function installDiagnosticRoutes(server) {
       const file = path.join(canonicalRequested, `Heap-${process.pid}-${Date.now()}.heapsnapshot`);
       const written = v8.writeHeapSnapshot(file);
       const bytes = fs.statSync(written).size;
+      if (state.snapshot_bytes + bytes > snapshotBytesCap) {
+        deleteSnapshotFile(written);
+        return res.status(413).json({
+          error: 'heap snapshot artifact byte cap exceeded',
+          bytes,
+          snapshot_bytes: state.snapshot_bytes,
+          bytes_cap: snapshotBytesCap,
+        });
+      }
       state.snapshot_count++;
       state.snapshot_bytes += bytes;
       res.json({
@@ -450,6 +487,7 @@ function installDiagnosticRoutes(server) {
 
 module.exports = {
   collectCounters,
+  deleteSnapshotFile,
   forceGcTwice,
   installDiagnosticRoutes,
 };

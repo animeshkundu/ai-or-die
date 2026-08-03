@@ -72,15 +72,22 @@ class SessionStore {
             pending_saves: 0,
             max_pending_saves: 0,
             active_saves: 0,
+            max_active_saves: 0,
             completed_saves: 0,
             failed_saves: 0,
             last_queue_wait_ms: 0,
             last_duration_ms: 0,
+            max_duration_ms: 0,
             last_session_count: 0,
             last_serialized_bytes: 0,
             active_serialized_bytes: 0,
+            max_active_serialized_bytes: 0,
             total_serialized_bytes: 0
         };
+        this._diagnosticMetricsEnabled =
+            process.env.AOD_DIAG_ENABLED === '1' &&
+            typeof process.env.AOD_DIAG_TOKEN === 'string' &&
+            process.env.AOD_DIAG_TOKEN.length >= 16;
         this.initializeStorage();
     }
 
@@ -224,6 +231,10 @@ class SessionStore {
 
         const startedAt = Date.now();
         this._diagnostics.active_saves++;
+        this._diagnostics.max_active_saves = Math.max(
+            this._diagnostics.max_active_saves,
+            this._diagnostics.active_saves
+        );
         try {
             // Ensure storage directory exists
             await fs.mkdir(this.storageDir, { recursive: true });
@@ -317,11 +328,15 @@ class SessionStore {
             // < 10 ms on modern hardware regardless of total session count.
             // See docs/audits/hot-05-sessionstore-stringify.md.
             const jsonStr = await this._serializeDataStreamed(data);
-            const serializedBytes = process.env.AOD_DIAG_ENABLED === '1'
+            const serializedBytes = this._diagnosticMetricsEnabled
                 ? Buffer.byteLength(jsonStr, 'utf8')
                 : 0;
             this._diagnostics.last_serialized_bytes = serializedBytes;
             this._diagnostics.active_serialized_bytes = serializedBytes;
+            this._diagnostics.max_active_serialized_bytes = Math.max(
+                this._diagnostics.max_active_serialized_bytes,
+                serializedBytes
+            );
             this._diagnostics.total_serialized_bytes += serializedBytes;
 
             // Step 1–4: write + fsync + close the temp file via an explicit
@@ -375,6 +390,10 @@ class SessionStore {
             this._diagnostics.active_saves--;
             this._diagnostics.active_serialized_bytes = 0;
             this._diagnostics.last_duration_ms = Date.now() - startedAt;
+            this._diagnostics.max_duration_ms = Math.max(
+                this._diagnostics.max_duration_ms,
+                this._diagnostics.last_duration_ms
+            );
         }
     }
 

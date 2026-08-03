@@ -6,6 +6,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const { ClaudeCodeWebServer } = require('../src/server');
+const { deleteSnapshotFile } = require('../src/diagnostic-probes');
 
 function request(port, method, pathname, options = {}) {
   return new Promise((resolve, reject) => {
@@ -88,11 +89,18 @@ describe('diagnostic memory probes', function () {
     await startWithEnv({
       AOD_DIAG_ENABLED: undefined,
       AOD_DIAG_TOKEN: token,
+      AOD_DIAG_DISABLE_PERSISTENCE: '1',
     });
     const response = await request(port, 'GET', '/api/_diag/counters', {
       headers: { 'x-aod-diag-token': token },
     });
     assert.strictEqual(response.statusCode, 404);
+    await server.saveSessionsToDisk(true);
+    assert.strictEqual(
+      server.sessionStore._diagnostics.save_calls,
+      1,
+      'the persistence seam must be inert when diagnostics are not registered',
+    );
   });
 
   it('does not register privileged routes when the token is absent', async function () {
@@ -102,6 +110,8 @@ describe('diagnostic memory probes', function () {
     });
     const response = await request(port, 'GET', '/api/_diag/counters');
     assert.strictEqual(response.statusCode, 404);
+    await server.saveSessionsToDisk(true);
+    assert.strictEqual(server.sessionStore._diagnostics.last_serialized_bytes, 0);
   });
 
   it('requires a dedicated snapshot directory without disabling other counters', async function () {
@@ -118,6 +128,56 @@ describe('diagnostic memory probes', function () {
       body: {},
     });
     assert.strictEqual(snapshot.statusCode, 503);
+  });
+
+  it('keeps the persistence suppression seam diagnostic-only', async function () {
+    await startWithEnv({
+      AOD_DIAG_ENABLED: '1',
+      AOD_DIAG_TOKEN: token,
+      AOD_DIAG_DISABLE_PERSISTENCE: '1',
+    });
+    const created = await request(port, 'POST', '/api/sessions/create', {
+      body: { name: 'persistence-disabled-probe', workingDir: process.cwd() },
+    });
+    assert.strictEqual(created.statusCode, 200);
+    const counters = await request(port, 'GET', '/api/_diag/counters', {
+      headers: { 'x-aod-diag-token': token },
+    });
+    assert.strictEqual(counters.body.persistence.writes_disabled, true);
+    assert.strictEqual(counters.body.persistence.auto_save_ticks, 0);
+    assert.strictEqual(counters.body.persistence.save_calls, 0);
+  });
+
+  it('deletes a snapshot that would exceed the aggregate artifact byte cap', async function () {
+    await startWithEnv({
+      AOD_DIAG_ENABLED: '1',
+      AOD_DIAG_TOKEN: token,
+      AOD_DIAG_SNAPSHOT_DIR: '$TMP',
+      AOD_DIAG_SNAPSHOT_BYTES_CAP: '1',
+    });
+    const response = await request(port, 'POST', '/api/_diag/heapsnapshot', {
+      headers: { 'x-aod-diag-token': token },
+      body: {},
+    });
+    assert.strictEqual(response.statusCode, 413);
+    assert.strictEqual(
+      fs.readdirSync(tmpRoot).some((name) => name.endsWith('.heapsnapshot')),
+      false,
+    );
+  });
+
+  it('surfaces an over-cap snapshot cleanup failure after bounded retries', function () {
+    let attempts = 0;
+    assert.throws(() => deleteSnapshotFile('/locked.heapsnapshot', {
+      unlinkSync() {
+        attempts++;
+        const error = new Error('locked');
+        error.code = 'EBUSY';
+        throw error;
+      },
+      existsSync() { return true; },
+    }), (error) => error.code === 'EBUSY');
+    assert.strictEqual(attempts, 3);
   });
 
   it('requires the diagnostic token and exposes ownership counters without changing /api/diagnostics', async function () {

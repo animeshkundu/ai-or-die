@@ -358,15 +358,50 @@ session finding and creates transient churn:
   for each actual save.
 - `:212-213` applies the 1,000-entry/512 KiB cap **only while serializing**; it
   does not cap live memory.
-- In the 200-session run, 200 fire-and-forget save calls produced maximum queue
-  depths 21/23/19. After drain, pending and active saves were zero. Only
-  13-18 saves did real serialization because queued calls rechecked dirty state.
-  Last JSON sizes were 110,587-119,557 bytes and last save durations 26-29 ms.
+- In the unthrottled 200-session stress, 200 fire-and-forget save calls produced
+  maximum queue depths 21/23/19. After drain, pending and active saves were zero.
+  Only 13-18 saves did real serialization because queued calls rechecked dirty
+  state. Last JSON sizes were 110,587-119,557 bytes and last save durations were
+  26-29 ms.
+
+The dedicated paired arm runs the real supervisor/server twice per repeat with
+identical session creation: once with persistence enabled and once with the
+diagnostic-only write suppression seam. It crosses the 30-second autosave
+boundary:
+
+```text
+npx -y node@22 test/longevity/harness/memory-diagnosis-cli.js \
+  --arm=persistence --operations=30 --repeats=3 --rate=1 \
+  --warmup-ms=500 --control-ms=250 --drain-ms=1000 \
+  --out=test/longevity/results/derived/persistence-linux-node22.json
+```
+
+The harness asserts the real server timer reports exactly one autosave tick in
+each measured process; timing drift fails the arm rather than silently changing
+its evidence shape. Both sides retained exactly 30 sessions after every repeat.
+Persistence-on made 31 calls: 30 fire-and-forget creation saves plus one
+30-second autosave, which was a no-op because the last creation save had already
+cleared dirty state.
+Maximum pending and active saves were one; all post-drain active/pending counts
+and active serialized bytes were zero. The largest serialized live string was
+17,967 bytes, total bytes serialized were 279,360 per repeat, and maximum save
+duration was 29-34 ms. Persistence-disabled recorded zero calls/bytes while
+retaining the same 30 sessions and independently reporting one autosave tick.
+
+The enabled side retained 776,856 post-GC bytes median
+(768,584-777,424), versus 658,184 (656,408-665,248) with writes disabled.
+The paired difference was 111,608 bytes median (110,400-121,016), or
+**3,720.27 bytes/session** (3,680.00-4,033.87). At the measured one-session/sec
+rate that difference is 12.77 MiB/hour; that stress-rate figure is not a
+production projection. The active serialization peak is separately bounded by
+the 17,967-byte counter and is absent after drain, so it is transient rather
+than part of the post-GC retained figure.
 
 Status: **RULED OUT as an independent permanent leak; IMPORTANT transient
-amplifier and persistence mirror of Finding 3.** A persistence-on/off arm remains
-useful at production tail sizes because one active serialization simultaneously
-owns the sessions array, per-session parts, and joined JSON string.
+amplifier and persistence mirror of Finding 3 for the exercised arm.** The
+post-GC residue is small relative to the retained sessions and output tails; one
+active serialization additionally owns the sessions array, per-session parts,
+and joined JSON string.
 
 ## Checked and ruled out
 
@@ -445,8 +480,12 @@ Only derived JSON is uploaded; `.heapsnapshot` is never an artifact path.
 - `AOD_DIAG_*` secrets are removed from every user-controlled PTY/agent and
   long-lived tunnel/mesh/helper child environment.
 - Snapshot writes are confined to `AOD_DIAG_SNAPSHOT_DIR`, preflight at 768 MiB
-  used heap by default, and capped by count and aggregate bytes. Snapshot
+  used heap by default, and capped by count and aggregate bytes. A snapshot that
+  would cross the byte cap is deleted before the route returns 413. Snapshot
   capture returns 503 unless that dedicated directory is explicitly configured.
+- A paired SessionStore control may suppress writes only when the privileged
+  diagnostic router was successfully registered. Tests prove the seam is inert
+  when diagnostics are disabled.
 - Diagnostic routes share the service listener rather than a loopback-only
   listener. They must never be enabled while the instance is reachable through
   a public, mesh, or VS Code tunnel, and diagnosis mode must be disabled after
@@ -465,6 +504,7 @@ Only derived JSON is uploaded; `.heapsnapshot` is never an artifact path.
 | Evidence | File |
 |---|---|
 | Empty session floor, save queue, WS/handle cleanup | `test/longevity/results/derived/sessions-linux-node22.json` |
+| Persistence enabled vs disabled across autosave | `test/longevity/results/derived/persistence-linux-node22.json` |
 | Real PTY output retention and PTY cleanup | `test/longevity/results/derived/pty-linux-node22.json` |
 | Ended artifact review retention | `test/longevity/results/derived/artifacts-linux-node22.json` |
 | Unavailable sticky-note retention | `test/longevity/results/derived/sticky-linux-node22.json` |

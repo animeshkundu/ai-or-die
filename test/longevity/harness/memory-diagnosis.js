@@ -212,6 +212,61 @@ function summarizeRuns(arm, runs, operations, ratePerSecond) {
   };
 }
 
+function netHeapDeltas(runs) {
+  return runs.map((run) => {
+    const measured = run.after.server.process.memory.heapUsed -
+      run.before.server.process.memory.heapUsed;
+    const control = run.control_after.server.process.memory.heapUsed -
+      run.control_before.server.process.memory.heapUsed;
+    return measured - control;
+  });
+}
+
+function summarizePersistenceRuns(runs, operations, ratePerSecond) {
+  const enabledRuns = runs.map((run) => run.enabled);
+  const disabledRuns = runs.map((run) => run.disabled);
+  const enabledDeltas = netHeapDeltas(enabledRuns);
+  const disabledDeltas = netHeapDeltas(disabledRuns);
+  const amplification = enabledDeltas.map((value, index) => value - disabledDeltas[index]);
+  const bytesPerOperation = amplification.map((value) => value / operations);
+  return {
+    arm: 'persistence',
+    operations,
+    repeats: runs.length,
+    enabled: summarizeRuns('persistence-enabled', enabledRuns, operations, ratePerSecond),
+    disabled: summarizeRuns('persistence-disabled', disabledRuns, operations, ratePerSecond),
+    persistence_amplification_bytes: {
+      median: median(amplification),
+      min: Math.min(...amplification),
+      max: Math.max(...amplification),
+    },
+    persistence_amplification_bytes_per_operation: {
+      median: median(bytesPerOperation),
+      min: Math.min(...bytesPerOperation),
+      max: Math.max(...bytesPerOperation),
+    },
+  };
+}
+
+function assertPersistenceRun(run, operations, writesDisabled) {
+  const after = run.after.server;
+  const persistence = after.persistence;
+  if (after.sessions.total !== operations) {
+    throw new Error(`persistence arm retained ${after.sessions.total}/${operations} sessions`);
+  }
+  if (persistence.auto_save_ticks !== 1) {
+    throw new Error(
+      `persistence arm expected exactly one autosave tick, observed ${persistence.auto_save_ticks}`,
+    );
+  }
+  const expectedSaveCalls = writesDisabled ? 0 : operations + 1;
+  if (persistence.save_calls !== expectedSaveCalls) {
+    throw new Error(
+      `persistence arm expected ${expectedSaveCalls} save calls, observed ${persistence.save_calls}`,
+    );
+  }
+}
+
 async function runOne(options, repeat, workload) {
   const controller = await startProcServer({
     diagToken: options.diagToken,
@@ -255,6 +310,7 @@ async function runMemoryDiagnosis(options = {}) {
   };
   const workloads = {
     sessions: runSessionOperations,
+    persistence: runSessionOperations,
     artifacts: runArtifactOperations,
     pty: runPtyOperations,
   };
@@ -272,18 +328,53 @@ async function runMemoryDiagnosis(options = {}) {
   }
 
   const runs = [];
-  for (let repeat = 0; repeat < cfg.repeats; repeat++) {
-    const control = await runOne(
-      { ...cfg, operations: 0, drainMs: cfg.controlMs },
-      repeat,
-      async () => sleep(cfg.controlMs),
-    );
-    const measured = await runOne(cfg, repeat, workload);
-    runs.push({
-      ...measured,
-      control_before: control.before,
-      control_after: control.after,
-    });
+  if (cfg.arm === 'persistence') {
+    for (let repeat = 0; repeat < cfg.repeats; repeat++) {
+      const enabledControl = await runOne(
+        { ...cfg, operations: 0, drainMs: cfg.controlMs },
+        repeat,
+        async () => sleep(cfg.controlMs),
+      );
+      const enabled = await runOne(cfg, repeat, workload);
+      const disabledConfig = {
+        ...cfg,
+        env: { AOD_DIAG_DISABLE_PERSISTENCE: '1' },
+      };
+      const disabledControl = await runOne(
+        { ...disabledConfig, operations: 0, drainMs: cfg.controlMs },
+        repeat,
+        async () => sleep(cfg.controlMs),
+      );
+      const disabled = await runOne(disabledConfig, repeat, workload);
+      assertPersistenceRun(enabled, cfg.operations, false);
+      assertPersistenceRun(disabled, cfg.operations, true);
+      runs.push({
+        enabled: {
+          ...enabled,
+          control_before: enabledControl.before,
+          control_after: enabledControl.after,
+        },
+        disabled: {
+          ...disabled,
+          control_before: disabledControl.before,
+          control_after: disabledControl.after,
+        },
+      });
+    }
+  } else {
+    for (let repeat = 0; repeat < cfg.repeats; repeat++) {
+      const control = await runOne(
+        { ...cfg, operations: 0, drainMs: cfg.controlMs },
+        repeat,
+        async () => sleep(cfg.controlMs),
+      );
+      const measured = await runOne(cfg, repeat, workload);
+      runs.push({
+        ...measured,
+        control_before: control.before,
+        control_after: control.after,
+      });
+    }
   }
 
   const publicConfig = { ...cfg };
@@ -299,7 +390,9 @@ async function runMemoryDiagnosis(options = {}) {
       arch: process.arch,
       config: publicConfig,
     },
-    summary: summarizeRuns(cfg.arm, runs, cfg.operations, cfg.ratePerSecond),
+    summary: cfg.arm === 'persistence'
+      ? summarizePersistenceRuns(runs, cfg.operations, cfg.ratePerSecond)
+      : summarizeRuns(cfg.arm, runs, cfg.operations, cfg.ratePerSecond),
     runs,
   };
 }
@@ -308,5 +401,7 @@ module.exports = {
   capture,
   createThenDisconnect,
   runMemoryDiagnosis,
+  assertPersistenceRun,
+  summarizePersistenceRuns,
   summarizeRuns,
 };

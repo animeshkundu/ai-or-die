@@ -93,6 +93,22 @@ jobs:
             --drain-ms=500 \
             --out="$DIAG_OUT/artifacts-$DIAG_OS.json"
 
+      - name: SessionStore persistence enabled-versus-disabled probe
+        shell: bash
+        run: |
+          # The harness asserts exactly one real 30-second autosave tick in
+          # both paired processes, so timing drift fails instead of changing
+          # the evidence shape silently.
+          node test/longevity/harness/memory-diagnosis-cli.js \
+            --arm=persistence \
+            --operations=30 \
+            --repeats=3 \
+            --rate=1 \
+            --warmup-ms=500 \
+            --control-ms=250 \
+            --drain-ms=1000 \
+            --out="$DIAG_OUT/persistence-$DIAG_OS.json"
+
       - name: PTY output-buffer process-isolated probe
         shell: bash
         run: |

@@ -364,6 +364,9 @@ class ClaudeCodeWebServer {
   setupAutoSave() {
     // Auto-save sessions every 30 seconds
     this.autoSaveInterval = setInterval(() => {
+      if (typeof this._diagnosticAutoSaveTicks === 'number') {
+        this._diagnosticAutoSaveTicks++;
+      }
       this.saveSessionsToDisk();
     }, 30000);
 
@@ -486,6 +489,7 @@ class ClaudeCodeWebServer {
   }
 
   async saveSessionsToDisk(force = false) {
+    if (this._diagnosticPersistenceDisabled === true) return true;
     if (force) {
       this.sessionStore.markDirty();
     }

@@ -16,6 +16,10 @@ raw heap snapshots. Raw `.heapsnapshot` files can contain terminal text, paths,
 usernames, and secrets; keep them local and delete them after generating the
 redacted aggregate with `harness/heap-snapshot-cli.js`.
 
+The `persistence-*` series pair persistence-enabled and diagnostic-only
+persistence-disabled server processes with identical session workloads so
+serialization peaks are separated from the live-session floor.
+
 `MEMORY-DIAGNOSIS-PR-BODY.md` is the ranked diagnosis report generated from the
 Node 22 series and historical CI OOM evidence.
 
