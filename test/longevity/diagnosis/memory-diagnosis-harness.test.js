@@ -131,6 +131,13 @@ describe('memory diagnosis harness', function () {
       () => assertPersistenceRun(run, 30, false),
       /expected 31 save calls/,
     );
+    run.after.server.persistence.save_calls = 0;
+    assert.doesNotThrow(() => assertPersistenceRun(run, 30, true));
+    run.after.server.persistence.save_calls = 1;
+    assert.throws(
+      () => assertPersistenceRun(run, 30, true),
+      /expected 0 save calls/,
+    );
   });
 
   it('leaves the VS Code stdout ownership counter disabled by default', async function () {
