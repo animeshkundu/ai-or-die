@@ -175,9 +175,11 @@ async function run() {
   // Raised to 170 for the mobile-input work (key-encoder/keys-panel/terminal-copy
   // + keys-panel.css + 4 iOS splash PNGs + 2 PWA screenshot PNGs).
   // v0.1.51's 206-file regression was a separate issue (different file class);
-  // 170 leaves headroom for normal growth without re-tripping that.
+  // Raised to 172 for the two diagnosis-only runtime modules
+  // (diagnostic-probes + child-env); both are required by packaged server code.
+  // This remains well below the 206-file arborist regression.
   const entryCount = entry.entryCount || 0;
-  assert(entryCount > 0 && entryCount <= 170, `Tarball file count ${entryCount} <= 170`);
+  assert(entryCount > 0 && entryCount <= 172, `Tarball file count ${entryCount} <= 172`);
 
   // Step 2: Install in temp directory
   console.log('\nStep 2: Installing tarball in temp directory');
