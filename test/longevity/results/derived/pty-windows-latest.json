@@ -1,0 +1,5268 @@
+{
+  "metadata": {
+    "captured_at": "2026-08-03T01:42:08.348Z",
+    "head": "0e1172c825d835c859443132da3d52f209218a69",
+    "node_version": "v22.23.1",
+    "platform": "win32",
+    "arch": "x64",
+    "config": {
+      "arm": "pty",
+      "operations": 32,
+      "repeats": 3,
+      "ratePerSecond": 0,
+      "warmupMs": 500,
+      "drainMs": 10000,
+      "controlMs": 250,
+      "payloadBytes": 65536
+    }
+  },
+  "summary": {
+    "arm": "pty",
+    "operations": 32,
+    "repeats": 3,
+    "requested_rate_per_second": 0,
+    "effective_rate_per_second": 22.268615170494083,
+    "post_gc_heap_delta_bytes": {
+      "median": 3477496,
+      "min": 3462352,
+      "max": 3480120
+    },
+    "bytes_per_operation": {
+      "median": 108671.75,
+      "min": 108198.5,
+      "max": 108753.75
+    },
+    "mb_per_hour": {
+      "median": 8314.574685624348,
+      "min": 8018.156503814431,
+      "max": 8436.509748990862
+    },
+    "control_delta_bytes": {
+      "median": 30576,
+      "min": 30496,
+      "max": 30576
+    }
+  },
+  "runs": [
+    {
+      "before": {
+        "ts": "2026-08-03T01:41:17.540Z",
+        "phase": "before",
+        "repeat": 0,
+        "operations": 0,
+        "server": {
+          "captured_at": "2026-08-03T01:41:16.986Z",
+          "process": {
+            "pid": 3428,
+            "ppid": 4452,
+            "thread_id": 0,
+            "uptime_seconds": 2.0167501,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 63889408,
+              "heapTotal": 31842304,
+              "heapUsed": 13252632,
+              "external": 2699186,
+              "arrayBuffers": 31909
+            },
+            "heap_statistics": {
+              "total_heap_size": 31842304,
+              "total_heap_size_executable": 786432,
+              "total_physical_size": 31842304,
+              "total_available_size": 4330204792,
+              "used_heap_size": 13264704,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1283384,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 8192,
+              "used_global_handles_size": 4640,
+              "external_memory": 2699186
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 16777216,
+                "space_used_size": 17184,
+                "space_available_size": 8230112,
+                "physical_space_size": 16777216
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 11055104,
+                "space_used_size": 9679168,
+                "space_available_size": 109328,
+                "physical_space_size": 11055104
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 786432,
+                "space_used_size": 662848,
+                "space_available_size": 0,
+                "physical_space_size": 786432
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 1884160,
+                "space_used_size": 1607208,
+                "space_available_size": 0,
+                "physical_space_size": 1884160
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 8388608,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 6,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 4,
+              "Server": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 18,
+              "by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 4,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 0,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 0,
+              "bytes_tracking_complete": true,
+              "retained_entries": 0,
+              "backing_slots": 0,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 0,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 0,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 0,
+            "active_saves": 0,
+            "completed_saves": 0,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 0,
+            "last_session_count": 0,
+            "last_serialized_bytes": 0,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 0
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 0,
+            "retained_events": 0,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 4452,
+          "ppid": 5352,
+          "memory": {
+            "rss": 43659264,
+            "heapTotal": 7966720,
+            "heapUsed": 5709760,
+            "external": 2060252,
+            "arrayBuffers": 16948
+          },
+          "heap_statistics": {
+            "total_heap_size": 7966720,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 7966720,
+            "total_available_size": 4339424432,
+            "used_heap_size": 5714472,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 426080,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11424,
+            "external_memory": 2060292
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 2097152,
+              "space_used_size": 240520,
+              "space_available_size": 790392,
+              "physical_space_size": 2097152
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 4111608,
+              "space_available_size": 51888,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 132832,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1008960,
+              "space_available_size": 64512,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1030912,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 3428,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 4452,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 43683840,
+            "private_bytes": 23220224,
+            "virtual_bytes": 5190127616,
+            "handle_count": 251
+          },
+          {
+            "pid": 3428,
+            "ppid": 4452,
+            "name": "node.exe",
+            "rss_bytes": 63881216,
+            "private_bytes": 79523840,
+            "virtual_bytes": 5240774656,
+            "handle_count": 283
+          }
+        ]
+      },
+      "after": {
+        "ts": "2026-08-03T01:41:29.615Z",
+        "phase": "after",
+        "repeat": 0,
+        "operations": 32,
+        "server": {
+          "captured_at": "2026-08-03T01:41:28.990Z",
+          "process": {
+            "pid": 3428,
+            "ppid": 4452,
+            "thread_id": 0,
+            "uptime_seconds": 14.0199678,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 71503872,
+              "heapTotal": 19509248,
+              "heapUsed": 16745560,
+              "external": 2766777,
+              "arrayBuffers": 97452
+            },
+            "heap_statistics": {
+              "total_heap_size": 19509248,
+              "total_heap_size_executable": 1048576,
+              "total_physical_size": 19509248,
+              "total_available_size": 4328087152,
+              "used_heap_size": 16757736,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 3141472,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 16384,
+              "used_global_handles_size": 13824,
+              "external_memory": 2766777
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 1048576,
+                "space_used_size": 16888,
+                "space_available_size": 1014024,
+                "physical_space_size": 1048576
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 13676544,
+                "space_used_size": 12396360,
+                "space_available_size": 216368,
+                "physical_space_size": 13676544
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 1048576,
+                "space_used_size": 920896,
+                "space_available_size": 0,
+                "physical_space_size": 1048576
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 2146304,
+                "space_used_size": 1881456,
+                "space_available_size": 0,
+                "physical_space_size": 2146304
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 1048576,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1589248,
+                "space_used_size": 1560624,
+                "space_available_size": 0,
+                "physical_space_size": 1589248
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 8,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 5,
+              "Server": 1,
+              "MessagePort": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 21,
+              "by_type": {
+                "async": 6,
+                "timer": 1,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 5,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 6,
+                "timer": 1,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 1,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 2385289,
+              "bytes_tracking_complete": true,
+              "retained_entries": 237,
+              "backing_slots": 1000,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 3,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 1,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 1,
+            "active_saves": 0,
+            "completed_saves": 1,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 113,
+            "last_session_count": 1,
+            "last_serialized_bytes": 729,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 729
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 1,
+            "retained_events": 1,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 4452,
+          "ppid": 5352,
+          "memory": {
+            "rss": 42737664,
+            "heapTotal": 6918144,
+            "heapUsed": 5319808,
+            "external": 2060256,
+            "arrayBuffers": 16912
+          },
+          "heap_statistics": {
+            "total_heap_size": 6918144,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 6918144,
+            "total_available_size": 4340371688,
+            "used_heap_size": 5323176,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 278576,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11360,
+            "external_memory": 2060256
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 1048576,
+              "space_used_size": 108264,
+              "space_available_size": 922648,
+              "physical_space_size": 1048576
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 3856464,
+              "space_available_size": 306304,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 0,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1002640,
+              "space_available_size": 0,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1048576,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 3428,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 4452,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 42737664,
+            "private_bytes": 22065152,
+            "virtual_bytes": 5189079040,
+            "handle_count": 251
+          },
+          {
+            "pid": 3428,
+            "ppid": 4452,
+            "name": "node.exe",
+            "rss_bytes": 71983104,
+            "private_bytes": 88055808,
+            "virtual_bytes": 5805395968,
+            "handle_count": 305
+          },
+          {
+            "pid": 6436,
+            "ppid": 3428,
+            "name": "conhost.exe",
+            "rss_bytes": 8146944,
+            "private_bytes": 1597440,
+            "virtual_bytes": 2203418288128,
+            "handle_count": 110
+          }
+        ]
+      },
+      "before_ms": 1785721276950,
+      "after_ms": 1785721289615,
+      "workload_started_ms": 1785721277540,
+      "workload_finished_ms": 1785721278949,
+      "control_before": {
+        "ts": "2026-08-03T01:41:13.738Z",
+        "phase": "before",
+        "repeat": 0,
+        "operations": 0,
+        "server": {
+          "captured_at": "2026-08-03T01:41:13.166Z",
+          "process": {
+            "pid": 7884,
+            "ppid": 1776,
+            "thread_id": 0,
+            "uptime_seconds": 2.0290419,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 64368640,
+              "heapTotal": 31580160,
+              "heapUsed": 13252384,
+              "external": 2699186,
+              "arrayBuffers": 31909
+            },
+            "heap_statistics": {
+              "total_heap_size": 31580160,
+              "total_heap_size_executable": 786432,
+              "total_physical_size": 31580160,
+              "total_available_size": 4330519680,
+              "used_heap_size": 13264456,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1258808,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 8192,
+              "used_global_handles_size": 4640,
+              "external_memory": 2699186
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 16777216,
+                "space_used_size": 17184,
+                "space_available_size": 8230112,
+                "physical_space_size": 16777216
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 10792960,
+                "space_used_size": 9678784,
+                "space_available_size": 162072,
+                "physical_space_size": 10792960
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 786432,
+                "space_used_size": 662848,
+                "space_available_size": 0,
+                "physical_space_size": 786432
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 1884160,
+                "space_used_size": 1607344,
+                "space_available_size": 0,
+                "physical_space_size": 1884160
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 8388608,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 6,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 4,
+              "Server": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 18,
+              "by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 4,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 0,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 0,
+              "bytes_tracking_complete": true,
+              "retained_entries": 0,
+              "backing_slots": 0,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 0,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 0,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 0,
+            "active_saves": 0,
+            "completed_saves": 0,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 0,
+            "last_session_count": 0,
+            "last_serialized_bytes": 0,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 0
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 0,
+            "retained_events": 0,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 1776,
+          "ppid": 5352,
+          "memory": {
+            "rss": 46088192,
+            "heapTotal": 7966720,
+            "heapUsed": 5709072,
+            "external": 2060252,
+            "arrayBuffers": 16948
+          },
+          "heap_statistics": {
+            "total_heap_size": 7966720,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 7966720,
+            "total_available_size": 4339425120,
+            "used_heap_size": 5713784,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 426080,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11424,
+            "external_memory": 2060292
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 2097152,
+              "space_used_size": 239760,
+              "space_available_size": 791152,
+              "physical_space_size": 2097152
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 4111680,
+              "space_available_size": 51816,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 132832,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1008960,
+              "space_available_size": 64512,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1030912,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 7884,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 1776,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 46174208,
+            "private_bytes": 24272896,
+            "virtual_bytes": 5190127616,
+            "handle_count": 251
+          },
+          {
+            "pid": 7884,
+            "ppid": 1776,
+            "name": "node.exe",
+            "rss_bytes": 64352256,
+            "private_bytes": 80084992,
+            "virtual_bytes": 5240512512,
+            "handle_count": 283
+          }
+        ]
+      },
+      "control_after": {
+        "ts": "2026-08-03T01:41:14.845Z",
+        "phase": "after",
+        "repeat": 0,
+        "operations": 0,
+        "server": {
+          "captured_at": "2026-08-03T01:41:14.282Z",
+          "process": {
+            "pid": 7884,
+            "ppid": 1776,
+            "thread_id": 0,
+            "uptime_seconds": 3.1446143,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 64540672,
+              "heapTotal": 31842304,
+              "heapUsed": 13282960,
+              "external": 2699186,
+              "arrayBuffers": 31909
+            },
+            "heap_statistics": {
+              "total_heap_size": 31842304,
+              "total_heap_size_executable": 786432,
+              "total_physical_size": 31842304,
+              "total_available_size": 4330493768,
+              "used_heap_size": 13295048,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1258808,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 8192,
+              "used_global_handles_size": 4640,
+              "external_memory": 2699186
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 16777216,
+                "space_used_size": 16832,
+                "space_available_size": 8230464,
+                "physical_space_size": 16777216
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 11055104,
+                "space_used_size": 9683280,
+                "space_available_size": 399568,
+                "physical_space_size": 11055104
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 786432,
+                "space_used_size": 685248,
+                "space_available_size": 0,
+                "physical_space_size": 786432
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 1884160,
+                "space_used_size": 1609776,
+                "space_available_size": 0,
+                "physical_space_size": 1884160
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 8388608,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 6,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 4,
+              "Server": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 18,
+              "by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 4,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 0,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 0,
+              "bytes_tracking_complete": true,
+              "retained_entries": 0,
+              "backing_slots": 0,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 0,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 0,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 0,
+            "active_saves": 0,
+            "completed_saves": 0,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 0,
+            "last_session_count": 0,
+            "last_serialized_bytes": 0,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 0
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 0,
+            "retained_events": 0,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 1776,
+          "ppid": 5352,
+          "memory": {
+            "rss": 46268416,
+            "heapTotal": 7966720,
+            "heapUsed": 5815072,
+            "external": 2060398,
+            "arrayBuffers": 17054
+          },
+          "heap_statistics": {
+            "total_heap_size": 7966720,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 7966720,
+            "total_available_size": 4339323608,
+            "used_heap_size": 5815296,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 426080,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11424,
+            "external_memory": 2060398
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 2097152,
+              "space_used_size": 313680,
+              "space_available_size": 717232,
+              "physical_space_size": 2097152
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 4115608,
+              "space_available_size": 47888,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 132832,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1012000,
+              "space_available_size": 61472,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1030912,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 7884,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 1776,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 46268416,
+            "private_bytes": 24858624,
+            "virtual_bytes": 5190127616,
+            "handle_count": 251
+          },
+          {
+            "pid": 7884,
+            "ppid": 1776,
+            "name": "node.exe",
+            "rss_bytes": 64630784,
+            "private_bytes": 80596992,
+            "virtual_bytes": 5240774656,
+            "handle_count": 283
+          }
+        ]
+      }
+    },
+    {
+      "before": {
+        "ts": "2026-08-03T01:41:37.288Z",
+        "phase": "before",
+        "repeat": 1,
+        "operations": 0,
+        "server": {
+          "captured_at": "2026-08-03T01:41:36.622Z",
+          "process": {
+            "pid": 6040,
+            "ppid": 2052,
+            "thread_id": 0,
+            "uptime_seconds": 2.6309002,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 64200704,
+              "heapTotal": 31842304,
+              "heapUsed": 13252312,
+              "external": 2699186,
+              "arrayBuffers": 31909
+            },
+            "heap_statistics": {
+              "total_heap_size": 31842304,
+              "total_heap_size_executable": 786432,
+              "total_physical_size": 31842304,
+              "total_available_size": 4330213896,
+              "used_heap_size": 13264384,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1258808,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 8192,
+              "used_global_handles_size": 4640,
+              "external_memory": 2699186
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 16777216,
+                "space_used_size": 17184,
+                "space_available_size": 8230112,
+                "physical_space_size": 16777216
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 11055104,
+                "space_used_size": 9678848,
+                "space_available_size": 118432,
+                "physical_space_size": 11055104
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 786432,
+                "space_used_size": 662848,
+                "space_available_size": 0,
+                "physical_space_size": 786432
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 1884160,
+                "space_used_size": 1607208,
+                "space_available_size": 0,
+                "physical_space_size": 1884160
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 8388608,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 6,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 4,
+              "Server": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 18,
+              "by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 4,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 0,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 0,
+              "bytes_tracking_complete": true,
+              "retained_entries": 0,
+              "backing_slots": 0,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 0,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 0,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 0,
+            "active_saves": 0,
+            "completed_saves": 0,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 0,
+            "last_session_count": 0,
+            "last_serialized_bytes": 0,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 0
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 0,
+            "retained_events": 0,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 2052,
+          "ppid": 5352,
+          "memory": {
+            "rss": 44421120,
+            "heapTotal": 8228864,
+            "heapUsed": 5702192,
+            "external": 2060252,
+            "arrayBuffers": 16948
+          },
+          "heap_statistics": {
+            "total_heap_size": 8228864,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 8228864,
+            "total_available_size": 4339427576,
+            "used_heap_size": 5706904,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 426080,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11424,
+            "external_memory": 2060292
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 2097152,
+              "space_used_size": 229432,
+              "space_available_size": 801480,
+              "physical_space_size": 2097152
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4501504,
+              "space_used_size": 4115128,
+              "space_available_size": 306088,
+              "physical_space_size": 4501504
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 132832,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1008960,
+              "space_available_size": 64512,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1030912,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 6040,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 2052,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 44462080,
+            "private_bytes": 23347200,
+            "virtual_bytes": 5190389760,
+            "handle_count": 251
+          },
+          {
+            "pid": 6040,
+            "ppid": 2052,
+            "name": "node.exe",
+            "rss_bytes": 64192512,
+            "private_bytes": 79441920,
+            "virtual_bytes": 5240774656,
+            "handle_count": 283
+          }
+        ]
+      },
+      "after": {
+        "ts": "2026-08-03T01:41:49.346Z",
+        "phase": "after",
+        "repeat": 1,
+        "operations": 32,
+        "server": {
+          "captured_at": "2026-08-03T01:41:48.758Z",
+          "process": {
+            "pid": 6040,
+            "ppid": 2052,
+            "thread_id": 0,
+            "uptime_seconds": 14.7671826,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 70340608,
+              "heapTotal": 19783680,
+              "heapUsed": 16762928,
+              "external": 2766777,
+              "arrayBuffers": 97452
+            },
+            "heap_statistics": {
+              "total_heap_size": 19783680,
+              "total_heap_size_executable": 1048576,
+              "total_physical_size": 19783680,
+              "total_available_size": 4327822568,
+              "used_heap_size": 16775104,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 3004712,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 16384,
+              "used_global_handles_size": 13824,
+              "external_memory": 2766777
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 1048576,
+                "space_used_size": 16888,
+                "space_available_size": 1014024,
+                "physical_space_size": 1048576
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 14200832,
+                "space_used_size": 12645040,
+                "space_available_size": 226216,
+                "physical_space_size": 14200832
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 1048576,
+                "space_used_size": 927360,
+                "space_available_size": 0,
+                "physical_space_size": 1048576
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 2146304,
+                "space_used_size": 1885904,
+                "space_available_size": 0,
+                "physical_space_size": 2146304
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 1048576,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 8,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 5,
+              "Server": 1,
+              "MessagePort": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 21,
+              "by_type": {
+                "async": 6,
+                "timer": 1,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 5,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 6,
+                "timer": 1,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 1,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 2385289,
+              "bytes_tracking_complete": true,
+              "retained_entries": 225,
+              "backing_slots": 1000,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 3,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 1,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 1,
+            "active_saves": 0,
+            "completed_saves": 1,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 113,
+            "last_session_count": 1,
+            "last_serialized_bytes": 729,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 729
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 1,
+            "retained_events": 1,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 2052,
+          "ppid": 5352,
+          "memory": {
+            "rss": 43188224,
+            "heapTotal": 6918144,
+            "heapUsed": 5316712,
+            "external": 2060256,
+            "arrayBuffers": 16912
+          },
+          "heap_statistics": {
+            "total_heap_size": 6918144,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 6918144,
+            "total_available_size": 4340424200,
+            "used_heap_size": 5320080,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 278576,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11360,
+            "external_memory": 2060256
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 1048576,
+              "space_used_size": 104568,
+              "space_available_size": 926344,
+              "physical_space_size": 1048576
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 3857872,
+              "space_available_size": 48240,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 0,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1002640,
+              "space_available_size": 0,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1048576,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 6040,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 2052,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 43188224,
+            "private_bytes": 22052864,
+            "virtual_bytes": 5189079040,
+            "handle_count": 251
+          },
+          {
+            "pid": 6040,
+            "ppid": 2052,
+            "name": "node.exe",
+            "rss_bytes": 71303168,
+            "private_bytes": 87470080,
+            "virtual_bytes": 5789077504,
+            "handle_count": 305
+          },
+          {
+            "pid": 1340,
+            "ppid": 6040,
+            "name": "conhost.exe",
+            "rss_bytes": 8159232,
+            "private_bytes": 1609728,
+            "virtual_bytes": 2203418288128,
+            "handle_count": 110
+          }
+        ]
+      },
+      "before_ms": 1785721296588,
+      "after_ms": 1785721309346,
+      "workload_started_ms": 1785721297288,
+      "workload_finished_ms": 1785721298725,
+      "control_before": {
+        "ts": "2026-08-03T01:41:32.580Z",
+        "phase": "before",
+        "repeat": 1,
+        "operations": 0,
+        "server": {
+          "captured_at": "2026-08-03T01:41:31.971Z",
+          "process": {
+            "pid": 7832,
+            "ppid": 7284,
+            "thread_id": 0,
+            "uptime_seconds": 2.1409271,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 63873024,
+              "heapTotal": 31580160,
+              "heapUsed": 13252512,
+              "external": 2699186,
+              "arrayBuffers": 31909
+            },
+            "heap_statistics": {
+              "total_heap_size": 31842304,
+              "total_heap_size_executable": 786432,
+              "total_physical_size": 31842304,
+              "total_available_size": 4330338160,
+              "used_heap_size": 13264584,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1283384,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 8192,
+              "used_global_handles_size": 4640,
+              "external_memory": 2699186
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 16777216,
+                "space_used_size": 17184,
+                "space_available_size": 8230112,
+                "physical_space_size": 16777216
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 11055104,
+                "space_used_size": 9679048,
+                "space_available_size": 242696,
+                "physical_space_size": 11055104
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 786432,
+                "space_used_size": 662848,
+                "space_available_size": 0,
+                "physical_space_size": 786432
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 1884160,
+                "space_used_size": 1607208,
+                "space_available_size": 0,
+                "physical_space_size": 1884160
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 8388608,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 6,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 4,
+              "Server": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 18,
+              "by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 4,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 0,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 0,
+              "bytes_tracking_complete": true,
+              "retained_entries": 0,
+              "backing_slots": 0,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 0,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 0,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 0,
+            "active_saves": 0,
+            "completed_saves": 0,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 0,
+            "last_session_count": 0,
+            "last_serialized_bytes": 0,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 0
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 0,
+            "retained_events": 0,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 7284,
+          "ppid": 5352,
+          "memory": {
+            "rss": 44101632,
+            "heapTotal": 7966720,
+            "heapUsed": 5709800,
+            "external": 2060252,
+            "arrayBuffers": 16948
+          },
+          "heap_statistics": {
+            "total_heap_size": 7966720,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 7966720,
+            "total_available_size": 4339424400,
+            "used_heap_size": 5714512,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 426080,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11424,
+            "external_memory": 2060292
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 2097152,
+              "space_used_size": 240560,
+              "space_available_size": 790352,
+              "physical_space_size": 2097152
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 4111608,
+              "space_available_size": 51896,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 132832,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1008960,
+              "space_available_size": 64512,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1030912,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 7832,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 7284,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 44142592,
+            "private_bytes": 22712320,
+            "virtual_bytes": 5190127616,
+            "handle_count": 251
+          },
+          {
+            "pid": 7832,
+            "ppid": 7284,
+            "name": "node.exe",
+            "rss_bytes": 64065536,
+            "private_bytes": 79794176,
+            "virtual_bytes": 5240774656,
+            "handle_count": 283
+          }
+        ]
+      },
+      "control_after": {
+        "ts": "2026-08-03T01:41:33.779Z",
+        "phase": "after",
+        "repeat": 1,
+        "operations": 0,
+        "server": {
+          "captured_at": "2026-08-03T01:41:33.113Z",
+          "process": {
+            "pid": 7832,
+            "ppid": 7284,
+            "thread_id": 0,
+            "uptime_seconds": 3.2832019,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 64237568,
+              "heapTotal": 31842304,
+              "heapUsed": 13283008,
+              "external": 2699186,
+              "arrayBuffers": 31909
+            },
+            "heap_statistics": {
+              "total_heap_size": 31842304,
+              "total_heap_size_executable": 786432,
+              "total_physical_size": 31842304,
+              "total_available_size": 4330494000,
+              "used_heap_size": 13295096,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1283384,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 8192,
+              "used_global_handles_size": 4640,
+              "external_memory": 2699186
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 16777216,
+                "space_used_size": 16832,
+                "space_available_size": 8230464,
+                "physical_space_size": 16777216
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 11055104,
+                "space_used_size": 9683328,
+                "space_available_size": 399800,
+                "physical_space_size": 11055104
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 786432,
+                "space_used_size": 685248,
+                "space_available_size": 0,
+                "physical_space_size": 786432
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 1884160,
+                "space_used_size": 1609776,
+                "space_available_size": 0,
+                "physical_space_size": 1884160
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 8388608,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 6,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 4,
+              "Server": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 18,
+              "by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 4,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 0,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 0,
+              "bytes_tracking_complete": true,
+              "retained_entries": 0,
+              "backing_slots": 0,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 0,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 0,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 0,
+            "active_saves": 0,
+            "completed_saves": 0,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 0,
+            "last_session_count": 0,
+            "last_serialized_bytes": 0,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 0
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 0,
+            "retained_events": 0,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 7284,
+          "ppid": 5352,
+          "memory": {
+            "rss": 44195840,
+            "heapTotal": 7966720,
+            "heapUsed": 5816312,
+            "external": 2060398,
+            "arrayBuffers": 17054
+          },
+          "heap_statistics": {
+            "total_heap_size": 7966720,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 7966720,
+            "total_available_size": 4339322376,
+            "used_heap_size": 5816536,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 426080,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11424,
+            "external_memory": 2060398
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 2097152,
+              "space_used_size": 314992,
+              "space_available_size": 715920,
+              "physical_space_size": 2097152
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 4115536,
+              "space_available_size": 47968,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 132832,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1012000,
+              "space_available_size": 61472,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1030912,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 7832,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 7284,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 44195840,
+            "private_bytes": 22671360,
+            "virtual_bytes": 5190127616,
+            "handle_count": 251
+          },
+          {
+            "pid": 7832,
+            "ppid": 7284,
+            "name": "node.exe",
+            "rss_bytes": 64188416,
+            "private_bytes": 79540224,
+            "virtual_bytes": 5240774656,
+            "handle_count": 283
+          }
+        ]
+      }
+    },
+    {
+      "before": {
+        "ts": "2026-08-03T01:41:55.928Z",
+        "phase": "before",
+        "repeat": 2,
+        "operations": 0,
+        "server": {
+          "captured_at": "2026-08-03T01:41:55.356Z",
+          "process": {
+            "pid": 5884,
+            "ppid": 7024,
+            "thread_id": 0,
+            "uptime_seconds": 2.0351202,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 63557632,
+              "heapTotal": 31580160,
+              "heapUsed": 13252200,
+              "external": 2699186,
+              "arrayBuffers": 31909
+            },
+            "heap_statistics": {
+              "total_heap_size": 31580160,
+              "total_heap_size_executable": 786432,
+              "total_physical_size": 31580160,
+              "total_available_size": 4330520040,
+              "used_heap_size": 13264272,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1283384,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 8192,
+              "used_global_handles_size": 4640,
+              "external_memory": 2699186
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 16777216,
+                "space_used_size": 17184,
+                "space_available_size": 8230112,
+                "physical_space_size": 16777216
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 10792960,
+                "space_used_size": 9678600,
+                "space_available_size": 162432,
+                "physical_space_size": 10792960
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 786432,
+                "space_used_size": 662848,
+                "space_available_size": 0,
+                "physical_space_size": 786432
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 1884160,
+                "space_used_size": 1607344,
+                "space_available_size": 0,
+                "physical_space_size": 1884160
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 8388608,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 6,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 4,
+              "Server": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 18,
+              "by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 4,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 0,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 0,
+              "bytes_tracking_complete": true,
+              "retained_entries": 0,
+              "backing_slots": 0,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 0,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 0,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 0,
+            "active_saves": 0,
+            "completed_saves": 0,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 0,
+            "last_session_count": 0,
+            "last_serialized_bytes": 0,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 0
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 0,
+            "retained_events": 0,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 7024,
+          "ppid": 5352,
+          "memory": {
+            "rss": 44089344,
+            "heapTotal": 7966720,
+            "heapUsed": 5681712,
+            "external": 2060252,
+            "arrayBuffers": 16948
+          },
+          "heap_statistics": {
+            "total_heap_size": 7966720,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 7966720,
+            "total_available_size": 4339452480,
+            "used_heap_size": 5686424,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 426080,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11424,
+            "external_memory": 2060292
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 2097152,
+              "space_used_size": 212472,
+              "space_available_size": 818440,
+              "physical_space_size": 2097152
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 4111608,
+              "space_available_size": 51888,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 132832,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1008960,
+              "space_available_size": 64512,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1030912,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 5884,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 7024,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 44113920,
+            "private_bytes": 23306240,
+            "virtual_bytes": 5190127616,
+            "handle_count": 251
+          },
+          {
+            "pid": 5884,
+            "ppid": 7024,
+            "name": "node.exe",
+            "rss_bytes": 63504384,
+            "private_bytes": 79106048,
+            "virtual_bytes": 5240512512,
+            "handle_count": 283
+          }
+        ]
+      },
+      "after": {
+        "ts": "2026-08-03T01:42:08.038Z",
+        "phase": "after",
+        "repeat": 2,
+        "operations": 32,
+        "server": {
+          "captured_at": "2026-08-03T01:42:07.442Z",
+          "process": {
+            "pid": 5884,
+            "ppid": 7024,
+            "thread_id": 0,
+            "uptime_seconds": 14.121145,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 70647808,
+              "heapTotal": 19521536,
+              "heapUsed": 16760272,
+              "external": 2766777,
+              "arrayBuffers": 97452
+            },
+            "heap_statistics": {
+              "total_heap_size": 19521536,
+              "total_heap_size_executable": 1048576,
+              "total_physical_size": 19521536,
+              "total_available_size": 4328018272,
+              "used_heap_size": 16772448,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1827656,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 16384,
+              "used_global_handles_size": 13824,
+              "external_memory": 2766777
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 1048576,
+                "space_used_size": 16888,
+                "space_available_size": 1014024,
+                "physical_space_size": 1048576
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 13938688,
+                "space_used_size": 12643960,
+                "space_available_size": 159776,
+                "physical_space_size": 13938688
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 1048576,
+                "space_used_size": 926336,
+                "space_available_size": 0,
+                "physical_space_size": 1048576
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 2146304,
+                "space_used_size": 1885352,
+                "space_available_size": 0,
+                "physical_space_size": 2146304
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 1048576,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 8,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 5,
+              "Server": 1,
+              "MessagePort": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 21,
+              "by_type": {
+                "async": 6,
+                "timer": 1,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 5,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 6,
+                "timer": 1,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 1,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 2385289,
+              "bytes_tracking_complete": true,
+              "retained_entries": 230,
+              "backing_slots": 1000,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 3,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 1,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 1,
+            "active_saves": 0,
+            "completed_saves": 1,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 124,
+            "last_session_count": 1,
+            "last_serialized_bytes": 729,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 729
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 1,
+            "retained_events": 1,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 7024,
+          "ppid": 5352,
+          "memory": {
+            "rss": 43085824,
+            "heapTotal": 7180288,
+            "heapUsed": 5317640,
+            "external": 2060256,
+            "arrayBuffers": 16912
+          },
+          "heap_statistics": {
+            "total_heap_size": 7180288,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 7180288,
+            "total_available_size": 4340388736,
+            "used_heap_size": 5321008,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 278576,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11360,
+            "external_memory": 2060256
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 1048576,
+              "space_used_size": 105352,
+              "space_available_size": 925560,
+              "physical_space_size": 1048576
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4501504,
+              "space_used_size": 3858016,
+              "space_available_size": 275888,
+              "physical_space_size": 4501504
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 0,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1002640,
+              "space_available_size": 0,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1048576,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 5884,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 7024,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 43098112,
+            "private_bytes": 22589440,
+            "virtual_bytes": 5189341184,
+            "handle_count": 251
+          },
+          {
+            "pid": 5884,
+            "ppid": 7024,
+            "name": "node.exe",
+            "rss_bytes": 71757824,
+            "private_bytes": 88584192,
+            "virtual_bytes": 5805920256,
+            "handle_count": 305
+          },
+          {
+            "pid": 8656,
+            "ppid": 5884,
+            "name": "conhost.exe",
+            "rss_bytes": 8159232,
+            "private_bytes": 1601536,
+            "virtual_bytes": 2203418288128,
+            "handle_count": 110
+          }
+        ]
+      },
+      "before_ms": 1785721315320,
+      "after_ms": 1785721328038,
+      "workload_started_ms": 1785721315928,
+      "workload_finished_ms": 1785721317417,
+      "control_before": {
+        "ts": "2026-08-03T01:41:52.094Z",
+        "phase": "before",
+        "repeat": 2,
+        "operations": 0,
+        "server": {
+          "captured_at": "2026-08-03T01:41:51.524Z",
+          "process": {
+            "pid": 7880,
+            "ppid": 8988,
+            "thread_id": 0,
+            "uptime_seconds": 2.0290826,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 63934464,
+              "heapTotal": 31580160,
+              "heapUsed": 13252456,
+              "external": 2699186,
+              "arrayBuffers": 31909
+            },
+            "heap_statistics": {
+              "total_heap_size": 31580160,
+              "total_heap_size_executable": 786432,
+              "total_physical_size": 31580160,
+              "total_available_size": 4330408920,
+              "used_heap_size": 13264528,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1258808,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 8192,
+              "used_global_handles_size": 4640,
+              "external_memory": 2699186
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 16777216,
+                "space_used_size": 17184,
+                "space_available_size": 8230112,
+                "physical_space_size": 16777216
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 10792960,
+                "space_used_size": 9678856,
+                "space_available_size": 51312,
+                "physical_space_size": 10792960
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 786432,
+                "space_used_size": 662848,
+                "space_available_size": 0,
+                "physical_space_size": 786432
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 1884160,
+                "space_used_size": 1607344,
+                "space_available_size": 0,
+                "physical_space_size": 1884160
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 8388608,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 6,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 4,
+              "Server": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 18,
+              "by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 4,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 0,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 0,
+              "bytes_tracking_complete": true,
+              "retained_entries": 0,
+              "backing_slots": 0,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 0,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 0,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 0,
+            "active_saves": 0,
+            "completed_saves": 0,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 0,
+            "last_session_count": 0,
+            "last_serialized_bytes": 0,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 0
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 0,
+            "retained_events": 0,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 8988,
+          "ppid": 5352,
+          "memory": {
+            "rss": 44244992,
+            "heapTotal": 7966720,
+            "heapUsed": 5709992,
+            "external": 2060252,
+            "arrayBuffers": 16948
+          },
+          "heap_statistics": {
+            "total_heap_size": 7966720,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 7966720,
+            "total_available_size": 4339424192,
+            "used_heap_size": 5714704,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 426080,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11424,
+            "external_memory": 2060292
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 2097152,
+              "space_used_size": 240752,
+              "space_available_size": 790160,
+              "physical_space_size": 2097152
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 4111608,
+              "space_available_size": 51880,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 132832,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1008960,
+              "space_available_size": 64512,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1030912,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 7880,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 8988,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 44269568,
+            "private_bytes": 22360064,
+            "virtual_bytes": 5190127616,
+            "handle_count": 251
+          },
+          {
+            "pid": 7880,
+            "ppid": 8988,
+            "name": "node.exe",
+            "rss_bytes": 63766528,
+            "private_bytes": 81088512,
+            "virtual_bytes": 5240512512,
+            "handle_count": 283
+          }
+        ]
+      },
+      "control_after": {
+        "ts": "2026-08-03T01:41:53.189Z",
+        "phase": "after",
+        "repeat": 2,
+        "operations": 0,
+        "server": {
+          "captured_at": "2026-08-03T01:41:52.622Z",
+          "process": {
+            "pid": 7880,
+            "ppid": 8988,
+            "thread_id": 0,
+            "uptime_seconds": 3.1278183,
+            "node_version": "v22.23.1",
+            "platform": "win32",
+            "arch": "x64",
+            "memory": {
+              "rss": 63946752,
+              "heapTotal": 31842304,
+              "heapUsed": 13283032,
+              "external": 2699186,
+              "arrayBuffers": 31909
+            },
+            "heap_statistics": {
+              "total_heap_size": 31842304,
+              "total_heap_size_executable": 786432,
+              "total_physical_size": 31842304,
+              "total_available_size": 4330383944,
+              "used_heap_size": 13295120,
+              "heap_size_limit": 4345298944,
+              "malloced_memory": 540720,
+              "peak_malloced_memory": 1258808,
+              "does_zap_garbage": 0,
+              "number_of_native_contexts": 2,
+              "number_of_detached_contexts": 0,
+              "total_global_handles_size": 8192,
+              "used_global_handles_size": 4640,
+              "external_memory": 2699186
+            },
+            "heap_spaces": [
+              {
+                "space_name": "read_only_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "new_space",
+                "space_size": 16777216,
+                "space_used_size": 16832,
+                "space_available_size": 8230464,
+                "physical_space_size": 16777216
+              },
+              {
+                "space_name": "old_space",
+                "space_size": 11055104,
+                "space_used_size": 9683352,
+                "space_available_size": 289744,
+                "physical_space_size": 11055104
+              },
+              {
+                "space_name": "code_space",
+                "space_size": 786432,
+                "space_used_size": 685248,
+                "space_available_size": 0,
+                "physical_space_size": 786432
+              },
+              {
+                "space_name": "shared_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_space",
+                "space_size": 1884160,
+                "space_used_size": 1609776,
+                "space_available_size": 0,
+                "physical_space_size": 1884160
+              },
+              {
+                "space_name": "new_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 8388608,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "large_object_space",
+                "space_size": 1339392,
+                "space_used_size": 1318400,
+                "space_available_size": 0,
+                "physical_space_size": 1339392
+              },
+              {
+                "space_name": "code_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "shared_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              },
+              {
+                "space_name": "trusted_large_object_space",
+                "space_size": 0,
+                "space_used_size": 0,
+                "space_available_size": 0,
+                "physical_space_size": 0
+              }
+            ],
+            "active_handles": 6,
+            "active_handles_by_type": {
+              "Pipe": 1,
+              "Socket": 4,
+              "Server": 1
+            },
+            "active_requests": 0,
+            "active_requests_by_type": {},
+            "libuv": {
+              "total": 18,
+              "by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "idle": 1,
+                "prepare": 1,
+                "pipe": 4,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              },
+              "active_by_type": {
+                "async": 3,
+                "timer": 2,
+                "check": 2,
+                "prepare": 1,
+                "pipe": 1,
+                "signal": 2,
+                "tcp": 2,
+                "loop": 1
+              }
+            },
+            "listeners": {
+              "newListener": 4,
+              "removeListener": 3,
+              "warning": 1,
+              "internalMessage": 1,
+              "SIGINT": 1,
+              "SIGTERM": 1,
+              "beforeExit": 1,
+              "uncaughtException": 1,
+              "unhandledRejection": 1,
+              "message": 1,
+              "disconnect": 1
+            }
+          },
+          "sessions": {
+            "total": 0,
+            "connected_clients": 0,
+            "ws_connections": 0,
+            "output_flush_timers": 0,
+            "output_buffers": {
+              "retained_bytes": 0,
+              "bytes_tracking_complete": true,
+              "retained_entries": 0,
+              "backing_slots": 0,
+              "pending_bytes": 0,
+              "pending_chunks": 0
+            },
+            "eviction_heap": 0,
+            "activity_timestamps": 0,
+            "control_session_seq": 0,
+            "control_idempotency": 0
+          },
+          "websocket": {
+            "server_clients": 0,
+            "aggregate_listeners": {}
+          },
+          "bridges": {
+            "claudeBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "codexBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "copilotBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "geminiBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            },
+            "terminalBridge": {
+              "sessions": 0,
+              "listener_disposables": 0,
+              "job_handles": 0
+            }
+          },
+          "persistence": {
+            "save_calls": 0,
+            "no_op_calls": 0,
+            "pending_saves": 0,
+            "max_pending_saves": 0,
+            "active_saves": 0,
+            "completed_saves": 0,
+            "failed_saves": 0,
+            "last_queue_wait_ms": 0,
+            "last_duration_ms": 0,
+            "last_session_count": 0,
+            "last_serialized_bytes": 0,
+            "active_serialized_bytes": 0,
+            "total_serialized_bytes": 0
+          },
+          "artifact_reviews": {
+            "total": 0,
+            "ended": 0,
+            "queued_prompts": 0,
+            "queued_prompt_bytes": 0,
+            "chat_entries": 0,
+            "chat_bytes": 0,
+            "replay_events": 0,
+            "dom_snapshot_bytes": 0
+          },
+          "sticky_notes": {
+            "jsonl_bindings": 0,
+            "offsets": 0,
+            "active_viewers": 0,
+            "summarizer_states": 0,
+            "summarizer_pending": 0,
+            "pending_text_bytes": 0,
+            "pending_text_sessions": 0,
+            "in_flight": 0,
+            "engine": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            },
+            "stt": {
+              "status": "unavailable",
+              "queue": 0,
+              "worker_thread_id": null,
+              "worker": null
+            }
+          },
+          "usage": {
+            "reader_cache_present": false,
+            "reader_overlapping_sessions": 0,
+            "analytics_active_sessions": 0,
+            "analytics_session_history": 0,
+            "analytics_recent_usage": 0,
+            "analytics_historical_data": 0,
+            "analytics_burn_rate_history": 0
+          },
+          "control_event_bus": {
+            "buckets": 0,
+            "retained_events": 0,
+            "evicted_session_watermarks": 0,
+            "listeners": 0
+          },
+          "tunnels": {
+            "vscode": {
+              "tunnels": 0,
+              "live_children": 0,
+              "restart_timers": 0,
+              "retained_server_stdout_chars": 0
+            },
+            "app_tunnel": null,
+            "mesh": null,
+            "keepalive": {
+              "live_child": false
+            }
+          }
+        },
+        "supervisor": {
+          "pid": 8988,
+          "ppid": 5352,
+          "memory": {
+            "rss": 44351488,
+            "heapTotal": 7966720,
+            "heapUsed": 5816312,
+            "external": 2060398,
+            "arrayBuffers": 17054
+          },
+          "heap_statistics": {
+            "total_heap_size": 7966720,
+            "total_heap_size_executable": 262144,
+            "total_physical_size": 7966720,
+            "total_available_size": 4339322360,
+            "used_heap_size": 5816536,
+            "heap_size_limit": 4345298944,
+            "malloced_memory": 426080,
+            "peak_malloced_memory": 631712,
+            "does_zap_garbage": 0,
+            "number_of_native_contexts": 2,
+            "number_of_detached_contexts": 0,
+            "total_global_handles_size": 16384,
+            "used_global_handles_size": 11424,
+            "external_memory": 2060398
+          },
+          "heap_spaces": [
+            {
+              "space_name": "read_only_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "new_space",
+              "space_size": 2097152,
+              "space_used_size": 314992,
+              "space_available_size": 715920,
+              "physical_space_size": 2097152
+            },
+            {
+              "space_name": "old_space",
+              "space_size": 4239360,
+              "space_used_size": 4115536,
+              "space_available_size": 47952,
+              "physical_space_size": 4239360
+            },
+            {
+              "space_name": "code_space",
+              "space_size": 262144,
+              "space_used_size": 112896,
+              "space_available_size": 132832,
+              "physical_space_size": 262144
+            },
+            {
+              "space_name": "shared_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_space",
+              "space_size": 1097728,
+              "space_used_size": 1012000,
+              "space_available_size": 61472,
+              "physical_space_size": 1097728
+            },
+            {
+              "space_name": "new_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 1030912,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "large_object_space",
+              "space_size": 270336,
+              "space_used_size": 262160,
+              "space_available_size": 0,
+              "physical_space_size": 270336
+            },
+            {
+              "space_name": "code_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "shared_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            },
+            {
+              "space_name": "trusted_large_object_space",
+              "space_size": 0,
+              "space_used_size": 0,
+              "space_available_size": 0,
+              "physical_space_size": 0
+            }
+          ],
+          "active_handles": 5,
+          "active_requests": 0,
+          "libuv": {
+            "async": 3,
+            "timer": 2,
+            "check": 2,
+            "idle": 1,
+            "prepare": 1,
+            "pipe": 4,
+            "signal": 2,
+            "process": 1,
+            "loop": 1
+          },
+          "child_pid": 7880,
+          "crash_timestamps": 0,
+          "pending_restart_timer": false
+        },
+        "process_tree": [
+          {
+            "pid": 8988,
+            "ppid": 5352,
+            "name": "node.exe",
+            "rss_bytes": 44351488,
+            "private_bytes": 22605824,
+            "virtual_bytes": 5190127616,
+            "handle_count": 251
+          },
+          {
+            "pid": 7880,
+            "ppid": 8988,
+            "name": "node.exe",
+            "rss_bytes": 63918080,
+            "private_bytes": 79667200,
+            "virtual_bytes": 5240774656,
+            "handle_count": 283
+          }
+        ]
+      }
+    }
+  ]
+}

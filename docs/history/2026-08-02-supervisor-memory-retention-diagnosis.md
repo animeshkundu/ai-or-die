@@ -13,6 +13,8 @@ PID or worker.
 The supervisor wrapper stayed flat. The server child retained data through
 several independent lifetime structures:
 
+- on Windows, each completed PTY leaves a `conhost.exe`, 22 server handles, and
+  native private bytes after bridge/listener/job counters reach zero;
 - live sessions have no count limit for seven days and eagerly allocate a
   1,000-slot output buffer;
 - output buffers are bounded by raw PTY callback count, not bytes, and survive
