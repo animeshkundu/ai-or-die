@@ -1,7 +1,9 @@
 'use strict';
 
 const assert = require('assert');
+const { EventEmitter } = require('events');
 
+const { VSCodeTunnelManager } = require('../../../src/vscode-tunnel');
 const { summarizeRuns } = require('../harness/memory-diagnosis');
 const { descendants } = require('../harness/process-tree-sampler');
 
@@ -67,5 +69,34 @@ describe('memory diagnosis harness', function () {
       { pid: 20, ppid: 1 },
     ];
     assert.deepStrictEqual(descendants(rows, 10).map((row) => row.pid), [10, 11, 12]);
+  });
+
+  it('leaves the VS Code stdout ownership counter disabled by default', async function () {
+    const previousDiagnosticFlag = process.env.AOD_DIAG_ENABLED;
+    delete process.env.AOD_DIAG_ENABLED;
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    const manager = new VSCodeTunnelManager({ spawn: () => child });
+    try {
+      await manager._initPromise;
+      manager._command = 'fake-code';
+      const sessionId = 'default-off-diagnostic-counter';
+      const tunnel = {
+        localPort: 19191,
+        connectionToken: 'token',
+        sessionId,
+        workingDir: process.cwd(),
+        stopping: false,
+      };
+      manager.tunnels.set(sessionId, tunnel);
+      const started = manager._spawnServer(sessionId);
+      child.stdout.emit('data', Buffer.from('Web UI available at http://localhost:19191\n'));
+      await started;
+      assert.strictEqual(tunnel._diagnosticServerStdoutChars, undefined);
+    } finally {
+      if (previousDiagnosticFlag === undefined) delete process.env.AOD_DIAG_ENABLED;
+      else process.env.AOD_DIAG_ENABLED = previousDiagnosticFlag;
+    }
   });
 });

@@ -103,6 +103,9 @@ returns 401.
 capability. Raw heap snapshots can contain terminal content, paths, usernames,
 and credentials and must never be uploaded to public CI artifacts. The
 diagnosis workflow publishes only redacted derived aggregates.
+These privileged routes use the service listener, not a loopback-only listener:
+never enable them on an instance exposed through a public, mesh, or VS Code
+tunnel. Disable diagnosis mode immediately after a capture.
 
 `AOD_DIAG_*` variables are stripped from PTY/agent, VS Code, tunnel, mesh, and
 keepalive child environments. Only the supervisor and server process that own

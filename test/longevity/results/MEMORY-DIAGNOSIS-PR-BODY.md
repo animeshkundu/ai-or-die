@@ -447,6 +447,12 @@ Only derived JSON is uploaded; `.heapsnapshot` is never an artifact path.
 - Snapshot writes are confined to `AOD_DIAG_SNAPSHOT_DIR`, preflight at 768 MiB
   used heap by default, and capped by count and aggregate bytes. Snapshot
   capture returns 503 unless that dedicated directory is explicitly configured.
+- Diagnostic routes share the service listener rather than a loopback-only
+  listener. They must never be enabled while the instance is reachable through
+  a public, mesh, or VS Code tunnel, and diagnosis mode must be disabled after
+  capture.
+- Source-level ownership counters are inert until `AOD_DIAG_ENABLED=1`; the
+  injected VS Code spawn seam resolves to the original `spawn` by default.
 - The analyzer streams numeric/string arrays, excludes weak edges, computes
   immediate dominators and retained size, and redacts every string/path before
   writing derived output. Its synthetic fixture has a hand-derived

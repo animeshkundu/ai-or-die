@@ -69,51 +69,58 @@ describe('memory diagnosis expected-red characterizations', function () {
   });
 
   it('bounds code serve-web stdout retained by its data-listener closure', async function () {
+    const previousDiagnosticFlag = process.env.AOD_DIAG_ENABLED;
+    process.env.AOD_DIAG_ENABLED = '1';
     const children = [];
-    const manager = new VSCodeTunnelManager({
-      spawn: () => {
-        const child = new FakeChild();
-        children.push(child);
-        return child;
-      },
-    });
-    await manager._initPromise;
-    manager._command = 'fake-code';
-    manager._available = true;
-    const sessionId = 'vscode-output-retainer';
-    const tunnel = {
-      serverProcess: null,
-      tunnelProcess: null,
-      _loginProcess: null,
-      localPort: 19191,
-      connectionToken: 'token',
-      localUrl: null,
-      publicUrl: null,
-      tunnelId: sessionId,
-      status: 'starting',
-      sessionId,
-      workingDir: process.cwd(),
-      retryCount: 0,
-      stopping: false,
-      _lastSpawnTime: null,
-      _totalRestarts: 0,
-      _stabilityTimer: null,
-      _restartDelayTimer: null,
-      _restartDelayResolve: null,
-      _whichDied: null,
-    };
-    manager.tunnels.set(sessionId, tunnel);
+    try {
+      const manager = new VSCodeTunnelManager({
+        spawn: () => {
+          const child = new FakeChild();
+          children.push(child);
+          return child;
+        },
+      });
+      await manager._initPromise;
+      manager._command = 'fake-code';
+      manager._available = true;
+      const sessionId = 'vscode-output-retainer';
+      const tunnel = {
+        serverProcess: null,
+        tunnelProcess: null,
+        _loginProcess: null,
+        localPort: 19191,
+        connectionToken: 'token',
+        localUrl: null,
+        publicUrl: null,
+        tunnelId: sessionId,
+        status: 'starting',
+        sessionId,
+        workingDir: process.cwd(),
+        retryCount: 0,
+        stopping: false,
+        _lastSpawnTime: null,
+        _totalRestarts: 0,
+        _stabilityTimer: null,
+        _restartDelayTimer: null,
+        _restartDelayResolve: null,
+        _whichDied: null,
+      };
+      manager.tunnels.set(sessionId, tunnel);
 
-    const started = manager._spawnServer(sessionId);
-    const child = children[0];
-    child.stdout.emit('data', Buffer.from('Web UI available at http://localhost:19191\n'));
-    await started;
-    for (let i = 0; i < 8; i++) child.stdout.emit('data', Buffer.alloc(64 * 1024, 0x78));
+      const started = manager._spawnServer(sessionId);
+      const child = children[0];
+      child.stdout.emit('data', Buffer.from('Web UI available at http://localhost:19191\n'));
+      await started;
+      for (let i = 0; i < 8; i++) child.stdout.emit('data', Buffer.alloc(64 * 1024, 0x78));
 
-    assert(
-      tunnel._diagnosticServerStdoutChars <= 64 * 1024,
-      `stdout closure retained ${tunnel._diagnosticServerStdoutChars} chars`,
-    );
+      assert(
+        tunnel._diagnosticServerStdoutChars <= 64 * 1024,
+        `stdout closure retained ${tunnel._diagnosticServerStdoutChars} chars`,
+      );
+    } finally {
+      if (previousDiagnosticFlag === undefined) delete process.env.AOD_DIAG_ENABLED;
+      else process.env.AOD_DIAG_ENABLED = previousDiagnosticFlag;
+    }
   });
 
   it('bounds pending JSONL text when the sticky-note engine is unavailable', function () {

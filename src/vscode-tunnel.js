@@ -634,7 +634,8 @@ class VSCodeTunnelManager {
 
       let readyResolved = false;
       let outputBuffer = '';
-      tunnel._diagnosticServerStdoutChars = 0;
+      const diagnosticsEnabled = process.env.AOD_DIAG_ENABLED === '1';
+      if (diagnosticsEnabled) tunnel._diagnosticServerStdoutChars = 0;
 
       const readyTimeout = setTimeout(() => {
         if (!readyResolved) {
@@ -648,7 +649,7 @@ class VSCodeTunnelManager {
       tunnel.serverProcess.stdout.on('data', (data) => {
         const output = data.toString();
         outputBuffer += output;
-        tunnel._diagnosticServerStdoutChars = outputBuffer.length;
+        if (diagnosticsEnabled) tunnel._diagnosticServerStdoutChars = outputBuffer.length;
         if (this.dev) process.stdout.write(`  [vscode-server] ${output}`);
 
         // Parse "Web UI available at http://localhost:<port>"

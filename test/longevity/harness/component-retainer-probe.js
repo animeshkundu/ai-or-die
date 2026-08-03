@@ -132,6 +132,7 @@ function runChild(arm, operations, payloadBytes) {
     ], {
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      env: { ...process.env, AOD_DIAG_ENABLED: '1' },
     });
     let stdout = '';
     let stderr = '';
