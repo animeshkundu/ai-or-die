@@ -7,6 +7,7 @@ const WebSocket = require('ws');
 
 const {
   closeProcServer,
+  controllerOutput,
   diagnosticRequest,
   requestJson,
   startProcServer,
@@ -80,7 +81,11 @@ describe('session retention lifecycle probes', function () {
       first.send(JSON.stringify({ type: 'create_session', name: 'lifecycle-output' }));
       const created = await firstMessages.wait('session_created');
       first.send(JSON.stringify({ type: 'start_claude' }));
-      await firstMessages.wait('claude_started');
+      try {
+        await firstMessages.wait('claude_started');
+      } catch (error) {
+        throw new Error(`${error.message}\n${controllerOutput(controller)}`);
+      }
       await firstMessages.wait('exit');
 
       const afterExit = await diagnosticRequest(controller, '/api/_diag/gc', {

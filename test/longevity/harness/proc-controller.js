@@ -101,7 +101,16 @@ async function startProcServer(options = {}) {
   if (options.syntheticAgentFixture) {
     const fixtureName = 'synthetic-agent-output.js';
     fs.copyFileSync(options.syntheticAgentFixture, path.join(workDir, fixtureName));
-    childEnv.AIORDIE_CLAUDE_LAUNCHER = `node ${fixtureName}`;
+    if (process.platform === 'win32') {
+      const wrapperName = 'synthetic-agent-output.cmd';
+      fs.writeFileSync(
+        path.join(workDir, wrapperName),
+        `@echo off\r\nnode "%~dp0${fixtureName}" %*\r\n`,
+      );
+      childEnv.AIORDIE_CLAUDE_LAUNCHER = wrapperName;
+    } else {
+      childEnv.AIORDIE_CLAUDE_LAUNCHER = `node ${fixtureName}`;
+    }
   }
 
   const diagToken = options.diagToken || crypto.randomBytes(24).toString('hex');
