@@ -1,8 +1,9 @@
 'use strict';
 
-const { parentPort, workerData } = require('worker_threads');
+const { parentPort, workerData, threadId } = require('worker_threads');
 const path = require('path');
 const os = require('os');
+const v8 = require('v8');
 const { pcm16ToFloat32 } = require('./utils/pcm.js');
 
 // Set platform-specific library paths BEFORE requiring sherpa-onnx-node.
@@ -75,7 +76,16 @@ try {
 let _shuttingDown = false;
 parentPort.on('message', (msg) => {
   if (!msg) return;
-  if (msg.type === 'shutdown') {
+  if (msg.type === 'diagnostics') {
+    parentPort.postMessage({
+      type: 'diagnostics',
+      id: msg.id,
+      threadId,
+      memory: process.memoryUsage(),
+      heapStatistics: v8.getHeapStatistics(),
+      heapSpaces: v8.getHeapSpaceStatistics(),
+    });
+  } else if (msg.type === 'shutdown') {
     // Graceful teardown. sherpa-onnx-node exposes no dispose API (the recognizer
     // is GC/finalizer-managed), and transcribe runs synchronously here, so when
     // this message is processed nothing is in flight. Exit cleanly while idle so

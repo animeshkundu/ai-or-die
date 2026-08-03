@@ -84,6 +84,30 @@ Health check.
 { "status": "ok", "claudeSessions": 3, "activeConnections": 2 }
 ```
 
+#### Default-off memory diagnosis routes
+
+The privileged diagnosis router is not registered unless both
+`AOD_DIAG_ENABLED=1` and a non-empty `AOD_DIAG_TOKEN` of at least 16 characters
+are present at server construction. When either condition is absent, every
+`/api/_diag/*` path returns 404. When registered, each request must also provide
+the exact token in `X-AOD-Diag-Token` (or `Authorization: Bearer ...`); mismatch
+returns 401.
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /api/_diag/counters` | Counts ownership structures, retained buffer bytes, persistence queue state, listeners, per-type libuv handles, V8 heap spaces, child/tunnel state, and cached worker-thread heap samples. No session text or paths are returned. |
+| `POST /api/_diag/gc` | Runs two full GCs and returns the same counter snapshot. Returns 501 when Node was not started with `--expose-gc`. |
+| `POST /api/_diag/heapsnapshot` | Requires `AOD_DIAG_SNAPSHOT_DIR`, then runs the preflight and writes a V8 heap snapshot under that dedicated root. Missing configuration returns 503. The default used-heap ceiling is 768 MiB; count and aggregate-byte caps prevent repeated large artifacts. A requested directory outside the configured root returns 403. |
+
+`GET /api/diagnostics` remains unchanged and never gains GC or heap-snapshot
+capability. Raw heap snapshots can contain terminal content, paths, usernames,
+and credentials and must never be uploaded to public CI artifacts. The
+diagnosis workflow publishes only redacted derived aggregates.
+
+`AOD_DIAG_*` variables are stripped from PTY/agent, VS Code, tunnel, mesh, and
+keepalive child environments. Only the supervisor and server process that own
+the diagnostic channel may read the token.
+
 #### `GET /api/sessions/list`
 List all sessions with metadata.
 

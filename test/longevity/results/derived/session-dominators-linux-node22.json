@@ -1,0 +1,2440 @@
+{
+  "metadata": {
+    "captured_at": "2026-08-03T00:43:29.837Z",
+    "head": "4c181ef76639e7640717c31b3f4bc324f98a6d36",
+    "node_version": "v22.23.2",
+    "platform": "linux",
+    "operations": 100,
+    "snapshot_bytes": 13023118,
+    "snapshot_sha256": "29448a036fa4a6c89b1f6772f41b7e964ff31d4ff596f62941063106ebfb5b20",
+    "raw_snapshot_committed": false
+  },
+  "ownership_counters": {
+    "sessions": {
+      "total": 100,
+      "connected_clients": 0,
+      "ws_connections": 0,
+      "output_flush_timers": 0,
+      "output_buffers": {
+        "retained_bytes": 0,
+        "bytes_tracking_complete": true,
+        "retained_entries": 0,
+        "backing_slots": 100000,
+        "pending_bytes": 0,
+        "pending_chunks": 0
+      },
+      "eviction_heap": 200,
+      "activity_timestamps": 0,
+      "control_session_seq": 0,
+      "control_idempotency": 0
+    },
+    "persistence": {
+      "save_calls": 100,
+      "no_op_calls": 0,
+      "pending_saves": 13,
+      "max_pending_saves": 13,
+      "active_saves": 1,
+      "completed_saves": 9,
+      "failed_saves": 0,
+      "last_queue_wait_ms": 1,
+      "last_duration_ms": 21,
+      "last_session_count": 88,
+      "last_serialized_bytes": 52593,
+      "active_serialized_bytes": 52593,
+      "total_serialized_bytes": 248335
+    }
+  },
+  "analysis": {
+    "node_count": 133286,
+    "edge_count": 585408,
+    "reachable_nodes": 133278,
+    "weak_edges_excluded": 20031,
+    "top_retainers": [
+      {
+        "node": 0,
+        "type": "synthetic",
+        "name": "",
+        "self_size": 0,
+        "retained_size": 15115310,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 107157,
+        "type": "object",
+        "name": "Map",
+        "self_size": 32,
+        "retained_size": 885856,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 107157,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 105197,
+        "type": "array",
+        "name": "",
+        "self_size": 3624,
+        "retained_size": 885824,
+        "immediate_dominator": 107157,
+        "retainer_chain": [
+          {
+            "node": 105197,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 107157,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 69244,
+        "type": "closure",
+        "name": "l",
+        "self_size": 64,
+        "retained_size": 864511,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 69244,
+            "type": "closure",
+            "name": "l"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 69659,
+        "type": "code",
+        "name": "<code:server.js>",
+        "self_size": 144,
+        "retained_size": 741552,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 69659,
+            "type": "code",
+            "name": "<code:server.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 96676,
+        "type": "string",
+        "name": "<redacted-string bytes=1024>",
+        "self_size": 676480,
+        "retained_size": 676480,
+        "immediate_dominator": 69659,
+        "retainer_chain": [
+          {
+            "node": 96676,
+            "type": "string",
+            "name": "<redacted-string bytes=1024>"
+          },
+          {
+            "node": 69659,
+            "type": "code",
+            "name": "<code:server.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 1,
+        "type": "synthetic",
+        "name": "(GC roots)",
+        "self_size": 0,
+        "retained_size": 505969,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 1,
+            "type": "synthetic",
+            "name": "(GC roots)"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 104897,
+        "type": "code",
+        "name": "<code:xterm-headless.js>",
+        "self_size": 144,
+        "retained_size": 376032,
+        "immediate_dominator": 69244,
+        "retainer_chain": [
+          {
+            "node": 104897,
+            "type": "code",
+            "name": "<code:xterm-headless.js>"
+          },
+          {
+            "node": 69244,
+            "type": "closure",
+            "name": "l"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 116579,
+        "type": "string",
+        "name": "<redacted-string bytes=1024>",
+        "self_size": 365000,
+        "retained_size": 365000,
+        "immediate_dominator": 104897,
+        "retainer_chain": [
+          {
+            "node": 116579,
+            "type": "string",
+            "name": "<redacted-string bytes=1024>"
+          },
+          {
+            "node": 104897,
+            "type": "code",
+            "name": "<code:xterm-headless.js>"
+          },
+          {
+            "node": 69244,
+            "type": "closure",
+            "name": "l"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 23,
+        "type": "synthetic",
+        "name": "(Strong root list)",
+        "self_size": 0,
+        "retained_size": 282224,
+        "immediate_dominator": 1,
+        "retainer_chain": [
+          {
+            "node": 23,
+            "type": "synthetic",
+            "name": "(Strong root list)"
+          },
+          {
+            "node": 1,
+            "type": "synthetic",
+            "name": "(GC roots)"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 859,
+        "type": "array",
+        "name": "",
+        "self_size": 262160,
+        "retained_size": 262160,
+        "immediate_dominator": 23,
+        "retainer_chain": [
+          {
+            "node": 859,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 23,
+            "type": "synthetic",
+            "name": "(Strong root list)"
+          },
+          {
+            "node": 1,
+            "type": "synthetic",
+            "name": "(GC roots)"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 64200,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 186888,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 64200,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 43584,
+        "type": "closure",
+        "name": "BuiltinModule",
+        "self_size": 64,
+        "retained_size": 182928,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 43584,
+            "type": "closure",
+            "name": "BuiltinModule"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 57863,
+        "type": "object",
+        "name": "Map",
+        "self_size": 32,
+        "retained_size": 181088,
+        "immediate_dominator": 43584,
+        "retainer_chain": [
+          {
+            "node": 57863,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 43584,
+            "type": "closure",
+            "name": "BuiltinModule"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 57880,
+        "type": "array",
+        "name": "",
+        "self_size": 14376,
+        "retained_size": 181056,
+        "immediate_dominator": 57863,
+        "retainer_chain": [
+          {
+            "node": 57880,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 57863,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 43584,
+            "type": "closure",
+            "name": "BuiltinModule"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 3,
+        "type": "synthetic",
+        "name": "(Builtins)",
+        "self_size": 0,
+        "retained_size": 172224,
+        "immediate_dominator": 1,
+        "retainer_chain": [
+          {
+            "node": 3,
+            "type": "synthetic",
+            "name": "(Builtins)"
+          },
+          {
+            "node": 1,
+            "type": "synthetic",
+            "name": "(GC roots)"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 68751,
+        "type": "object",
+        "name": "system / Context",
+        "self_size": 64,
+        "retained_size": 149160,
+        "immediate_dominator": 69244,
+        "retainer_chain": [
+          {
+            "node": 68751,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 69244,
+            "type": "closure",
+            "name": "l"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 123167,
+        "type": "object",
+        "name": "Object",
+        "self_size": 56,
+        "retained_size": 140512,
+        "immediate_dominator": 68751,
+        "retainer_chain": [
+          {
+            "node": 123167,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 68751,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 69244,
+            "type": "closure",
+            "name": "l"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 72448,
+        "type": "code",
+        "name": "<code:artifact-review.js>",
+        "self_size": 144,
+        "retained_size": 132440,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 72448,
+            "type": "code",
+            "name": "<code:artifact-review.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 53554,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 128400,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 53554,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 70058,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 127352,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 70058,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 81794,
+        "type": "object",
+        "name": "system / Context",
+        "self_size": 728,
+        "retained_size": 125008,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 81794,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 72449,
+        "type": "string",
+        "name": "<redacted-string bytes=1025>",
+        "self_size": 119384,
+        "retained_size": 119384,
+        "immediate_dominator": 72448,
+        "retainer_chain": [
+          {
+            "node": 72449,
+            "type": "string",
+            "name": "<redacted-string bytes=1025>"
+          },
+          {
+            "node": 72448,
+            "type": "code",
+            "name": "<code:artifact-review.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 60536,
+        "type": "object",
+        "name": "Mime",
+        "self_size": 104,
+        "retained_size": 111032,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 60536,
+            "type": "object",
+            "name": "Mime"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 64043,
+        "type": "object",
+        "name": "Object",
+        "self_size": 56,
+        "retained_size": 107776,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 64043,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 78094,
+        "type": "object",
+        "name": "Array",
+        "self_size": 32,
+        "retained_size": 102168,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 78094,
+            "type": "object",
+            "name": "Array"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 72785,
+        "type": "code",
+        "name": "<code:command.js>",
+        "self_size": 144,
+        "retained_size": 99880,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 72785,
+            "type": "code",
+            "name": "<code:command.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 46704,
+        "type": "object",
+        "name": "Module",
+        "self_size": 144,
+        "retained_size": 98920,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 46704,
+            "type": "object",
+            "name": "Module"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 66749,
+        "type": "array",
+        "name": "(object properties)",
+        "self_size": 98368,
+        "retained_size": 98368,
+        "immediate_dominator": 64200,
+        "retainer_chain": [
+          {
+            "node": 66749,
+            "type": "array",
+            "name": "(object properties)"
+          },
+          {
+            "node": 64200,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 61786,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 98016,
+        "immediate_dominator": 46704,
+        "retainer_chain": [
+          {
+            "node": 61786,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 46704,
+            "type": "object",
+            "name": "Module"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 85251,
+        "type": "object",
+        "name": "Map",
+        "self_size": 32,
+        "retained_size": 96256,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 85251,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 85478,
+        "type": "array",
+        "name": "",
+        "self_size": 7208,
+        "retained_size": 96224,
+        "immediate_dominator": 85251,
+        "retainer_chain": [
+          {
+            "node": 85478,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 85251,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 67996,
+        "type": "closure",
+        "name": "WebSocket",
+        "self_size": 64,
+        "retained_size": 90904,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 67996,
+            "type": "closure",
+            "name": "WebSocket"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 103262,
+        "type": "code",
+        "name": "<code:vscode-tunnel.js>",
+        "self_size": 144,
+        "retained_size": 86568,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 103262,
+            "type": "code",
+            "name": "<code:vscode-tunnel.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 119068,
+        "type": "code",
+        "name": "<code:usage-reader.js>",
+        "self_size": 144,
+        "retained_size": 85936,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 119068,
+            "type": "code",
+            "name": "<code:usage-reader.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 81800,
+        "type": "regexp",
+        "name": "<redacted-regexp bytes=167>",
+        "self_size": 56,
+        "retained_size": 85552,
+        "immediate_dominator": 81794,
+        "retainer_chain": [
+          {
+            "node": 81800,
+            "type": "regexp",
+            "name": "<redacted-regexp bytes=167>"
+          },
+          {
+            "node": 81794,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 95801,
+        "type": "array",
+        "name": "",
+        "self_size": 112,
+        "retained_size": 85496,
+        "immediate_dominator": 81800,
+        "retainer_chain": [
+          {
+            "node": 95801,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 81800,
+            "type": "regexp",
+            "name": "<redacted-regexp bytes=167>"
+          },
+          {
+            "node": 81794,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 95807,
+        "type": "hidden",
+        "name": "system / CodeWrapper",
+        "self_size": 16,
+        "retained_size": 85384,
+        "immediate_dominator": 95801,
+        "retainer_chain": [
+          {
+            "node": 95807,
+            "type": "hidden",
+            "name": "system / CodeWrapper"
+          },
+          {
+            "node": 95801,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 81800,
+            "type": "regexp",
+            "name": "<redacted-regexp bytes=167>"
+          },
+          {
+            "node": 81794,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 103539,
+        "type": "code",
+        "name": "(code)",
+        "self_size": 88,
+        "retained_size": 85368,
+        "immediate_dominator": 95807,
+        "retainer_chain": [
+          {
+            "node": 103539,
+            "type": "code",
+            "name": "(code)"
+          },
+          {
+            "node": 95807,
+            "type": "hidden",
+            "name": "system / CodeWrapper"
+          },
+          {
+            "node": 95801,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 81800,
+            "type": "regexp",
+            "name": "<redacted-regexp bytes=167>"
+          },
+          {
+            "node": 81794,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 126198,
+        "type": "code",
+        "name": "",
+        "self_size": 85248,
+        "retained_size": 85280,
+        "immediate_dominator": 103539,
+        "retainer_chain": [
+          {
+            "node": 126198,
+            "type": "code",
+            "name": ""
+          },
+          {
+            "node": 103539,
+            "type": "code",
+            "name": "(code)"
+          },
+          {
+            "node": 95807,
+            "type": "hidden",
+            "name": "system / CodeWrapper"
+          },
+          {
+            "node": 95801,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 81800,
+            "type": "regexp",
+            "name": "<redacted-regexp bytes=167>"
+          },
+          {
+            "node": 81794,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 67992,
+        "type": "closure",
+        "name": "FileWatcher",
+        "self_size": 64,
+        "retained_size": 83304,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 67992,
+            "type": "closure",
+            "name": "FileWatcher"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 90541,
+        "type": "string",
+        "name": "<redacted-string bytes=1024>",
+        "self_size": 78168,
+        "retained_size": 78168,
+        "immediate_dominator": 72785,
+        "retainer_chain": [
+          {
+            "node": 90541,
+            "type": "string",
+            "name": "<redacted-string bytes=1024>"
+          },
+          {
+            "node": 72785,
+            "type": "code",
+            "name": "<code:command.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 120314,
+        "type": "code",
+        "name": "<code:file-watcher.js>",
+        "self_size": 144,
+        "retained_size": 77080,
+        "immediate_dominator": 67992,
+        "retainer_chain": [
+          {
+            "node": 120314,
+            "type": "code",
+            "name": "<code:file-watcher.js>"
+          },
+          {
+            "node": 67992,
+            "type": "closure",
+            "name": "FileWatcher"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 74178,
+        "type": "string",
+        "name": "<redacted-string bytes=1024>",
+        "self_size": 76768,
+        "retained_size": 76768,
+        "immediate_dominator": 103262,
+        "retainer_chain": [
+          {
+            "node": 74178,
+            "type": "string",
+            "name": "<redacted-string bytes=1024>"
+          },
+          {
+            "node": 103262,
+            "type": "code",
+            "name": "<code:vscode-tunnel.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 73626,
+        "type": "string",
+        "name": "<redacted-string bytes=1024>",
+        "self_size": 76488,
+        "retained_size": 76488,
+        "immediate_dominator": 119068,
+        "retainer_chain": [
+          {
+            "node": 73626,
+            "type": "string",
+            "name": "<redacted-string bytes=1024>"
+          },
+          {
+            "node": 119068,
+            "type": "code",
+            "name": "<code:usage-reader.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 102594,
+        "type": "code",
+        "name": "<code:base-bridge.js>",
+        "self_size": 144,
+        "retained_size": 74768,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 102594,
+            "type": "code",
+            "name": "<code:base-bridge.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 71242,
+        "type": "string",
+        "name": "<redacted-string bytes=1027>",
+        "self_size": 70040,
+        "retained_size": 70040,
+        "immediate_dominator": 120314,
+        "retainer_chain": [
+          {
+            "node": 71242,
+            "type": "string",
+            "name": "<redacted-string bytes=1027>"
+          },
+          {
+            "node": 120314,
+            "type": "code",
+            "name": "<code:file-watcher.js>"
+          },
+          {
+            "node": 67992,
+            "type": "closure",
+            "name": "FileWatcher"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 60528,
+        "type": "closure",
+        "name": "createError",
+        "self_size": 64,
+        "retained_size": 67904,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 60528,
+            "type": "closure",
+            "name": "createError"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 72840,
+        "type": "string",
+        "name": "<redacted-string bytes=1028>",
+        "self_size": 67368,
+        "retained_size": 67368,
+        "immediate_dominator": 102594,
+        "retainer_chain": [
+          {
+            "node": 72840,
+            "type": "string",
+            "name": "<redacted-string bytes=1028>"
+          },
+          {
+            "node": 102594,
+            "type": "code",
+            "name": "<code:base-bridge.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 45456,
+        "type": "object",
+        "name": "system / Context",
+        "self_size": 296,
+        "retained_size": 67056,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 45456,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 76958,
+        "type": "closure",
+        "name": "Receiver",
+        "self_size": 64,
+        "retained_size": 65888,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 76958,
+            "type": "closure",
+            "name": "Receiver"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 133150,
+        "type": "synthetic",
+        "name": "Node / BindingData",
+        "self_size": 56,
+        "retained_size": 65616,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 133150,
+            "type": "synthetic",
+            "name": "Node / BindingData"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 133151,
+        "type": "native",
+        "name": "Node / parser_buffer",
+        "self_size": 65560,
+        "retained_size": 65560,
+        "immediate_dominator": 133150,
+        "retainer_chain": [
+          {
+            "node": 133151,
+            "type": "native",
+            "name": "Node / parser_buffer"
+          },
+          {
+            "node": 133150,
+            "type": "synthetic",
+            "name": "Node / BindingData"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 3194,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 63320,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 3194,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 45461,
+        "type": "object",
+        "name": "Map",
+        "self_size": 32,
+        "retained_size": 61864,
+        "immediate_dominator": 45456,
+        "retainer_chain": [
+          {
+            "node": 45461,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 45456,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 46192,
+        "type": "array",
+        "name": "",
+        "self_size": 3624,
+        "retained_size": 61832,
+        "immediate_dominator": 45461,
+        "retainer_chain": [
+          {
+            "node": 46192,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 45461,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 45456,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 78256,
+        "type": "code",
+        "name": "(script line ends)",
+        "self_size": 61688,
+        "retained_size": 61688,
+        "immediate_dominator": 69659,
+        "retainer_chain": [
+          {
+            "node": 78256,
+            "type": "code",
+            "name": "(script line ends)"
+          },
+          {
+            "node": 69659,
+            "type": "code",
+            "name": "<code:server.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 3312,
+        "type": "object",
+        "name": "ClaudeCodeWebServer",
+        "self_size": 648,
+        "retained_size": 61536,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 3312,
+            "type": "object",
+            "name": "ClaudeCodeWebServer"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 43927,
+        "type": "object",
+        "name": "system / Context",
+        "self_size": 376,
+        "retained_size": 58408,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 43927,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 60663,
+        "type": "closure",
+        "name": "send",
+        "self_size": 64,
+        "retained_size": 57864,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 60663,
+            "type": "closure",
+            "name": "send"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 63826,
+        "type": "object",
+        "name": "ServerResponse",
+        "self_size": 56,
+        "retained_size": 57080,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 63826,
+            "type": "object",
+            "name": "ServerResponse"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 43939,
+        "type": "object",
+        "name": "Map",
+        "self_size": 32,
+        "retained_size": 56048,
+        "immediate_dominator": 43927,
+        "retainer_chain": [
+          {
+            "node": 43939,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 43927,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 44127,
+        "type": "array",
+        "name": "",
+        "self_size": 14376,
+        "retained_size": 56016,
+        "immediate_dominator": 43939,
+        "retainer_chain": [
+          {
+            "node": 44127,
+            "type": "array",
+            "name": ""
+          },
+          {
+            "node": 43939,
+            "type": "object",
+            "name": "Map"
+          },
+          {
+            "node": 43927,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 81924,
+        "type": "object",
+        "name": "EventEmitter",
+        "self_size": 24,
+        "retained_size": 55816,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 81924,
+            "type": "object",
+            "name": "EventEmitter"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 67988,
+        "type": "object",
+        "name": "Object",
+        "self_size": 96,
+        "retained_size": 55320,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 67988,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 96782,
+        "type": "closure",
+        "name": "Sender",
+        "self_size": 64,
+        "retained_size": 51992,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 96782,
+            "type": "closure",
+            "name": "Sender"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 82005,
+        "type": "object",
+        "name": "system / Context",
+        "self_size": 720,
+        "retained_size": 51688,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 82005,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 64265,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 50872,
+        "immediate_dominator": 64043,
+        "retainer_chain": [
+          {
+            "node": 64265,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 64043,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 60793,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 50872,
+        "immediate_dominator": 60536,
+        "retainer_chain": [
+          {
+            "node": 60793,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 60536,
+            "type": "object",
+            "name": "Mime"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 120292,
+        "type": "code",
+        "name": "<code:search.js>",
+        "self_size": 144,
+        "retained_size": 50024,
+        "immediate_dominator": 67988,
+        "retainer_chain": [
+          {
+            "node": 120292,
+            "type": "code",
+            "name": "<code:search.js>"
+          },
+          {
+            "node": 67988,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 108149,
+        "type": "closure",
+        "name": "GetIntrinsic",
+        "self_size": 64,
+        "retained_size": 49640,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 108149,
+            "type": "closure",
+            "name": "GetIntrinsic"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 108589,
+        "type": "code",
+        "name": "<code:session-store.js>",
+        "self_size": 144,
+        "retained_size": 49336,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 108589,
+            "type": "code",
+            "name": "<code:session-store.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 64263,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 49240,
+        "immediate_dominator": 64043,
+        "retainer_chain": [
+          {
+            "node": 64263,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 64043,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 60794,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 49240,
+        "immediate_dominator": 60536,
+        "retainer_chain": [
+          {
+            "node": 60794,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 60536,
+            "type": "object",
+            "name": "Mime"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 70087,
+        "type": "array",
+        "name": "(object properties)",
+        "self_size": 49216,
+        "retained_size": 49216,
+        "immediate_dominator": 64263,
+        "retainer_chain": [
+          {
+            "node": 70087,
+            "type": "array",
+            "name": "(object properties)"
+          },
+          {
+            "node": 64263,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 64043,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 60872,
+        "type": "array",
+        "name": "(object properties)",
+        "self_size": 49216,
+        "retained_size": 49216,
+        "immediate_dominator": 60793,
+        "retainer_chain": [
+          {
+            "node": 60872,
+            "type": "array",
+            "name": "(object properties)"
+          },
+          {
+            "node": 60793,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 60536,
+            "type": "object",
+            "name": "Mime"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 60291,
+        "type": "array",
+        "name": "(object properties)",
+        "self_size": 49216,
+        "retained_size": 49216,
+        "immediate_dominator": 3194,
+        "retainer_chain": [
+          {
+            "node": 60291,
+            "type": "array",
+            "name": "(object properties)"
+          },
+          {
+            "node": 3194,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 70085,
+        "type": "array",
+        "name": "(object properties)",
+        "self_size": 49216,
+        "retained_size": 49216,
+        "immediate_dominator": 64265,
+        "retainer_chain": [
+          {
+            "node": 70085,
+            "type": "array",
+            "name": "(object properties)"
+          },
+          {
+            "node": 64265,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 64043,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 60874,
+        "type": "array",
+        "name": "(object properties)",
+        "self_size": 49216,
+        "retained_size": 49216,
+        "immediate_dominator": 60794,
+        "retainer_chain": [
+          {
+            "node": 60874,
+            "type": "array",
+            "name": "(object properties)"
+          },
+          {
+            "node": 60794,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 60536,
+            "type": "object",
+            "name": "Mime"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 62675,
+        "type": "array",
+        "name": "(object properties)",
+        "self_size": 49216,
+        "retained_size": 49216,
+        "immediate_dominator": 61786,
+        "retainer_chain": [
+          {
+            "node": 62675,
+            "type": "array",
+            "name": "(object properties)"
+          },
+          {
+            "node": 61786,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 46704,
+            "type": "object",
+            "name": "Module"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 114467,
+        "type": "code",
+        "name": "<code:websocket.js>",
+        "self_size": 144,
+        "retained_size": 48336,
+        "immediate_dominator": 67996,
+        "retainer_chain": [
+          {
+            "node": 114467,
+            "type": "code",
+            "name": "<code:websocket.js>"
+          },
+          {
+            "node": 67996,
+            "type": "closure",
+            "name": "WebSocket"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 3174,
+        "type": "hidden",
+        "name": "system / NativeContext",
+        "self_size": 2320,
+        "retained_size": 46096,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 3174,
+            "type": "hidden",
+            "name": "system / NativeContext"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 70962,
+        "type": "string",
+        "name": "<redacted-string bytes=1027>",
+        "self_size": 45224,
+        "retained_size": 45224,
+        "immediate_dominator": 120292,
+        "retainer_chain": [
+          {
+            "node": 70962,
+            "type": "string",
+            "name": "<redacted-string bytes=1027>"
+          },
+          {
+            "node": 120292,
+            "type": "code",
+            "name": "<code:search.js>"
+          },
+          {
+            "node": 67988,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 73604,
+        "type": "string",
+        "name": "<redacted-string bytes=1028>",
+        "self_size": 44896,
+        "retained_size": 44896,
+        "immediate_dominator": 108589,
+        "retainer_chain": [
+          {
+            "node": 73604,
+            "type": "string",
+            "name": "<redacted-string bytes=1028>"
+          },
+          {
+            "node": 108589,
+            "type": "code",
+            "name": "<code:session-store.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 68613,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 44112,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 68613,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 79060,
+        "type": "object",
+        "name": "Stream",
+        "self_size": 56,
+        "retained_size": 43592,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 79060,
+            "type": "object",
+            "name": "Stream"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 71380,
+        "type": "code",
+        "name": "<code:stt-engine.js>",
+        "self_size": 144,
+        "retained_size": 43112,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 71380,
+            "type": "code",
+            "name": "<code:stt-engine.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 3185,
+        "type": "closure",
+        "name": "internalBinding",
+        "self_size": 64,
+        "retained_size": 39864,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 3185,
+            "type": "closure",
+            "name": "internalBinding"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 91080,
+        "type": "object",
+        "name": "system / Context",
+        "self_size": 40,
+        "retained_size": 39648,
+        "immediate_dominator": 3185,
+        "retainer_chain": [
+          {
+            "node": 91080,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 3185,
+            "type": "closure",
+            "name": "internalBinding"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 91081,
+        "type": "object",
+        "name": "Object",
+        "self_size": 24,
+        "retained_size": 39608,
+        "immediate_dominator": 91080,
+        "retainer_chain": [
+          {
+            "node": 91081,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 91080,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 3185,
+            "type": "closure",
+            "name": "internalBinding"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 3379,
+        "type": "object",
+        "name": "system / Context",
+        "self_size": 808,
+        "retained_size": 39376,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 3379,
+            "type": "object",
+            "name": "system / Context"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 73014,
+        "type": "object",
+        "name": "Writable",
+        "self_size": 24,
+        "retained_size": 38880,
+        "immediate_dominator": 76958,
+        "retainer_chain": [
+          {
+            "node": 73014,
+            "type": "object",
+            "name": "Writable"
+          },
+          {
+            "node": 76958,
+            "type": "closure",
+            "name": "Receiver"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 89525,
+        "type": "code",
+        "name": "<code:response.js>",
+        "self_size": 144,
+        "retained_size": 38864,
+        "immediate_dominator": 63826,
+        "retainer_chain": [
+          {
+            "node": 89525,
+            "type": "code",
+            "name": "<code:response.js>"
+          },
+          {
+            "node": 63826,
+            "type": "object",
+            "name": "ServerResponse"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 74201,
+        "type": "string",
+        "name": "<redacted-string bytes=1024>",
+        "self_size": 37896,
+        "retained_size": 37896,
+        "immediate_dominator": 71380,
+        "retainer_chain": [
+          {
+            "node": 74201,
+            "type": "string",
+            "name": "<redacted-string bytes=1024>"
+          },
+          {
+            "node": 71380,
+            "type": "code",
+            "name": "<code:stt-engine.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 103579,
+        "type": "code",
+        "name": "<code:sticky-note-summarizer.js>",
+        "self_size": 144,
+        "retained_size": 37304,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 103579,
+            "type": "code",
+            "name": "<code:sticky-note-summarizer.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 89992,
+        "type": "closure",
+        "name": "handleMessage",
+        "self_size": 56,
+        "retained_size": 36920,
+        "immediate_dominator": 70058,
+        "retainer_chain": [
+          {
+            "node": 89992,
+            "type": "closure",
+            "name": "handleMessage"
+          },
+          {
+            "node": 70058,
+            "type": "object",
+            "name": "Object"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 71262,
+        "type": "string",
+        "name": "<redacted-string bytes=1024>",
+        "self_size": 36480,
+        "retained_size": 36480,
+        "immediate_dominator": 114467,
+        "retainer_chain": [
+          {
+            "node": 71262,
+            "type": "string",
+            "name": "<redacted-string bytes=1024>"
+          },
+          {
+            "node": 114467,
+            "type": "code",
+            "name": "<code:websocket.js>"
+          },
+          {
+            "node": 67996,
+            "type": "closure",
+            "name": "WebSocket"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 113413,
+        "type": "code",
+        "name": "<code:keepalive-manager.js>",
+        "self_size": 144,
+        "retained_size": 36400,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 113413,
+            "type": "code",
+            "name": "<code:keepalive-manager.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 71370,
+        "type": "code",
+        "name": "<code:sticky-note-engine.js>",
+        "self_size": 144,
+        "retained_size": 35432,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 71370,
+            "type": "code",
+            "name": "<code:sticky-note-engine.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      },
+      {
+        "node": 104446,
+        "type": "code",
+        "name": "<code:routes.js>",
+        "self_size": 144,
+        "retained_size": 34952,
+        "immediate_dominator": 0,
+        "retainer_chain": [
+          {
+            "node": 104446,
+            "type": "code",
+            "name": "<code:routes.js>"
+          },
+          {
+            "node": 0,
+            "type": "synthetic",
+            "name": ""
+          }
+        ]
+      }
+    ]
+  }
+}

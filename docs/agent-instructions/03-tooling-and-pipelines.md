@@ -22,6 +22,12 @@ The CI pipeline (`.github/workflows/ci.yml`) runs on every push and PR. It runs 
 
 See `06-local-first-then-ci.md` for the full CI job map, artifact details, and debugging workflow. Local tests gate the push; CI is the final cross-platform verification (see ADR-0008 for the parallelization strategy).
 
+The diagnosis-only `.github/workflows/memory-diagnosis.yml` is opt-in via
+workflow dispatch or the `run-memory-diagnosis` PR label. It is non-blocking,
+runs Node 22 on Windows and Ubuntu, verifies the documented expected-red
+retainers, and uploads only redacted derived JSON. Raw `.heapsnapshot` files
+must never appear in an artifact upload path.
+
 ### Release Pipeline
 
 The release pipeline (`.github/workflows/release-on-main.yml`) triggers on push to main:

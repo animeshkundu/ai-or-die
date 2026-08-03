@@ -95,6 +95,7 @@ Source: `src/vscode-tunnel.js`
 |--------|------|---------|-------------|
 | `dev` | boolean | `false` | Enable verbose stdout logging |
 | `onEvent` | function | `() => {}` | Callback for tunnel events: `(sessionId, event)` |
+| `spawn` | function | `child_process.spawn` | Test-only process factory used by retention probes; production omits it. |
 
 ### Constructor Behavior
 

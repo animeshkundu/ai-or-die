@@ -6,6 +6,7 @@ const net = require('net');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { withoutDiagnosticSecrets } = require('./utils/child-env');
 
 const MAX_RETRIES = 10;
 const URL_TIMEOUT_MS = 30000;
@@ -32,6 +33,7 @@ class VSCodeTunnelManager {
     this.maxTunnels = parseInt(process.env.MAX_VSCODE_TUNNELS || String(DEFAULT_MAX_TUNNELS), 10);
     this.onEvent = options.onEvent || (() => {}); // callback(sessionId, event)
     this.dev = options.dev || false;
+    this._spawn = options.spawn || spawn;
 
     // PROC-02 gap 3: per-instance stability-threshold override so the
     // regression test (test/longevity/process/vscode-tunnel-respawn.test.js
@@ -506,7 +508,7 @@ class VSCodeTunnelManager {
     const spawnOptions = {
       cwd: tunnel.workingDir,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: withoutDiagnosticSecrets(),
     };
     if (process.platform === 'win32') spawnOptions.shell = true;
 
@@ -621,17 +623,18 @@ class VSCodeTunnelManager {
       const spawnOptions = {
         cwd: tunnel.workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
+        env: withoutDiagnosticSecrets(),
       };
       // Windows .cmd/.bat files require shell to execute
       if (process.platform === 'win32') {
         spawnOptions.shell = true;
       }
 
-      tunnel.serverProcess = spawn(this._command, args, spawnOptions);
+      tunnel.serverProcess = this._spawn(this._command, args, spawnOptions);
 
       let readyResolved = false;
       let outputBuffer = '';
+      tunnel._diagnosticServerStdoutChars = 0;
 
       const readyTimeout = setTimeout(() => {
         if (!readyResolved) {
@@ -645,6 +648,7 @@ class VSCodeTunnelManager {
       tunnel.serverProcess.stdout.on('data', (data) => {
         const output = data.toString();
         outputBuffer += output;
+        tunnel._diagnosticServerStdoutChars = outputBuffer.length;
         if (this.dev) process.stdout.write(`  [vscode-server] ${output}`);
 
         // Parse "Web UI available at http://localhost:<port>"

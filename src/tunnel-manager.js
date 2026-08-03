@@ -1,6 +1,7 @@
 'use strict';
 
 const { spawn, execFile } = require('child_process');
+const { withoutDiagnosticSecrets } = require('./utils/child-env');
 const os = require('os');
 
 const MAX_RETRIES = 10;
@@ -205,7 +206,8 @@ class TunnelManager {
     // Run interactive login (inherits stdio so user can interact with browser auth)
     const loginOk = await new Promise((resolve) => {
       const loginProc = spawn('devtunnel', ['user', 'login'], {
-        stdio: 'inherit'
+        stdio: 'inherit',
+        env: withoutDiagnosticSecrets(),
       });
       loginProc.on('exit', (code) => resolve(code === 0));
       loginProc.on('error', () => resolve(false));
@@ -299,7 +301,8 @@ class TunnelManager {
 
     return new Promise((resolve) => {
       this.process = spawn('devtunnel', args, {
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: withoutDiagnosticSecrets(),
       });
 
       let urlResolved = false;

@@ -66,6 +66,21 @@ class SessionStore {
         // call waits for the prior in-flight save to settle before
         // entering the write critical section.
         this._inFlightSave = Promise.resolve();
+        this._diagnostics = {
+            save_calls: 0,
+            no_op_calls: 0,
+            pending_saves: 0,
+            max_pending_saves: 0,
+            active_saves: 0,
+            completed_saves: 0,
+            failed_saves: 0,
+            last_queue_wait_ms: 0,
+            last_duration_ms: 0,
+            last_session_count: 0,
+            last_serialized_bytes: 0,
+            active_serialized_bytes: 0,
+            total_serialized_bytes: 0
+        };
         this.initializeStorage();
     }
 
@@ -172,7 +187,17 @@ class SessionStore {
     }
 
     async saveSessions(sessions) {
-        if (!this._dirty) return true;
+        this._diagnostics.save_calls++;
+        if (!this._dirty) {
+            this._diagnostics.no_op_calls++;
+            return true;
+        }
+        const queuedAt = Date.now();
+        this._diagnostics.pending_saves++;
+        this._diagnostics.max_pending_saves = Math.max(
+            this._diagnostics.max_pending_saves,
+            this._diagnostics.pending_saves
+        );
 
         // DISK-01 follow-up (SOAK-reported race): chain onto any prior
         // in-flight save so two callers don't both writeFile() the same
@@ -184,8 +209,10 @@ class SessionStore {
         this._inFlightSave = new Promise((resolve) => { release = resolve; });
         try {
             await prior.catch(() => {});
+            this._diagnostics.last_queue_wait_ms = Date.now() - queuedAt;
             return await this._saveSessionsLocked(sessions);
         } finally {
+            this._diagnostics.pending_saves--;
             release();
         }
     }
@@ -195,6 +222,8 @@ class SessionStore {
         // queue may have already flushed our state. (Cheap; no-op fast path.)
         if (!this._dirty) return true;
 
+        const startedAt = Date.now();
+        this._diagnostics.active_saves++;
         try {
             // Ensure storage directory exists
             await fs.mkdir(this.storageDir, { recursive: true });
@@ -241,6 +270,7 @@ class SessionStore {
                 nameIsUserSet: session.nameIsUserSet || false,
                 stickyNotesEnabled: session.stickyNotesEnabled === true
             }));
+            this._diagnostics.last_session_count = sessionsArray.length;
 
             const data = {
                 version: '1.0',
@@ -287,6 +317,12 @@ class SessionStore {
             // < 10 ms on modern hardware regardless of total session count.
             // See docs/audits/hot-05-sessionstore-stringify.md.
             const jsonStr = await this._serializeDataStreamed(data);
+            const serializedBytes = process.env.AOD_DIAG_ENABLED === '1'
+                ? Buffer.byteLength(jsonStr, 'utf8')
+                : 0;
+            this._diagnostics.last_serialized_bytes = serializedBytes;
+            this._diagnostics.active_serialized_bytes = serializedBytes;
+            this._diagnostics.total_serialized_bytes += serializedBytes;
 
             // Step 1–4: write + fsync + close the temp file via an explicit
             // FileHandle so we can call .sync() before closing.
@@ -327,12 +363,18 @@ class SessionStore {
 
             this._dirty = false;
             this._lastSaveError = null;
+            this._diagnostics.completed_saves++;
             return true;
         } catch (error) {
             this._lastSaveError = error;
             this._saveFailureCount++;
+            this._diagnostics.failed_saves++;
             console.error('Failed to save sessions:', error.message);
             return false;
+        } finally {
+            this._diagnostics.active_saves--;
+            this._diagnostics.active_serialized_bytes = 0;
+            this._diagnostics.last_duration_ms = Date.now() - startedAt;
         }
     }
 

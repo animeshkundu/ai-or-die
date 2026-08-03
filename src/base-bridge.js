@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const jobGuard = require('./job-guard');
+const { withoutDiagnosticSecrets } = require('./utils/child-env');
 const { killProcessTreeSync } = require('./utils/process-tree');
 
 /** Chunk size for PTY writes — safely below ConPTY ~16KB kernel buffer */
@@ -299,13 +300,12 @@ class BaseBridge {
       // don't override buildArgs (terminal/codex) ignore these.
       const args = this.buildArgs({ dangerouslySkipPermissions, permissionMode, agentArgs });
 
-      const env = {
-        ...process.env,
+      const env = withoutDiagnosticSecrets(process.env, {
         TERM: 'xterm-256color',
         FORCE_COLOR: '1',
         COLORTERM: 'truecolor',
         ...((extraEnv && typeof extraEnv === 'object') ? extraEnv : {})
-      };
+      });
 
       const ptyProcess = spawn(this.command, args, {
         cwd: workingDir,

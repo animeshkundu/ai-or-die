@@ -62,6 +62,14 @@ Serializes the session Map to disk.
 
 **Returns:** `true` on success, `false` on error.
 
+**Diagnosis counters:** `SessionStore._diagnostics` is read-only instrumentation
+for the default-off memory probe. It records save calls, no-op calls, pending and
+maximum queue depth, active/completed/failed saves, queue wait and duration,
+session count, and active/last/total serialized bytes. The full UTF-8 byte scan
+runs only when `AOD_DIAG_ENABLED=1`; normal saves record zero byte counters and
+do not pay that diagnostic pass. Instrumentation does not alter save ordering or
+persistence behavior.
+
 **Last-error surfacing (DISK-03):** After every call, `this._lastSaveError`
 is either `null` (success) or the `Error` that aborted the save. The
 server reads `_lastSaveError.code` and opens the disk-full circuit

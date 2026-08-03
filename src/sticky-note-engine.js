@@ -50,6 +50,9 @@ class StickyNoteEngine {
     this._initPromise = null;
     this._downloadProgress = null;
     this._runtimeInfo = null; // { gpu, threads } reported by the worker on ready
+    this._workerDiagnostics = null;
+    this._diagnosticRequestId = 0;
+    this._diagnosticWaiters = new Map();
 
     this._modelManager =
       options.modelManager ||
@@ -163,6 +166,15 @@ class StickyNoteEngine {
 
   _onWorkerMessage(msg) {
     if (!msg) return;
+    if (msg.type === 'diagnostics') {
+      this._workerDiagnostics = msg;
+      const waiter = this._diagnosticWaiters.get(msg.id);
+      if (waiter) {
+        this._diagnosticWaiters.delete(msg.id);
+        waiter(msg);
+      }
+      return;
+    }
     if (msg.type === 'ready') {
       this._status = 'ready';
       this._restartAttempts = 0;
@@ -189,6 +201,9 @@ class StickyNoteEngine {
   }
 
   _onWorkerExit(code) {
+    for (const resolve of this._diagnosticWaiters.values()) resolve(null);
+    this._diagnosticWaiters.clear();
+    this._workerDiagnostics = null;
     for (const req of this._queue) {
       clearTimeout(req.timer);
       req.reject(new Error('sticky-note worker crashed'));
@@ -310,6 +325,29 @@ class StickyNoteEngine {
     }
   }
 
+  requestDiagnostics(timeoutMs = 1000) {
+    if (!this._worker) return Promise.resolve(null);
+    const id = ++this._diagnosticRequestId;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this._diagnosticWaiters.delete(id);
+        resolve(null);
+      }, timeoutMs);
+      if (timer.unref) timer.unref();
+      this._diagnosticWaiters.set(id, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+      try {
+        this._worker.postMessage({ type: 'diagnostics', id });
+      } catch (_) {
+        clearTimeout(timer);
+        this._diagnosticWaiters.delete(id);
+        resolve(null);
+      }
+    });
+  }
+
   async shutdown() {
     this._stopping = true;
 
@@ -348,6 +386,9 @@ class StickyNoteEngine {
     }
     this._queue = [];
     this._currentRequest = null;
+    for (const resolve of this._diagnosticWaiters.values()) resolve(null);
+    this._diagnosticWaiters.clear();
+    this._workerDiagnostics = null;
     // Cooperatively stop the worker — the live one, or one still booting (tracked
     // from creation in _spawnWorker). Ask it to dispose its native model/context
     // and exit on its own. We deliberately do NOT call worker.terminate():

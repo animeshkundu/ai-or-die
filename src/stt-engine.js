@@ -25,6 +25,9 @@ class SttEngine {
     this._lastSpawnError = null;
     this._stopping = false;
     this._initPromise = null;
+    this._workerDiagnostics = null;
+    this._diagnosticRequestId = 0;
+    this._diagnosticWaiters = new Map();
     this._modelManager = new ModelManager({
       modelsDir: options.modelsDir
     });
@@ -193,6 +196,15 @@ class SttEngine {
   }
 
   _onWorkerMessage(msg) {
+    if (msg.type === 'diagnostics') {
+      this._workerDiagnostics = msg;
+      const waiter = this._diagnosticWaiters.get(msg.id);
+      if (waiter) {
+        this._diagnosticWaiters.delete(msg.id);
+        waiter(msg);
+      }
+      return;
+    }
     if (msg.type === 'ready') {
       this._status = 'ready';
       this._restartAttempts = 0;
@@ -241,6 +253,9 @@ class SttEngine {
     this._currentRequest = null;
 
     this._worker = null;
+    this._workerDiagnostics = null;
+    for (const resolve of this._diagnosticWaiters.values()) resolve(null);
+    this._diagnosticWaiters.clear();
 
     // PROC-02 gap 1: if shutdown() ran, do NOT schedule a respawn.
     // Without this guard, `await engine.shutdown()` would call
@@ -294,6 +309,29 @@ class SttEngine {
         this._status = 'unavailable';
       }
     }, delay);
+  }
+
+  requestDiagnostics(timeoutMs = 1000) {
+    if (!this._worker) return Promise.resolve(null);
+    const id = ++this._diagnosticRequestId;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this._diagnosticWaiters.delete(id);
+        resolve(null);
+      }, timeoutMs);
+      if (timer.unref) timer.unref();
+      this._diagnosticWaiters.set(id, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+      try {
+        this._worker.postMessage({ type: 'diagnostics', id });
+      } catch (_) {
+        clearTimeout(timer);
+        this._diagnosticWaiters.delete(id);
+        resolve(null);
+      }
+    });
   }
 
   _spawnWorker() {

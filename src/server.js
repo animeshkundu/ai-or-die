@@ -41,6 +41,7 @@ const { createControlRouter } = require('./control/routes');
 const { ArtifactReviewStore, createArtifactReviewRouter, createAssetTokenSigner, buildArtifactPushPayload, artifactPushEnabledFromEnv } = require('./artifact-review');
 const { deriveStatus, awaitingKindForPendingTool, awaitingFromScreen, TRUST_PROMPT_REGEX, DEFAULT_UNBOUND_QUIET_MS } = require('./control/session-status');
 const { detectAwaiting, detectTurnState } = require('./control/jsonl-awaiting');
+const { installDiagnosticRoutes } = require('./diagnostic-probes');
 
 // HOT-08: per-WebSocket-message size cap. Gates JSON.parse so a single
 // large frame can't block the event loop for tens-to-hundreds of ms.
@@ -1294,6 +1295,8 @@ class ClaudeCodeWebServer {
         next();
       });
     }
+
+    installDiagnosticRoutes(this);
 
     this.app.use('/api/control', createControlRouter(this._buildControlDeps()));
     this.app.use('/api/artifact', createArtifactReviewRouter({

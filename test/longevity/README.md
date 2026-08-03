@@ -74,6 +74,14 @@ test/longevity/
     └── baseline-<utc>/            ← reference run on main HEAD; do not overwrite
 ```
 
+Memory-retention diagnosis uses a separate, opt-in path under
+`harness/{proc-controller,memory-diagnosis,process-tree-sampler,component-retainer-probe,heap-snapshot-analyzer,session-dominator-proof}.js`.
+Its passing and expected-red tests live in `diagnosis/`; they are intentionally
+excluded from `npm run test:longevity:server` and run only in
+`memory-diagnosis.yml`. The process controller launches `bin/supervisor.js` and
+never imports `src/server.js`, so load-generator memory cannot contaminate
+server measurements.
+
 ## CLI flags
 
 | Flag                | Default            | Notes |

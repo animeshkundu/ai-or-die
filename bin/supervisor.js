@@ -3,7 +3,9 @@
 'use strict';
 
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 const path = require('path');
+const v8 = require('v8');
 const { RESTART_EXIT_CODE } = require('../src/restart-manager');
 const jobGuard = require('../src/job-guard');
 
@@ -225,6 +227,33 @@ function startServer() {
   });
 }
 
+function collectSupervisorDiagnostics() {
+  const handles = (process._getActiveHandles && process._getActiveHandles()) || [];
+  const requests = (process._getActiveRequests && process._getActiveRequests()) || [];
+  let libuv = [];
+  try {
+    const report = process.report && process.report.getReport ? process.report.getReport() : null;
+    libuv = report && Array.isArray(report.libuv) ? report.libuv : [];
+  } catch (_) { /* unavailable in restricted runtimes */ }
+  return {
+    pid: process.pid,
+    ppid: process.ppid,
+    memory: process.memoryUsage(),
+    heap_statistics: v8.getHeapStatistics(),
+    heap_spaces: v8.getHeapSpaceStatistics(),
+    active_handles: handles.length,
+    active_requests: requests.length,
+    libuv: libuv.reduce((counts, handle) => {
+      const type = handle && handle.type || 'unknown';
+      counts[type] = (counts[type] || 0) + 1;
+      return counts;
+    }, {}),
+    child_pid: child && child.pid || null,
+    crash_timestamps: crashTimestamps.length,
+    pending_restart_timer: !!pendingRestartTimer,
+  };
+}
+
 function shutdownGracefully() {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -265,6 +294,27 @@ process.on('SIGTERM', shutdownGracefully);
 // Allow test harness to trigger shutdown via IPC
 process.on('message', (msg) => {
   if (msg && msg.type === 'shutdown') shutdownGracefully();
+  const expectedToken = process.env.AOD_DIAG_TOKEN;
+  const suppliedToken = msg && typeof msg.token === 'string' ? Buffer.from(msg.token) : null;
+  const expectedBuffer = typeof expectedToken === 'string' ? Buffer.from(expectedToken) : null;
+  if (msg &&
+      msg.type === 'diagnostics' &&
+      process.env.AOD_DIAG_ENABLED === '1' &&
+      expectedBuffer &&
+      expectedBuffer.length >= 16 &&
+      suppliedToken &&
+      suppliedToken.length === expectedBuffer.length &&
+      crypto.timingSafeEqual(suppliedToken, expectedBuffer)) {
+    try {
+      if (process.send) {
+        process.send({
+          type: 'diagnostics',
+          id: msg.id,
+          diagnostics: collectSupervisorDiagnostics(),
+        });
+      }
+    } catch (_) { /* diagnostic channel is best-effort */ }
+  }
 });
 
 // Establish the Windows Job Object guard BEFORE the first spawn so the server and its

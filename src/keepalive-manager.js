@@ -2,6 +2,7 @@
 
 const childProcess = require('child_process');
 const path = require('path');
+const { withoutDiagnosticSecrets } = require('./utils/child-env');
 
 // Keep the host machine awake while the ai-or-die server runs (Windows 11).
 //
@@ -171,6 +172,7 @@ class KeepaliveManager {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         shell: false,
+        env: withoutDiagnosticSecrets(),
       });
       this._child = child;
 
