@@ -122,7 +122,7 @@ describe('server eager model init', function () {
     }
   });
 
-  it('_ensureStickyNoteEngine is a no-op when the engine is disabled (default/Bun/test)', function () {
+  it('_ensureStickyNoteEngine is a no-op when the engine is disabled (Bun/test/--no-sticky-notes)', function () {
     const { server, tmp } = makeServer();
     try {
       let calls = 0;

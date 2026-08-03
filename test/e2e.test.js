@@ -783,6 +783,7 @@ describe('E2E: Input/output round-trip', function () {
     ({ ws } = await connectWs(port));
     wsSend(ws, { type: 'create_session', name: 'IO Test' });
     ioSessionId = (await waitForMessage(ws, 'session_created')).sessionId;
+    assert.ok(ioSessionId, 'session_created includes the IO test session ID');
     // Set up listener before sending to avoid race condition
     const startedPromise = waitForMessage(ws, 'terminal_started', 15000);
     wsSend(ws, { type: 'start_terminal' });
