@@ -76,7 +76,7 @@ async function sampleWindows(rootPid) {
     '    handle_count=$(if($p){[int]$p.HandleCount}else{$null})',
     '  }',
     '} | ConvertTo-Json -Compress',
-  ].join('; ');
+  ].join('\n');
   const stdout = await execFileText('powershell.exe', [
     '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script,
   ]);
