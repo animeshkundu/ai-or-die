@@ -6854,15 +6854,171 @@ class ClaudeCodeWebServer {
    * for FD inspection.
    */
   _collectDiagnostics() {
+    const now = Date.now();
     const mem = process.memoryUsage();
     const handles = (process._getActiveHandles && process._getActiveHandles()) || [];
     const requests = (process._getActiveRequests && process._getActiveRequests()) || [];
+    const mapSize = (value) => value && typeof value.size === 'number' ? value.size : 0;
+    const byteLength = (value) => {
+      if (Buffer.isBuffer(value)) return value.length;
+      return Buffer.byteLength(typeof value === 'string' ? value : String(value || ''), 'utf8');
+    };
+    const listenerCount = (emitter, event) => (
+      emitter && typeof emitter.listenerCount === 'function' ? emitter.listenerCount(event) : 0
+    );
+    const outputBuffers = {
+      active: { sessions: 0, items: 0, bytes: 0, per_session: [] },
+      inactive: { sessions: 0, items: 0, bytes: 0, per_session: [] },
+    };
+    for (const session of this.claudeSessions.values()) {
+      if (!session) continue;
+      const buffer = session.outputBuffer;
+      const chunks = Array.isArray(buffer) ? buffer : [];
+      const items = buffer && typeof buffer.length === 'number' ? buffer.length : chunks.length;
+      const bytes = buffer && Number.isFinite(buffer.byteLength)
+        ? buffer.byteLength
+        : chunks.reduce((total, chunk) => total + byteLength(chunk), 0);
+      const bucket = session.active ? outputBuffers.active : outputBuffers.inactive;
+      bucket.sessions++;
+      bucket.items += items;
+      bucket.bytes += bytes;
+      bucket.per_session.push({ items, bytes });
+    }
+    let stickyPendingText;
+    let artifactReviews;
+    const byteMetricsCache = this._retentionByteMetricsCache;
+    if (byteMetricsCache && now - byteMetricsCache.at < 5000) {
+      ({ stickyPendingText, artifactReviews } = byteMetricsCache);
+    } else {
+      stickyPendingText = { sessions: 0, bytes: 0, per_session_bytes: [] };
+      const stickyStates = this.stickyNoteSummarizer && this.stickyNoteSummarizer._states;
+      if (stickyStates && typeof stickyStates.values === 'function') {
+        for (const state of stickyStates.values()) {
+          const bytes = byteLength(state && state.pendingText);
+          if (bytes === 0) continue;
+          stickyPendingText.sessions++;
+          stickyPendingText.bytes += bytes;
+          stickyPendingText.per_session_bytes.push(bytes);
+        }
+      }
+      artifactReviews = {
+        total: 0,
+        open: 0,
+        ended: 0,
+        events: 0,
+        chat_entries: 0,
+        chat_bytes: 0,
+        queued_prompt_bytes: 0,
+        dom_snapshot_bytes: 0,
+      };
+      const reviews = this.artifactReviews && this.artifactReviews._reviews;
+      if (reviews && typeof reviews.values === 'function') {
+        for (const review of reviews.values()) {
+          if (!review) continue;
+          artifactReviews.total++;
+          if (review.status === 'ended') artifactReviews.ended++;
+          else artifactReviews.open++;
+          artifactReviews.events += Array.isArray(review.events) ? review.events.length : 0;
+          artifactReviews.chat_entries += Array.isArray(review.chat) ? review.chat.length : 0;
+          for (const entry of review.chat || []) artifactReviews.chat_bytes += byteLength(entry && entry.text);
+          for (const prompt of review.queuedPrompts || []) {
+            artifactReviews.queued_prompt_bytes += byteLength(
+              typeof prompt === 'string' ? prompt : prompt && (prompt.prompt || prompt.text || '')
+            );
+          }
+          artifactReviews.dom_snapshot_bytes += byteLength(
+            typeof review.domSnapshot === 'string' ? review.domSnapshot : ''
+          );
+        }
+      }
+      this._retentionByteMetricsCache = {
+        at: now,
+        stickyPendingText,
+        artifactReviews,
+      };
+    }
+    const nestedMapSize = (map) => {
+      if (!map || typeof map.values !== 'function') return 0;
+      let size = 0;
+      for (const value of map.values()) size += value && typeof value.size === 'number' ? value.size : 0;
+      return size;
+    };
+    const activeHandleTypes = {};
+    for (const handle of handles) {
+      const name = handle && handle.constructor && handle.constructor.name || 'Unknown';
+      activeHandleTypes[name] = (activeHandleTypes[name] || 0) + 1;
+    }
+    const webSocketListeners = { message: 0, close: 0, error: 0, buffered_bytes: 0 };
+    for (const wsInfo of this.webSocketConnections.values()) {
+      const ws = wsInfo && wsInfo.ws;
+      for (const event of ['message', 'close', 'error']) {
+        webSocketListeners[event] += listenerCount(ws, event);
+      }
+      webSocketListeners.buffered_bytes += Number.isFinite(ws && ws.bufferedAmount) ? ws.bufferedAmount : 0;
+    }
+    const stickyTimers = { debounce: 0, stale: 0, retry: 0 };
+    const stickyStatesForTimers = this.stickyNoteSummarizer && this.stickyNoteSummarizer._states;
+    if (stickyStatesForTimers && typeof stickyStatesForTimers.values === 'function') {
+      for (const state of stickyStatesForTimers.values()) {
+        if (state && state.debounceTimer) stickyTimers.debounce++;
+        if (state && state.staleTimer) stickyTimers.stale++;
+        if (state && state.retryTimer) stickyTimers.retry++;
+      }
+    }
+    const sessionTimers = { output_flush: 0, control_idle: 0 };
+    for (const session of this.claudeSessions.values()) {
+      if (session && session._outputFlushTimer) sessionTimers.output_flush++;
+      if (session && session._ctlIdleTimer) sessionTimers.control_idle++;
+    }
+    const controlBus = this.controlEventBus;
+    let controlRetainedEvents = 0;
+    if (controlBus && controlBus._buckets && typeof controlBus._buckets.values === 'function') {
+      for (const events of controlBus._buckets.values()) {
+        controlRetainedEvents += Array.isArray(events) ? events.length : 0;
+      }
+    }
+    const vscodeOutput = {
+      tunnels: 0,
+      server_stdout_bytes: 0,
+      login_output_bytes: 0,
+    };
+    const vscodeTunnels = this.vscodeTunnel && this.vscodeTunnel.tunnels;
+    if (vscodeTunnels && typeof vscodeTunnels.values === 'function') {
+      for (const tunnel of vscodeTunnels.values()) {
+        vscodeOutput.tunnels++;
+        vscodeOutput.server_stdout_bytes += Number.isFinite(tunnel && tunnel._serverOutputBytes)
+          ? tunnel._serverOutputBytes : 0;
+        vscodeOutput.login_output_bytes += Number.isFinite(tunnel && tunnel._loginOutputBytes)
+          ? tunnel._loginOutputBytes : 0;
+      }
+    }
     let fdCount = null;
     try {
       if (process.platform === 'linux') {
         fdCount = fs.readdirSync('/proc/self/fd').length;
       }
     } catch (_) { /* ignore — /proc may be unavailable in sandboxes */ }
+    let windowsHandleCount = this._windowsHandleCount || null;
+    if (
+      process.platform === 'win32' &&
+      !this._windowsHandleCountPending &&
+      (!this._windowsHandleCountAt || now - this._windowsHandleCountAt >= 60000)
+    ) {
+      this._windowsHandleCountPending = true;
+      const systemRoot = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+      const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      execFile(
+        powershell,
+        ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${process.pid}).HandleCount`],
+        { encoding: 'utf8', timeout: 1000, windowsHide: true, windowsVerbatimArguments: true },
+        (error, stdout) => {
+          const parsed = error ? NaN : Number.parseInt(String(stdout).trim(), 10);
+          this._windowsHandleCount = Number.isFinite(parsed) ? parsed : null;
+          this._windowsHandleCountAt = Date.now();
+          this._windowsHandleCountPending = false;
+        }
+      );
+    }
     return {
       uptime_seconds: Math.round(process.uptime()),
       node_version: process.version,
@@ -6879,6 +7035,15 @@ class ClaudeCodeWebServer {
         active_handles: handles.length,
         active_requests: requests.length,
         fd_count: fdCount,
+        windows_handle_count: windowsHandleCount,
+        active_handle_types: activeHandleTypes,
+        listener_counts: {
+          SIGINT: process.listenerCount('SIGINT'),
+          SIGTERM: process.listenerCount('SIGTERM'),
+          beforeExit: process.listenerCount('beforeExit'),
+          uncaughtException: process.listenerCount('uncaughtException'),
+          unhandledRejection: process.listenerCount('unhandledRejection'),
+        },
       },
       sessions: {
         total: this.claudeSessions.size,
@@ -6887,6 +7052,85 @@ class ClaudeCodeWebServer {
         voice_upload_counts: Array.from(this.claudeSessions.values())
           .filter(s => s._voiceUploadTimestamps && s._voiceUploadTimestamps.length).length,
         activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
+      },
+      retention: {
+        output_buffers: outputBuffers,
+        sticky_pending_text: stickyPendingText,
+        artifact_reviews: artifactReviews,
+        usage_reader: {
+          cache_present: !!(this.usageReader && this.usageReader.cache),
+          cache_entry_count: (this.usageReader && this.usageReader.cache && this.usageReader.cache.requests) || 0,
+          cache_age_ms: this.usageReader && this.usageReader.cacheTime
+            ? Math.max(0, Date.now() - this.usageReader.cacheTime)
+            : null,
+        },
+        usage_analytics: {
+          active_sessions: (this.usageAnalytics && this.usageAnalytics.activeSessions && this.usageAnalytics.activeSessions.size) || 0,
+          session_history: (this.usageAnalytics && this.usageAnalytics.sessionHistory && this.usageAnalytics.sessionHistory.length) || 0,
+          recent_usage: (this.usageAnalytics && this.usageAnalytics.recentUsage && this.usageAnalytics.recentUsage.length) || 0,
+          historical_data: (this.usageAnalytics && this.usageAnalytics.historicalData && this.usageAnalytics.historicalData.length) || 0,
+          burn_rate_history: (this.usageAnalytics && this.usageAnalytics.burnRateHistory && this.usageAnalytics.burnRateHistory.length) || 0,
+        },
+        bridge_state: {
+          claude_trust_prompts: mapSize(this.claudeBridge && this.claudeBridge._trustPromptHandled),
+          terminal_osc7_parsers: mapSize(this.terminalBridge && this.terminalBridge._osc7Parsers),
+          terminal_osc7_hooks: mapSize(this.terminalBridge && this.terminalBridge._osc7Hooks),
+          terminal_live_cwds: mapSize(this.terminalBridge && this.terminalBridge._liveCwd),
+          terminal_last_raw_osc7: mapSize(this.terminalBridge && this.terminalBridge._lastRawOsc7),
+          terminal_osc7_validation_cache: mapSize(this.terminalBridge && this.terminalBridge._osc7ValidationCache),
+        },
+        control_event_bus: {
+          bucket_sessions: mapSize(controlBus && controlBus._buckets),
+          retained_events: controlRetainedEvents,
+          evicted_session_watermarks: mapSize(controlBus && controlBus._evictedBySession),
+          event_listeners: listenerCount(controlBus, 'event'),
+        },
+        websocket: webSocketListeners,
+        vscode_tunnel_output: vscodeOutput,
+        timers: {
+          server_intervals: [
+            this.autoSaveInterval,
+            this.imageSweepInterval,
+            this.sessionEvictionInterval,
+            this.diagnosticsHeartbeatInterval,
+            this.diskCompactInterval,
+            this.diskUsageSampleInterval,
+            this._stickyJsonlPoll,
+            this._wsKeepalive,
+          ].filter(Boolean).length,
+          session: sessionTimers,
+          sticky: stickyTimers,
+        },
+        workers: {
+          sticky_note: {
+            status: this.stickyNoteEngine && this.stickyNoteEngine.getStatus
+              ? this.stickyNoteEngine.getStatus() : null,
+            queue_length: (this.stickyNoteEngine && this.stickyNoteEngine._queue && this.stickyNoteEngine._queue.length) || 0,
+            live: !!(this.stickyNoteEngine && this.stickyNoteEngine._worker),
+            spawning: !!(this.stickyNoteEngine && this.stickyNoteEngine._spawningWorker),
+            restart_attempts: (this.stickyNoteEngine && this.stickyNoteEngine._restartAttempts) || 0,
+          },
+          stt: {
+            status: this.sttEngine && this.sttEngine.getStatus ? this.sttEngine.getStatus() : null,
+            queue_length: (this.sttEngine && this.sttEngine._queue && this.sttEngine._queue.length) || 0,
+            live: !!(this.sttEngine && this.sttEngine._worker),
+            spawning: !!(this.sttEngine && this.sttEngine._spawningWorker),
+            restart_attempts: (this.sttEngine && this.sttEngine._restartAttempts) || 0,
+          },
+        },
+        maps: {
+          claude_notes: (this._claudeNotes && this._claudeNotes.size) || 0,
+          claude_offsets: (this._claudeOffsets && this._claudeOffsets.size) || 0,
+          sticky_jsonl: (this._stickyJsonl && this._stickyJsonl.size) || 0,
+          sticky_active: (this._stickyActive && this._stickyActive.size) || 0,
+          control_idempotency: (this._controlIdempotency && this._controlIdempotency.size) || 0,
+          activity_broadcast_timestamps: (this.activityBroadcastTimestamps && this.activityBroadcastTimestamps.size) || 0,
+          rate_limit_entries: nestedMapSize(this._rateLimitBuckets),
+          session_rate_limit_entries: nestedMapSize(this._sessionRateLimitBuckets),
+          control_session_seq: mapSize(this._controlSessionSeq),
+          attachment_dir_cache: mapSize(this._attachmentDirCache),
+          steering_queues: mapSize(this._steeringQueues),
+        },
       },
       // Deterministic-shutdown guard status. On win32, job_guard_active reflects whether
       // the supervisor established the kill-on-close Job Object (false ⇒ degraded:

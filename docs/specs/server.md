@@ -283,7 +283,7 @@ All messages are JSON. The `type` field determines the handler.
 | Client Message | Description |
 |---------------|-------------|
 | `create_session` | Create a new session and join it. Fields: `name`, `workingDir`. |
-| `join_session` | Join an existing session. Fields: `sessionId`. Replays the last 200 lines of the output buffer. |
+| `join_session` | Join an existing session. Fields: `sessionId`. Replays the last 200 stored output chunks from the output buffer. |
 | `leave_session` | Disconnect from current session without stopping the agent. |
 | `start_claude` | Launch Claude CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
 | `start_codex` | Launch Codex CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
@@ -357,8 +357,8 @@ All messages are JSON. The `type` field determines the handler.
   agent: null,                  // 'claude' | 'codex' | 'agent' | null
   workingDir: '/path',
   connections: Set<wsId>,       // WebSocket connection IDs
-  outputBuffer: [],             // Rolling buffer of terminal output strings
-  maxBufferSize: 1000,          // Max items in outputBuffer
+  outputBuffer: CircularBuffer, // Rolling buffer of raw terminal-output chunks
+  maxBufferSize: 1000,          // Max items in outputBuffer (not a byte or line limit)
   sessionStartTime: Date|null,  // Set on first agent start
   sessionUsage: {               // Aggregated token/cost tracking
     requests: 0,
@@ -382,6 +382,48 @@ Sessions are persisted to disk via `SessionStore` every 30 seconds (`setInterval
 ### Session Restoration
 
 On startup, `loadPersistedSessions()` loads sessions from disk. All sessions are restored with `active: false` and empty `connections` Sets since pty processes do not survive restarts.
+
+---
+
+## Supervisor Diagnostics
+
+`GET /api/diagnostics` and the five-minute diagnostics heartbeat return
+additive, content-free retention counters for long-running-service triage.
+Existing `memory`, `process`, `sessions`, `process_guard`, and `disk` fields
+remain stable.
+
+`process.windows_handle_count` is a best-effort asynchronous native Windows
+`HandleCount` sample from the current Node process, refreshed at most once a
+minute. It is `null` off Windows or when the in-box PowerShell probe cannot
+run. `process.active_handle_types` groups Node/libuv handles by constructor name;
+`process.listener_counts` exposes the process-level shutdown/error listener
+cardinality for long-lived EventEmitter diagnosis.
+
+The `retention` block contains:
+
+- `output_buffers.active` and `output_buffers.inactive`: session count, stored
+  item count, UTF-8 byte count, and content-free per-session item/byte
+  measurements. `CircularBuffer` maintains its output byte count incrementally,
+  so collecting this field does not rescan retained PTY output. Sticky-text and
+  review byte metrics are sampled at most once every five seconds.
+- `sticky_pending_text`: count and UTF-8 bytes of the JSONL summarizer's
+  pending text, including content-free per-session byte measurements.
+- `artifact_reviews`: counts and byte totals for open/ended reviews, replay
+  events, chat, queued prompts, and DOM snapshots.
+- `usage_reader` and `usage_analytics`: cache age/count and in-memory
+  aggregation cardinalities.
+- `bridge_state`, `control_event_bus`, `websocket`, `vscode_tunnel_output`,
+  `timers`, and `workers`:
+  bridge-subclass map cardinalities, event-ring watermarks/listeners, WebSocket
+  listener and queued-byte counts, known timer cardinalities, and worker
+  lifecycle/queue state. Native worker RSS is process-wide and is therefore
+  represented by the top-level `memory` block rather than attributed to a
+  worker.
+- `maps`: cardinalities for sticky-note, control-plane, activity, attachment,
+  steering, and rate-limiter maps.
+
+These diagnostics observe retention; they do not evict output, end reviews,
+or alter any session lifecycle.
 
 ---
 

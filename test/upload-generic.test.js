@@ -89,6 +89,7 @@ function request(port, method, urlPath, body) {
     // and .gitignore start from a known clean state. Keep the workingDir
     // itself intact so the .gitignore-append test can manage its own
     // .gitignore file lifecycle.
+    if (server._attachmentDirCache) server._attachmentDirCache.clear();
     if (fs.existsSync(attachmentsDir)) {
       fs.rmSync(attachmentsDir, { recursive: true, force: true });
     }

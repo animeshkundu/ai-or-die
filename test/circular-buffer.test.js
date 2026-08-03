@@ -35,6 +35,15 @@ describe('CircularBuffer', () => {
       buf.push('d');
       assert.deepStrictEqual(buf.toArray(), ['b', 'c', 'd']);
     });
+
+    it('tracks UTF-8 byte length through eviction without rescanning retained items', () => {
+      const buf = new CircularBuffer(2);
+      buf.push('é');
+      buf.push(Buffer.from('abc'));
+      assert.strictEqual(buf.byteLength, 5);
+      buf.push('z');
+      assert.strictEqual(buf.byteLength, 4);
+    });
   });
 
   describe('slice', () => {

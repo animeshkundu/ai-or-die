@@ -16,6 +16,7 @@
  *   --browser-page          open a Playwright page and sample window.__diagnostics() (SOAK-05b)
  *   --browser-interval=<n><u> browser sampling cadence    default 60s
  *   --browser-headed        launch Chromium with head visible (debug only)
+ *   --heap-snapshots        capture start/mid/end V8 snapshots plus heap-diff.json
  *   --json                  emit verdict as JSON on stdout (for CI scraping)
  *
  * Exit code: 0 on overall pass, 1 on any failed gate or abort.
@@ -104,6 +105,7 @@ function printHelp() {
   console.log('  --browser-page          launch Chromium and sample window.__diagnostics()');
   console.log('  --browser-interval=60s  browser sampling cadence (default 60s)');
   console.log('  --browser-headed        Chromium with head visible (debug only)');
+  console.log('  --heap-snapshots        capture start/mid/end V8 heap snapshots');
   console.log('  --json                  print verdict JSON to stdout');
   console.log('  --help');
   console.log('');
@@ -130,6 +132,7 @@ async function main() {
   const resume = !!args.resume;
   const browserPage = !!args['browser-page'];
   const browserHeadless = !args['browser-headed']; // default headless; --browser-headed flips it
+  const heapSnapshots = !!args['heap-snapshots'];
   const browserIntervalMs = args['browser-interval']
     ? parseDuration(args['browser-interval'])
     : 60_000;
@@ -160,6 +163,7 @@ async function main() {
     browserPage,
     browserIntervalMs,
     browserHeadless,
+    heapSnapshots,
     // SOAK-05l: per-workload constructor options, e.g.
     //   { 'mock-clock': { batchSize: 50, maxInjected: 50000 } }
     workloadOpts: args._workloadOpts || {},

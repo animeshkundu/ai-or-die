@@ -20,6 +20,10 @@ npm run soak
 # 4-hour full soak with all 7 plan-spec workloads, JSON verdict to stdout
 npm run soak -- --duration=4h --workloads=all --label=full --json
 
+# Capture start/mid/end V8 snapshots plus a constructor/retainer diff
+npm run soak -- --duration=30m --workloads=output-buffer-flood \
+  --heap-snapshots --label=output-buffer
+
 # Re-run only specific gates against a PR (SUP-REL fix-validation workflow)
 npm run soak -- --duration=10m --gates=memory,handles,event_loop --pr=124 --label=hot-06-rerun
 ```
@@ -87,6 +91,7 @@ test/longevity/
 | `--label=<slug>`    | _none_             | Appended to results dir name |
 | `--out=<dir>`       | `results/<utc>[-<label>]` | Override results dir entirely |
 | `--resume`          | off                | Continue an existing run dir (12h split-chunk soak) |
+| `--heap-snapshots`  | off                | Capture start/mid/end V8 snapshots and write `heap-diff.json` |
 | `--json`            | off                | Print verdict JSON to stdout (CI scraping) |
 
 **Exit code**: `0` on overall pass or indeterminate verdict, `1` on any
@@ -201,6 +206,7 @@ bit-for-bit reproducible.
 | `mock-clock`        | 7-day eviction sweep              | 50/sweep × 5 sweeps/s × 90 d-old       | same                                       |
 | `disk-bloat-jsonl`  | UsageReader JSONL growth (DISK-02)| 2 projects × ~1 MB/s of fake usage.jsonl| 4 projects × 10 MB/s                       |
 | `disk-bloat-quota`  | ENOSPC breaker (DISK-03)          | 8 files/s × 256 KB (=2 MB/s)            | same; relies on `AIORDIE_DISK_QUOTA_MB=50` env to trip the breaker fast |
+| `output-buffer-flood` | Supervisor output-buffer retention | 4 inactive-after-output sessions x 4 MiB/s | Tune `sessionCount`, `targetBytesPerSecond`, and `chunkBytes` to match a PTY workload |
 
 ### Stress profiles
 

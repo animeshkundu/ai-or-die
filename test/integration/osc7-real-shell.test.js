@@ -58,7 +58,11 @@ function has(cmd) {
 const HAS_BASH = has('bash');
 const HAS_ZSH  = has('zsh');
 const HAS_TMUX = has('tmux');
-const HAS_PWSH = has('pwsh');
+// PowerShell's interactive terminal initialization requires emulator replies
+// that this raw POSIX PTY harness cannot supply. The supported deployment
+// contract is Windows ConPTY, so exercise this scenario there rather than
+// reporting a harness-only Linux timeout as a product failure.
+const HAS_PWSH = process.platform === 'win32' && has('pwsh');
 const HAS_SUDO_NOPASSWD = (() => {
   if (!has('sudo')) return false;
   try { execFileSync('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: 2000 }); return true; }

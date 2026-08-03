@@ -28,6 +28,7 @@ const { Rng } = require('./rng');
 const JsonlWriter = require('./jsonl-writer');
 const { getWorkload } = require('./workloads');
 const { BrowserSampler } = require('./browser-sampler');
+const { captureHeapSnapshot, diffHeapSnapshots } = require('./heap-snapshot');
 
 function utcLabel(d = new Date()) {
   // 20260527T140532Z
@@ -54,6 +55,7 @@ async function runSoak(options = {}) {
     browserPage = false,
     browserIntervalMs = 60_000,
     browserHeadless = true,
+    heapSnapshots = false,
     // SOAK-05l: { workloadName: {key: value, ...} } map of per-workload
     // constructor option overrides. Merged into each workload's `opts` when
     // it's instantiated. Unknown workload names are silently ignored
@@ -170,11 +172,28 @@ async function runSoak(options = {}) {
   let browserSampler;
   const workloadInstances = [];
   let abnormalError = null;
+  const heapSnapshotFiles = [];
+  let heapSnapshotTimer = null;
 
   try {
     ctl = await startServer({ port: 0, serverOpts });
     log(`server up on ${ctl.baseUrl} (workDir=${ctl.workDir})`);
     logEvent('server_up', { port: ctl.port, workDir: ctl.workDir });
+    if (heapSnapshots) {
+      const file = captureHeapSnapshot(outputDir, 'start');
+      heapSnapshotFiles.push(file);
+      logEvent('heap_snapshot', { label: 'start', file: path.basename(file) });
+      heapSnapshotTimer = setTimeout(() => {
+        try {
+          const mid = captureHeapSnapshot(outputDir, 'mid');
+          heapSnapshotFiles.push(mid);
+          logEvent('heap_snapshot', { label: 'mid', file: path.basename(mid) });
+        } catch (err) {
+          logEvent('heap_snapshot_error', { label: 'mid', error: err.message });
+        }
+      }, Math.max(100, Math.floor(durationMs / 2)));
+      if (heapSnapshotTimer.unref) heapSnapshotTimer.unref();
+    }
 
     sampler = new DiagnosticsSampler({
       baseUrl: ctl.baseUrl,
@@ -242,11 +261,24 @@ async function runSoak(options = {}) {
       logEvent('drain_start', { drain_ms: drainMs });
       await new Promise((resolve) => setTimeout(resolve, drainMs));
     }
+    if (heapSnapshots) {
+      if (heapSnapshotTimer) {
+        clearTimeout(heapSnapshotTimer);
+        heapSnapshotTimer = null;
+      }
+      const file = captureHeapSnapshot(outputDir, 'end');
+      heapSnapshotFiles.push(file);
+      logEvent('heap_snapshot', { label: 'end', file: path.basename(file) });
+    }
   } catch (err) {
     abnormalError = err;
     log(`ABORT: ${err.stack || err.message}`);
     logEvent('soak_abort', { error: err.message, stack: err.stack });
   } finally {
+    if (heapSnapshotTimer) {
+      clearTimeout(heapSnapshotTimer);
+      heapSnapshotTimer = null;
+    }
     if (sampler) {
       try { await sampler.stop(); } catch (_) { /* ignore */ }
     }
@@ -262,6 +294,15 @@ async function runSoak(options = {}) {
 
   const evaluation = evaluator.evaluate();
   fs.writeFileSync(gateResultPath, JSON.stringify(evaluation, null, 2));
+  let heapSnapshotDiff = null;
+  if (heapSnapshotFiles.length >= 2) {
+    heapSnapshotDiff = diffHeapSnapshots(
+      heapSnapshotFiles[0],
+      heapSnapshotFiles[heapSnapshotFiles.length - 1],
+      { top: 100 }
+    );
+    fs.writeFileSync(path.join(outputDir, 'heap-diff.json'), JSON.stringify(heapSnapshotDiff, null, 2));
+  }
 
   const finishedAtIso = new Date().toISOString();
   const samplerStats = sampler ? sampler.stats() : { samples: 0, errors: 0 };
@@ -300,6 +341,8 @@ async function runSoak(options = {}) {
     aborted: !!abnormalError,
     abort_error: abnormalError ? abnormalError.message : null,
     sampler_stats: { samples: totalSampleCount, errors: totalErrorCount },
+    heap_snapshots: heapSnapshotFiles.map((file) => path.basename(file)),
+    heap_snapshot_diff: heapSnapshotDiff ? 'heap-diff.json' : null,
   };
   fs.writeFileSync(metadataPath, JSON.stringify(finalMetadata, null, 2));
 
