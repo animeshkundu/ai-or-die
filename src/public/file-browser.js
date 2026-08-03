@@ -253,6 +253,28 @@
   //   2. _renderCodePlainFallback (CDN-blocked degraded path). The two
   //      paths emit identical structure so the visual fallback feels
   //      consistent regardless of how the user got there.
+  /**
+   * Mark a code preview as SETTLED — its DOM will not be replaced again.
+   *
+   * The preview deliberately renders a plain gutter+content DOM immediately so
+   * content is visible without waiting on Monaco's CDN fetch, then Monaco (or
+   * the fallback renderer) SWEEPS that DOM and replaces it. Anything reading
+   * the preview — a consumer, or a test asserting on it — can therefore land
+   * on either side of that swap depending purely on network latency, with no
+   * way to tell which it got.
+   *
+   * That is a genuine observability gap, not just a test problem: nothing
+   * signalled "this preview has stopped changing". This sets one marker, once,
+   * from whichever renderer wins, so readiness is a fact rather than a guess.
+   * `which` is 'monaco' or 'plain' so a reader can tell which DOM shape it has.
+   */
+  function _markPreviewSettled(host, which) {
+    try {
+      const target = (host && host.closest && host.closest('.fb-preview-container')) || host;
+      if (target && target.setAttribute) target.setAttribute('data-preview-settled', which);
+    } catch (_) { /* never break the viewer over a marker */ }
+  }
+
   function _buildPlainCodePreview(host, content) {
     var wrapper = document.createElement('div');
     wrapper.className = 'fb-code-preview';
@@ -2567,6 +2589,7 @@
           contentEl.classList.add('fb-code-content');
         }
       } catch (_) { /* cosmetic aliasing only — never break the viewer */ }
+      _markPreviewSettled(host, 'monaco');
       // Expose the live Monaco editor instance on the panel so the
       // fs-watcher integration (and tests) can reach it for cursor /
       // selection / scroll preservation across silent reloads. Same
@@ -2616,6 +2639,7 @@
         host.innerHTML = '';
         self._renderCodePlainFallback(host, content);
       }
+      _markPreviewSettled(host, 'plain');
     });
   };
 

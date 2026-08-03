@@ -30,6 +30,11 @@ build/
 
 # Documentation (README.md and LICENSE always included by npm)
 docs/
+# Local working notes / research. NOT covered by the `docs/` rule above — the
+# leading dot makes it a distinct path, and it was shipping to every installer
+# (10 files of local research plus scratch HTML). Contents are developer-local
+# and sometimes private, so this is a leak, not just bloat.
+.docs/
 site/
 AGENTS.md
 CLAUDE.md
