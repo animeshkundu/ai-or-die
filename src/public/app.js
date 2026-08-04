@@ -3005,14 +3005,24 @@ class ClaudeCodeWebInterface {
                     // snapshot is used ONLY for non-live (exited/idle) sessions.
                     // See join-repaint.js for the decision matrix.
                     const replayBuffer = () => {
-                        // Drop anything still queued from BEFORE this replay.
-                        // The replay is authoritative for the joined session,
-                        // and the wipe below would otherwise be painted over by
-                        // stale bytes belonging to the previously-viewed one —
-                        // which is also how queued output got attributed to the
-                        // wrong session.
-                        this._pendingWrites.length = 0;
-                        this._pendingWriteBytes = 0;
+                        // Deliberately does NOT clear _pendingWrites.
+                        //
+                        // An earlier revision cleared it here, reasoning that the
+                        // replay is authoritative so anything queued must be
+                        // stale. That is wrong, and it LOST output: this closure
+                        // runs inside terminal.write('', cb), an ASYNC drain
+                        // callback, not at join time. Bytes queued by then are
+                        // frames the server broadcast AFTER it snapshotted the
+                        // replay, so they are not in message.outputBuffer and
+                        // clearing them discards them permanently. Measured: the
+                        // reconnect sequence test went from 239/240 to 237/240
+                        // when that clear was added.
+                        //
+                        // Dropping genuinely stale pre-join bytes is already
+                        // handled synchronously at join time, before this is
+                        // scheduled. That is the correct place for it, because at
+                        // that instant nothing newer than the replay can be in
+                        // the queue yet.
                         this.terminal.write('\x1bc');
                         message.outputBuffer.forEach(data => {
                             this.terminal.write(data);
