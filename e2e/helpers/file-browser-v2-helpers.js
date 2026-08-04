@@ -83,10 +83,28 @@ function writeFileInside(dir, relPath, content) {
  * (bash + zsh on macOS/Linux).
  */
 function osc7EmitCommand(cwdAbs) {
-  // POSIX path → file://localhost/<abs>; abs already starts with "/".
-  // We percent-encode spaces only; other characters in a typical fixture
-  // path don't need encoding.
-  const enc = String(cwdAbs).replace(/ /g, '%20');
+  // Emit an OSC 7 sequence by typing a command into the live terminal.
+  //
+  // The command must match the SHELL the terminal bridge actually spawned.
+  // On Windows that is pwsh (src/terminal-bridge.js), which has no `printf` —
+  // so the POSIX form emitted nothing at all there, no cwd_changed frame ever
+  // fired, and the failure looked like a broken OSC 7 pipeline rather than a
+  // harness mismatch. Windows is the PRIMARY target and pwsh OSC 7 is a real
+  // documented user contract (docs/specs/file-browser.md), so emit the pwsh
+  // equivalent rather than skipping the platform.
+  //
+  // Path form: Windows fixture dirs are `C:\...`, which becomes
+  // `file://localhost/C:/...` — fileURLToPath decodes that to a drive path
+  // (verified against src/osc7-parser.js). POSIX paths already start with "/".
+  const isWin = process.platform === 'win32';
+  const posixish = String(cwdAbs).replace(/\\/g, '/');
+  const withLeadingSlash = posixish.startsWith('/') ? posixish : '/' + posixish;
+  const enc = withLeadingSlash.replace(/ /g, '%20');
+  if (isWin) {
+    // [Console]::Write avoids PowerShell appending a newline, and $([char]N)
+    // is the portable way to emit ESC/BEL without escape-sequence support.
+    return '[Console]::Write("$([char]27)]7;file://localhost' + enc + '$([char]7)")\r';
+  }
   return "printf '\\033]7;file://localhost" + enc + "\\007'\r";
 }
 
