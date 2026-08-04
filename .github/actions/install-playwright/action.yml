@@ -38,16 +38,44 @@ runs:
     #
     # So: match the historical path and key exactly so those caches restore,
     # and keep the bounded installer below for the miss case.
+    # Resolve the Playwright version: browsers change with IT, not with every
+    # dependency bump.
+    - name: Resolve Playwright version
+      id: pwver
+      shell: bash
+      run: |
+        v="$(node -p "require('./node_modules/playwright/package.json').version" 2>/dev/null || echo unknown)"
+        echo "version=$v" >> "$GITHUB_OUTPUT"
+        echo "playwright=$v"
+
+    # Cache at Playwright's DEFAULT per-OS locations.
+    #
+    # The historical key was playwright-<os>-<hash(package-lock.json)>. That is
+    # the wrong invariant: browser binaries track the Playwright VERSION, not
+    # the lockfile, so any PR touching dependencies invalidated every warm
+    # cache. This branch did exactly that and then discovered the cold path is
+    # unusable here — the ~170MB Chromium download from cdn.playwright.dev
+    # timed out on three consecutive 600s attempts, in a single job (so not
+    # contention). Browser jobs only ever passed because they never downloaded.
+    #
+    # So: key on the Playwright version, and keep a PREFIX restore-key so the
+    # existing lockfile-keyed caches still restore. An earlier revision refused
+    # restore-keys on the grounds that a partial restore "looks like a hit" —
+    # that reasoning is wrong for this action, because `playwright install`
+    # below VERIFIES what is present and downloads only what is missing. A
+    # stale-but-valid cache is a genuine hit; a stale-and-wrong one just means
+    # the installer does the work it would have done anyway.
     - name: Cache Playwright browsers
       uses: actions/cache@v4
       with:
-        # All three OS defaults. actions/cache skips paths that do not exist,
-        # so one list works across the whole matrix.
+        # All three OS defaults; cache skips paths that do not exist.
         path: |
           ~/.cache/ms-playwright
           ~/Library/Caches/ms-playwright
           ~/AppData/Local/ms-playwright
-        key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+        key: playwright-${{ runner.os }}-${{ steps.pwver.outputs.version }}
+        restore-keys: |
+          playwright-${{ runner.os }}-
 
     - name: Install browsers (bounded + instrumented)
       shell: bash
