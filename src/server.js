@@ -7553,6 +7553,20 @@ class ClaudeCodeWebServer {
     }
     if (this.server) {
       this.server.close();
+      // close() stops accepting NEW connections and then waits for existing ones
+      // to end by themselves — it does not touch idle keep-alive sockets. Every
+      // browser page load holds one, so an e2e run that boots ~100 servers in a
+      // single job leaves ~100 sockets parked in the OS. On Windows that shows
+      // up as `net::ERR_NO_BUFFER_SPACE` on a later page.goto (observed in
+      // 14-nerd-font-rendering after ~97 tests in one bucket): the runner has
+      // run out of ephemeral ports, and it presents as an unrelated test
+      // failing to navigate.
+      //
+      // Same defect and same fix as test/control/artifact-routes.test.js. Guard
+      // the call so this stays safe on older runtimes.
+      if (typeof this.server.closeAllConnections === 'function') {
+        try { this.server.closeAllConnections(); } catch (_) { /* best effort */ }
+      }
     }
     // In HTTPS mode `this.server` is the TLS-sniffing proxy that owns the
     // listening port; the TLS app server and the http->https redirect server sit
