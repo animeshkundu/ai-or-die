@@ -41,5 +41,12 @@ Budgets are also scoped to the phase they are named for. The flood budget sample
 
 - The `os` matrix for `test-browser-ios-webkit` is `[ubuntu-latest]`, and the comment in `e2e/playwright.config.js` that claimed ubuntu + windows "as required by ADR-0037" now points here.
 - Restoring Windows WebKit requires fixing the engine teardown wedge first, and amending this ADR.
+- The `client-redesign-webkit` project excludes exactly one case, the split-geometry contract, via `grepInvert`. Split view is desktop-only -- the client refuses it below 700px of available width and tells the user to use session tabs -- and under WebKit's phone device profile `setViewportSize` does not reliably yield a desktop-class layout, because `width=device-width` governs the layout viewport. The case keeps running on `client-redesign` and `client-redesign-mobile` across ubuntu and windows. Every other case in specs 74-76 runs on WebKit.
 - A WebKit-only rasterization regression will not fail CI. It will appear in `client-performance.json`. Accepted deliberately: the alternative is either a ceiling calibrated from a single sample, which flakes, or deleting WebKit coverage entirely, which is worse.
 - Real iOS 16 hardware timings remain unverified by CI on any engine. `docs/specs/mobile-input-verification.md` stays the required manual gate.
+
+## Statistic choice for the flood budget
+
+The flood frame budget gates on the **median** frame gap, not the maximum. Within one hour, on an unchanged and demonstrably healthy pipeline -- write queue drained, ~336KB delivered in 10-12 coalesced binary frames -- the flood-window maximum measured 16.8ms locally, 50ms on the Windows runner and 66.6ms on the Linux runner. A maximum over roughly twenty samples on a shared two-core runner measures contention, and gating on it produces a flaky check, which this repository treats as a defect in its own right.
+
+The median is robust to that and still fails hard on a real regression: a pipeline that stopped bounding work per animation frame moves the whole distribution, not only its tail. Single-task main-thread blocking remains separately gated by `flood.maxLongTaskMs <= 100`, and the drained-queue and coalescing invariants gate the output path directly. Maximum and p95 are still recorded in `client-performance.json` for human review.

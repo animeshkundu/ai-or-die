@@ -322,6 +322,45 @@ describe('FitCoordinator', function () {
     assert.strictEqual(timers.length, 0, 'a exhausted its own budget of 2');
   });
 
+  // Regression: the self-retry must not fight the overlay invariant of
+  // ADR-0045. An established terminal whose container is temporarily
+  // unmeasurable (chrome overlaying it) must NOT be re-fitted on a timer --
+  // that reflowed a terminal the user was reading. Only targets that never had
+  // a geometry chase a measurement.
+  it('never re-fits an established target whose container goes unmeasurable', function () {
+    const queue = [];
+    const timers = [];
+    const resizes = [];
+    let width = 800;
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+      logger: { warn() {} },
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width, height: 400 }) },
+      terminal: { resize: (cols, rows) => resizes.push({ cols, rows }) },
+      proposeDimensions: () => (width ? { cols: width === 800 ? 80 : 40, rows: 25 } : null),
+      send: () => true,
+    });
+    queue.shift()();
+    assert.deepStrictEqual(resizes, [{ cols: 80, rows: 25 }], 'establishes a geometry');
+
+    // Chrome overlays the terminal: the container measures as unmeasurable.
+    width = 0;
+    coordinator.request('main');
+    while (queue.length) queue.shift()();
+    assert.strictEqual(timers.length, 0, 'no retry is armed for an established target');
+    assert.strictEqual(resizes.length, 1, 'the established geometry is untouched');
+
+    // Only a real ResizeObserver-driven change re-fits it.
+    width = 400;
+    coordinator.request('main');
+    while (queue.length) queue.shift()();
+    assert.deepStrictEqual(resizes, [{ cols: 80, rows: 25 }, { cols: 40, rows: 25 }]);
+  });
+
   it('resumes retrying after a bounded run once the container becomes measurable', function () {
     const queue = [];
     const timers = [];

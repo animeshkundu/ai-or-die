@@ -155,14 +155,19 @@
       } catch (error) {
         this._logger.warn('[terminal-fit] measurement failed', error);
         target.deferred = true;
-        this._scheduleRetry(id);
+        if (!target.last) this._scheduleRetry(id);
         return;
       }
       const reserve = typeof target.reserve === 'function' ? target.reserve() : target.reserve;
       const next = geometry.measureTerminalGeometry(target.container, proposed, reserve);
       if (!next || next.cols < 20 || next.rows < 5) {
         target.deferred = true;
-        this._scheduleRetry(id);
+        // Only chase a measurement for a target that has NEVER had a valid
+        // geometry. Once a target is established, a temporarily unmeasurable
+        // container means chrome is overlaying it, and re-fitting it later
+        // would reflow a terminal that ADR-0045 requires to stay put; that case
+        // waits for ResizeObserver as before.
+        if (!target.last) this._scheduleRetry(id);
         return;
       }
 

@@ -19,11 +19,13 @@ A detached container or a container with a zero axis returns no geometry. Geomet
 - The container was not measurable at the moment of the fit and never changes size again.
 - The geometry was measured but the session socket had not finished opening, so `send` reported that nothing went on the wire.
 
-The coordinator therefore owns a bounded self-retry. A target that ends a pass either deferred or with an unsent geometry re-queues itself on a timer (default 120 ms, at most 12 attempts per target). The attempt counter is per target, so one wedged pane cannot starve the others, and it resets as soon as that target resizes and sends successfully. Exhausting the bound stops the loop; a later `ResizeObserver` callback, `visibilitychange`, or explicit `request` still resumes the target normally.
+The coordinator therefore owns a bounded self-retry. A target that ends a pass with an unsent geometry re-queues itself on a timer (default 120 ms, at most 12 attempts per target). A target that could not be measured at all re-queues only if it has **never** had a valid geometry: once a terminal is established, an unmeasurable container means chrome is overlaying it, and re-fitting it on a timer would reflow a terminal that ADR-0045 requires to stay put. Established targets wait for `ResizeObserver`, as before.
+
+The attempt counter records retries the coordinator actually performed and advances only when the timer fires, so a burst of `ResizeObserver` callbacks arriving while one timer is armed cannot silently spend the whole budget. It is per target, so one wedged pane cannot starve the others, and it is cleared both when that target settles and when an external `request` arrives. Exhausting the bound stops the loop; a later `ResizeObserver` callback, `visibilitychange`, or explicit `request` still resumes the target normally.
 
 ## Verification
 
-`test/fit-coordinator.test.js` drives the coordinator with injected `requestAnimationFrame`, `setTimeout`, and `ResizeObserver` and asserts: a target with a closed socket keeps retrying and succeeds on the attempt after the socket opens; a permanently unmeasurable target performs exactly `maxRetries` retries and then stops; and a target that exhausted its retries still fits once its container becomes measurable and a fresh request arrives.
+`test/fit-coordinator.test.js` drives the coordinator with injected `requestAnimationFrame`, `setTimeout`, and `ResizeObserver` and asserts: a target with a closed socket keeps retrying and succeeds on the attempt after the socket opens; a permanently unmeasurable target performs exactly `maxRetries` retries and then stops; requests made while a retry is armed do not consume the budget; an external request starts a fresh bounded run after exhaustion; one shared timer serves several targets without cross-starving their budgets; and an established target whose container goes unmeasurable is never re-fitted on a timer.
 
 ## Consequences
 
