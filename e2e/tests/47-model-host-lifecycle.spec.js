@@ -75,6 +75,35 @@ test.describe('model-host lifecycle compatibility', () => {
     await expect(mic).toBeEnabled();
     await expect(mic).toHaveAttribute('title', /reconnecting/);
     await expect(sticky).toHaveAttribute('title', /reconnecting/);
+
+    // REGRESSION: a note-state update arriving AFTER the lifecycle change must
+    // not revert the label. Two writers used to set stickyNoteBtn.title
+    // independently — the lifecycle handler, and _updateStickyNoteBtn() which
+    // derived a label from note state alone — so last-writer-wins produced a
+    // button reading "Show status note" while data-model-state was still
+    // "restarting". The visible label and aria-label contradicted the element's
+    // own state, which is exactly the case assistive tech gets wrong.
+    //
+    // The assertion above passes even with the bug present, because it happens
+    // to observe the button before any note update lands. Ordering is the whole
+    // defect, so it has to be provoked explicitly.
+    await page.evaluate(() => {
+      window.app._updateStickyNoteBtn({ collapsed: true, hasNote: true, summarizing: false });
+    });
+    await expect(sticky).toHaveAttribute('data-model-state', 'restarting');
+    await expect(sticky).toHaveAttribute('title', /reconnecting/);
+    await expect(sticky).toHaveAttribute('aria-label', /reconnecting/);
+
+    // And once the model is usable again the note state describes the action.
+    await page.evaluate(() => {
+      window.app.handleMessage({
+        type: 'model_lifecycle_status',
+        stt: 'ready',
+        stickyNotes: 'ready',
+      });
+      window.app._updateStickyNoteBtn({ collapsed: true, hasNote: true, summarizing: false });
+    });
+    await expect(sticky).toHaveAttribute('title', /has updates/);
   });
 
   test('mobile users can open and close the lifecycle-aware status card', async ({ browser }) => {

@@ -60,6 +60,11 @@ jobs:
     # away from a timeout. The cap alone was never the defect — a job that
     # times out on every platform is over budget, not unlucky — but 18 left no
     # margin for npm ci + Playwright install + gate + a 5-minute soak.
+    #
+    # 30 stands: the browser install is bounded at 10 min and normally restores
+    # from the cache ci.yml's prewarm-browsers publishes (including a macOS
+    # chromium entry, which previously had no producer at all). Worst case is
+    # npm ci + 10 (install) + ~2 (gate) + 5 (soak), comfortably inside 30.
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -81,8 +86,21 @@ jobs:
       # --with-deps is a no-op on Windows/macOS but installs apt deps on Linux.
       # Round-5 (REL-04, dd9d4ad): test:longevity split into :server + :browser
       # surfaced this gap once browser tests actually started running in CI.
+      # Cached + bounded + instrumented. The previous bare
+      # `npx playwright install --with-deps chromium` had no cache, no retry
+      # and no timeout, and hung for the ENTIRE job budget on all three
+      # platforms across four consecutive commits — the gate below never ran.
+      # The shared action bounds each attempt and reports host-deps separately
+      # from the browser download so a hang is attributable.
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        uses: ./.github/actions/install-playwright
+        with:
+          browsers: chromium
+          # No overrides. ci.yml's prewarm-browsers publishes a chromium entry
+          # for ubuntu, windows AND macos, and cache entries are repo-scoped, so
+          # this normally restores. The action's defaults (one attempt, 10 min)
+          # are the bounded fallback for the case where this workflow gets there
+          # first — it saves what it downloads, so the next run is warm.
 
       # Fast regression-test gate (< 2 min). Catches per-lane regression-
       # test failures before the expensive 5-min soak.

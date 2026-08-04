@@ -122,8 +122,14 @@ jobs:
   # Warm the STT model cache ONCE before the browser jobs so none of them pay
   # the ~640MB on-demand download inside their per-job budget (a timed-out job
   # never saves the cache, so per-job-only caching could never self-warm the
-  # slow jobs). Browser jobs `needs: prewarm-models` and then just restore.
-  prewarm-models:
+  # slow jobs).
+  #
+  # Deliberately SEPARATE from browser prewarming. The model download has never
+  # been the problem — it comes from a fast host and completes reliably. Sharing
+  # a job with the browser install put a healthy 640MB transfer in the same
+  # timeout and cache-quota failure domain as the failing one, so a browser
+  # stall took the model cache down with it for no reason.
+  prewarm-stt:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -142,225 +148,120 @@ jobs:
         with:
           models: stt
 
-  test-browser-golden:
-    runs-on: ${{ matrix.os }}
-    needs: prewarm-models
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run golden path test
-        run: npx playwright test --config e2e/playwright.config.js --project golden-path
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-golden-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-functional-core:
-    runs-on: ${{ matrix.os }}
-    needs: prewarm-models
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run functional core tests
-        run: npx playwright test --config e2e/playwright.config.js --project functional-core
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-functional-core-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-functional-extended:
-    runs-on: ${{ matrix.os }}
-    needs: prewarm-models
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run functional extended tests
-        run: npx playwright test --config e2e/playwright.config.js --project functional-extended
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-functional-extended-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-mobile:
-    runs-on: ${{ matrix.os }}
-    needs: prewarm-models
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run mobile portrait tests (iPhone 14)
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-iphone
-      - name: Run mobile portrait tests (Pixel 7)
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-pixel
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-mobile-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  # iOS mobile-input / flicker suite on the WebKit engine (Edge on iOS = WebKit,
-  # ADR-0037). Specs 77-79 across iPhone 16 + iPad gen 11, portrait + landscape.
+  # Warm the Playwright browser cache, ONE BROWSER PER CELL.
   #
-  # Runs on ubuntu-latest ONLY. Playwright-WebKit on the Windows runner wedges
-  # WebSocket *inbound* frame delivery ~15-30s after connect once the page is
-  # heavy enough (verified via traces after the xterm 6.0 upgrade): the terminal
-  # joins, then the heartbeat pong stops arriving, the socket is force-closed, and
-  # the close handshake itself hangs ~30s. It is a Playwright-WebKit-on-Windows
-  # ENGINE limitation, not a product defect — the identical WebKit engine + xterm
-  # 6.0 passes on ubuntu-webkit here and on macOS-webkit locally, and real Windows
-  # users run Edge (Chromium), covered by the test-browser-* jobs below. Bigger
-  # timeouts (60/120/180s), disabling the service worker, and vendoring the assets
-  # were all tried and ruled out on CI. Tracking issue filed for the engine bug.
-  test-browser-ios-webkit:
+  # Why one browser per cell rather than one job installing the set:
+  #   - The cache key encodes the browser set, so a "chromium webkit" entry does
+  #     NOT serve a consumer that asks for "chromium". Publishing one entry per
+  #     browser is what actually makes consumers hit.
+  #   - `actions/cache` saves with post-if: success(), so when a two-browser
+  #     install died on the second browser the first one's completed download
+  #     was thrown away. One browser per job removes the partial-failure case.
+  #   - The browsers download concurrently rather than serially.
+  #
+  # macOS is here because longevity-smoke runs a macOS cell and had no producer
+  # anywhere — it could only ever cold-download on its own budget.
+  prewarm-browsers:
+    name: prewarm ${{ matrix.browser }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    needs: prewarm-models
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            browser: chromium
+          - os: ubuntu-latest
+            browser: webkit
+          - os: windows-latest
+            browser: chromium
+          # For longevity-smoke's macOS cell; no chromium consumer in this file.
+          - os: macos-latest
+            browser: chromium
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: 'npm'
+      - run: npm ci
+      - name: Prewarm ${{ matrix.browser }}
+        uses: ./.github/actions/install-playwright
+        with:
+          browsers: ${{ matrix.browser }}
+          # Uses the action's defaults. A healthy install is ~20s, so the
+          # default 5-minute bound is ample; this job exists to publish ONE
+          # cache entry per browser, not to absorb a long transfer.
+
+  # ---------------------------------------------------------------------------
+  # Derived browser matrix.
+  #
+  # Replaces 17 hand-written jobs (~857 lines) that differed only in --project.
+  # Two problems with that scheme, both of which bit us:
+  #   1. A MISSING job is invisible in review — nothing looks wrong. Four
+  #      projects had drifted to ZERO coverage that way: file-browser-v2,
+  #      journey, journey-auth, journey-auth-regressions.
+  #   2. Eight of those jobs gated on `[test, prewarm-models]`, so a red unit
+  #      job silently masked an entire downstream tier for most of a large PR.
+  #      When it finally went green those jobs immediately exposed real bugs.
+  #
+  # The matrix is generated from playwright.config.js: a new project is covered
+  # by default, and anything skipped must be declared with a reason in
+  # scripts/ci-browser-matrix.js. Browser (chromium vs webkit) comes from each
+  # project's own use.browserName rather than a name heuristic.
+  # ---------------------------------------------------------------------------
+  browser-matrix:
+    name: discover browser projects
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: 'npm'
+      - run: npm ci
+      # Fails if an exclusion names a project that no longer exists, so the
+      # exclusion list cannot quietly rot back into a coverage hole.
+      - run: node scripts/ci-browser-matrix.js --check
+      # Fails if any job would look for a browser cache key that no job writes.
+      # That mismatch is a relationship BETWEEN files, so it is invisible to
+      # YAML linting and to any single-file check — the key expression was
+      # byte-identical in producer and consumer while being wrong, which is
+      # exactly how the WebKit cells ended up restoring caches with no WebKit
+      # in them.
+      - run: node scripts/ci-cache-keys.js --check
+      - id: gen
+        run: echo "matrix=$(node scripts/ci-browser-matrix.js)" >> "$GITHUB_OUTPUT"
+
+  test-browser:
+    name: browser (${{ matrix.label }}, ${{ matrix.os }})
+    # prewarm-* are OPTIMISATIONS, not gates. They populate the shared caches so
+    # these cells restore instead of each cold-downloading concurrently.
+    #
+    # But `needs:` on a matrix job is an AGGREGATE: a single failed prewarm cell
+    # (say Windows) would skip ALL ~13 browser cells, including every Linux one
+    # whose prewarm succeeded. fail-fast: false does not help — that governs
+    # siblings inside a matrix, not this dependency edge. That is precisely the
+    # masked-signal failure the old `needs:` chain caused, in a new shape.
+    #
+    # So: depend on them for ORDERING, then explicitly run anyway unless the
+    # matrix itself could not be computed. A cold cell falls back to its own
+    # bounded install, which is slower but honest.
+    needs: [browser-matrix, prewarm-browsers, prewarm-stt]
+    if: ${{ !cancelled() && needs.browser-matrix.result == 'success' }}
+    runs-on: ${{ matrix.os }}
+    # These cells normally restore the cache prewarm-browsers built, and a
+    # fall-through install is only tens of seconds, so 25 is ample again.
     timeout-minutes: 25
     strategy:
+      # Never cancel siblings. fail-fast defaults to TRUE, which would let one
+      # red project hide every other result in the matrix — the same
+      # missing-signal failure the old needs: chain produced, in a new shape.
       fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
+      matrix: ${{ fromJSON(needs.browser-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -368,636 +269,34 @@ jobs:
           node-version: '26'
           cache: 'npm'
       - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
+      - uses: ./.github/actions/install-playwright
         with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright WebKit
-        # WebKit engine (closest to iOS Edge). Retry: the browser CDN download
-        # flakes intermittently. bash works on ubuntu and Windows (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install webkit --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Run iOS input suite (iPhone 16, WebKit)
-        run: npx playwright test --config e2e/playwright.config.js --project ios-iphone16 --project ios-iphone16-landscape
-      - name: Run iOS input suite (iPad gen 11, WebKit)
-        run: npx playwright test --config e2e/playwright.config.js --project ios-ipad11 --project ios-ipad11-landscape
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-ios-webkit-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-visual:
-    runs-on: ${{ matrix.os }}
-    needs: prewarm-models
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
+          browsers: ${{ matrix.browser }}
       - name: Restore local models (STT, cached)
         uses: ./.github/actions/cache-models
         with:
           models: stt
-      - name: Run visual regression tests
-        run: npx playwright test --config e2e/playwright.config.js --project visual-regression
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-visual-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-      - name: Upload generated baselines
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: screenshot-baselines-${{ matrix.os }}
-          path: e2e/tests/**/*-snapshots/
-          retention-days: 30
-      - name: Upload screenshot diffs
-        uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: screenshot-diffs-${{ matrix.os }}
-          path: e2e/tests/**/*-diff.png
-          retention-days: 14
-
-  test-browser-new-features:
-    runs-on: ${{ matrix.os }}
-    needs: prewarm-models
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
+      # One job runs SEVERAL projects. Every job pays checkout + setup-node +
+      # npm ci (~1.5 min) before its first test, so one-job-per-project spent
+      # ~28% more runner time than the layout it replaced (measured: 33 jobs /
+      # 145 min before, 42 jobs / ~185 min projected). Playwright still reports
+      # per project inside the job, so a failure stays attributable.
+      - name: Run ${{ matrix.projects }}
         shell: bash
         run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run new feature tests
-        run: npx playwright test --config e2e/playwright.config.js --project new-features
+          args=""
+          for p in ${{ matrix.projects }}; do args="$args --project $p"; done
+          npx playwright test --config e2e/playwright.config.js $args
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-new-features-${{ matrix.os }}
+          name: playwright-${{ matrix.label }}-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/
           retention-days: 14
 
-  test-browser-integrations:
-    runs-on: ${{ matrix.os }}
-    needs: prewarm-models
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run integration tests
-        run: npx playwright test --config e2e/playwright.config.js --project integrations
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-integrations-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-power-user:
-    runs-on: ${{ matrix.os }}
-    needs: [test, prewarm-models]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run power user flow tests
-        run: npx playwright test --config e2e/playwright.config.js --project power-user-flows
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-power-user-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-mobile-flows:
-    runs-on: ${{ matrix.os }}
-    needs: [test, prewarm-models]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run mobile flow tests
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-flows
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-mobile-flows-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-ui-features:
-    runs-on: ${{ matrix.os }}
-    needs: [test, prewarm-models]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run UI feature tests
-        run: npx playwright test --config e2e/playwright.config.js --project ui-features
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-ui-features-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-mobile-sprint1:
-    runs-on: ${{ matrix.os }}
-    needs: [test, prewarm-models]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run mobile sprint1 tests
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-sprint1
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-mobile-sprint1-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-mobile-sprint23:
-    runs-on: ${{ matrix.os }}
-    needs: [test, prewarm-models]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run mobile sprint23 tests
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-sprint23
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-mobile-sprint23-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-mobile-journeys:
-    runs-on: ${{ matrix.os }}
-    needs: [test, prewarm-models]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run mobile journey tests
-        run: npx playwright test --config e2e/playwright.config.js --project mobile-journeys
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-mobile-journeys-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-ux-features:
-    runs-on: ${{ matrix.os }}
-    needs: [test, prewarm-models]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run UX features tests
-        run: npx playwright test --config e2e/playwright.config.js --project ux-features
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-ux-features-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-restart:
-    runs-on: ${{ matrix.os }}
-    needs: [test, prewarm-models]
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      - name: Restore local models (STT, cached)
-        uses: ./.github/actions/cache-models
-        with:
-          models: stt
-      - name: Run restart tests
-        run: npx playwright test --config e2e/playwright.config.js --project restart
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-restart-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
-
-  test-browser-sticky-notes:
-    runs-on: ${{ matrix.os }}
-    needs: test
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '26'
-          cache: 'npm'
-      - run: npm ci
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ~/AppData/Local/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - name: Install Playwright browsers
-        # Retry: the browser CDN download flakes intermittently (exit 100 /
-        # mid-install cancellation) and a single failure sinks the whole job.
-        # bash works on both ubuntu and the Windows runners (Git Bash).
-        shell: bash
-        run: |
-          for i in 1 2 3; do
-            npx playwright install chromium --with-deps && exit 0
-            echo "::warning::playwright install attempt $i failed; retrying in 10s"; sleep 10
-          done
-          exit 1
-      # No model cache needed: the sticky-note spec runs the server with both
-      # native engines off and injects the server->client messages (no download).
-      - name: Run sticky-note tests
-        run: npx playwright test --config e2e/playwright.config.js --project sticky-notes
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-sticky-notes-${{ matrix.os }}
-          path: |
-            e2e/test-results/
-            playwright-report/
-          retention-days: 14
 
   test-package:
     name: test-package (${{ matrix.os }})

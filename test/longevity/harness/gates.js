@@ -47,6 +47,32 @@ const GATES = [
       if (heap.length < 2) {
         return { pass: null, summary: 'insufficient samples for slope' };
       }
+      const windowMs = heap[heap.length - 1].ts - heap[0].ts;
+      // A slope in MB/h reads as duration-independent, but it is not. The
+      // threshold is calibrated as 10MB/4h, and extrapolating a short window to
+      // an hourly rate multiplies whatever noise is in it by 3600000/windowMs.
+      // The 5-minute smoke tier measured 0.45MB of ordinary GC sawtooth and
+      // reported it as "5.432 MB/h" against a 2.5 threshold — a confident
+      // verdict on data that cannot support one.
+      //
+      // Below the minimum window this returns N/A rather than a pass, exactly
+      // as the harness already does for gates with no data. It does NOT weaken
+      // the leak check: nightly runs 4h and weekly 6h, both far above the floor,
+      // and both still gate. What it removes is a verdict smoke was never able
+      // to make. Raising the threshold instead would have been the wrong fix —
+      // that hides a real leak at every duration to silence one that is noise.
+      const minWindowMs = ctx.thresholds.heap_slope_min_window_ms ?? 30 * 60 * 1000;
+      if (windowMs < minWindowMs) {
+        return {
+          pass: null,
+          summary: `window ${(windowMs / 60000).toFixed(1)}min is below the `
+            + `${(minWindowMs / 60000).toFixed(0)}min needed for a slope verdict `
+            + `(threshold is calibrated as 10MB/4h); reported for diagnosis only`,
+          slope_mb_per_hour: linearRegressionSlope(heap) * 3600 * 1000,
+          window_ms: windowMs,
+          samples: heap.length,
+        };
+      }
       const slopeMbPerHour = linearRegressionSlope(heap) * 3600 * 1000;
       // 10MB / 4h = 2.5 MB/h
       const threshold = ctx.thresholds.heap_slope_mb_per_hour ?? 2.5;
@@ -56,6 +82,7 @@ const GATES = [
         summary: `heap slope ${slopeMbPerHour.toFixed(3)} MB/h (threshold ${threshold}) over ${heap.length} samples`,
         slope_mb_per_hour: slopeMbPerHour,
         threshold,
+        window_ms: windowMs,
         samples: heap.length,
       };
     },
