@@ -20,8 +20,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The inventory only runs on an explicit workflow_dispatch with a non-zero run
+  # count. That condition is checked in a step, not in a job-level `if:`: a
+  # job-level condition makes the job report "skipped", which branch protection
+  # and CI gates read as not-green. Guarding at step level lets the job run and
+  # conclude "success" as a cheap no-op on pull requests, while the inventory
+  # itself still only happens when it was asked for.
   flake-inventory:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.flake_inventory_runs != '0' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     strategy:
@@ -29,15 +34,33 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
+      - name: Check whether a flake inventory was requested
+        id: guard
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INVENTORY_RUNS: ${{ inputs.flake_inventory_runs }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$INVENTORY_RUNS" != "0" ] && [ -n "$INVENTORY_RUNS" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Running flake inventory for $INVENTORY_RUNS run(s)."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No flake inventory requested; nothing to do."
+          fi
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.enabled == 'true'
       - uses: actions/setup-node@v4
+        if: steps.guard.outputs.enabled == 'true'
         with:
           node-version: '26'
           cache: 'npm'
       - run: npm ci
+        if: steps.guard.outputs.enabled == 'true'
       - run: node scripts/run-flake-inventory.js ${{ inputs.flake_inventory_runs }} flake-inventory-artifacts
+        if: steps.guard.outputs.enabled == 'true'
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.guard.outputs.enabled == 'true' }}
         with:
           name: flake-inventory-${{ matrix.os }}
           path: flake-inventory-artifacts/
