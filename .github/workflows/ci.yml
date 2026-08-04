@@ -125,7 +125,11 @@ jobs:
   # slow jobs). Browser jobs `needs: prewarm-models` and then just restore.
   prewarm-models:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # 20 -> 35: this job now warms the Playwright browsers too, and on a cache
+    # MISS that is a genuinely slow ~170MB download per browser. It hit the old
+    # 20-min cap and was reported as `cancelled`, which reads like an infra
+    # blip rather than a budget breach.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:

@@ -22,50 +22,32 @@ inputs:
 runs:
   using: composite
   steps:
-    # Pin the browser location explicitly.
+    # Cache at Playwright's DEFAULT per-OS locations, under the SAME key the
+    # previous inline jobs used.
     #
-    # Playwright's default cache path is DIFFERENT on every OS:
-    #   linux   ~/.cache/ms-playwright
-    #   macos   ~/Library/Caches/ms-playwright
-    #   windows %USERPROFILE%\AppData\Local\ms-playwright
-    # Caching only `~/.cache/ms-playwright` — as was proposed — would therefore
-    # be a Linux-only fix on a product whose PRIMARY target is Windows. Forcing
-    # one path makes the cache key portable and the cache actually effective
-    # where it matters most.
-    - name: Pin Playwright browser path
-      shell: bash
-      run: echo "PLAYWRIGHT_BROWSERS_PATH=${{ github.workspace }}/.pw-browsers" >> "$GITHUB_ENV"
-
-    # Key on OS + the resolved Playwright version, NOT on the lockfile hash
-    # alone. A lockfile-only key can restore a cache built for a different
-    # browser revision, which yields a half-present install that fails in a
-    # confusing way at test time rather than at install time.
-    - name: Resolve Playwright version
-      id: pwver
-      shell: bash
-      run: |
-        version="$(node -p "require('./node_modules/@playwright/test/package.json').version" 2>/dev/null || echo unknown)"
-        echo "version=$version" >> "$GITHUB_OUTPUT"
-        echo "Playwright version: $version"
-
+    # An earlier revision of this action pinned PLAYWRIGHT_BROWSERS_PATH to one
+    # workspace path and keyed on the resolved Playwright version. Tidier in
+    # theory; a regression in practice — it orphaned every warm cache the repo
+    # already had, so every job cold-downloaded.
+    #
+    # And the cold path does not work in this environment. Measured on a SINGLE
+    # smoke job (so not contention): the ~170MB Chromium download from
+    # cdn.playwright.dev stalled past a 240s budget on three consecutive
+    # attempts. The old jobs passed because they restored a warm cache and
+    # never actually downloaded.
+    #
+    # So: match the historical path and key exactly so those caches restore,
+    # and keep the bounded installer below for the miss case.
     - name: Cache Playwright browsers
       uses: actions/cache@v4
       with:
-        path: ${{ github.workspace }}/.pw-browsers
-        # Key on OS + Playwright version ONLY — deliberately NOT on the browser
-        # list. One shared cache per (OS, version) holds every browser, so a
-        # prewarm job that installs "chromium webkit" produces a cache that a
-        # matrix cell asking for just "chromium" can restore. Including the
-        # browser list would give each variant its own key, every cell would
-        # miss, and 42 cells would cold-download concurrently — which is exactly
-        # how this matrix stalled on its first run.
-        #
-        # `playwright install` is a cheap no-op when the browser is already
-        # present, so a cell that restores a superset simply verifies and exits.
-        key: pw-${{ runner.os }}-${{ steps.pwver.outputs.version }}
-        # No loose restore-keys: a partial restore from a DIFFERENT Playwright
-        # version looks like a hit and then fails confusingly at test time
-        # rather than at install time.
+        # All three OS defaults. actions/cache skips paths that do not exist,
+        # so one list works across the whole matrix.
+        path: |
+          ~/.cache/ms-playwright
+          ~/Library/Caches/ms-playwright
+          ~/AppData/Local/ms-playwright
+        key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
     - name: Install browsers (bounded + instrumented)
       shell: bash
