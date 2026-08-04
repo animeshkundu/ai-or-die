@@ -428,10 +428,11 @@ test.describe('orientation change terminal refit', () => {
     const nav = page.locator('.bottom-nav');
     await expect(nav).toBeVisible();
 
-    // Rotate to landscape wider than 820px — bottom nav hidden
+    // Compact landscape keeps one-action Files access.
     await page.setViewportSize({ width: 844, height: 390 });
     await page.waitForTimeout(200);
-    await expect(nav).toBeHidden();
+    await expect(nav).toBeVisible();
+    await expect(nav.getByRole('button', { name: 'Browse files' })).toBeVisible();
 
     // Rotate back — bottom nav visible
     await page.setViewportSize({ width: 390, height: 844 });

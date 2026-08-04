@@ -9,7 +9,7 @@
   width: 420px;
   max-width: calc(100% - 32px);
   height: 60%;
-  max-height: 80vh;
+  max-height: 80dvh;
   min-width: 320px;
   min-height: 240px;
   display: flex;
@@ -302,13 +302,26 @@
     bottom: 0 !important;
     width: 100% !important;
     max-width: none;
-    height: 70vh !important;
     height: 70dvh !important;
     min-width: 0;
     border-radius: 12px 12px 0 0;
     box-sizing: border-box;
     padding-bottom: var(--sa-bottom, 0px);
     box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.45);
+  }
+
+  @media (pointer: coarse) {
+    .artifact-panel__btn,
+    .artifact-panel__send,
+    .artifact-panel__pill-x,
+    .artifact-panel__reopen {
+      min-width: 44px;
+      min-height: 44px;
+    }
+
+    .artifact-panel__input {
+      min-height: 44px;
+    }
   }
 
   .artifact-panel__resize {

@@ -1,4 +1,4 @@
-/* safe-area.css — PWA standalone safe-area insets for fixed/absolute overlays.
+/* safe-area.css — safe-area insets for fixed/absolute overlays.
 
    The Dynamic Island fix in mobile.css covers the in-flow surfaces (tab bar,
    file-browser header, mobile menu). Out-of-flow overlays (modals, toasts,
@@ -7,11 +7,8 @@
    home indicator (bottom) when launched as an installed PWA. This file applies
    the insets to those surfaces, in ONE place.
 
-   Everything is gated behind `html.pwa-standalone` (set by the early-paint
-   script + matchMedia listener in app.js) so normal browser-tab and
-   desktop-non-PWA layouts are completely unaffected. Tokens --sa-top/--sa-bottom
-   come from tokens.css and are populated by app.js's _polyfillSafeAreaInsets()
-   (which works around the WebKit env()===0 bug), falling back to env() then 0.
+   The env() values are zero on non-notched layouts, so these rules apply in
+   browser and standalone modes without user-agent or display-mode gates.
 
    Loaded LAST so these rules win regardless of source order. */
 
@@ -19,50 +16,72 @@
    Pad the overlay itself so the flex-centered .modal-content is inset out of
    both the island and the home indicator. box-sizing keeps the overlay
    full-viewport while the padding shrinks the centering box. */
-html.pwa-standalone .settings-modal,
-html.pwa-standalone .session-modal,
-html.pwa-standalone .plan-modal,
-html.pwa-standalone .folder-browser-modal,
-html.pwa-standalone .shortcuts-modal,
-html.pwa-standalone .image-preview-modal,
-html.pwa-standalone .terminal-overlay {
+.settings-modal,
+.session-modal,
+.plan-modal,
+.folder-browser-modal,
+.shortcuts-modal,
+.image-preview-modal,
+.terminal-overlay {
     box-sizing: border-box;
     padding-top: var(--sa-top);
     padding-bottom: var(--sa-bottom);
+    padding-left: var(--sa-left);
+    padding-right: var(--sa-right);
+}
+
+@media (max-height: 600px) and (max-width: 900px) {
+    .terminal-overlay {
+        bottom: calc(var(--chrome-bottom-nav-height) + var(--sa-bottom));
+        padding-top: calc(var(--chrome-tab-height) + max(var(--space-3), var(--sa-top)));
+        padding-bottom: var(--space-3);
+    }
+
+    .terminal-overlay .overlay-content {
+        max-height: 100%;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+    }
 }
 
 /* Clamp modal content to the padded area so a tall modal (e.g. Settings)
    can't overflow back up into the island. dvh tracks the live viewport. */
-html.pwa-standalone .modal-content {
-    max-height: calc(100dvh - var(--sa-top) - var(--sa-bottom) - 40px);
+.modal-content {
+    max-height: calc(100dvh - var(--sa-top) - var(--sa-bottom) - var(--space-10));
 }
 
 /* Full-height slide-in side panel (file browser). Its header already gets the
    top inset via mobile.css; pad the bottom so the file list clears the home
    indicator. box-sizing keeps the panel viewport-height. */
-html.pwa-standalone .file-browser-panel {
+.file-browser-panel {
     box-sizing: border-box;
     padding-bottom: var(--sa-bottom);
+    padding-left: var(--sa-left);
+    padding-right: var(--sa-right);
 }
 
 /* --- Top-anchored transient surfaces ---------------------------------------- */
-html.pwa-standalone .toast-container {
+.toast-container {
     top: calc(52px + var(--sa-top));
 }
-html.pwa-standalone .banner-base {
+.banner-base {
     padding-top: calc(8px + var(--sa-top));
 }
-html.pwa-standalone .notif-permission-prompt {
+.notif-permission-prompt {
     top: calc(60px + var(--sa-top));
 }
-html.pwa-standalone .fb-find-panel {
+.fb-find-panel {
     top: calc(80px + var(--sa-top));
 }
 
 /* --- Bottom-anchored bars: lift above the home indicator -------------------- */
-html.pwa-standalone .extra-keys-bar {
+.extra-keys-bar {
     bottom: var(--sa-bottom);
+    left: var(--sa-left);
+    right: var(--sa-right);
 }
-html.pwa-standalone .input-overlay {
+.input-overlay {
     bottom: calc(16px + var(--sa-bottom));
+    left: calc(16px + var(--sa-left));
+    right: calc(16px + var(--sa-right));
 }

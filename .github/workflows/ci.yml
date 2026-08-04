@@ -330,6 +330,10 @@ jobs:
         run: npx playwright test --config e2e/playwright.config.js --project mobile-iphone
       - name: Run mobile portrait tests (Pixel 7)
         run: npx playwright test --config e2e/playwright.config.js --project mobile-pixel
+      - name: Run terminal-first client shell contract
+        run: npx playwright test --config e2e/playwright.config.js --project client-redesign
+      - name: Run terminal-first mobile shell contract
+        run: npx playwright test --config e2e/playwright.config.js --project client-redesign-mobile
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -360,7 +364,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -389,6 +393,8 @@ jobs:
         run: npx playwright test --config e2e/playwright.config.js --project ios-iphone16 --project ios-iphone16-landscape
       - name: Run iOS input suite (iPad gen 11, WebKit)
         run: npx playwright test --config e2e/playwright.config.js --project ios-ipad11 --project ios-ipad11-landscape
+      - name: Run terminal-first client shell contract (WebKit)
+        run: npx playwright test --config e2e/playwright.config.js --project client-redesign-webkit
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -844,6 +850,8 @@ jobs:
           models: stt
       - name: Run mobile journey tests
         run: npx playwright test --config e2e/playwright.config.js --project mobile-journeys
+      - name: Run file browser and artifact contracts
+        run: npx playwright test --config e2e/playwright.config.js --project file-browser-v2
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}

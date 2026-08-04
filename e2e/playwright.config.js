@@ -163,6 +163,23 @@ module.exports = defineConfig({
       testMatch: /(?:^|[\\/])(?:5[6-9]-.*|6[0-9]-.*)\.spec\.js$/,
       timeout: 90000,
     },
+    {
+      name: 'client-redesign',
+      testMatch: /(?:^|[\\/])7[4-6]-.*\.spec\.js$/,
+      timeout: 90000,
+    },
+    {
+      name: 'client-redesign-webkit',
+      testMatch: /(?:^|[\\/])7[4-6]-.*\.spec\.js$/,
+      timeout: 120000,
+      use: { ...iPhone16, serviceWorkers: 'allow', permissions: [] },
+    },
+    {
+      name: 'client-redesign-mobile',
+      testMatch: /(?:^|[\\/])7[4-6]-.*\.spec\.js$/,
+      timeout: 90000,
+      use: { ...devices['Pixel 7'], serviceWorkers: 'allow' },
+    },
     // Exploratory user-journey suite. Drives the live dev server at
     // http://127.0.0.1:11500 — start it BEFORE running:
     //   node bin/ai-or-die.js --port 11500 --no-open --disable-auth
@@ -205,11 +222,8 @@ module.exports = defineConfig({
       timeout: 120000,
     },
     // iOS mobile-input suite on WebKit (approximates Edge-on-iOS), specs 77-79.
-    // These run on ubuntu-latest ONLY in CI (see the test-browser-ios-webkit job):
-    // Playwright-WebKit on the Windows runner wedges WebSocket inbound-frame
-    // delivery under the heavier xterm 6.0 page — a Playwright-WebKit-on-Windows
-    // ENGINE limitation, not a product bug (full diagnosis in ci.yml). The same
-    // WebKit engine + xterm 6.0 passes here on ubuntu-webkit and on macOS-webkit.
+    // CI runs these on Ubuntu and Windows as required by ADR-0037. A stalled
+    // engine is a failed gate rather than a reason to substitute Chromium.
     // serviceWorkers:'allow' so the PWA/offline paths can run; the SW was
     // investigated and ruled out (blocking it did NOT change the failure).
     // 120s budget is modest headroom for the heavier 6.0 page on WebKit.
@@ -217,25 +231,25 @@ module.exports = defineConfig({
       name: 'ios-iphone16',
       testMatch: /(?:^|[\\/])7[7-9]-.*\.spec\.js$/,
       timeout: 120000,
-      use: { ...iPhone16, serviceWorkers: 'allow' },
+      use: { ...iPhone16, serviceWorkers: 'allow', permissions: [] },
     },
     {
       name: 'ios-iphone16-landscape',
       testMatch: /(?:^|[\\/])79-.*\.spec\.js$/,
       timeout: 120000,
-      use: { ...iPhone16Landscape, serviceWorkers: 'allow' },
+      use: { ...iPhone16Landscape, serviceWorkers: 'allow', permissions: [] },
     },
     {
       name: 'ios-ipad11',
       testMatch: /(?:^|[\\/])7[7-9]-.*\.spec\.js$/,
       timeout: 120000,
-      use: { ...iPad11, serviceWorkers: 'allow' },
+      use: { ...iPad11, serviceWorkers: 'allow', permissions: [] },
     },
     {
       name: 'ios-ipad11-landscape',
       testMatch: /(?:^|[\\/])79-.*\.spec\.js$/,
       timeout: 120000,
-      use: { ...iPad11Landscape, serviceWorkers: 'allow' },
+      use: { ...iPad11Landscape, serviceWorkers: 'allow', permissions: [] },
     },
   ],
 });

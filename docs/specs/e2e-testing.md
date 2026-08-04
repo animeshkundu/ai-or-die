@@ -2,6 +2,16 @@
 
 This document outlines the end-to-end testing strategy for the ai-or-die web application, covering framework selection, architectural decisions, and the full test plan.
 
+## Terminal-first shell gate
+
+`e2e/tests/74-client-shell-contract.spec.js` runs in desktop Chromium, coarse-pointer mobile Chromium, and WebKit projects. It verifies that file preview remains inside the geometry-neutral browser with focus return, every non-terminal surface leaves terminal geometry untouched, split creation never emits unsafe resize messages, hidden-page output backpressure remains active while animation frames are suspended, visible coarse-pointer controls meet 44 by 44 CSS pixels, and the assistant chooser remains reachable at the 852x393 landscape viewport.
+
+`e2e/tests/75-client-performance-report.spec.js` records cold readiness, keystroke-to-echo latency, 4,000-line flood drain time, binary WebSocket frame count and bytes, maximum animation-frame gap, long-task timing, 60-step deep-scrollback p95/max frame gaps, scrollback length, and residual client queues at 1280x800 and 393x852. Results are attached as `client-performance.json` on every redesign project.
+
+`e2e/tests/76-client-visual-evidence.spec.js` attaches dark and light screenshots at 1280x800, 393x852, and 852x393 on all redesign projects, while asserting the blocking chooser stays within horizontal bounds, clears the elevated tab strip, and initially displays every tool card without clipping in short landscape.
+
+The accepted ADR-0037 WebKit specs 77 through 79 are hard gates: inability to initialize `window.app`, the terminal, or required mobile controls fails the job rather than being converted to a skipped test.
+
 ## 1. Research Findings
 
 ### 1.1 Testing WebSocket-Based Node.js Apps
@@ -114,6 +124,7 @@ For the initial test suite, browser-level tests are **deferred**. The server E2E
 - **Isolated** -- Each test suite starts its own server on an ephemeral port
 - **Checkout-path independent** -- Playwright regular-expression `testMatch` entries are anchored to the test basename/path suffix so digits in a parent checkout directory cannot reassign specs between projects.
 - **No hidden integration red** -- `npm run test:integration` runs in the Ubuntu and Windows CI matrix alongside `npm test`.
+- **File-browser contract gate** -- the Ubuntu and Windows mobile-journey job also runs the complete `file-browser-v2` project, including artifact review and terminal click-to-open behavior.
 - **Recorded flake inventory** -- manual CI dispatch accepts
   `flake_inventory_runs`; `scripts/run-flake-inventory.js` records platform,
   Node version, exit code, wall time, and a structured report containing every

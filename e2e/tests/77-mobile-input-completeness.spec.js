@@ -34,14 +34,8 @@ test.afterEach(async ({ page }, testInfo) => {
 });
 
 async function waitForAppReadyOrSkip(page) {
-  let ready = false;
-  try {
-    await waitForAppReady(page, 20000);
-    ready = await page.evaluate(() => !!(window.app && window.app.terminal));
-  } catch (_) {
-    ready = false;
-  }
-  test.skip(!ready, 'window.app was not ready in this WebKit mobile project');
+  await waitForAppReady(page, 20000);
+  expect(await page.evaluate(() => !!(window.app && window.app.terminal))).toBe(true);
 }
 
 async function joinTerminalWithRetry(page, sessionId) {
@@ -76,7 +70,7 @@ async function expectMobileContract(page) {
     isMobile: !!(window.app && window.app.isMobile),
     bodyIsMobile: document.body.classList.contains('is-mobile'),
   }));
-  test.skip(!state.hasApp, 'window.app was not available in this WebKit mobile project');
+  expect(state.hasApp).toBe(true);
   expect(state.isMobile).toBe(true);
   expect(state.bodyIsMobile).toBe(true);
 }
@@ -191,7 +185,7 @@ test.describe('ADR-0037 mobile input completeness', () => {
     await expectMobileContract(page);
 
     const hasExtraKeys = await page.evaluate(() => !!(window.app && window.app.extraKeys));
-    test.skip(!hasExtraKeys, 'window.app.extraKeys is unavailable in this WebKit mobile project');
+    expect(hasExtraKeys).toBe(true);
 
     await page.evaluate(() => window.app.extraKeys.show());
     await expect(page.locator('.extra-keys-bar')).toBeVisible();

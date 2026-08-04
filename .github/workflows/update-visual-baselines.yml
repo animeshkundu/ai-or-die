@@ -1,8 +1,7 @@
 name: Update Visual Baselines
 
-# Regenerate the Playwright visual-regression baselines and commit them back
-# to the branch. Visual regression runs on Linux only in CI (Windows skips —
-# see 09-visual-regression.spec.js), so this updates the *-linux.png baselines.
+# Regenerate the Linux and Windows Playwright visual-regression baselines and
+# commit them back to the branch.
 #
 # Trigger: push a commit whose message contains "[update-baselines]". (A
 # workflow_dispatch trigger only works once the file is on the default branch;
@@ -21,10 +20,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  update-baselines:
+  generate-baselines:
     if: contains(github.event.head_commit.message, '[update-baselines]')
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
         # persist-credentials (default true) keeps the token so we can push.
@@ -54,6 +57,26 @@ jobs:
           models: stt
       - name: Regenerate visual baselines
         run: npx playwright test --config e2e/playwright.config.js --project visual-regression --update-snapshots
+      - name: Upload regenerated baselines (artifact)
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: visual-baselines-${{ runner.os }}
+          path: e2e/tests/**/*-snapshots/
+          retention-days: 14
+
+  commit-baselines:
+    if: contains(github.event.head_commit.message, '[update-baselines]')
+    needs: generate-baselines
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download regenerated baselines
+        uses: actions/download-artifact@v4
+        with:
+          pattern: visual-baselines-*
+          path: e2e/tests
+          merge-multiple: true
       - name: Commit and push updated baselines
         run: |
           git config user.name "github-actions[bot]"
@@ -62,14 +85,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No baseline changes to commit."
           else
-            git commit -m "test: regenerate linux visual baselines"
+            git commit -m "test: regenerate visual baselines"
             git push origin HEAD:${{ github.ref_name }}
             echo "Pushed regenerated baselines."
           fi
-      - name: Upload regenerated baselines (artifact)
-        uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
-        with:
-          name: visual-baselines
-          path: e2e/tests/**/*-snapshots/
-          retention-days: 14

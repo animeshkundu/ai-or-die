@@ -48,7 +48,7 @@ body.keyboard-open .keys-panel-fab { display: none; }
   background: rgba(0, 0, 0, 0.45);
   opacity: 0;
   visibility: hidden;
-  transition: opacity 0.15s ease, visibility 0.15s ease;
+  transition: opacity var(--duration-fast) var(--ease-default), visibility var(--duration-fast) var(--ease-default);
 }
 .keys-panel__backdrop--open { opacity: 1; visibility: visible; }
 
@@ -60,7 +60,6 @@ body.keyboard-open .keys-panel-fab { display: none; }
   right: 0;
   bottom: 0;
   z-index: var(--z-modal);
-  max-height: 70vh;
   max-height: 70dvh;
   display: flex;
   flex-direction: column;
@@ -71,7 +70,7 @@ body.keyboard-open .keys-panel-fab { display: none; }
   border-radius: 14px 14px 0 0;
   box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.45);
   transform: translateY(100%);
-  transition: transform 0.18s ease-out;
+  transition: transform var(--duration-normal) var(--ease-out);
 }
 .keys-panel--open { transform: translateY(0); }
 

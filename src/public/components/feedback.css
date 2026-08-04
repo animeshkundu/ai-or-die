@@ -28,7 +28,7 @@
   font-size: var(--text-base);
   font-family: var(--font-sans);
   pointer-events: auto;
-  animation: toast-slide-in 0.25s var(--ease-out) both;
+  animation: toast-slide-in var(--duration-toast) var(--ease-out) both;
 }
 
 /* Colored left-border accent per type */
@@ -121,7 +121,7 @@
 
 /* Exit animation */
 .toast--exit {
-  animation: toast-slide-out 0.2s var(--ease-in) forwards;
+  animation: toast-slide-out var(--duration-normal) var(--ease-in) forwards;
 }
 @keyframes toast-slide-out {
   from { opacity: 1; transform: translateX(0); }
@@ -137,7 +137,7 @@
   .toast--exit {
     animation: none;
     opacity: 0;
-    transition: opacity 0.15s;
+    transition: opacity var(--duration-fast);
   }
 }
 

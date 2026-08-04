@@ -12,7 +12,7 @@
     "start:direct": "node bin/ai-or-die.js",
     "dev": "node bin/supervisor.js --dev",
     "dev:direct": "node bin/ai-or-die.js --dev",
-    "test": "mocha --require test/hooks/session-sandbox.js --exit test/*.test.js test/control/*.test.js",
+    "test": "mocha --require test/hooks/session-sandbox.js --exit --timeout 5000 test/*.test.js test/control/*.test.js",
     "test:integration": "mocha --require test/hooks/session-sandbox.js --exit --timeout 60000 test/supervisor-integration.test.js test/integration/*.test.js",
     "test:browser": "npx playwright test --config e2e/playwright.config.js",
     "soak": "node test/longevity/harness/cli.js",

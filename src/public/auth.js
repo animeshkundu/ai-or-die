@@ -197,7 +197,7 @@ class AuthManager {
                         font-size: 14px;
                         font-weight: 500;
                         cursor: pointer;
-                        transition: opacity 0.2s;
+                        transition: opacity var(--duration-normal) var(--ease-default);
                     "
                     onmouseover="this.style.opacity='0.9'"
                     onmouseout="this.style.opacity='1'"

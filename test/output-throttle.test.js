@@ -1,13 +1,12 @@
 const assert = require('assert');
+const { ClaudeCodeWebServer } = require('../src/server');
 
-// Minimal mock of the output coalescing logic extracted from server.js.
-// We can't instantiate ClaudeCodeWebServer in unit tests (requires express,
-// node-pty, etc.), so we test the coalescing behavior with a lightweight
-// harness that mirrors the server's session/connection structure.
+// Exercise the real server methods with only their stateful collaborators mocked.
+// This keeps wire-format, priority, flow-control, and backpressure coverage from
+// drifting away from production.
 
 const WebSocket = { OPEN: 1 };
 
-/** Max bytes to accumulate before flushing coalesced output immediately */
 const MAX_COALESCE_BYTES = 32 * 1024;
 
 class OutputThrottleHarness {
@@ -15,73 +14,6 @@ class OutputThrottleHarness {
     this.claudeSessions = new Map();
     this.webSocketConnections = new Map();
     this.sentMessages = []; // Track what was sent
-  }
-
-  // Mirrors server.js _throttledOutputBroadcast
-  _throttledOutputBroadcast(sessionId, data) {
-    const session = this.claudeSessions.get(sessionId);
-    if (!session) return;
-
-    if (!session._pendingOutput) {
-      session._pendingOutput = '';
-    }
-    session._pendingOutput += data;
-
-    // Cap: flush immediately when buffer exceeds threshold
-    if (session._pendingOutput.length > MAX_COALESCE_BYTES) {
-      if (session._outputFlushTimer) {
-        clearTimeout(session._outputFlushTimer);
-        session._outputFlushTimer = null;
-      }
-      this._flushSessionOutput(sessionId);
-      return;
-    }
-
-    if (!session._outputFlushTimer) {
-      session._outputFlushTimer = setTimeout(() => {
-        session._outputFlushTimer = null;
-        this._flushSessionOutput(sessionId);
-      }, 16);
-      if (session._outputFlushTimer.unref) {
-        session._outputFlushTimer.unref();
-      }
-    }
-  }
-
-  // Mirrors server.js _flushSessionOutput
-  _flushSessionOutput(sessionId) {
-    const session = this.claudeSessions.get(sessionId);
-    if (!session || !session._pendingOutput) return;
-
-    const pending = session._pendingOutput;
-    session._pendingOutput = '';
-
-    if (session.connections.size === 0) return;
-
-    const msg = JSON.stringify({ type: 'output', data: pending });
-    session.connections.forEach(wsId => {
-      const wsInfo = this.webSocketConnections.get(wsId);
-      if (wsInfo &&
-          wsInfo.claudeSessionId === sessionId &&
-          wsInfo.ws.readyState === WebSocket.OPEN) {
-        // Backpressure: skip clients that can't consume fast enough
-        if (wsInfo.ws.bufferedAmount > 256 * 1024) {
-          return;
-        }
-        wsInfo.ws.send(msg);
-      }
-    });
-  }
-
-  // Mirrors server.js _flushAndClearOutputTimer
-  _flushAndClearOutputTimer(session, sessionId) {
-    if (session._outputFlushTimer) {
-      clearTimeout(session._outputFlushTimer);
-      session._outputFlushTimer = null;
-    }
-    if (session._pendingOutput) {
-      this._flushSessionOutput(sessionId);
-    }
   }
 
   // Helper: create a session with mock WebSocket clients
@@ -95,22 +27,33 @@ class OutputThrottleHarness {
         claudeSessionId: sessionId,
         ws: {
           readyState: WebSocket.OPEN,
-          send(data) { sentRef.push({ wsId, data }); }
+          bufferedAmount: 0,
+          send(data, options) { sentRef.push({ wsId, data, options }); }
         }
       });
     }
     this.claudeSessions.set(sessionId, {
       connections,
-      _pendingOutput: '',
+      priority: 'foreground',
+      _pendingChunks: [],
+      _pendingBytes: 0,
       _outputFlushTimer: null,
+      _flushing: false,
     });
   }
 }
 
+OutputThrottleHarness.prototype._throttledOutputBroadcast =
+  ClaudeCodeWebServer.prototype._throttledOutputBroadcast;
+OutputThrottleHarness.prototype._flushSessionOutput =
+  ClaudeCodeWebServer.prototype._flushSessionOutput;
+OutputThrottleHarness.prototype._flushAndClearOutputTimer =
+  ClaudeCodeWebServer.prototype._flushAndClearOutputTimer;
+
 describe('Output Throttle', function() {
 
   describe('_throttledOutputBroadcast', function() {
-    it('should accumulate output in _pendingOutput', function() {
+    it('should accumulate output in pending chunks', function() {
       const h = new OutputThrottleHarness();
       h.addSession('s1', 1);
 
@@ -118,7 +61,8 @@ describe('Output Throttle', function() {
       h._throttledOutputBroadcast('s1', ' world');
 
       const session = h.claudeSessions.get('s1');
-      assert.strictEqual(session._pendingOutput, 'hello world');
+      assert.deepStrictEqual(session._pendingChunks, ['hello', ' world']);
+      assert.strictEqual(session._pendingBytes, 11);
 
       // Cleanup
       h._flushAndClearOutputTimer(session, 's1');
@@ -170,7 +114,8 @@ describe('Output Throttle', function() {
       assert.strictEqual(h.sentMessages.length, 1, 'Should flush immediately for large data');
 
       const session = h.claudeSessions.get('s1');
-      assert.strictEqual(session._pendingOutput, '', 'Pending output should be cleared after flush');
+      assert.deepStrictEqual(session._pendingChunks, [], 'Pending output should be cleared after flush');
+      assert.strictEqual(session._pendingBytes, 0);
       assert.strictEqual(session._outputFlushTimer, null, 'Timer should be null after immediate flush');
     });
   });
@@ -192,17 +137,17 @@ describe('Output Throttle', function() {
       setTimeout(() => {
         assert.strictEqual(h.sentMessages.length, 1, 'Expected exactly 1 coalesced send');
 
-        const parsed = JSON.parse(h.sentMessages[0].data);
-        assert.strictEqual(parsed.type, 'output');
+        const output = h.sentMessages[0].data.toString('utf8');
         // All 10 lines should be in one message
         for (let i = 0; i < 10; i++) {
-          assert.ok(parsed.data.includes(`line${i}\n`), `Missing line${i}`);
+          assert.ok(output.includes(`line${i}\n`), `Missing line${i}`);
         }
+        assert.deepStrictEqual(h.sentMessages[0].options, { binary: true, compress: false });
         done();
       }, 30);
     });
 
-    it('should send to all connected clients with one JSON.stringify', function(done) {
+    it('should send the same binary frame to all connected clients', function(done) {
       const h = new OutputThrottleHarness();
       h.addSession('s1', 3); // 3 clients
 
@@ -211,15 +156,16 @@ describe('Output Throttle', function() {
       setTimeout(() => {
         assert.strictEqual(h.sentMessages.length, 3, 'Expected 3 sends (one per client)');
 
-        // All 3 clients should receive the same serialized string
+        // All 3 clients should receive the same pre-encoded buffer.
         const firstMsg = h.sentMessages[0].data;
         assert.ok(h.sentMessages.every(m => m.data === firstMsg),
-          'All clients should receive identical pre-serialized message');
+          'All clients should receive the identical binary frame');
+        assert.ok(Buffer.isBuffer(firstMsg));
         done();
       }, 30);
     });
 
-    it('should preserve PUA codepoints through coalescing and JSON round-trip', function(done) {
+    it('should preserve PUA codepoints through coalescing and UTF-8 encoding', function(done) {
       const h = new OutputThrottleHarness();
       h.addSession('s1', 1);
 
@@ -235,21 +181,20 @@ describe('Output Throttle', function() {
 
       // Verify concatenation preserves codepoints in pending output
       const session = h.claudeSessions.get('s1');
-      const concatenated = session._pendingOutput;
+      const concatenated = session._pendingChunks.join('');
       assert.strictEqual(concatenated.length, 3, 'Concatenated string should have 3 characters');
       assert.strictEqual(concatenated.charCodeAt(0), 0xE0B0, 'First char should be U+E0B0');
       assert.strictEqual(concatenated.charCodeAt(1), 0xE0A0, 'Second char should be U+E0A0');
       assert.strictEqual(concatenated.charCodeAt(2), 0xE0B2, 'Third char should be U+E0B2');
 
-      // After the timer fires, verify JSON.stringify round-trip preserves them
+      // After the timer fires, verify the binary frame preserves them.
       setTimeout(() => {
         assert.strictEqual(h.sentMessages.length, 1, 'Expected 1 coalesced send');
 
-        const parsed = JSON.parse(h.sentMessages[0].data);
-        assert.strictEqual(parsed.type, 'output');
-        assert.strictEqual(parsed.data.charCodeAt(0), 0xE0B0, 'U+E0B0 survives JSON round-trip');
-        assert.strictEqual(parsed.data.charCodeAt(1), 0xE0A0, 'U+E0A0 survives JSON round-trip');
-        assert.strictEqual(parsed.data.charCodeAt(2), 0xE0B2, 'U+E0B2 survives JSON round-trip');
+        const decoded = h.sentMessages[0].data.toString('utf8');
+        assert.strictEqual(decoded.charCodeAt(0), 0xE0B0, 'U+E0B0 survives binary encoding');
+        assert.strictEqual(decoded.charCodeAt(1), 0xE0A0, 'U+E0A0 survives binary encoding');
+        assert.strictEqual(decoded.charCodeAt(2), 0xE0B2, 'U+E0B2 survives binary encoding');
         done();
       }, 30);
     });
@@ -261,27 +206,31 @@ describe('Output Throttle', function() {
       h.addSession('s1', 0); // Zero clients
 
       const session = h.claudeSessions.get('s1');
-      session._pendingOutput = 'orphaned data';
+      session._pendingChunks = ['orphaned data'];
+      session._pendingBytes = 13;
 
       h._flushSessionOutput('s1');
 
       assert.strictEqual(h.sentMessages.length, 0, 'Should not send to empty connections');
-      assert.strictEqual(session._pendingOutput, '', 'Should clear pending even with no clients');
+      assert.deepStrictEqual(session._pendingChunks, [], 'Should clear pending even with no clients');
+      assert.strictEqual(session._pendingBytes, 0);
     });
 
-    it('should clear _pendingOutput after flush', function() {
+    it('should clear pending chunks after flush', function() {
       const h = new OutputThrottleHarness();
       h.addSession('s1', 1);
 
       const session = h.claudeSessions.get('s1');
-      session._pendingOutput = 'some data';
+      session._pendingChunks = ['some data'];
+      session._pendingBytes = 9;
 
       h._flushSessionOutput('s1');
 
-      assert.strictEqual(session._pendingOutput, '');
+      assert.deepStrictEqual(session._pendingChunks, []);
+      assert.strictEqual(session._pendingBytes, 0);
     });
 
-    it('should do nothing when _pendingOutput is empty', function() {
+    it('should do nothing when pending chunks are empty', function() {
       const h = new OutputThrottleHarness();
       h.addSession('s1', 1);
 
@@ -299,7 +248,8 @@ describe('Output Throttle', function() {
       wsInfo.ws.readyState = 3; // CLOSED
 
       const session = h.claudeSessions.get('s1');
-      session._pendingOutput = 'test data';
+      session._pendingChunks = ['test data'];
+      session._pendingBytes = 9;
       h._flushSessionOutput('s1');
 
       assert.strictEqual(h.sentMessages.length, 1, 'Only open client should receive');
@@ -319,11 +269,25 @@ describe('Output Throttle', function() {
       fastWsInfo.ws.bufferedAmount = 0;
 
       const session = h.claudeSessions.get('s1');
-      session._pendingOutput = 'backpressure test data';
+      session._pendingChunks = ['backpressure test data'];
+      session._pendingBytes = 22;
       h._flushSessionOutput('s1');
 
       assert.strictEqual(h.sentMessages.length, 1, 'Only fast client should receive');
       assert.strictEqual(h.sentMessages[0].wsId, 'ws-s1-1', 'Fast client should be the recipient');
+    });
+
+    it('should skip clients that explicitly paused ingress', function() {
+      const h = new OutputThrottleHarness();
+      h.addSession('s1', 2);
+      h.webSocketConnections.get('ws-s1-0')._flowPaused = true;
+
+      const session = h.claudeSessions.get('s1');
+      session._pendingChunks = ['flow controlled'];
+      session._pendingBytes = 15;
+      h._flushSessionOutput('s1');
+
+      assert.deepStrictEqual(h.sentMessages.map(({ wsId }) => wsId), ['ws-s1-1']);
     });
   });
 
@@ -336,12 +300,13 @@ describe('Output Throttle', function() {
       const session = h.claudeSessions.get('s1');
 
       assert.notStrictEqual(session._outputFlushTimer, null);
-      assert.strictEqual(session._pendingOutput, 'pending data');
+      assert.deepStrictEqual(session._pendingChunks, ['pending data']);
 
       h._flushAndClearOutputTimer(session, 's1');
 
       assert.strictEqual(session._outputFlushTimer, null);
-      assert.strictEqual(session._pendingOutput, '');
+      assert.deepStrictEqual(session._pendingChunks, []);
+      assert.strictEqual(session._pendingBytes, 0);
       assert.strictEqual(h.sentMessages.length, 1);
     });
 
@@ -375,10 +340,10 @@ describe('Output Throttle', function() {
 
       // Verify ordering: output comes before exit
       assert.strictEqual(h.sentMessages.length, 2);
-      const first = JSON.parse(h.sentMessages[0].data);
+      const first = h.sentMessages[0].data.toString('utf8');
       const second = JSON.parse(h.sentMessages[1].data);
-      assert.strictEqual(first.type, 'output');
-      assert.strictEqual(first.data, 'final output');
+      assert.strictEqual(first, 'final output');
+      assert.deepStrictEqual(h.sentMessages[0].options, { binary: true, compress: false });
       assert.strictEqual(second.type, 'exit');
     });
   });

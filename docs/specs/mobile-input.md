@@ -9,6 +9,14 @@ A user on an iPhone (installed PWA, Edge on iOS = WebKit) must fully drive the C
 - **Compose** (soft keyboard up): free prompt text via the native composer (autocorrect/IME off). Inline extra-keys bar rides above the keyboard for specials. Focus retention matters here.
 - **Control** (keyboard down, full screen): read output + drive the TUI via the keys panel. Panel taps `app.send({type:'input'})` reach the pty without needing textarea focus, so no keyboard-dismiss flicker.
 
+## Viewport regime
+
+- Visible height and offset come from `visualViewport`; `window.innerHeight` is not a mobile layout input.
+- Changes are coalesced through one animation-frame callback.
+- Keyboard dismissal restores the visual offset to zero after WebKit rubber-band movement.
+- The shell uses `dvh` for load-bearing viewport heights.
+- `--sa-top`, `--sa-right`, `--sa-bottom`, and `--sa-left` apply in browser and standalone modes, including landscape.
+
 ## Mode-aware encoding (critical)
 Key bytes depend on terminal state, read from `terminal.modes`:
 - **Cursor keys** (arrows, Home, End) are **SS3** (`\x1bO<final>`) when `applicationCursorKeysMode` is true, else **CSI** (`\x1b[<final>`). Any modifier forces CSI with a modifier param (`\x1b[1;<m><final>`), never SS3.
