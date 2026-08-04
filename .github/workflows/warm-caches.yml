@@ -1,0 +1,107 @@
+name: Warm caches (default branch)
+
+# The one workflow in this repo that runs on `main`, and it exists for a
+# structural reason.
+#
+# GitHub scopes a cache entry to the branch that created it. A run may restore
+# from its own branch, its PR base branch, or the DEFAULT branch — never from a
+# sibling feature branch. Every other workflow here is `on: pull_request` (or
+# `on: push` with `branches-ignore: [main]`), so until now nothing ever ran on
+# main and nothing ever published a cache that a fresh PR branch could restore.
+# Every new branch therefore started 100% cold, every time.
+#
+# That was survivable for the ML models, which come from a fast host. It was
+# fatal for the Playwright browsers: measured throughput from these runners to
+# cdn.playwright.dev is ~0.28 MB/s, so a ~170MB browser cannot finish inside a
+# normal job budget. Jobs burned their whole allocation downloading and timed
+# out — and because `actions/cache` saves with post-if: success(), a job that
+# timed out saved nothing, so the next run started from zero as well.
+#
+# Publishing on main breaks that loop once, for every branch, permanently.
+#
+# NOTE this cannot warm a version that main does not have yet: a PR that bumps
+# Playwright still pays one cold download, which then serves that branch.
+
+on:
+  push:
+    branches: [main]
+    # Only when something that changes what we cache actually changes.
+    paths:
+      - 'package-lock.json'
+      - 'src/utils/model-manager.js'
+      - 'src/utils/gguf-model-manager.js'
+      - '.github/actions/install-playwright/**'
+      - '.github/actions/cache-models/**'
+      - '.github/workflows/warm-caches.yml'
+  # Caches are evicted after 7 days unused, and under a repo-wide size limit.
+  # A weekly refresh keeps main's entries alive so branches keep restoring.
+  schedule:
+    - cron: '41 5 * * 1'
+  # Manual recovery, e.g. after an eviction or a poisoned entry.
+  workflow_dispatch:
+
+concurrency:
+  group: warm-caches
+  cancel-in-progress: false
+
+jobs:
+  # One browser per cell, matching how the install action keys its cache: the
+  # key encodes the browser SET, so a "chromium webkit" entry does not serve a
+  # consumer asking for "chromium". One entry per browser is what makes
+  # consumers actually hit. It also means a slow browser cannot discard a fast
+  # one's completed download, and both transfer concurrently.
+  #
+  # The (os, browser) pairs mirror the real consumers:
+  #   ubuntu  chromium — ci.yml browser matrix (most projects)
+  #   ubuntu  webkit   — ci.yml ios-* projects (WebKit runs on Linux only)
+  #   windows chromium — ci.yml browser matrix
+  #   macos   chromium — longevity-smoke's macOS cell
+  browsers:
+    name: ${{ matrix.browser }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            browser: chromium
+          - os: ubuntu-latest
+            browser: webkit
+          - os: windows-latest
+            browser: chromium
+          - os: macos-latest
+            browser: chromium
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: 'npm'
+      - run: npm ci
+      - uses: ./.github/actions/install-playwright
+        with:
+          browsers: ${{ matrix.browser }}
+          # Generous single attempt: this job's whole purpose is to absorb the
+          # slow cold download once, on main, so no PR ever has to.
+          attempt-timeout-ms: '1200000'
+          attempts: '1'
+
+  models:
+    name: stt (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: 'npm'
+      - run: npm ci
+      - uses: ./.github/actions/cache-models
+        with:
+          models: stt

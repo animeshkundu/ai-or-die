@@ -13,18 +13,21 @@ inputs:
   attempt-timeout-ms:
     description: Hard per-attempt wall-clock budget. Bounds a HANG, which a retry loop alone cannot.
     required: false
-    default: '240000'
+    default: '600000'
   skip-deps:
     description: Set to "1" to skip the Linux host-dependency phase.
     required: false
     default: '0'
   attempts:
     description: >-
-      Attempts per phase. Retries help a transfer that FAILS; they are useless
-      against one that is merely slow, because each retry restarts from zero.
-      Use 1 with a large attempt-timeout-ms for a known-slow cold download.
+      Attempts per phase. Defaults to 1 deliberately. Retries help a transfer
+      that FAILS; they do nothing for one that is merely slow, because each
+      retry restarts from zero — three 600s attempts against this CDN burned
+      30 minutes and never got past the same point. Callers install ONE browser
+      per cache entry, so there is no intra-job progress for a retry to build
+      on either. Prefer a single generous attempt-timeout-ms.
     required: false
-    default: '3'
+    default: '1'
 
 runs:
   using: composite
@@ -47,47 +50,135 @@ runs:
     # and keep the bounded installer below for the miss case.
     # Resolve the Playwright version: browsers change with IT, not with every
     # dependency bump.
-    - name: Resolve Playwright version
+    - name: Resolve Playwright version + browser set
       id: pwver
       shell: bash
+      env:
+        BROWSERS_IN: ${{ inputs.browsers }}
       run: |
         v="$(node -p "require('./node_modules/playwright/package.json').version" 2>/dev/null || echo unknown)"
         echo "version=$v" >> "$GITHUB_OUTPUT"
-        echo "playwright=$v"
+        # Canonical, order-independent browser-set token for the cache key, so
+        # "webkit chromium" and "chromium webkit" produce the same entry.
+        # Done in node rather than `sort -u | paste`: this action runs on
+        # ubuntu, windows (Git Bash) and macOS, and `paste -sd-` differs between
+        # GNU and BSD. node is already a hard requirement of the line above.
+        set="$(node -e "console.log((process.env.BROWSERS_IN||'').trim().split(/\s+/).filter(Boolean).sort().filter((v,i,a)=>a.indexOf(v)===i).join('-'))")"
+        echo "set=$set" >> "$GITHUB_OUTPUT"
+        echo "playwright=$v browsers=$set"
 
     # Cache at Playwright's DEFAULT per-OS locations.
     #
-    # The historical key was playwright-<os>-<hash(package-lock.json)>. That is
-    # the wrong invariant: browser binaries track the Playwright VERSION, not
-    # the lockfile, so any PR touching dependencies invalidated every warm
-    # cache. This branch did exactly that and then discovered the cold path is
-    # unusable here — the ~170MB Chromium download from cdn.playwright.dev
-    # timed out on three consecutive 600s attempts, in a single job (so not
-    # contention). Browser jobs only ever passed because they never downloaded.
+    # KEY DESIGN. Three things must appear in the key, and one of them was
+    # missing in a way that silently broke WebKit:
     #
-    # So: key on the Playwright version, and keep a PREFIX restore-key so the
-    # existing lockfile-keyed caches still restore. An earlier revision refused
-    # restore-keys on the grounds that a partial restore "looks like a hit" —
-    # that reasoning is wrong for this action, because `playwright install`
-    # below VERIFIES what is present and downloads only what is missing. A
-    # stale-but-valid cache is a genuine hit; a stale-and-wrong one just means
-    # the installer does the work it would have done anyway.
-    - name: Cache Playwright browsers
-      uses: actions/cache@v4
+    #   version  — browser binaries track the Playwright VERSION, not the
+    #              lockfile. The original key hashed package-lock.json, so any
+    #              dependency bump invalidated every warm cache.
+    #   browsers — THE BUG. The key did not say WHICH browsers the cache holds,
+    #              but callers install different sets: longevity-smoke installs
+    #              chromium, prewarm-models installs chromium+webkit. A cache
+    #              entry is IMMUTABLE, so the first job to save owns that key for
+    #              the whole version. When the chromium-only writer won (it
+    #              usually did — less to download), every WebKit job got an exact
+    #              cache HIT containing no WebKit, then had to cold-download it
+    #              inside a short budget, and failed. A corrected cache published
+    #              later on main could not repair it either: a branch's own
+    #              exact-key entry takes precedence over the default branch's.
+    #   arch     — runner.os does not distinguish X64 from ARM64, so a mixed-arch
+    #              matrix would restore incompatible binaries.
+    #
+    # The v2 prefix retires the poisoned v1 namespace outright; leaving it would
+    # let existing chromium-only entries keep shadowing correct ones.
+    #
+    # restore-keys deliberately stays inside the same os/arch/browser-set AND
+    # the same Playwright version. A versionless fallback is tempting — it makes
+    # a version bump cheap — but it is a slow leak: `playwright install` does not
+    # purge old binaries, so restoring v1.5x's browsers and installing v1.6x on
+    # top saves a `-complete` entry holding BOTH, and every subsequent bump
+    # compounds it until the repo's cache quota evicts the entries that matter.
+    # A version bump therefore starts clean. It costs one cold download, on the
+    # bumping PR only, and warm-caches.yml republishes on main immediately after
+    # the merge because that bump necessarily touches package-lock.json.
+    #
+    # The remaining same-version fallback is what picks up a `-partial-*` entry.
+    #
+    # RESTORE AND SAVE ARE SPLIT ON PURPOSE. `actions/cache` runs its save with
+    # post-if: success(), so a job that times out mid-download saves NOTHING and
+    # the next job starts from zero — which is how a slow CDN turned into an
+    # unbreakable loop. Splitting lets a failed install still bank its progress.
+    #
+    # The two saves use DIFFERENT keys, and that distinction is load-bearing.
+    # Cache entries are immutable, so if a partial install wrote the exact
+    # `-complete` key, no later full install could ever replace it and every
+    # future job would restore an incomplete set and re-download the delta
+    # forever. So `-complete` is written ONLY by a successful install; a failure
+    # banks under a unique `-partial-<run>-<attempt>` key that the restore-keys
+    # prefix still picks up as resumable scaffolding.
+    - name: Restore Playwright browser cache
+      id: pwcache
+      uses: actions/cache/restore@v4
       with:
         # All three OS defaults; cache skips paths that do not exist.
+        # Repeated verbatim in the save steps below: GitHub Actions does not
+        # support YAML anchors, so this cannot be factored out.
         path: |
           ~/.cache/ms-playwright
           ~/Library/Caches/ms-playwright
           ~/AppData/Local/ms-playwright
-        key: playwright-${{ runner.os }}-${{ steps.pwver.outputs.version }}
+        key: playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.pwver.outputs.set }}-${{ steps.pwver.outputs.version }}-complete
         restore-keys: |
-          playwright-${{ runner.os }}-
+          playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.pwver.outputs.set }}-${{ steps.pwver.outputs.version }}-
 
+    # Skipped entirely on an exact hit — the cache already holds exactly this
+    # browser set at exactly this version, so there is nothing to verify.
+    # A restore-key (prefix) hit still runs it: that cache is an older revision
+    # or a partial, and the installer downloads only the delta.
     - name: Install browsers (bounded + instrumented)
+      id: pwinstall
+      if: steps.pwcache.outputs.cache-hit != 'true'
+      # Swallowed here and re-raised at the end of this action. A failing step
+      # inside a composite action skips the steps after it, and relying on
+      # `always()` to dodge that has been unreliable across runner versions.
+      # Deferring the failure makes the save-then-fail order deterministic.
+      continue-on-error: true
       shell: bash
       env:
         PLAYWRIGHT_INSTALL_ATTEMPT_TIMEOUT_MS: ${{ inputs.attempt-timeout-ms }}
         PLAYWRIGHT_INSTALL_ATTEMPTS: ${{ inputs.attempts }}
         PLAYWRIGHT_SKIP_DEPS: ${{ inputs.skip-deps }}
       run: node scripts/ci-install-playwright.js ${{ inputs.browsers }}
+
+    # Full set present: publish the authoritative entry every other job restores.
+    - name: Save Playwright browser cache (complete)
+      if: steps.pwcache.outputs.cache-hit != 'true' && steps.pwinstall.outcome == 'success'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ~/.cache/ms-playwright
+          ~/Library/Caches/ms-playwright
+          ~/AppData/Local/ms-playwright
+        key: playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.pwver.outputs.set }}-${{ steps.pwver.outputs.version }}-complete
+
+    # Install failed, but whatever finished before it did is still on disk.
+    # Banking it under a unique key means the next attempt resumes instead of
+    # restarting from zero, which is the entire reason a slow CDN was fatal.
+    - name: Save Playwright browser cache (partial, resumable)
+      if: steps.pwcache.outputs.cache-hit != 'true' && steps.pwinstall.outcome == 'failure'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ~/.cache/ms-playwright
+          ~/Library/Caches/ms-playwright
+          ~/AppData/Local/ms-playwright
+        key: playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.pwver.outputs.set }}-${{ steps.pwver.outputs.version }}-partial-${{ github.run_id }}-${{ github.run_attempt }}
+
+    # Re-raise the deferred install failure. Without a browser the suite cannot
+    # run, so this must stay fatal — silently continuing would surface as a
+    # confusing downstream test error instead of a clear one here.
+    - name: Fail if the browser install did not succeed
+      if: steps.pwinstall.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::error::Playwright install failed for '${{ inputs.browsers }}'. Partial progress was cached; a re-run resumes from it."
+        exit 1
