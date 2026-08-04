@@ -294,6 +294,24 @@ Browser-level tests run Chromium via Playwright, validating the full stack from 
 - Failure artifacts: terminal buffer, WebSocket log, console log, screenshot
 - CI: separate `test-browser` job on ubuntu-latest + windows-latest
 
+**Playwright version floor (>= 1.60.0):**
+
+Playwright releases before 1.60.0 download every browser byte and then hang
+indefinitely during extraction when run on Node >= 24.16
+(microsoft/playwright#41000). CI pins `node-version: '26'`, so every
+`Install Playwright browsers` step stalled until the job-level timeout killed
+it and no browser suite could run. The retry loop around the install cannot
+recover from this: the installer never exits, so it never retries.
+
+`@playwright/test` therefore must stay at or above 1.60.0.
+`test/playwright-version-floor.test.js` asserts the floor in both
+`package.json` and `package-lock.json` so a later dependency edit cannot walk
+back under it. Confirmed on Node 26.6.0: 1.58.2 hangs, 1.60.0 completes.
+
+The bundled Chromium moves from 145 to 148 with this floor; the committed
+`09-visual-regression` baselines were re-verified against Chromium 148 and
+still match within the configured `maxDiffPixelRatio: 0.01` tolerance.
+
 ### 5.2 Mock Tool Scripts
 
 For testing specific tool bridge behaviors (trust prompts, dangerous mode flags):
