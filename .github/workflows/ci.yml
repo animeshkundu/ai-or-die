@@ -231,6 +231,13 @@ jobs:
       # Fails if an exclusion names a project that no longer exists, so the
       # exclusion list cannot quietly rot back into a coverage hole.
       - run: node scripts/ci-browser-matrix.js --check
+      # Fails if any job would look for a browser cache key that no job writes.
+      # That mismatch is a relationship BETWEEN files, so it is invisible to
+      # YAML linting and to any single-file check — the key expression was
+      # byte-identical in producer and consumer while being wrong, which is
+      # exactly how the WebKit cells ended up restoring caches with no WebKit
+      # in them.
+      - run: node scripts/ci-cache-keys.js --check
       - id: gen
         run: echo "matrix=$(node scripts/ci-browser-matrix.js)" >> "$GITHUB_OUTPUT"
 
