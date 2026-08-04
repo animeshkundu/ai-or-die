@@ -18,6 +18,21 @@ try {
 function listen(app) {
   return new Promise((resolve) => {
     const server = http.createServer(app);
+    // server.close() stops accepting NEW connections and then waits for the
+    // existing ones to end on their own. These tests exercise the artifact
+    // long-poll (/api/artifact/:id/poll), so a socket parked in a poll keeps
+    // the server half-alive after close() resolves, and its pending request
+    // keeps running. Across 24 servers in this file that accumulates, which is
+    // what made every later test/control file progressively slower — routes
+    // alone runs in ~4s, but artifact-routes + routes took ~46s against an
+    // expected ~19s. Forcing the sockets down makes close() actually mean
+    // closed.
+    const origClose = server.close.bind(server);
+    server.close = (cb) => {
+      const done = origClose(cb);
+      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+      return done;
+    };
     server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
   });
 }
