@@ -11,9 +11,14 @@ inputs:
     required: false
     default: chromium
   attempt-timeout-ms:
-    description: Hard per-attempt wall-clock budget. Bounds a HANG, which a retry loop alone cannot.
+    description: >-
+      Hard per-attempt wall-clock budget. Bounds a HANG, which a retry loop
+      alone cannot. Default 15 min: a ~170MB browser needs ~10.1 min at the
+      ~0.28 MB/s measured from these runners, and a budget set at the estimate
+      itself fails on a coin flip. Callers that expect a cache hit still pay
+      nothing; this is the size of the fallback, not the common path.
     required: false
-    default: '600000'
+    default: '900000'
   skip-deps:
     description: Set to "1" to skip the Linux host-dependency phase.
     required: false

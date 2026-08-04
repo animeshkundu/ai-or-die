@@ -251,7 +251,11 @@ jobs:
     needs: [browser-matrix, prewarm-browsers, prewarm-stt]
     if: ${{ !cancelled() && needs.browser-matrix.result == 'success' }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # 25 -> 35. These cells normally restore the cache prewarm-browsers built,
+    # which costs seconds. But they are no longer gated on that job succeeding
+    # (see above), so a cell CAN fall through to its own 15-min bounded install,
+    # and 25 left no room for that plus the tests themselves.
+    timeout-minutes: 35
     strategy:
       # Never cancel siblings. fail-fast defaults to TRUE, which would let one
       # red project hide every other result in the matrix — the same
