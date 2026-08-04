@@ -8,6 +8,12 @@ name: Update Visual Baselines
 # the marker keeps this self-contained on a feature branch and inert on normal
 # pushes.) Mirrors the test-browser-visual job in ci.yml, plus --update-snapshots
 # and a commit-back step.
+#
+# The marker is checked in a step, not in a job-level `if:`. A job-level
+# condition makes the job report "skipped", which branch protection and CI
+# gates read as not-green. Guarding at step level lets both jobs run and
+# conclude "success" as a cheap no-op when the marker is absent, while the
+# work still only happens when the marker is present.
 on:
   push:
     branches-ignore: [main]
@@ -21,7 +27,6 @@ concurrency:
 
 jobs:
   generate-baselines:
-    if: contains(github.event.head_commit.message, '[update-baselines]')
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -29,14 +34,31 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
+      - name: Check for [update-baselines] marker
+        id: guard
+        shell: bash
+        env:
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if printf '%s' "$HEAD_COMMIT_MESSAGE" | grep -qF '[update-baselines]'; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Marker found; regenerating visual baselines."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No [update-baselines] marker in the head commit message; nothing to do."
+          fi
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.enabled == 'true'
         # persist-credentials (default true) keeps the token so we can push.
       - uses: actions/setup-node@v4
+        if: steps.guard.outputs.enabled == 'true'
         with:
           node-version: '26'
           cache: 'npm'
       - run: npm ci
+        if: steps.guard.outputs.enabled == 'true'
       - name: Cache Playwright browsers
+        if: steps.guard.outputs.enabled == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -44,6 +66,7 @@ jobs:
             ~/AppData/Local/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - name: Install Playwright browsers
+        if: steps.guard.outputs.enabled == 'true'
         shell: bash
         run: |
           for i in 1 2 3; do
@@ -52,32 +75,48 @@ jobs:
           done
           exit 1
       - name: Restore local models (STT, cached)
+        if: steps.guard.outputs.enabled == 'true'
         uses: ./.github/actions/cache-models
         with:
           models: stt
       - name: Regenerate visual baselines
+        if: steps.guard.outputs.enabled == 'true'
         run: npx playwright test --config e2e/playwright.config.js --project visual-regression --update-snapshots
       - name: Upload regenerated baselines (artifact)
         uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.guard.outputs.enabled == 'true' }}
         with:
           name: visual-baselines-${{ runner.os }}
           path: e2e/tests/**/*-snapshots/
           retention-days: 14
 
   commit-baselines:
-    if: contains(github.event.head_commit.message, '[update-baselines]')
     needs: generate-baselines
     runs-on: ubuntu-latest
     steps:
+      - name: Check for [update-baselines] marker
+        id: guard
+        shell: bash
+        env:
+          HEAD_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          if printf '%s' "$HEAD_COMMIT_MESSAGE" | grep -qF '[update-baselines]'; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "No [update-baselines] marker in the head commit message; nothing to commit."
+          fi
       - uses: actions/checkout@v4
+        if: steps.guard.outputs.enabled == 'true'
       - name: Download regenerated baselines
+        if: steps.guard.outputs.enabled == 'true'
         uses: actions/download-artifact@v4
         with:
           pattern: visual-baselines-*
           path: e2e/tests
           merge-multiple: true
       - name: Commit and push updated baselines
+        if: steps.guard.outputs.enabled == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
