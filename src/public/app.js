@@ -1530,6 +1530,36 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    /**
+     * Single source of truth for the sticky-note button's label.
+     *
+     * There used to be two independent writers to `stickyNoteBtn.title`: the
+     * `model_lifecycle_status` handler, and `_updateStickyNoteBtn()` which
+     * derived a label from note state alone. Whichever ran last won, so a note
+     * update arriving after a lifecycle change silently reverted the button to
+     * "Show status note" while `data-model-state` still read "restarting" — the
+     * visible label and the element's own state contradicting each other, with
+     * `aria-label` carrying the wrong one to assistive tech.
+     *
+     * Lifecycle wins when the model is not usable, because that is the more
+     * important thing to tell the user; otherwise the note state describes what
+     * clicking will do.
+     */
+    _stickyNoteBtnLabel(state) {
+        // Default to collapsed when the note state is not known yet: the card
+        // starts collapsed, and treating "unknown" as expanded would render
+        // "Hide status note" on a button that shows the note.
+        const s = state || this._lastStickyNoteState || { collapsed: true };
+        const lifecycle = this._modelLifecycle && this._modelLifecycle.stickyNotes;
+        if (lifecycle === 'idle') return 'Session status — model starts when opened';
+        if (lifecycle === 'restarting') return 'Session status — model reconnecting';
+        if (lifecycle === 'failed') return 'Session status unavailable — see server logs';
+        if (!s.collapsed) return 'Hide status note';
+        if (s.summarizing) return 'Status note: summarizing…';
+        if (s.hasNote) return 'Show status note (has updates)';
+        return 'Show status note';
+    }
+
     /** Reflect the active tab's note state on the toolbar button (dot + aria). */
     _updateStickyNoteBtn(state) {
         const btn = document.getElementById('stickyNoteBtn');
@@ -1539,10 +1569,8 @@ class ClaudeCodeWebInterface {
         btn.classList.toggle('summarizing', !!s.summarizing);
         const badge = btn.querySelector('.sticky-note-badge');
         if (badge) badge.hidden = !(s.hasNote || s.summarizing);
-        let label = 'Show status note';
-        if (!s.collapsed) label = 'Hide status note';
-        else if (s.summarizing) label = 'Status note: summarizing…';
-        else if (s.hasNote) label = 'Show status note (has updates)';
+        this._lastStickyNoteState = s;
+        const label = this._stickyNoteBtnLabel(s);
         btn.setAttribute('aria-label', label);
         btn.title = label;
         const mobileBtn = document.getElementById('navSticky');
@@ -3083,14 +3111,17 @@ class ClaudeCodeWebInterface {
                 }
                 if (stickyBtn) {
                     stickyBtn.dataset.modelState = message.stickyNotes || '';
-                    if (message.stickyNotes === 'idle') {
-                        stickyBtn.title = 'Session status — model starts when opened';
-                    } else if (message.stickyNotes === 'restarting') {
-                        stickyBtn.title = 'Session status — model reconnecting';
-                    } else if (message.stickyNotes === 'failed') {
-                        stickyBtn.title = 'Session status unavailable — see server logs';
-                    } else {
-                        stickyBtn.title = 'Session status (Ctrl+Shift+N)';
+                    // Route through the shared label function so this cannot
+                    // disagree with _updateStickyNoteBtn(). Previously both set
+                    // .title independently and last-writer-wins produced a
+                    // button whose label contradicted its own data-model-state.
+                    const label = this._stickyNoteBtnLabel(this._lastStickyNoteState);
+                    stickyBtn.title = label;
+                    stickyBtn.setAttribute('aria-label', label);
+                    const mobileSticky = document.getElementById('navSticky');
+                    if (mobileSticky) {
+                        mobileSticky.title = label;
+                        mobileSticky.setAttribute('aria-label', label);
                     }
                 }
                 const voiceBtn = document.getElementById('voiceInputBtn');
