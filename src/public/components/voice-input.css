@@ -170,6 +170,15 @@
         min-width: 44px;
         min-height: 44px;
     }
+
+    /* The banner dismiss is the only way to get rid of a multi-hundred-MB
+       download notice, so it has to be reachable with a thumb. The glyph stays
+       16px; the hit area grows to the 44pt minimum. */
+    .voice-download-dismiss {
+        min-width: 44px;
+        min-height: 44px;
+        padding: 0;
+    }
 }
 
 /* Reduced motion */

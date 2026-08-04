@@ -222,8 +222,11 @@ module.exports = defineConfig({
       timeout: 120000,
     },
     // iOS mobile-input suite on WebKit (approximates Edge-on-iOS), specs 77-79.
-    // CI runs these on Ubuntu and Windows as required by ADR-0037. A stalled
-    // engine is a failed gate rather than a reason to substitute Chromium.
+    // CI runs these on Ubuntu only, per ADR-0049 (which amends ADR-0037 on this
+    // point): Playwright-WebKit on the Windows runner wedges inbound WebSocket
+    // frame delivery and its workers have to be force-killed at teardown. A
+    // stalled engine is a failed gate rather than a reason to substitute
+    // Chromium.
     // serviceWorkers:'allow' so the PWA/offline paths can run; the SW was
     // investigated and ruled out (blocking it did NOT change the failure).
     // 120s budget is modest headroom for the heavier 6.0 page on WebKit.

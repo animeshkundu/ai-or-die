@@ -16,12 +16,27 @@
       this._forceSend = new Set();
       this._raf = options.requestAnimationFrame
         || (typeof requestAnimationFrame === 'function' ? requestAnimationFrame.bind(globalThis) : (fn) => setTimeout(fn, 0));
+      this._setTimeout = options.setTimeout
+        || (typeof setTimeout === 'function' ? setTimeout.bind(globalThis) : null);
+      this._clearTimeout = options.clearTimeout
+        || (typeof clearTimeout === 'function' ? clearTimeout.bind(globalThis) : null);
       this._ResizeObserver = options.ResizeObserver
         || (typeof ResizeObserver !== 'undefined' ? ResizeObserver : null);
       this._document = options.document
         || (typeof document !== 'undefined' ? document : null);
       this._logger = options.logger || console;
       this._scheduled = false;
+      // A fit can fail for reasons no ResizeObserver will ever report again:
+      // the container was not measurable yet, or the session socket had not
+      // finished opening so the geometry could not be put on the wire. Without
+      // a retry the PTY keeps a stale size forever (observed on WebKit, where a
+      // freshly created split pane never received its geometry). Retries are
+      // bounded and stop as soon as a target settles.
+      this._retries = new Map();
+      this._pendingRetry = new Set();
+      this._retryTimer = null;
+      this._retryDelayMs = options.retryDelayMs != null ? options.retryDelayMs : 120;
+      this._maxRetries = options.maxRetries != null ? options.maxRetries : 12;
       this._onVisibilityChange = () => {
         if (!this._document || this._document.visibilityState === 'visible') this.requestAll();
       };
@@ -50,9 +65,20 @@
       this._targets.delete(id);
       this._queued.delete(id);
       this._forceSend.delete(id);
+      this._retries.delete(id);
+      this._pendingRetry.delete(id);
     }
 
     request(id, options) {
+      if (!this._targets.has(id)) return;
+      // An external trigger (ResizeObserver, visibilitychange, app code) is new
+      // information about this target, so it starts a fresh bounded retry run.
+      // The coordinator's own retry timer bypasses this via _requestFromRetry.
+      this._retries.delete(id);
+      this._enqueue(id, options);
+    }
+
+    _enqueue(id, options) {
       if (!this._targets.has(id)) return;
       this._queued.add(id);
       if (options && options.forceSend) this._forceSend.add(id);
@@ -67,9 +93,46 @@
 
     destroy() {
       for (const id of Array.from(this._targets.keys())) this.unregister(id);
+      this._cancelRetryTimer();
+      this._retries.clear();
+      this._pendingRetry.clear();
       if (this._document && typeof this._document.removeEventListener === 'function') {
         this._document.removeEventListener('visibilitychange', this._onVisibilityChange);
       }
+    }
+
+    _cancelRetryTimer() {
+      if (this._retryTimer != null && this._clearTimeout) this._clearTimeout(this._retryTimer);
+      this._retryTimer = null;
+    }
+
+    // Re-arm a bounded retry for a target that could not settle this pass.
+    //
+    // The attempt counter records retries this coordinator actually performed,
+    // and is only advanced when the timer fires. Incrementing here instead would
+    // let a burst of ResizeObserver callbacks arriving while one timer is armed
+    // silently spend the whole budget without ever retrying. The counter is
+    // per-target so one wedged pane cannot starve the others, and it is cleared
+    // both when the target settles and when an external `request` arrives.
+    _scheduleRetry(id) {
+      if (!this._setTimeout) return;
+      if (this._pendingRetry.has(id)) return;
+      if ((this._retries.get(id) || 0) >= this._maxRetries) return;
+      this._pendingRetry.add(id);
+      if (this._retryTimer != null) return;
+      this._retryTimer = this._setTimeout(() => {
+        this._retryTimer = null;
+        const due = Array.from(this._pendingRetry);
+        this._pendingRetry.clear();
+        for (const pending of due) {
+          if (!this._targets.has(pending)) {
+            this._retries.delete(pending);
+            continue;
+          }
+          this._retries.set(pending, (this._retries.get(pending) || 0) + 1);
+          this._enqueue(pending);
+        }
+      }, this._retryDelayMs);
     }
 
     _flush() {
@@ -92,12 +155,14 @@
       } catch (error) {
         this._logger.warn('[terminal-fit] measurement failed', error);
         target.deferred = true;
+        this._scheduleRetry(id);
         return;
       }
       const reserve = typeof target.reserve === 'function' ? target.reserve() : target.reserve;
       const next = geometry.measureTerminalGeometry(target.container, proposed, reserve);
       if (!next || next.cols < 20 || next.rows < 5) {
         target.deferred = true;
+        this._scheduleRetry(id);
         return;
       }
 
@@ -119,7 +184,15 @@
         this._forceSend.add(id);
         this._logger.warn('[terminal-fit] apply failed', error);
       }
-      if (sendSucceeded) this._forceSend.delete(id);
+      if (sendSucceeded && !target.deferred) {
+        this._forceSend.delete(id);
+        this._retries.delete(id);
+        this._pendingRetry.delete(id);
+      } else {
+        // The geometry is known but the peer has not received it. Nothing else
+        // will re-trigger this target, so keep trying until the socket opens.
+        this._scheduleRetry(id);
+      }
     }
   }
 

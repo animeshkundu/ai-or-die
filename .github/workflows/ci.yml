@@ -380,6 +380,10 @@ jobs:
   # users run Edge (Chromium), covered by the test-browser-* jobs below. Bigger
   # timeouts (60/120/180s), disabling the service worker, and vendoring the assets
   # were all tried and ruled out on CI. Tracking issue filed for the engine bug.
+  # This job stays ubuntu-only for that reason, recorded in ADR-0049 (which
+  # amends ADR-0037 on this point): on the Windows runner the WebKit workers
+  # wedge and are force-killed after the 300s stop timeout, so the job reports
+  # failure even when every test in it passed.
   test-browser-ios-webkit:
     runs-on: ${{ matrix.os }}
     needs: prewarm-models
@@ -387,7 +391,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

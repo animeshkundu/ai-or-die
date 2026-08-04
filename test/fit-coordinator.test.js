@@ -145,4 +145,211 @@ describe('FitCoordinator', function () {
     queue.shift()();
     assert.strictEqual(sends.length, 2);
   });
+
+  // Regression: nothing but a container size change or a visibilitychange used
+  // to re-drive a target, so a pane whose socket was still opening (or whose
+  // container was not measurable yet) kept a stale PTY size forever. Observed
+  // on WebKit as a freshly created split pane that never sent its geometry.
+  it('retries on its own when the socket is not open yet', function () {
+    const queue = [];
+    const timers = [];
+    const sends = [];
+    let open = false;
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send(size) {
+        sends.push(size);
+        return open;
+      },
+    });
+    queue.shift()();
+    assert.strictEqual(sends.length, 1, 'first attempt runs');
+    assert.strictEqual(timers.length, 1, 'a retry is armed after a failed send');
+
+    // No ResizeObserver fires and the page never hides: only the coordinator's
+    // own retry can rescue this target.
+    timers.shift()();
+    queue.shift()();
+    assert.strictEqual(sends.length, 2, 'retry re-attempts the send');
+
+    open = true;
+    timers.shift()();
+    queue.shift()();
+    assert.strictEqual(sends.length, 3, 'succeeds once the socket opens');
+
+    // Settled: no further retries are armed.
+    const armedAfterSuccess = timers.length;
+    assert.strictEqual(armedAfterSuccess, 0, 'retries stop once the send lands');
+  });
+
+  it('bounds the retry loop so a permanently unmeasurable target cannot spin', function () {
+    const queue = [];
+    const timers = [];
+    let attempts = 0;
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+      maxRetries: 3,
+      logger: { warn() {} },
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 0, height: 0 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => { attempts++; return null; },
+      send() { return true; },
+    });
+    queue.shift()();
+    let guard = 0;
+    while (timers.length && guard++ < 50) {
+      timers.shift()();
+      while (queue.length) queue.shift()();
+    }
+    assert.strictEqual(attempts, 4, 'one initial attempt plus maxRetries retries');
+    assert.strictEqual(timers.length, 0, 'the retry loop terminates');
+  });
+
+  // Regression: the budget used to be spent at schedule time, so a burst of
+  // ResizeObserver callbacks arriving while one timer was armed could consume
+  // every attempt without a single retry ever running.
+  it('does not spend the retry budget on requests made while a retry is armed', function () {
+    const queue = [];
+    const timers = [];
+    let attempts = 0;
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+      maxRetries: 2,
+      logger: { warn() {} },
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send() { attempts++; return false; },
+    });
+    queue.shift()();
+    assert.strictEqual(attempts, 1);
+    assert.strictEqual(timers.length, 1, 'exactly one shared timer is armed');
+
+    // Three more schedule attempts land while that timer is still pending.
+    for (let i = 0; i < 3; i++) coordinator._scheduleRetry('main');
+    assert.strictEqual(timers.length, 1, 'no extra timers pile up');
+
+    timers.shift()();
+    while (queue.length) queue.shift()();
+    assert.strictEqual(attempts, 2, 'the armed retry still ran');
+    assert.ok(timers.length >= 1, 'the second retry of the budget is still available');
+  });
+
+  it('starts a fresh bounded run after an external request', function () {
+    const queue = [];
+    const timers = [];
+    let attempts = 0;
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+      maxRetries: 2,
+      logger: { warn() {} },
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send() { attempts++; return false; },
+    });
+    queue.shift()();
+    let guard = 0;
+    while (timers.length && guard++ < 20) {
+      timers.shift()();
+      while (queue.length) queue.shift()();
+    }
+    assert.strictEqual(attempts, 3, 'initial attempt plus maxRetries retries');
+    assert.strictEqual(timers.length, 0, 'budget exhausted, loop stopped');
+
+    // A ResizeObserver callback is new information: the budget resets.
+    coordinator.request('main');
+    while (queue.length) queue.shift()();
+    assert.strictEqual(attempts, 4);
+    assert.strictEqual(timers.length, 1, 'a fresh bounded run is armed');
+  });
+
+  it('shares one timer across targets without cross-starving their budgets', function () {
+    const queue = [];
+    const timers = [];
+    const attempts = { a: 0, b: 0 };
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+      maxRetries: 2,
+      logger: { warn() {} },
+    });
+    const makeTarget = (key, open) => ({
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send() { attempts[key]++; return open(); },
+    });
+    let bOpen = false;
+    coordinator.register('a', makeTarget('a', () => false));
+    coordinator.register('b', makeTarget('b', () => bOpen));
+    while (queue.length) queue.shift()();
+    assert.strictEqual(attempts.a, 1);
+    assert.strictEqual(attempts.b, 1);
+    assert.strictEqual(timers.length, 1, 'both targets coalesce into one timer');
+
+    bOpen = true;
+    timers.shift()();
+    while (queue.length) queue.shift()();
+    assert.strictEqual(attempts.a, 2);
+    assert.strictEqual(attempts.b, 2, 'b succeeds on its retry');
+
+    // b settled, so only a keeps retrying and a still has its own budget left.
+    timers.shift()();
+    while (queue.length) queue.shift()();
+    assert.strictEqual(attempts.b, 2, 'a settled target is not retried again');
+    assert.strictEqual(attempts.a, 3);
+    assert.strictEqual(timers.length, 0, 'a exhausted its own budget of 2');
+  });
+
+  it('resumes retrying after a bounded run once the container becomes measurable', function () {
+    const queue = [];
+    const timers = [];
+    const resizes = [];
+    let width = 0;
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+      maxRetries: 2,
+      logger: { warn() {} },
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width, height: 400 }) },
+      terminal: { resize: (cols, rows) => resizes.push({ cols, rows }) },
+      proposeDimensions: () => (width ? { cols: 80, rows: 25 } : null),
+      send: () => true,
+    });
+    queue.shift()();
+    let guard = 0;
+    while (timers.length && guard++ < 20) {
+      timers.shift()();
+      while (queue.length) queue.shift()();
+    }
+    assert.deepStrictEqual(resizes, [], 'never fits against a zero-width container');
+    width = 800;
+    coordinator.request('main');
+    while (queue.length) queue.shift()();
+    assert.deepStrictEqual(resizes, [{ cols: 80, rows: 25 }]);
+  });
 });

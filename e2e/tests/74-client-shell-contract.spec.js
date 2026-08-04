@@ -258,20 +258,52 @@ test.describe('Terminal-first client shell contract', () => {
     const after = await page.evaluate((prefix) => {
       const terminal = window.app.terminal;
       const buffer = terminal.buffer.active;
-      const rawCounts = {};
       const sequencePattern = new RegExp(prefix + '_(\\d{3})', 'g');
+      const rawCounts = {};
       for (const match of window.app._outputTail.matchAll(sequencePattern)) {
         rawCounts[match[1]] = (rawCounts[match[1]] || 0) + 1;
       }
+      // What the user actually sees. The rendered buffer is the contract for
+      // "no duplicated frames": counting occurrences in the raw byte stream
+      // instead conflates client duplication with a legitimate PTY repaint --
+      // Windows ConPTY re-emits the visible screen when the reconnecting client
+      // sends its geometry, so ~one screenful of lines appears twice on the
+      // wire while the rendered screen stays correct.
+      const renderedCounts = {};
+      let logical = '';
+      const tally = (text) => {
+        for (const match of text.matchAll(sequencePattern)) {
+          renderedCounts[match[1]] = (renderedCounts[match[1]] || 0) + 1;
+        }
+      };
+      for (let row = 0; row < buffer.length; row++) {
+        const line = buffer.getLine(row);
+        if (!line) continue;
+        const text = line.translateToString(line.isWrapped ? false : true);
+        if (line.isWrapped) {
+          logical += text;
+        } else {
+          tally(logical);
+          logical = text;
+        }
+      }
+      tally(logical);
       return {
         rawCounts,
+        renderedCounts,
         selected: terminal.getSelection(),
         viewportY: buffer.viewportY,
       };
     }, marker);
+    // No output lost on the wire: every sequence number reached the client.
     expect(Object.keys(after.rawCounts)).toHaveLength(240);
-    const duplicates = Object.entries(after.rawCounts).filter(([, count]) => count !== 1);
-    expect(duplicates, JSON.stringify(duplicates)).toEqual([]);
+    // No output lost on screen either -- without this the duplicate check below
+    // would pass vacuously on a buffer that rendered nothing.
+    expect(Object.keys(after.renderedCounts)).toHaveLength(240);
+    // No duplicated frames on screen.
+    const renderedDuplicates = Object.entries(after.renderedCounts)
+      .filter(([, count]) => count !== 1);
+    expect(renderedDuplicates, JSON.stringify(renderedDuplicates)).toEqual([]);
     expect(after.viewportY).toBe(before.viewportY);
     expect(after.selected).toBe(before.selected);
   });
@@ -320,6 +352,16 @@ test.describe('Terminal-first client shell contract', () => {
     expect(result.navFiles.height).toBeGreaterThanOrEqual(44);
 
     if (result.coarse) {
+      // Force the transient banners into view so their controls are measured
+      // too. The speech-model download banner only appears while a model is
+      // downloading, so on a runner with warm model caches its dismiss button
+      // would otherwise never be sampled -- that is how it shipped at 21x27.
+      await page.evaluate(() => {
+        for (const id of ['voiceDownloadBanner', 'stickyNotesDownloadBanner']) {
+          const banner = document.getElementById(id);
+          if (banner) banner.style.display = 'flex';
+        }
+      });
       const tooSmall = await page.locator(
         'button:visible, input:not([type="hidden"]):visible, select:visible, [role="button"]:visible, [role="tab"]:visible'
       ).evaluateAll((controls) => controls.map((control) => {
@@ -331,6 +373,13 @@ test.describe('Terminal-first client shell contract', () => {
         };
       }).filter(({ width, height }) => width < 44 || height < 44));
       expect(tooSmall, JSON.stringify(tooSmall)).toEqual([]);
+      // Every control also needs an accessible name, not just a glyph.
+      const unnamed = await page.locator('button:visible').evaluateAll((controls) => controls
+        .filter((control) => !(control.getAttribute('aria-label') || '').trim()
+          && !(control.getAttribute('title') || '').trim()
+          && !/[a-z0-9]/i.test(control.textContent || ''))
+        .map((control) => control.id || control.className));
+      expect(unnamed, JSON.stringify(unnamed)).toEqual([]);
     }
   });
 

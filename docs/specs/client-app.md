@@ -22,7 +22,7 @@ Desktop terminals prefer the xterm WebGL renderer only when the browser reports 
 
 ## Design and accessibility
 
-All application motion resolves through design tokens and respects reduced-motion preferences. Session tabs implement roving focus, `aria-selected`, `aria-controls`, and Arrow/Home/End navigation. Coarse-pointer controls use a minimum 44 by 44 CSS pixel target.
+All application motion resolves through design tokens and respects reduced-motion preferences. Session tabs implement roving focus, `aria-selected`, `aria-controls`, and Arrow/Home/End navigation. Coarse-pointer controls use a minimum 44 by 44 CSS pixel target and carry an accessible name; this includes controls on transient surfaces such as the model-download banners, whose dismiss button keeps its 16px glyph while its hit area grows to the 44pt minimum.
 
 At short landscape heights, the assistant chooser anchors to the visible top edge, removes redundant identity and subtitle copy, uses a compact two-column card layout, and ends above the bottom navigation with every tool fully visible. The install prompt is suppressed while this blocking chooser is open so fixed controls cannot overlap its actions.
 
