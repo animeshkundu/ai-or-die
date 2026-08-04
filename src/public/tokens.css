@@ -84,6 +84,10 @@
   --space-10: 2.5rem;    /* 40px */
   --space-12: 3rem;      /* 48px */
 
+  /* --- Persistent shell chrome --- */
+  --chrome-tab-height: 44px;
+  --chrome-bottom-nav-height: 52px;
+
   /* --- Border Radius --- */
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -100,11 +104,22 @@
 
   /* --- Transitions --- */
   --duration-fast: 150ms;
+  --duration-spin: 800ms;
+  --duration-rotation: 1000ms;
+  --duration-emphasis: 1100ms;
   --duration-normal: 200ms;
+  --duration-toast: 250ms;
   --duration-slow: 300ms;
+  --duration-drawer: 240ms;
+  --duration-pulse: 1500ms;
+  --duration-attention: 2000ms;
+  --duration-reduced: 0.01ms;
   --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-emphasis: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-linear: linear;
+  --ease-in-out: ease-in-out;
 
   /* --- Danger --- */
   --danger-bg: #8b0000;
@@ -136,6 +151,7 @@
   --z-dropdown: 100;
   --z-sticky: 200;
   --z-overlay: 300;
+  --z-navigation: 320;
   --z-modal: 400;
   --z-notif-center: 450;
   --z-toast: 500;
@@ -154,6 +170,8 @@
      effect on browser-tab or desktop-non-PWA layouts. */
   --sa-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
   --sa-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --sa-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --sa-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
 }
 
 /* ============================================================

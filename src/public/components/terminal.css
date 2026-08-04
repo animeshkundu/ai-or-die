@@ -48,7 +48,7 @@
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
     cursor: pointer;
-    transition: all var(--duration-fast) ease;
+    transition: all var(--duration-fast) var(--ease-default);
     font-size: 12px;
     font-weight: 600;
     font-family: var(--font-mono);
@@ -94,7 +94,7 @@
     flex-direction: column;
     min-width: 0;
     background: var(--bg-primary);
-    transition: border-color var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    transition: border-color var(--duration-normal) var(--ease-default);
 }
 
 .split-pane.split-active {
@@ -118,11 +118,22 @@
 }
 
 .split-divider {
+    position: relative;
     width: 6px;
   background: var(--border);
     cursor: col-resize;
     flex-shrink: 0;
-    transition: background var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    transition: background var(--duration-normal) var(--ease-default);
+}
+
+.split-divider::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 44px;
+    transform: translateX(-50%);
 }
 
 .split-divider:hover {
@@ -145,8 +156,8 @@
     justify-content: center;
     cursor: pointer;
     opacity: 0.6;
-    transition: background-color var(--duration-fast, 150ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
-                opacity var(--duration-fast, 150ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    transition: background-color var(--duration-fast) var(--ease-default),
+                opacity var(--duration-fast) var(--ease-default);
 }
 
 .split-close:hover {
@@ -176,6 +187,26 @@
     box-sizing: border-box;
 }
 
+@media (pointer: coarse) {
+    #terminal,
+    .xterm {
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
+        touch-action: pan-y;
+    }
+
+    .xterm-viewport {
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior: contain;
+    }
+
+    .split-close {
+        min-width: 44px;
+        min-height: 44px;
+    }
+}
+
 .terminal-overlay {
     position: fixed; /* Cover the full app regardless of container visibility */
     top: 0;
@@ -188,6 +219,8 @@
     align-items: center;
     justify-content: center;
     backdrop-filter: blur(2px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .overlay-content {
@@ -197,6 +230,63 @@
     border-radius: 12px;
     border: 1px solid var(--border);
     max-width: 520px;
+}
+
+@media (max-height: 600px) {
+    .terminal-overlay {
+        align-items: flex-start;
+        padding-top: calc(var(--chrome-tab-height) + max(var(--space-3), var(--sa-top)));
+        padding-bottom: max(var(--space-3), var(--sa-bottom));
+    }
+
+    .overlay-content {
+        width: min(720px, calc(100% - var(--space-6)));
+        max-width: none;
+        margin: 0 auto;
+        padding: var(--space-3);
+    }
+
+    .terminal-overlay .start-prompt-heading {
+        font-size: var(--text-xl);
+        margin-bottom: var(--space-1);
+    }
+
+    .terminal-overlay .start-prompt-identity,
+    .terminal-overlay .start-prompt-subtitle {
+        display: none;
+    }
+
+    .terminal-overlay .tool-cards-list {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--space-2);
+        max-width: none;
+        padding: 0;
+    }
+
+    .terminal-overlay .tool-cards-divider {
+        grid-column: 1 / -1;
+        padding: var(--space-1) 0;
+    }
+
+    .terminal-overlay .tool-card-expansion:not(.expanded) {
+        display: none;
+    }
+
+    .terminal-overlay .tool-card-expansion.expanded {
+        grid-column: 1 / -1;
+    }
+
+    .terminal-overlay .tool-card {
+        min-height: 52px;
+        padding: var(--space-2);
+        gap: var(--space-2);
+    }
+
+    .terminal-overlay .tool-card-icon {
+        width: 36px;
+        height: 36px;
+    }
 }
 
 .loading-spinner {
@@ -212,7 +302,7 @@
     border: 3px solid var(--border);
     border-top: 3px solid var(--accent);
     border-radius: 50%;
-    animation: spin 1s linear infinite;
+    animation: spin var(--duration-rotation) var(--ease-linear) infinite;
 }
 
 @keyframes spin {

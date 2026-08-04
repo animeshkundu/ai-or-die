@@ -44,11 +44,15 @@ Complete a real plan-mode Claude Code task using ONLY touch:
 
 ## D. Layout & safe area
 - [ ] iPhone 16: nothing hidden under the Dynamic Island / home indicator.
+- [ ] iPhone 16 landscape: file browser, input overlay, extra keys, and bottom
+      navigation clear both horizontal safe-area insets.
 - [ ] iPad (gen 11): touch chrome (bottom nav, hamburger) in both orientations;
       no clipped or overlapping chrome; no horizontal scroll.
 - [ ] Artifact panel opens as a usable bottom sheet on iPhone; the sticky-note
       card docks as a full-width strip and is legible.
 - [ ] Rotate both devices repeatedly: terminal reflows, no clipping.
+- [ ] At 852x393 the assistant chooser starts below the session strip, uses the
+      compact two-column layout, and every assistant remains reachable by scroll.
 
 ## E. Offline
 - [ ] Installed + Airplane Mode + relaunch: the app shell loads from the service

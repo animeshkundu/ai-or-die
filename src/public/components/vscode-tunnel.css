@@ -8,7 +8,7 @@
     border-bottom: 1px solid var(--border);
     font-size: 13px;
     color: var(--text-primary);
-    animation: vst-slide-down 0.2s ease-out;
+    animation: vst-slide-down var(--duration-normal) var(--ease-out);
     z-index: var(--z-dropdown);
     flex-shrink: 0;
 }
@@ -80,7 +80,7 @@
     padding: 4px 10px;
     border-radius: 4px;
     font-size: 12px;
-    transition: all 0.15s;
+    transition: all var(--duration-fast) var(--ease-default);
     white-space: nowrap;
 }
 
@@ -120,7 +120,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: color 0.15s, background 0.15s;
+    transition: color var(--duration-fast), background var(--duration-fast);
 }
 
 .vst-close:hover {
@@ -135,7 +135,7 @@
     border: 2px solid var(--border);
     border-top-color: var(--accent);
     border-radius: 50%;
-    animation: vst-spin 0.8s linear infinite;
+    animation: vst-spin var(--duration-spin) var(--ease-linear) infinite;
     flex-shrink: 0;
 }
 
@@ -167,7 +167,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: color 0.2s, background 0.2s;
+    transition: color var(--duration-normal), background var(--duration-normal);
     position: relative;
 }
 
@@ -181,7 +181,7 @@
 }
 
 .tab-vscode-tunnel.starting svg {
-    animation: vst-spin 1.5s linear infinite;
+    animation: vst-spin var(--duration-pulse) var(--ease-linear) infinite;
 }
 
 .tab-vscode-tunnel.running {
@@ -282,7 +282,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: color 0.2s, background 0.2s;
+    transition: color var(--duration-normal), background var(--duration-normal);
     position: relative;
 }
 
@@ -297,7 +297,7 @@
 }
 
 .tab-app-tunnel.starting svg {
-    animation: vst-spin 1.5s linear infinite;
+    animation: vst-spin var(--duration-pulse) var(--ease-linear) infinite;
 }
 
 .tab-app-tunnel.running {

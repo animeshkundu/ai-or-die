@@ -100,7 +100,21 @@ class ClaudeCodeWebInterface {
 
         // Write coalescing: batch binary frames into a single terminal.write per rAF
         this._pendingWrites = [];
+        this._pendingWriteBytes = 0;
         this._rafPending = false;
+        this._ingressPaused = false;
+        this._flowPauseNeedsReplay = false;
+        this._ingressVisibilityTimer = null;
+        this._ingressVisibilityHandler = null;
+        this._WRITE_FRAME_BUDGET = 96 * 1024;
+        this._reconnectViewState = null;
+        this._joinRepaintInProgress = false;
+        this._outputTailSessionId = null;
+        this._outputTail = '';
+        this._OUTPUT_TAIL_LIMIT = 256 * 1024;
+        this._joinRepaintTimer = null;
+        this._joinRepaintGeneration = 0;
+        this.fitCoordinator = null;
 
         // Input coalescing: batch keystrokes per animation frame, flush on breather
         this._inputBuffer = '';
@@ -114,9 +128,10 @@ class ClaudeCodeWebInterface {
         this._copyBadgeTimer = null;
 
         // Deferred plan detection: accumulate binary data, decode after 100ms idle
-        this._planDetectChunks = [];
+        this._planDetectText = [];
+        this._planDetectBytes = 0;
+        this._PLAN_DETECT_BYTE_LIMIT = 256 * 1024;
         this._planDetectTimer = null;
-        this._planTextDecoder = new TextDecoder();
 
         // PWA install state machine
         this._installState = 'checking'; // checking | available | prompting | installed | unavailable-https | unavailable-ios | unavailable-browser | unavailable
@@ -155,6 +170,34 @@ class ClaudeCodeWebInterface {
         }
 
         this.init();
+    }
+
+    _setupIngressVisibilityGuard() {
+        if (this._ingressVisibilityHandler) return;
+        const stopWatchdog = () => {
+            if (!this._ingressVisibilityTimer) return;
+            clearInterval(this._ingressVisibilityTimer);
+            this._ingressVisibilityTimer = null;
+        };
+        this._ingressVisibilityHandler = () => {
+            if (document.visibilityState === 'hidden') {
+                this._applyIngressBackpressure();
+                if (!this._ingressVisibilityTimer) {
+                    this._ingressVisibilityTimer = setInterval(
+                        () => this._applyIngressBackpressure(),
+                        250
+                    );
+                }
+            } else {
+                stopWatchdog();
+                if (this._ingressPaused && this._pendingWriteBytes < 128 * 1024) {
+                    this._ingressPaused = false;
+                    if (!this._outputPaused) this._resumeOutputFlow();
+                }
+            }
+        };
+        document.addEventListener('visibilitychange', this._ingressVisibilityHandler);
+        this._ingressVisibilityHandler();
     }
 
     // Helper method for authenticated fetch calls
@@ -204,10 +247,12 @@ class ClaudeCodeWebInterface {
             if (spIdText && spId) { spIdText.textContent = identity; spId.hidden = false; }
         }
         this.setupTerminal();
+        this._setupIngressVisibilityGuard();
         this._setupExtraKeys();
         this._setupOrientationHandler();
         this._setupPwaStandaloneListener();
         this.setupUI();
+        this._setupNotificationCapability();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
         if (window.InputOverlay) {
@@ -273,10 +318,13 @@ class ClaudeCodeWebInterface {
             this.splitContainer.setupDropZones();
         }
         
-        // Show mode switcher and bottom nav on mobile
+        // Bottom-nav CSS is viewport-driven, so wire it regardless of the
+        // current input device; desktop layouts simply keep it hidden.
+        this._setupBottomNav();
+
+        // Show touch-only controls on mobile.
         if (this.isMobile) {
             this.showModeSwitcher();
-            this._setupBottomNav();
             this._setupSwipeGestures();
         }
 
@@ -636,6 +684,26 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    _setupNotificationCapability() {
+        if (!window.NotificationCapability) return;
+        const standalone = this._isInstalledPWA();
+        const supported = 'Notification' in window;
+        const result = window.NotificationCapability.classifyNotificationCapability({
+            secureContext: window.isSecureContext,
+            standalone,
+            notificationSupported: supported,
+            permission: supported ? window.Notification.permission : null
+        });
+        const toggle = document.getElementById('notifDesktop');
+        const status = document.getElementById('notifDesktopStatus');
+        if (toggle) toggle.hidden = !result.supported;
+        if (status) {
+            status.hidden = result.supported;
+            status.textContent = result.text;
+            status.dataset.state = result.state;
+        }
+    }
+
     sendEscape() {
         // Send ESC key to terminal
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
@@ -715,7 +783,7 @@ class ClaudeCodeWebInterface {
                 brightWhite: '#f0f6fc'
             },
             allowProposedApi: true,
-            scrollback: 10000,
+            scrollback: 1000,
             rightClickSelectsWord: false,
             allowTransparency: false,
             // Disable focus tracking to prevent ^[[I and ^[[O sequences
@@ -744,6 +812,20 @@ class ClaudeCodeWebInterface {
         }
 
         this.terminal.open(document.getElementById('terminal'));
+        this.fitCoordinator = new FitCoordinator();
+        this.fitCoordinator.register('main', {
+            container: document.getElementById('terminal'),
+            terminal: this.terminal,
+            proposeDimensions: () => this.fitAddon.proposeDimensions(),
+            reserve: () => this.isMobile ? { cols: 0, rows: 1 } : { cols: 6, rows: 2 },
+            send: ({ cols, rows }) => {
+                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    this.send({ type: 'resize', cols, rows });
+                    return true;
+                }
+                return false;
+            }
+        });
 
         // Trackpad/mouse-wheel policy: preempt xterm's alt-buffer wheel->arrow
         // translation so scrolling doesn't hijack the Claude Code TUI. Reads the
@@ -937,12 +1019,6 @@ class ClaudeCodeWebInterface {
             }
         });
 
-        this.terminal.onResize(({ cols, rows }) => {
-            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.send({ type: 'resize', cols, rows });
-            }
-        });
-
         // Sync terminal colors AND any live Monaco instances when the CSS
         // theme changes (data-theme attribute on documentElement).
         const themeObserver = new MutationObserver((mutations) => {
@@ -975,18 +1051,9 @@ class ClaudeCodeWebInterface {
 
         const handleOrientationChange = () => {
             setTimeout(() => {
+                this.viewportRegime?.resetBaseline();
                 this.fitTerminal();
                 this._polyfillSafeAreaInsets();
-                // Re-evaluate keyboard state
-                if (window.visualViewport && this._keyboardOpen !== undefined) {
-                    const heightDiff = window.innerHeight - window.visualViewport.height;
-                    const threshold = Math.max(window.screen.height * 0.25, 100);
-                    if (heightDiff <= threshold && this._keyboardOpen) {
-                        this._keyboardOpen = false;
-                        this._restoreTerminalFromKeyboard();
-                        document.body.classList.remove('keyboard-open');
-                    }
-                }
             }, 300);
         };
 
@@ -1013,65 +1080,41 @@ class ClaudeCodeWebInterface {
         // The extra-keys bar is still usable via manual show/hide.
         if (!window.visualViewport) return;
 
-        // Thrashing detection: if >3 resize events in 500ms, fall back to fixed threshold
-        const resizeTimestamps = [];
-        let useFallbackThreshold = false;
-
-        // Debounce timer for body class toggle
-        let classDebounceTimer = null;
-
         // Safari fallback: poll viewport height if no resize fires after focus
         let safariFallbackStarted = false;
         this._safariPollInterval = null;
 
-        const getThreshold = () => {
-            if (useFallbackThreshold) return 150;
-            return Math.max(window.screen.height * 0.25, 100);
-        };
-
-        const checkKeyboard = () => {
-            const currentHeight = window.visualViewport.height;
-            const heightDiff = window.innerHeight - currentHeight;
-            const threshold = getThreshold();
-
-            if (heightDiff > threshold && !this._keyboardOpen) {
+        const checkKeyboard = (state) => {
+            state = state || this.viewportRegime.read();
+            if (state.zoomed) return;
+            const currentHeight = state.height;
+            if (state.keyboardOpen && !this._keyboardOpen) {
                 this._keyboardOpen = true;
-                // Apply class immediately — CSS transitions handle visual smoothing
                 document.body.classList.add('keyboard-open');
                 this._adjustTerminalForKeyboard(currentHeight);
-            } else if (heightDiff <= threshold && this._keyboardOpen) {
+            } else if (!state.keyboardOpen && this._keyboardOpen) {
                 this._keyboardOpen = false;
                 document.body.classList.remove('keyboard-open');
                 this._restoreTerminalFromKeyboard();
-            } else if (heightDiff > threshold && this._keyboardOpen) {
-                // Keyboard already open but the viewport height changed (final
-                // animation frame, or rotation while open) — re-apply the size so
-                // the terminal isn't left fit against a stale intermediate height.
+            } else if (state.keyboardOpen && this._keyboardOpen) {
                 this._updateKeyboardHeight(currentHeight);
             }
         };
 
+        this.viewportRegime = new ViewportRegime({
+            visualViewport: window.visualViewport,
+            document,
+            window,
+            onChange: (state) => {
+                checkKeyboard(state);
+            }
+        });
         window.visualViewport.addEventListener('resize', () => {
-            // Thrashing guard
-            const now = Date.now();
-            resizeTimestamps.push(now);
-            // Keep only events within the last 500ms
-            while (resizeTimestamps.length > 0 && now - resizeTimestamps[0] > 500) {
-                resizeTimestamps.shift();
-            }
-            if (resizeTimestamps.length > 3) {
-                useFallbackThreshold = true;
-            } else if (resizeTimestamps.length <= 1) {
-                useFallbackThreshold = false;
-            }
-
             // Cancel any pending Safari fallback since resize is firing
             if (this._safariPollInterval) {
                 clearInterval(this._safariPollInterval);
                 this._safariPollInterval = null;
             }
-
-            checkKeyboard();
         });
 
         // Safari fallback: if terminal receives focus but no visualViewport resize fires,
@@ -1080,6 +1123,13 @@ class ClaudeCodeWebInterface {
             const termEl = document.getElementById('terminal');
             if (termEl) {
                 let fallbackTimeout = null;
+                let cancelFallback = null;
+
+                const clearFallbackListener = () => {
+                    if (!cancelFallback) return;
+                    window.visualViewport.removeEventListener('resize', cancelFallback);
+                    cancelFallback = null;
+                };
 
                 termEl.addEventListener('focusin', () => {
                     // If polling was previously proven needed, restart the interval
@@ -1093,15 +1143,17 @@ class ClaudeCodeWebInterface {
                     if (fallbackTimeout) return;
                     fallbackTimeout = setTimeout(() => {
                         fallbackTimeout = null;
+                        clearFallbackListener();
                         // No resize event fired within 1s of focus — start polling
                         safariFallbackStarted = true;
                         this._safariPollInterval = setInterval(checkKeyboard, 200);
                     }, 1000);
                     // If a resize fires, cancel the fallback
-                    const cancelFallback = () => {
+                    clearFallbackListener();
+                    cancelFallback = () => {
                         clearTimeout(fallbackTimeout);
                         fallbackTimeout = null;
-                        window.visualViewport.removeEventListener('resize', cancelFallback);
+                        clearFallbackListener();
                     };
                     window.visualViewport.addEventListener('resize', cancelFallback);
                 });
@@ -1117,6 +1169,7 @@ class ClaudeCodeWebInterface {
                         clearTimeout(fallbackTimeout);
                         fallbackTimeout = null;
                     }
+                    clearFallbackListener();
                 });
             }
         }
@@ -1138,7 +1191,6 @@ class ClaudeCodeWebInterface {
     // fit is coalesced into one rAF below.
     _updateKeyboardHeight(availableHeight) {
         this._inKeyboardTransition = true;
-        document.documentElement.style.setProperty('--visual-viewport-height', availableHeight + 'px');
         const termEl = document.getElementById('terminal');
         if (termEl) {
             const barH = (this.extraKeys && this.extraKeys.container)
@@ -1152,7 +1204,6 @@ class ClaudeCodeWebInterface {
     _restoreTerminalFromKeyboard() {
         this._inKeyboardTransition = true;
         if (this.extraKeys) this.extraKeys.hide();
-        document.documentElement.style.removeProperty('--visual-viewport-height');
         const termEl = document.getElementById('terminal');
         if (termEl) termEl.style.height = '';
         this._scheduleKeyboardFit();
@@ -1161,7 +1212,7 @@ class ClaudeCodeWebInterface {
 
     // Coalesce fits during a keyboard transition into a single rAF. Uses
     // fitTerminal() (which applies the mobile row/column adjustments) and refits
-    // split panes — NOT a raw fitAddon.fit() that would bypass both.
+    // split panes — never use the fit addon's mutating call, which bypasses both.
     _scheduleKeyboardFit() {
         if (this._kbFitRaf) cancelAnimationFrame(this._kbFitRaf);
         this._kbFitRaf = requestAnimationFrame(() => {
@@ -2196,6 +2247,7 @@ class ClaudeCodeWebInterface {
 
     connect(sessionId = null) {
         return new Promise((resolve, reject) => {
+            this._resetFlowControlState();
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
             let wsUrl = `${protocol}//${location.host}`;
             if (sessionId) {
@@ -2237,6 +2289,7 @@ class ClaudeCodeWebInterface {
                     }
                     this.updateStatus('Connected');
                     console.log('Connected to server');
+                    this.fitCoordinator?.request('main', { forceSend: true });
                     
                     // Load available sessions
                     this.loadSessions();
@@ -2300,6 +2353,7 @@ class ClaudeCodeWebInterface {
                 if (this._heartbeat) { this._heartbeat.stop(); this._heartbeat = null; }
                 if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
                 if (this._pongTimer) { clearTimeout(this._pongTimer); this._pongTimer = null; }
+                this._captureReconnectViewState();
 
                 // A close mid-transcription must not leave the mic spinner + its
                 // 90 s timeout hanging.
@@ -2407,6 +2461,7 @@ class ClaudeCodeWebInterface {
             this._heartbeat = null;
         }
         if (this.socket) {
+            this._captureReconnectViewState();
             this.socket.close();
             this.socket = null;
         }
@@ -2428,24 +2483,41 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    _captureReconnectViewState() {
+        if (!this.currentClaudeSessionId || !this.terminal) return;
+        const buffer = this.terminal.buffer && this.terminal.buffer.active;
+        const selection = typeof this.terminal.getSelectionPosition === 'function'
+            ? this.terminal.getSelectionPosition()
+            : null;
+        this._reconnectViewState = {
+            sessionId: this.currentClaudeSessionId,
+            viewportY: buffer ? buffer.viewportY : 0,
+            wasAtBottom: buffer ? buffer.viewportY === buffer.baseY : true,
+            selection
+        };
+    }
+
     reconnect() {
+        // A reconnect request always releases the explicit-hide latch, even when
+        // another reconnect is already in flight.
+        this._overlayExplicitlyHidden = false;
         if (this._reconnecting) return;
         this._reconnecting = true;
         this.disconnect();
-        // Reset overlay flag so session_joined can show start prompt if terminal
-        // exited during the disconnect (fixes stuck blank screen after reconnect)
-        this._overlayExplicitlyHidden = false;
         // Reset flow control state so stale pause signals aren't sent on new connection
         this._outputPaused = false;
         this._pendingCallbacks = 0;
         this._writtenBytes = 0;
         this._pendingWrites = [];
-        this._rafPending = false;
+        this._pendingWriteBytes = 0;
+        this._ingressPaused = false;
         // Clear stale input buffer to prevent ghost keystrokes after reconnect
         this._inputBuffer = '';
         this._inputFlushScheduled = false;
         this._ctrlModifierPending = false;
-        this._planDetectChunks = [];
+        this._planDetectText = [];
+        this._planDetectBytes = 0;
+        this._textDecoder = new TextDecoder();
         if (this._planDetectTimer) {
             clearTimeout(this._planDetectTimer);
             this._planDetectTimer = null;
@@ -2538,32 +2610,89 @@ class ClaudeCodeWebInterface {
 
     handleBinaryOutput(data) {
         const chunk = new Uint8Array(data);
-
-        // 1. Queue the chunk for coalesced terminal write
         this._pendingWrites.push(chunk);
-        if (!this._rafPending) {
+        this._pendingWriteBytes += chunk.byteLength;
+        if (!this._rafPending && !this._joinRepaintInProgress) {
             this._rafPending = true;
             requestAnimationFrame(() => this._flushWrites());
         }
+    }
 
-        // 2. Session activity tracking (cheap — runs per frame)
+    _applyIngressBackpressure() {
+        if (this._pendingWriteBytes > 1024 * 1024 && !this._ingressPaused) {
+            this._ingressPaused = true;
+            this._flowPauseNeedsReplay = true;
+            this.send({ type: 'flow_control', action: 'pause' });
+        }
+    }
+
+    _resetFlowControlState() {
+        this._outputPaused = false;
+        this._pendingCallbacks = 0;
+        this._writtenBytes = 0;
+        this._ingressPaused = false;
+        this._flowPauseNeedsReplay = false;
+    }
+
+    _resumeOutputFlow() {
+        this.send({ type: 'flow_control', action: 'resume' });
+        if (!this._flowPauseNeedsReplay || !this.currentClaudeSessionId) {
+            this._flowPauseNeedsReplay = false;
+            return;
+        }
+        this._captureReconnectViewState();
+        const sessionId = this.currentClaudeSessionId;
+        this._flowPauseNeedsReplay = false;
+        this.send({ type: 'join_session', sessionId });
+    }
+
+    _releaseFlowPauseForJoin() {
+        if (this._ingressPaused || this._outputPaused || this._flowPauseNeedsReplay) {
+            this.send({ type: 'flow_control', action: 'resume' });
+        }
+        this._resetFlowControlState();
+    }
+
+    // Write a bounded amount per animation frame so WebKit's many-small-frame
+    // delivery pattern cannot turn into one long xterm task.
+    _flushWrites() {
+        this._rafPending = false;
+        if (this._joinRepaintInProgress) return;
+        if (this._pendingWrites.length === 0) return;
+        this._applyIngressBackpressure();
+        const combined = OutputFrameBatcher.takeChunkBudget(
+            this._pendingWrites,
+            this._WRITE_FRAME_BUDGET
+        );
+        this._pendingWriteBytes = Math.max(0, this._pendingWriteBytes - combined.byteLength);
+        const text = this._textDecoder.decode(combined, { stream: true });
+        if (this.currentClaudeSessionId !== this._outputTailSessionId) {
+            this._outputTailSessionId = this.currentClaudeSessionId;
+            this._outputTail = '';
+        }
+        this._outputTail = OutputFrameBatcher.appendBoundedText(
+            this._outputTail,
+            text,
+            this._OUTPUT_TAIL_LIMIT
+        );
+
+        this._writeToTerminal(combined);
+
         if (this.sessionTabManager && this.currentClaudeSessionId) {
-            const text = this._textDecoder.decode(data, { stream: true });
             this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
         }
 
-        // 3. Deferred plan detection — accumulate chunks, decode after 100ms idle
         if (this.planDetector) {
-            this._planDetectChunks.push(chunk);
-            if (this._planDetectTimer) clearTimeout(this._planDetectTimer);
-            this._planDetectTimer = setTimeout(() => this._flushPlanDetection(), 100);
+            this._planDetectText.push(text);
+            this._planDetectBytes += combined.byteLength;
+            if (this._planDetectBytes >= this._PLAN_DETECT_BYTE_LIMIT) {
+                if (this._planDetectTimer) clearTimeout(this._planDetectTimer);
+                this._flushPlanDetection();
+            } else {
+                if (this._planDetectTimer) clearTimeout(this._planDetectTimer);
+                this._planDetectTimer = setTimeout(() => this._flushPlanDetection(), 100);
+            }
         }
-
-        // 4. Keep the active tab's snapshot fresh after output settles (never
-        // per frame). Debounced so a burst captures once when it quiets. Only
-        // captures while the terminal STABLY shows this session (no switch in
-        // flight; active tab + joined session agree), so a switch can never
-        // store one tab's screen under another tab's id.
         if (this.snapshotCache && this._terminalStablyShowsSession(this.currentClaudeSessionId)) {
             const sid = this.currentClaudeSessionId;
             if (this._snapCaptureTimer) clearTimeout(this._snapCaptureTimer);
@@ -2572,57 +2701,41 @@ class ClaudeCodeWebInterface {
                 if (this._terminalStablyShowsSession(sid)) this.snapshotCache?.capture(sid);
             }, 400);
         }
-    }
 
-    // Concatenate all queued chunks and write to terminal once per animation frame
-    _flushWrites() {
-        this._rafPending = false;
-        const chunks = this._pendingWrites;
-        this._pendingWrites = [];
-        if (chunks.length === 0) return;
-
-        // Concatenate into a single Uint8Array
-        let combined;
-        if (chunks.length === 1) {
-            combined = chunks[0];
-        } else {
-            let totalLen = 0;
-            for (let i = 0; i < chunks.length; i++) totalLen += chunks[i].byteLength;
-            combined = new Uint8Array(totalLen);
-            let offset = 0;
-            for (let i = 0; i < chunks.length; i++) {
-                combined.set(chunks[i], offset);
-                offset += chunks[i].byteLength;
+        if (this._pendingWrites.length > 0 && !this._rafPending) {
+            if (this._ingressPaused && this._pendingWriteBytes < 128 * 1024) {
+                this._ingressPaused = false;
+                if (!this._outputPaused) this._resumeOutputFlow();
             }
+            this._rafPending = true;
+            requestAnimationFrame(() => this._flushWrites());
+        } else if (this._ingressPaused && this._pendingWriteBytes < 128 * 1024) {
+            this._ingressPaused = false;
+            if (!this._outputPaused) this._resumeOutputFlow();
         }
 
-        this._writeToTerminal(combined);
     }
 
-    // Decode accumulated binary chunks and run plan detection
+    _releaseJoinRepaint(generation) {
+        if (generation !== this._joinRepaintGeneration) return;
+        if (this._joinRepaintTimer) {
+            clearTimeout(this._joinRepaintTimer);
+            this._joinRepaintTimer = null;
+        }
+        if (!this._joinRepaintInProgress) return;
+        this._joinRepaintInProgress = false;
+        if (this._pendingWrites.length > 0 && !this._rafPending) {
+            this._rafPending = true;
+            requestAnimationFrame(() => this._flushWrites());
+        }
+    }
+
     _flushPlanDetection() {
         this._planDetectTimer = null;
-        const chunks = this._planDetectChunks;
-        this._planDetectChunks = [];
-        if (chunks.length === 0 || !this.planDetector) return;
-
-        // Concatenate then decode once
-        let combined;
-        if (chunks.length === 1) {
-            combined = chunks[0];
-        } else {
-            let totalLen = 0;
-            for (let i = 0; i < chunks.length; i++) totalLen += chunks[i].byteLength;
-            combined = new Uint8Array(totalLen);
-            let offset = 0;
-            for (let i = 0; i < chunks.length; i++) {
-                combined.set(chunks[i], offset);
-                offset += chunks[i].byteLength;
-            }
-        }
-
-        const text = this._planTextDecoder.decode(combined, { stream: true });
-        this.planDetector.processOutput(text);
+        const text = this._planDetectText.join('');
+        this._planDetectText = [];
+        this._planDetectBytes = 0;
+        if (text && this.planDetector) this.planDetector.processOutput(text);
     }
 
     // Flow control using xterm.js callback-counting watermark pattern
@@ -2634,7 +2747,7 @@ class ClaudeCodeWebInterface {
                 this._pendingCallbacks = Math.max(this._pendingCallbacks - 1, 0);
                 if (this._outputPaused && this._pendingCallbacks < this._LOW_WATER) {
                     this._outputPaused = false;
-                    this.send({ type: 'flow_control', action: 'resume' });
+                    if (!this._ingressPaused) this._resumeOutputFlow();
                 }
             });
             this._pendingCallbacks++;
@@ -2644,7 +2757,7 @@ class ClaudeCodeWebInterface {
                 this.send({ type: 'flow_control', action: 'pause' });
             }
         } else {
-            this.terminal.write(data);  // Fast path — no callback overhead
+            this.terminal.write(data);
         }
     }
 
@@ -2764,7 +2877,17 @@ class ClaudeCodeWebInterface {
                 // unreliable here.
                 const targetTabId = this.sessionTabManager ? this.sessionTabManager.activeTabId : message.sessionId;
                 const isStaleJoin = targetTabId && targetTabId !== message.sessionId;
+                if (isStaleJoin && this._cachePaintedForSession === message.sessionId) {
+                    this._cachePaintedForSession = null;
+                }
+                this._releaseFlowPauseForJoin();
                 if (!isStaleJoin) {
+                    // The server's outputBuffer is authoritative at this boundary.
+                    // Drop bytes queued by the closed socket before replaying it,
+                    // otherwise those frames paint a second time after the replay.
+                    this._pendingWrites.length = 0;
+                    this._pendingWriteBytes = 0;
+                    this._textDecoder = new TextDecoder();
                     // For a LIVE session, replay the raw outputBuffer (real ANSI +
                     // cursor codes) so the agent's live TUI redraw aligns. The
                     // server's renderedSnapshot is rendered PLAIN TEXT (no cursor/
@@ -2774,10 +2897,9 @@ class ClaudeCodeWebInterface {
                     // snapshot is used ONLY for non-live (exited/idle) sessions.
                     // See join-repaint.js for the decision matrix.
                     const replayBuffer = () => {
-                        this.terminal.clear();
+                        this.terminal.write('\x1bc');
                         message.outputBuffer.forEach(data => {
-                            // Filter out focus tracking sequences (^[[I and ^[[O)
-                            this.terminal.write(data.replace(/\x1b\[\[?[IO]/g, ''));
+                            this.terminal.write(data);
                         });
                     };
                     const action = chooseJoinRepaint(message);
@@ -2785,29 +2907,76 @@ class ClaudeCodeWebInterface {
                     // this switch? If so, a 'clear' verdict (the server has nothing
                     // to replay) must NOT blank the good cached view.
                     const cacheAlreadyPainted = this._cachePaintedForSession === message.sessionId;
-                    if (action === 'buffer') {
-                        replayBuffer();
-                    } else if (action === 'snapshot') {
-                        this.terminal.clear();
-                        this.terminal.write(message.renderedSnapshot.replace(/\n/g, '\r\n'));
-                    } else if (!cacheAlreadyPainted) {
-                        // Empty-state guard: clear so a cold join never leaves the
-                        // previous tab's content lingering on the shared terminal.
-                        this.terminal.clear();
-                    }
+                    if (cacheAlreadyPainted) this._cachePaintedForSession = null;
+                    const reconnectView = this._reconnectViewState
+                        && this._reconnectViewState.sessionId === message.sessionId
+                        ? this._reconnectViewState
+                        : null;
+                    this._reconnectViewState = null;
+                    const repaintGeneration = ++this._joinRepaintGeneration;
+                    this._joinRepaintInProgress = true;
+                    if (this._joinRepaintTimer) clearTimeout(this._joinRepaintTimer);
+                    this._joinRepaintTimer = setTimeout(() => {
+                        if (repaintGeneration !== this._joinRepaintGeneration) return;
+                        console.warn('[terminal-repaint] xterm drain timed out; resuming queued output');
+                        this._releaseJoinRepaint(repaintGeneration);
+                    }, 5000);
+                    // Drain any write already accepted by xterm from the old socket
+                    // before clearing and replaying the authoritative server buffer.
+                    this.terminal.write('', () => {
+                        if (repaintGeneration !== this._joinRepaintGeneration) return;
+                        const replayText = action === 'buffer'
+                            ? message.outputBuffer.join('')
+                            : '';
+                        if (action === 'buffer') {
+                            replayBuffer();
+                            this._outputTailSessionId = message.sessionId;
+                            this._outputTail = replayText.slice(-this._OUTPUT_TAIL_LIMIT);
+                        } else if (action === 'snapshot') {
+                            this.terminal.write('\x1bc');
+                            this.terminal.write(message.renderedSnapshot.replace(/\n/g, '\r\n'));
+                            this._outputTailSessionId = message.sessionId;
+                            this._outputTail = '';
+                        } else if (!cacheAlreadyPainted) {
+                            // Empty-state guard: clear so a cold join never leaves the
+                            // previous tab's content lingering on the shared terminal.
+                            this.terminal.write('\x1bc');
+                            this._outputTailSessionId = message.sessionId;
+                            this._outputTail = '';
+                        }
 
-                    // Refresh the cache from the authoritative repaint, but only
-                    // AFTER xterm has drained the writes above. terminal.write('',
-                    // cb) fires its callback once all prior writes are parsed — a
-                    // reliable drain barrier (a single rAF is not). Guard against a
-                    // re-switch landing before the drain completes.
-                    if (this.snapshotCache && message.sessionId && action !== 'clear') {
-                        const sid = message.sessionId;
+                        // A second barrier waits for the replay itself. New socket
+                        // bytes remain in _pendingWrites until this callback finishes.
                         this.terminal.write('', () => {
-                            if (this._terminalStablyShowsSession(sid)) this.snapshotCache?.capture(sid);
+                            if (repaintGeneration !== this._joinRepaintGeneration) return;
+                            const sid = message.sessionId;
+                            if (this.snapshotCache && action !== 'clear'
+                                && this._terminalStablyShowsSession(sid)) {
+                                this.snapshotCache.capture(sid);
+                            }
+                            const activeBuffer = this.terminal.buffer && this.terminal.buffer.active;
+                            if (reconnectView && activeBuffer) {
+                                if (reconnectView.wasAtBottom) {
+                                    this.terminal.scrollToBottom();
+                                } else {
+                                    const maxViewportY = Math.max(0, activeBuffer.baseY);
+                                    this.terminal.scrollToLine(Math.min(reconnectView.viewportY, maxViewportY));
+                                }
+                            }
+                            const selection = reconnectView && reconnectView.selection;
+                            if (selection && selection.start && selection.end) {
+                                const length = Math.max(
+                                    0,
+                                    (selection.end.y - selection.start.y) * this.terminal.cols
+                                        + selection.end.x - selection.start.x
+                                );
+                                if (length > 0) {
+                                    this.terminal.select(selection.start.x, selection.start.y, length);
+                                }
+                            }
+                            this._releaseJoinRepaint(repaintGeneration);
                         });
-                    }
-                    this._cachePaintedForSession = null;
+                    });
                 }
 
                 // Show appropriate UI based on session state
@@ -2930,9 +3099,7 @@ class ClaudeCodeWebInterface {
             }
                 
             case 'output':
-                // Filter out focus tracking sequences (^[[I and ^[[O)
-                const filteredData = message.data.replace(/\x1b\[\[?[IO]/g, '');
-                this.terminal.write(filteredData);
+                this.terminal.write(message.data);
                 
                 // Update session activity indicator with output data
                 if (this.sessionTabManager && this.currentClaudeSessionId) {
@@ -3347,7 +3514,7 @@ class ClaudeCodeWebInterface {
             const card = document.createElement('div');
             card.className = 'tool-card' + (tool.available ? '' : (isInstallable ? ' installable' : ' disabled'));
             card.dataset.tool = toolId;
-            card.style.animationDelay = `${cardIndex * 50}ms`;
+            card.style.animationDelay = `calc(var(--duration-fast) * ${cardIndex / 3})`;
             card.classList.add('tool-card-enter');
 
             // Escape alias to prevent XSS from server-provided config
@@ -3690,6 +3857,10 @@ class ClaudeCodeWebInterface {
             console.log('[Renderer] Mobile detected, using DOM renderer for reliability');
             return;
         }
+        if (this._usesSoftwareWebGL()) {
+            console.log('[Renderer] Software WebGL detected, using DOM renderer');
+            return;
+        }
         if (typeof WebglAddon !== 'undefined') {
             try {
                 this.webglAddon = new WebglAddon.WebglAddon();
@@ -3709,43 +3880,31 @@ class ClaudeCodeWebInterface {
         }
     }
 
-    fitTerminal() {
-        if (this._fitting) return;
-        if (this.fitAddon) {
-            this._fitting = true;
-            try {
-                this.fitAddon.fit();
-
-                // Mobile needs fewer adjustments — no scrollbar, thinner tab bar
-                const rowAdjust = this.isMobile ? 1 : 2;
-                const colAdjust = this.isMobile ? 0 : 6;
-                const adjustedRows = Math.max(1, this.terminal.rows - rowAdjust);
-                const adjustedCols = Math.max(1, this.terminal.cols - colAdjust);
-                if (adjustedRows !== this.terminal.rows || adjustedCols !== this.terminal.cols) {
-                    this.terminal.resize(adjustedCols, adjustedRows);
-                }
-
-                // On mobile, ensure terminal doesn't exceed viewport width
-                if (this.isMobile) {
-                    const terminalElement = document.querySelector('.xterm');
-                    if (terminalElement) {
-                        const viewportWidth = window.innerWidth;
-                        const currentWidth = terminalElement.offsetWidth;
-
-                        if (currentWidth > viewportWidth) {
-                            // Reduce columns to fit viewport
-                            const charWidth = currentWidth / this.terminal.cols;
-                            const maxCols = Math.floor((viewportWidth - 20) / charWidth);
-                            this.terminal.resize(maxCols, this.terminal.rows);
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('Error fitting terminal:', error);
-            } finally {
-                this._fitting = false;
-            }
+    _usesSoftwareWebGL() {
+        let gl = null;
+        try {
+            const canvas = document.createElement('canvas');
+            gl = canvas.getContext('webgl2', {
+                antialias: false,
+                depth: false,
+                stencil: false,
+                preserveDrawingBuffer: false
+            });
+            if (!gl) return false;
+            const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+            const renderer = String(debugInfo
+                ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+                : gl.getParameter(gl.RENDERER));
+            return /swiftshader|llvmpipe|lavapipe|software rasterizer|angle.*software|microsoft basic render|apple software/i.test(renderer);
+        } catch (_) {
+            return false;
+        } finally {
+            try { gl?.getExtension('WEBGL_lose_context')?.loseContext(); } catch (_) {}
         }
+    }
+
+    fitTerminal(options) {
+        this.fitCoordinator?.request('main', options);
     }
 
     setupTerminalSearch() {
@@ -4242,6 +4401,7 @@ class ClaudeCodeWebInterface {
         });
 
         overlay.style.display = 'flex';
+        document.body.classList.add('terminal-overlay-open');
 
         // Keep the tab bar above the overlay so users can switch sessions
         const tabBar = document.getElementById('sessionTabsBar');
@@ -4254,6 +4414,7 @@ class ClaudeCodeWebInterface {
         if (overlay) {
             console.log('[hideOverlay] Hiding overlay, current display:', overlay.style.display);
             overlay.style.display = 'none';
+            document.body.classList.remove('terminal-overlay-open');
             console.log('[hideOverlay] Overlay hidden, new display:', overlay.style.display);
         } else {
             console.error('[hideOverlay] Overlay element not found!');
@@ -4437,12 +4598,9 @@ class ClaudeCodeWebInterface {
     }
 
     _polyfillSafeAreaInsets() {
-        // WebKit bug: env(safe-area-inset-top|bottom) sometimes returns 0px in
-        // iOS PWA standalone on Dynamic Island / notched devices. Probe the
-        // actual env() value per axis; if zero on a notch-class iOS device in
-        // portrait, substitute the known defaults (59px island, 34px home
-        // indicator). Results are exposed as the --safe-area-inset-* variables
-        // that tokens.css (--sa-top/--sa-bottom) and the gated rules consume.
+        // WebKit can report zero for safe-area env() values in an installed PWA.
+        // Probe all four axes and use notch-class fallbacks only in standalone
+        // mode, including the horizontal insets required after rotation.
         if (!document.body) return;
 
         const root = document.documentElement;
@@ -4455,16 +4613,20 @@ class ClaudeCodeWebInterface {
         if (!this._isInstalledPWA()) {
             root.style.removeProperty('--safe-area-inset-top');
             root.style.removeProperty('--safe-area-inset-bottom');
+            root.style.removeProperty('--safe-area-inset-left');
+            root.style.removeProperty('--safe-area-inset-right');
             return;
         }
 
         const measure = (axis) => {
             const probe = document.createElement('div');
-            probe.style.cssText = 'position:fixed;left:0;width:1px;pointer-events:none;visibility:hidden;'
-                + (axis === 'top' ? 'top:0;' : 'bottom:0;')
-                + 'height:env(safe-area-inset-' + axis + ');';
+            const horizontal = axis === 'left' || axis === 'right';
+            probe.style.cssText = 'position:fixed;top:0;pointer-events:none;visibility:hidden;'
+                + (horizontal ? 'height:1px;' : 'left:0;width:1px;')
+                + axis + ':0;'
+                + (horizontal ? 'width:' : 'height:') + 'env(safe-area-inset-' + axis + ');';
             document.body.appendChild(probe);
-            const px = probe.offsetHeight;
+            const px = horizontal ? probe.offsetWidth : probe.offsetHeight;
             document.body.removeChild(probe);
             return px;
         };
@@ -4478,22 +4640,24 @@ class ClaudeCodeWebInterface {
         const longSide = Math.max(window.innerWidth, window.innerHeight);
         const shortSide = Math.min(window.innerWidth, window.innerHeight);
         const tall = shortSide > 0 && (longSide / shortSide) > 2;
-        const notchClass = isPortrait && this._isIOS() && tall;
+        const notchClass = this._isIOS() && tall;
 
         const apply = (axis, fallback) => {
             const measured = measure(axis);
             const prop = '--safe-area-inset-' + axis;
             if (measured > 0) {
                 root.style.setProperty(prop, measured + 'px');
-            } else if (notchClass) {
+            } else if (notchClass && fallback) {
                 root.style.setProperty(prop, fallback);
             } else {
                 root.style.removeProperty(prop);
             }
         };
 
-        apply('top', '59px');
-        apply('bottom', '34px');
+        apply('top', isPortrait ? '59px' : null);
+        apply('bottom', isPortrait ? '34px' : '21px');
+        apply('left', isPortrait ? null : '59px');
+        apply('right', isPortrait ? null : '59px');
     }
 
     _isIOS() {
@@ -5312,8 +5476,11 @@ class ClaudeCodeWebInterface {
                 <svg class="folder-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
                 </svg>
-                <span class="folder-name">${folder.name}</span>
             `;
+            const folderName = document.createElement('span');
+            folderName.className = 'folder-name';
+            folderName.textContent = folder.name;
+            folderItem.appendChild(folderName);
             folderItem.addEventListener('click', () => this.loadFolders(folder.path));
             folderList.appendChild(folderItem);
         });

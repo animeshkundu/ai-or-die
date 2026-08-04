@@ -19,11 +19,10 @@ const {
  * 09-visual-regression.spec.js-snapshots/. Update with:
  *   npx playwright test --update-snapshots --project visual-regression
  *
- * SKIP on Windows CI: runner image updates cause baseline drift that is
- * unrelated to code changes. Re-enable after baselines are regenerated.
+ * Linux and Windows are both CI gates. Regenerate both through
+ * update-visual-baselines.yml when an intentional redesign changes pixels.
  */
 test.describe('Visual regression', () => {
-  test.skip(process.platform === 'win32' && !!process.env.CI, 'Skipped on Windows CI — screenshot baselines need regeneration');
   let server, port, url;
 
   test.beforeAll(async () => {

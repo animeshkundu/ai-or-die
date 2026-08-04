@@ -276,6 +276,12 @@ The WebSocket server (`ws.Server`) is attached to the same HTTP(S) server instan
 2. If `?sessionId=` is present in the URL and the session exists, the server auto-joins that session.
 3. On close or error, the connection is removed from `webSocketConnections` and its session's `connections` Set.
 
+During a join, the server prepares the replay snapshot and drains any pending
+coalesced output before adding the socket to the session's live-output
+subscribers. Subscription and `session_joined` delivery then occur
+synchronously, so output already represented in `outputBuffer` cannot also
+arrive as a live boundary frame.
+
 ### Message Protocol
 
 All messages are JSON. The `type` field determines the handler.
@@ -283,7 +289,7 @@ All messages are JSON. The `type` field determines the handler.
 | Client Message | Description |
 |---------------|-------------|
 | `create_session` | Create a new session and join it. Fields: `name`, `workingDir`. |
-| `join_session` | Join an existing session. Fields: `sessionId`. Replays the last 200 stored output chunks from the output buffer. |
+| `join_session` | Join an existing session. Fields: `sessionId`. Replays the newest stored output up to a 256 KiB byte cap. |
 | `leave_session` | Disconnect from current session without stopping the agent. |
 | `start_claude` | Launch Claude CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
 | `start_codex` | Launch Codex CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |

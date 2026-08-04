@@ -470,7 +470,7 @@
     overlay.style.zIndex = '10000';
     var box = document.createElement('div');
     box.className = 'modal-content';
-    box.style.cssText = 'max-width:90vw;max-height:80vh;display:flex;flex-direction:column';
+    box.style.cssText = 'max-width:90vw;max-height:80dvh;display:flex;flex-direction:column';
     overlay.appendChild(box);
 
     var hdr = document.createElement('div');

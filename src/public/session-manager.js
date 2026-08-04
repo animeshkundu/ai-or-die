@@ -15,7 +15,6 @@ class SessionTabManager {
         this.notificationsEnabled = false;
         this.idleTimeoutMs = 90000;
         this._deletingSessionIds = new Set();
-        this.requestNotificationPermission();
     }
 
     getAlias(kind) {
@@ -26,26 +25,28 @@ class SessionTabManager {
     }
     
     requestNotificationPermission() {
-        if ('Notification' in window) {
-            if (Notification.permission === 'default') {
-                // Request permission
-                Notification.requestPermission().then(permission => {
-                    this.notificationsEnabled = permission === 'granted';
-                    if (this.notificationsEnabled) {
-                        console.log('Desktop notifications enabled');
-                    } else {
-                        console.log('Desktop notifications denied');
-                    }
-                });
-            } else if (Notification.permission === 'granted') {
-                this.notificationsEnabled = true;
-                console.log('Desktop notifications already enabled');
-            } else {
-                this.notificationsEnabled = false;
-                console.log('Desktop notifications blocked');
-            }
-        } else {
+        if (!('Notification' in window)) {
             console.log('Desktop notifications not supported in this browser');
+            return;
+        }
+        const applyPermission = (permission) => {
+            this.notificationsEnabled = permission === 'granted';
+            console.log(this.notificationsEnabled
+                ? 'Desktop notifications enabled'
+                : 'Desktop notifications denied');
+            this.claudeInterface?._setupNotificationCapability();
+        };
+        if (Notification.permission === 'granted') {
+            applyPermission('granted');
+        } else if (Notification.permission === 'denied') {
+            applyPermission('denied');
+        } else if (Notification.requestPermission.length > 0) {
+            Notification.requestPermission(applyPermission);
+        } else {
+            Notification.requestPermission().then(applyPermission).catch((error) => {
+                console.error('Desktop notification permission failed:', error);
+                applyPermission(Notification.permission);
+            });
         }
     }
     
@@ -310,7 +311,17 @@ class SessionTabManager {
     }
     
     checkAndPromptForNotifications() {
-        if ('Notification' in window && Notification.permission === 'default') {
+        const overlay = document.getElementById('overlay');
+        const blockingChooserVisible = overlay && getComputedStyle(overlay).display !== 'none';
+        const classifier = window.NotificationCapability
+            && window.NotificationCapability.classifyNotificationCapability;
+        const capability = classifier ? classifier({
+            secureContext: window.isSecureContext,
+            standalone: this.claudeInterface?._isInstalledPWA() || false,
+            notificationSupported: 'Notification' in window,
+            permission: 'Notification' in window ? Notification.permission : null
+        }) : { supported: 'Notification' in window };
+        if (!blockingChooserVisible && capability.supported && Notification.permission === 'default') {
             if (window.feedback) {
                 var self = this;
                 window.feedback.info(
@@ -391,8 +402,10 @@ class SessionTabManager {
         if (overflowBtn) {
             overflowBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                overflowMenu.classList.toggle('active');
+                const open = overflowMenu.classList.toggle('active');
+                overflowBtn.setAttribute('aria-expanded', String(open));
                 this.updateOverflowMenu();
+                if (open) overflowMenu.querySelector('[role="menuitem"]')?.focus();
             });
         }
         
@@ -400,7 +413,15 @@ class SessionTabManager {
         document.addEventListener('click', (e) => {
             if (!overflowMenu?.contains(e.target) && !overflowBtn?.contains(e.target)) {
                 overflowMenu?.classList.remove('active');
+                overflowBtn?.setAttribute('aria-expanded', 'false');
             }
+        });
+        overflowMenu?.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            e.preventDefault();
+            overflowMenu.classList.remove('active');
+            overflowBtn?.setAttribute('aria-expanded', 'false');
+            overflowBtn?.focus();
         });
         
         // Update overflow on window resize (debounced to avoid layout thrashing)
@@ -477,31 +498,43 @@ class SessionTabManager {
             
             const item = document.createElement('div');
             item.className = 'overflow-tab-item';
+            item.setAttribute('role', 'menuitem');
+            item.tabIndex = 0;
             if (sessionId === this.activeTabId) {
                 item.classList.add('active');
+                item.setAttribute('aria-current', 'page');
             }
             
             item.innerHTML = `
                 <span class="overflow-tab-name">${tabElement.querySelector('.tab-name').textContent}</span>
-                <span class="overflow-tab-close" data-session-id="${sessionId}" title="Close tab">
+                <button type="button" class="overflow-tab-close" data-session-id="${sessionId}" title="Close tab" aria-label="Close ${_esc(session.name)}">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="18" y1="6" x2="6" y2="18"/>
                         <line x1="6" y1="6" x2="18" y2="18"/>
                     </svg>
-                </span>
+                </button>
             `;
             
             // Click to switch to tab
             item.addEventListener('click', async (e) => {
-                if (!e.target.classList.contains('overflow-tab-close')) {
+                if (!e.target.closest('.overflow-tab-close')) {
                     await this.switchToTab(sessionId);
                     menu.classList.remove('active');
+                    document.getElementById('tabOverflowBtn')?.setAttribute('aria-expanded', 'false');
                     // Update menu contents after switching - use a slightly longer delay to ensure UI updates
                     setTimeout(() => {
                         this.updateTabOverflow();
                         this.updateOverflowMenu();
                     }, 150);
                 }
+            });
+            item.addEventListener('keydown', async (e) => {
+                if (e.target.closest('.overflow-tab-close')) return;
+                if (e.key !== 'Enter' && e.key !== ' ') return;
+                e.preventDefault();
+                await this.switchToTab(sessionId);
+                menu.classList.remove('active');
+                document.getElementById('tabOverflowBtn')?.setAttribute('aria-expanded', 'false');
             });
             
             // Close button
@@ -510,6 +543,7 @@ class SessionTabManager {
                 e.stopPropagation();
                 this.closeSession(sessionId);
                 menu.classList.remove('active');
+                document.getElementById('tabOverflowBtn')?.setAttribute('aria-expanded', 'false');
             });
             
             menu.appendChild(item);
@@ -616,6 +650,9 @@ class SessionTabManager {
         tab.className = 'session-tab';
         tab.setAttribute('role', 'tab');
         tab.setAttribute('aria-selected', 'false');
+        tab.setAttribute('aria-controls', 'terminalContainer');
+        tab.id = `session-tab-${sessionId}`;
+        tab.tabIndex = -1;
         tab.dataset.sessionId = sessionId;
         tab.draggable = true;
         
@@ -650,12 +687,12 @@ class SessionTabManager {
                 ${badgeHtml}
                 <span class="tab-name" title="${_esc(sessionName)}">${_esc(displayName)}</span>
             </div>
-            <span class="tab-close" title="Close tab" aria-label="Close ${_esc(sessionName)}">
+            <button type="button" class="tab-close" title="Close tab" aria-label="Close ${_esc(sessionName)}">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="18" y1="6" x2="6" y2="18"/>
                     <line x1="6" y1="6" x2="18" y2="18"/>
                 </svg>
-            </span>
+            </button>
         `;
         
         // Tab click handler
@@ -663,6 +700,32 @@ class SessionTabManager {
             if (!e.target.closest('.tab-close')) {
                 await this.switchToTab(sessionId);
             }
+        });
+        tab.addEventListener('keydown', (e) => {
+            const ids = this.getOrderedTabIds().filter((id) => {
+                const candidate = this.tabs.get(id);
+                return candidate && candidate.style.display !== 'none';
+            });
+            const index = ids.indexOf(sessionId);
+            let targetIndex = index;
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                this.switchToTab(sessionId);
+                return;
+            }
+            if (e.key === 'ArrowLeft') targetIndex = (index - 1 + ids.length) % ids.length;
+            else if (e.key === 'ArrowRight') targetIndex = (index + 1) % ids.length;
+            else if (e.key === 'Home') targetIndex = 0;
+            else if (e.key === 'End') targetIndex = ids.length - 1;
+            else if (e.key === 'Delete') {
+                e.preventDefault();
+                this.closeSession(sessionId);
+                return;
+            }
+            else return;
+            e.preventDefault();
+            const target = this.tabs.get(ids[targetIndex]);
+            target?.focus();
         });
         
         // Close button handler
@@ -699,6 +762,7 @@ class SessionTabManager {
         if (!this.tabOrder.includes(sessionId)) {
             this.tabOrder.push(sessionId);
         }
+        if (!this.activeTabId && this.tabs.size === 1) tab.tabIndex = 0;
 
         // Store session data with timestamp and activity tracking
         this.activeSessions.set(sessionId, {
@@ -754,6 +818,7 @@ class SessionTabManager {
         this.tabs.forEach(t => {
             t.classList.remove('active');
             t.setAttribute('aria-selected', 'false');
+            t.tabIndex = -1;
         });
 
         // Add active class to selected tab
@@ -761,6 +826,7 @@ class SessionTabManager {
         if (!tab) return;
         tab.classList.add('active');
         tab.setAttribute('aria-selected', 'true');
+        tab.tabIndex = 0;
         this.activeTabId = sessionId;
         try { localStorage.setItem('cc-active-session', sessionId); } catch (_) { /* private mode */ }
         this.ensureTabVisible(sessionId);
@@ -791,12 +857,21 @@ class SessionTabManager {
         // 'clear' verdict (see app.js). session_joined repaints authoritatively.
         const cachePainted = this.claudeInterface.snapshotCache?.paintCached(sessionId);
         this.claudeInterface._cachePaintedForSession = cachePainted ? sessionId : null;
-        // When we painted the incoming tab from cache, drop any output frames
-        // still queued from the OUTGOING session so they can't flush on top of
-        // the instant repaint. They belong to the previous session, whose
-        // server-side buffer replays them on its next visit.
-        if (cachePainted && Array.isArray(this.claudeInterface._pendingWrites)) {
+        // Drop output frames still queued from the outgoing session before the
+        // join control frame repaints the shared terminal. The server buffer
+        // replays them when that session is visited again.
+        if (Array.isArray(this.claudeInterface._pendingWrites)) {
             this.claudeInterface._pendingWrites.length = 0;
+            this.claudeInterface._pendingWriteBytes = 0;
+            this.claudeInterface._textDecoder = new TextDecoder();
+            this.claudeInterface._planDetectText = [];
+            this.claudeInterface._planDetectBytes = 0;
+            if (this.claudeInterface._ingressPaused) {
+                this.claudeInterface._ingressPaused = false;
+                if (!this.claudeInterface._outputPaused) {
+                    this.claudeInterface.send({ type: 'flow_control', action: 'resume' });
+                }
+            }
         }
         await this.claudeInterface.joinSession(sessionId);
         this.updateHeaderInfo(sessionId);

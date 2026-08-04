@@ -412,9 +412,11 @@
     var panel = document.createElement('div');
     panel.className = 'file-browser-panel';
     panel.id = 'fileBrowserPanel';
-    panel.setAttribute('role', 'complementary');
+    panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-label', 'File Browser');
+    panel.setAttribute('aria-modal', 'false');
     panel.tabIndex = -1; // Allow focus for keyboard events
+    panel.hidden = true;
 
     // Resize handle
     var resizeHandle = document.createElement('div');
@@ -599,11 +601,32 @@
         }
         e.stopPropagation();
         e.preventDefault();
+      } else if (e.key === 'Tab' && this._isOverlayMode()) {
+        var focusable = Array.from(panel.querySelectorAll(
+          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        )).filter(function (node) { return !node.hidden && node.offsetParent !== null; });
+        if (focusable.length) {
+          var first = focusable[0];
+          var last = focusable[focusable.length - 1];
+          var active = document.activeElement;
+          var activeInList = focusable.indexOf(active) !== -1;
+          if (e.shiftKey && (active === first || !activeInList)) {
+            e.preventDefault();
+            last.focus();
+          } else if (!e.shiftKey && (active === last || !activeInList)) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
       }
     }.bind(this));
 
     document.body.appendChild(panel);
     this._panelEl = panel;
+    this._onViewportResize = function () {
+      if (this._open) this._updateOverlayMode();
+    }.bind(this);
+    window.addEventListener('resize', this._onViewportResize);
 
     // Document-level Escape handler (fallback when panel doesn't have focus)
     var self = this;
@@ -682,10 +705,6 @@
       document.removeEventListener('mouseup', onMouseUp);
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
-      // Refit terminal
-      if (this.app && this.app.fitAddon) {
-        this.app.fitAddon.fit();
-      }
     }.bind(this);
 
     handle.addEventListener('mousedown', function (e) {
@@ -733,6 +752,7 @@
   FileBrowserPanel.prototype.open = function (startPath) {
     if (this._open) return;
     this._open = true;
+    this._opener = document.activeElement;
     // Resolution order:
     //   1. Explicit startPath argument from the caller (e.g. openToFile)
     //   2. Live cwd from the active session (getCwd is invoked HERE, every
@@ -745,6 +765,7 @@
       try { cwd = this.getCwd(); } catch (_) { cwd = null; }
     }
     var p = startPath || cwd || this.initialPath || null;
+    this._panelEl.hidden = false;
     this._panelEl.classList.add('open');
     this._updateOverlayMode();
     // fs-watcher (#41 / ADR-0017): bring up the single-EventSource-per-
@@ -762,15 +783,21 @@
     }
     this.navigateTo(p);
     this._announceToScreenReader('File browser opened');
-    // Adjust terminal width
-    this._adjustTerminal();
+    var scheduleFocus = typeof requestAnimationFrame === 'function'
+      ? requestAnimationFrame
+      : function (fn) { setTimeout(fn, 0); };
+    scheduleFocus(function () {
+      if (this._panelEl && typeof this._panelEl.focus === 'function') this._panelEl.focus();
+    }.bind(this));
   };
 
   FileBrowserPanel.prototype.close = function () {
     if (!this._open) return;
     this._open = false;
     this._panelEl.classList.remove('open');
+    this._panelEl.hidden = true;
     this._backdropEl.classList.remove('active');
+    this._setBackgroundInert(false);
     // Drop the fs-watcher when the panel closes — the SSE consumes a
     // server-side chokidar watcher (kernel resource) per the
     // MAX_CONCURRENT_WATCHERS=5/IP cap. Re-opens the next time the
@@ -784,7 +811,14 @@
       try { this._fileWatcher.disconnect(); } catch (_) { /* ignore */ }
     }
     this._announceToScreenReader('File browser closed');
-    this._adjustTerminal();
+    var shouldFocusTerminal = !this._opener || this._opener === document.body
+      || !this._opener.isConnected || typeof this._opener.focus !== 'function';
+    if (!shouldFocusTerminal) {
+      this._opener.focus();
+    } else if (this.app && this.app.terminal && typeof this.app.terminal.focus === 'function') {
+      this.app.terminal.focus();
+    }
+    this._opener = null;
   };
 
   FileBrowserPanel.prototype.toggle = function () {
@@ -818,46 +852,7 @@
   };
 
   FileBrowserPanel.prototype._adjustTerminal = function () {
-    var termContainer = document.querySelector('.terminal-container');
-    if (!termContainer) return;
-    if (this._open && !this._isOverlayMode()) {
-      termContainer.style.marginRight = this._panelEl.offsetWidth + 'px';
-    } else {
-      termContainer.style.marginRight = '';
-    }
-
-    // Clear any pending resize from previous toggle
-    var self = this;
-    if (this._resizeTimer) {
-      clearTimeout(this._resizeTimer);
-      this._resizeTimer = null;
-    }
-    if (this._transitionHandler) {
-      this._panelEl.removeEventListener('transitionend', this._transitionHandler);
-    }
-
-    // Refit terminals when CSS transition completes (not on a hardcoded timer)
-    this._transitionHandler = function (e) {
-      if (e.propertyName !== 'transform') return;
-      self._panelEl.removeEventListener('transitionend', self._transitionHandler);
-      self._transitionHandler = null;
-      if (self._resizeTimer) {
-        clearTimeout(self._resizeTimer);
-        self._resizeTimer = null;
-      }
-      self._refitAllTerminals();
-    };
-    this._panelEl.addEventListener('transitionend', this._transitionHandler);
-
-    // Safety fallback (300ms = 200ms transition + 100ms buffer)
-    this._resizeTimer = setTimeout(function () {
-      self._resizeTimer = null;
-      if (self._transitionHandler) {
-        self._panelEl.removeEventListener('transitionend', self._transitionHandler);
-        self._transitionHandler = null;
-      }
-      self._refitAllTerminals();
-    }, 300);
+    // Non-terminal surfaces overlay the terminal and never change its geometry.
   };
 
   FileBrowserPanel.prototype._refitAllTerminals = function () {
@@ -880,8 +875,27 @@
   FileBrowserPanel.prototype._updateOverlayMode = function () {
     if (this._isOverlayMode()) {
       this._backdropEl.classList.add('active');
+      this._panelEl.setAttribute('aria-modal', 'true');
+      this._setBackgroundInert(true);
     } else {
       this._backdropEl.classList.remove('active');
+      this._panelEl.setAttribute('aria-modal', 'false');
+      this._setBackgroundInert(false);
+    }
+  };
+
+  FileBrowserPanel.prototype._setBackgroundInert = function (inert) {
+    if (typeof document === 'undefined' || typeof document.getElementById !== 'function') return;
+    var appRoot = document.getElementById('app');
+    if (!appRoot) return;
+    if (inert && !this._backgroundInertApplied) {
+      this._backgroundWasInert = appRoot.inert;
+      appRoot.inert = true;
+      this._backgroundInertApplied = true;
+    } else if (!inert && this._backgroundInertApplied) {
+      appRoot.inert = !!this._backgroundWasInert;
+      this._backgroundInertApplied = false;
+      this._backgroundWasInert = false;
     }
   };
 

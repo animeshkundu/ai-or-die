@@ -126,7 +126,7 @@ ninja-keys {
 .shortcuts-modal .modal-content {
     width: 560px;
     max-width: 90vw;
-    max-height: 80vh;
+    max-height: 80dvh;
     overflow-y: auto;
 }
 
