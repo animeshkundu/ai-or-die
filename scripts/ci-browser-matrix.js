@@ -46,6 +46,34 @@ const PLATFORM_LIMITS = {
 
 const DEFAULT_OS = ['ubuntu-latest', 'windows-latest'];
 
+// How many jobs to spread each (os, browser) group across.
+//
+// One job per project is the most granular reporting, but every job pays
+// checkout + setup-node + npm ci before it runs a single test — roughly 1.5
+// min of pure overhead. Measured: the previous hand-written layout ran 33
+// browser jobs in 145 min of runner time; one-cell-per-project would be 42
+// jobs for ~185 min. That is ~28% more compute to test exactly the same code.
+//
+// Bucketing is not a new idea here — the old layout already did it implicitly
+// (test-browser-mobile ran 2 projects, ios-webkit ran 4). This just makes it
+// explicit and tunable. Playwright still reports results per project inside a
+// bucket, so a failure is still attributable to a project; you read a job log
+// instead of a job name.
+//
+// Raise for finer granularity and more parallelism, lower to cut runner cost.
+// Set to 0 for one job per project.
+const CHROMIUM_BUCKETS = parseInt(process.env.CI_BROWSER_BUCKETS, 10) || 6;
+
+function chunk(items, buckets) {
+  if (!buckets || buckets >= items.length) return items.map((i) => [i]);
+  const out = Array.from({ length: buckets }, () => []);
+  // Round-robin rather than contiguous slices: adjacent projects tend to have
+  // similar cost (the mobile-* family, the ios-* family), so contiguous slicing
+  // would pile the slow ones into one bucket and leave others idle.
+  items.forEach((item, index) => out[index % buckets].push(item));
+  return out.filter((b) => b.length);
+}
+
 function projectEntries() {
   const configPath = path.resolve(__dirname, '..', 'e2e', 'playwright.config.js');
   const config = require(configPath);
@@ -68,11 +96,37 @@ function build() {
   const entries = projectEntries();
   const names = entries.map((e) => e.name);
   const unknownExclusions = Object.keys(EXCLUDED).filter((n) => !names.includes(n));
-  const include = [];
+
+  // Group by (os, browser) first: a job installs ONE browser, and mixing
+  // chromium and webkit projects into one job would force it to install both.
+  const groups = new Map();
   for (const { name: project, browser } of entries) {
     if (EXCLUDED[project]) continue;
     const limit = PLATFORM_LIMITS[project];
-    for (const os of (limit ? limit.os : DEFAULT_OS)) include.push({ project, os, browser });
+    for (const os of (limit ? limit.os : DEFAULT_OS)) {
+      const key = `${os}::${browser}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(project);
+    }
+  }
+
+  const include = [];
+  for (const [key, projects] of groups) {
+    const [os, browser] = key.split('::');
+    // webkit is only the 4 ios-* projects — keep them in a single job rather
+    // than paying a second browser install to split 4 fast tests.
+    const buckets = browser === 'webkit' ? 1 : CHROMIUM_BUCKETS;
+    for (const group of chunk(projects.slice().sort(), buckets)) {
+      include.push({
+        os,
+        browser,
+        projects: group.join(' '),
+        // Stable, readable job label. Names appear in branch protection, so
+        // keep them derived from content rather than an index that shifts when
+        // a project is added.
+        label: group.length === 1 ? group[0] : `${browser}-${group[0]}+${group.length - 1}`,
+      });
+    }
   }
   return { include, names, unknownExclusions };
 }

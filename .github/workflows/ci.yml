@@ -142,6 +142,23 @@ jobs:
         with:
           models: stt
 
+      # Prewarm the Playwright browser cache ONCE per OS, for the same reason
+      # the STT model is prewarmed here.
+      #
+      # Without this the 42-cell browser matrix cold-downloads Chromium 42 times
+      # concurrently from cdn.playwright.dev. That is self-inflicted: the first
+      # run of this matrix invalidated the old lockfile-keyed caches, every cell
+      # missed, and the download stalled past a 240s budget on three consecutive
+      # attempts — while `apt` finished in 11s, so the dpkg-lock theory was
+      # wrong. One warm cache per OS turns 42 cold downloads into 1.
+      - name: Prewarm Playwright browsers
+        uses: ./.github/actions/install-playwright
+        with:
+          browsers: chromium webkit
+          # Generous: this is the ONE cold download, and everything downstream
+          # depends on it landing.
+          attempt-timeout-ms: '600000'
+
   # ---------------------------------------------------------------------------
   # Derived browser matrix.
   #
@@ -180,8 +197,11 @@ jobs:
         run: echo "matrix=$(node scripts/ci-browser-matrix.js)" >> "$GITHUB_OUTPUT"
 
   test-browser:
-    name: browser (${{ matrix.project }}, ${{ matrix.os }})
-    needs: browser-matrix
+    name: browser (${{ matrix.label }}, ${{ matrix.os }})
+    # prewarm-models is a REAL dependency, not gating: it populates the shared
+    # Playwright browser cache once per OS. Without it every cell cold-downloads
+    # Chromium concurrently and the CDN stalls them out.
+    needs: [browser-matrix, prewarm-models]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -204,13 +224,22 @@ jobs:
         uses: ./.github/actions/cache-models
         with:
           models: stt
-      - name: Run ${{ matrix.project }}
-        run: npx playwright test --config e2e/playwright.config.js --project ${{ matrix.project }}
+      # One job runs SEVERAL projects. Every job pays checkout + setup-node +
+      # npm ci (~1.5 min) before its first test, so one-job-per-project spent
+      # ~28% more runner time than the layout it replaced (measured: 33 jobs /
+      # 145 min before, 42 jobs / ~185 min projected). Playwright still reports
+      # per project inside the job, so a failure stays attributable.
+      - name: Run ${{ matrix.projects }}
+        shell: bash
+        run: |
+          args=""
+          for p in ${{ matrix.projects }}; do args="$args --project $p"; done
+          npx playwright test --config e2e/playwright.config.js $args
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-${{ matrix.project }}-${{ matrix.os }}
+          name: playwright-${{ matrix.label }}-${{ matrix.os }}
           path: |
             e2e/test-results/
             playwright-report/
