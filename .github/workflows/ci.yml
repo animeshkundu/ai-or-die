@@ -125,11 +125,11 @@ jobs:
   # slow jobs). Browser jobs `needs: prewarm-models` and then just restore.
   prewarm-models:
     runs-on: ${{ matrix.os }}
-    # 20 -> 35: this job now warms the Playwright browsers too, and on a cache
+    # 20 -> 45: this job now warms the Playwright browsers too, and on a cache
     # MISS that is a genuinely slow ~170MB download per browser. It hit the old
     # 20-min cap and was reported as `cancelled`, which reads like an infra
     # blip rather than a budget breach.
-    timeout-minutes: 35
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -159,9 +159,21 @@ jobs:
         uses: ./.github/actions/install-playwright
         with:
           browsers: chromium webkit
-          # Generous: this is the ONE cold download, and everything downstream
-          # depends on it landing.
-          attempt-timeout-ms: '600000'
+          # ONE long attempt, not several short ones.
+          #
+          # GitHub scopes a cache to the branch that created it, and this
+          # workflow is `on: pull_request` only — main never runs it, so it
+          # never publishes a cache other branches can restore. Every new branch
+          # therefore starts cold, and measured throughput to cdn.playwright.dev
+          # from these runners is ~0.28 MB/s: a 170MB browser cannot finish in a
+          # 600s budget, so three 600s attempts just burn 30 minutes and fail.
+          #
+          # 25 minutes gives the one cold download a real chance to complete and
+          # populate this branch's cache; every later job restores it. Retries
+          # are pointless against a slow-but-progressing transfer — they restart
+          # from zero — so attempts is 1 and the budget carries the whole cost.
+          attempt-timeout-ms: '1500000'
+          attempts: '1'
 
   # ---------------------------------------------------------------------------
   # Derived browser matrix.

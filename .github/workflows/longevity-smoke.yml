@@ -60,7 +60,12 @@ jobs:
     # away from a timeout. The cap alone was never the defect — a job that
     # times out on every platform is over budget, not unlucky — but 18 left no
     # margin for npm ci + Playwright install + gate + a 5-minute soak.
-    timeout-minutes: 30
+    #
+    # 30 -> 45: the browser install now gets a single 25-minute attempt, because
+    # this workflow is PR-only and so never restores a cache created on main —
+    # every branch cold-downloads at ~0.28 MB/s. 25 (install) + 5 (soak) + npm
+    # ci + gate does not fit in 30.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -91,6 +96,13 @@ jobs:
         uses: ./.github/actions/install-playwright
         with:
           browsers: chromium
+          # Same reasoning as prewarm-models in ci.yml: this workflow is also
+          # PR-triggered, so it never restores a cache created on main, and the
+          # cold download runs at ~0.28 MB/s from these runners. Three short
+          # attempts just burn the budget restarting from zero; one long attempt
+          # can actually finish and populate the branch cache.
+          attempt-timeout-ms: '1500000'
+          attempts: '1'
 
       # Fast regression-test gate (< 2 min). Catches per-lane regression-
       # test failures before the expensive 5-min soak.
