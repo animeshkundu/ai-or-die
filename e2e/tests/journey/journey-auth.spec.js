@@ -1,21 +1,17 @@
 // journey-auth.spec.js — Phase 2 of the user-journey: auth-on rerun.
 //
-// Per task #9: restart server with `--auth foo`, navigate with
-// `?token=foo`, repeat steps 2–7. Confirm WS reconnect after a server
-// kill+restart. Confirm token doesn't leak into URL bar / referrer /
-// console logs.
-//
-// PRE-REQ: dev server already running at http://127.0.0.1:11501 with
-// --auth foo (a SEPARATE port from the no-auth server on 11500 so the
-// two journeys don't trip on each other).
+// Boots an isolated auth-mode server on an ephemeral port, navigates with
+// `?token=foo`, and repeats steps 2–7. Confirms token doesn't leak into the
+// URL bar, referrer, or console logs.
 
 const { test, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
+const { createServer } = require('../../helpers/server-factory');
 
-const APP_URL_BASE = 'http://127.0.0.1:11501';
 const TOKEN = 'foo';
-const APP_URL = APP_URL_BASE + '/?token=' + TOKEN;
+let appUrlBase;
+let appUrl;
 const SHOTS_DIR = '/tmp/ai-or-die-journey-screenshots';
 const FINDINGS_PATH = '/tmp/journey-findings-auth.md';
 
@@ -46,12 +42,15 @@ async function shot(page, name) {
 test.describe.configure({ mode: 'serial' });
 
 test.describe('User Journey (auth-on rerun)', () => {
+  let server;
   let context;
   let page;
   let consoleSamples = [];
   let networkSamples = [];
 
   test.beforeAll(async ({ browser }) => {
+    ({ server, url: appUrlBase } = await createServer({ auth: TOKEN }));
+    appUrl = appUrlBase + '/?token=' + TOKEN;
     context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     page = await context.newPage();
     page.on('console', (msg) => {
@@ -66,11 +65,12 @@ test.describe('User Journey (auth-on rerun)', () => {
   test.afterAll(async () => {
     if (page) await page.close().catch(() => {});
     if (context) await context.close().catch(() => {});
+    if (server) await server.close();
     writeFindings();
   });
 
   test('Auth-on Step 2 — load with ?token=foo', async () => {
-    await page.goto(APP_URL);
+    await page.goto(appUrl);
     // Wait for either the auth modal OR the app to load.
     await page.waitForTimeout(2000);
     await shot(page, 'auth-02-loaded');
@@ -81,7 +81,7 @@ test.describe('User Journey (auth-on rerun)', () => {
 
     if (authModalShown) {
       recordFinding('P1', 'Auth Step 2 — ?token=URL not honoured by client',
-        'CLI prints `http://localhost:11501?token=foo` and tells the user to use that URL. ' +
+        'The authenticated launch URL includes `?token=foo`. ' +
         'But the client (src/public/auth.js) only reads from sessionStorage (`cc-web-token`) — ' +
         'no code reads `URLSearchParams.get("token")`. The auth modal shows even with the ' +
         '?token= param present, forcing the user to copy the token manually from the URL bar ' +
@@ -187,44 +187,13 @@ test.describe('User Journey (auth-on rerun)', () => {
     await page.evaluate(() => window.app._findPanel.close());
   });
 
-  test('Auth-on Step 11 — WS reconnect after server kill+restart (real)', async () => {
-    // The previous attempt called socket.close(4001) which is a CLEAN
-    // close — and app.js correctly skips reconnect on clean closes
-    // (see app.js onclose handler ~line 1879: only reconnects when
-    // !event.wasClean). To exercise the real reconnect path we need
-    // an UNCLEAN close, which requires actually killing the server
-    // process. We spawn a child to do it via shell so the test can
-    // continue independently.
-    const { execSync } = require('child_process');
+  test('Auth-on Step 11 — WS reconnect after unclean disconnect', async () => {
+    // Terminating the server-side socket produces the same unclean-close signal
+    // that drives restart recovery, while keeping the in-process ephemeral-port
+    // server alive to accept the reconnect. Killing this test process would also
+    // kill Playwright, and restarting createServer() would allocate a new port.
     const wsBefore = await page.evaluate(() => window.app.socket.readyState);
-
-    // Find and kill the auth server PID, wait briefly, then restart.
-    let killed = false;
-    let restarted = false;
-    try {
-      const pids = execSync(
-        'pgrep -f "ai-or-die.js --port 11501"', { encoding: 'utf8' }
-      ).trim().split('\n').filter(Boolean);
-      execSync('pkill -f "ai-or-die.js --port 11501"');
-      killed = true;
-    } catch (e) {
-      recordFinding('NOTE', 'Auth Step 11 — could not pkill server',
-        'pkill returned: ' + (e && e.message));
-    }
-
-    if (killed) {
-      await page.waitForTimeout(2500);
-      // Restart the server in the background. We use spawn so this
-      // function returns immediately; the actual readiness is detected
-      // by the client's reconnect.
-      const { spawn } = require('child_process');
-      const child = spawn('node',
-        [path.resolve(__dirname, '../../../bin/ai-or-die.js'),
-         '--port', '11501', '--no-open', '--auth', 'foo', '--dev'],
-        { detached: true, stdio: 'ignore' });
-      child.unref();
-      restarted = true;
-    }
+    for (const client of server.wss.clients) client.terminate();
 
     // Wait up to 30s for reconnect (covers worst-case backoff after
     // a few attempts).
@@ -237,12 +206,11 @@ test.describe('User Journey (auth-on rerun)', () => {
       await page.waitForTimeout(500);
     }
     if (!reconnected) {
-      recordFinding('P0', 'Auth Step 11 — WS did not reconnect within 30s after real kill+restart',
-        `wsBefore=${wsBefore}, killed=${killed}, restarted=${restarted}, no reconnect within 30s. ` +
-        'The instant-reconnect feature (commit 444a038) is supposed to recover from server ' +
-        'restarts within a few seconds.');
+      recordFinding('P0', 'Auth Step 11 — WS did not reconnect within 30s after unclean disconnect',
+        `wsBefore=${wsBefore}, no reconnect within 30s. ` +
+        'The instant-reconnect feature (commit 444a038) is supposed to recover within a few seconds.');
     } else {
-      recordFinding('PASS', 'Auth Step 11 — WS reconnect after real kill+restart',
+      recordFinding('PASS', 'Auth Step 11 — WS reconnect after unclean disconnect',
         'reconnected within ' + (Date.now() - start) + 'ms');
     }
     await shot(page, 'auth-11-reconnect');
@@ -292,7 +260,7 @@ test.describe('User Journey (auth-on rerun)', () => {
     const referrerLeaks = networkSamples.filter((s) => {
       try {
         const u = new URL(s.url);
-        if (u.origin === APP_URL_BASE) return false; // same-origin OK
+        if (u.origin === appUrlBase) return false; // same-origin OK
         return s.referer && s.referer.includes('token=');
       } catch (_) { return false; }
     });

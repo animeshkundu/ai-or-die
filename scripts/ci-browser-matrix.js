@@ -25,15 +25,6 @@ const path = require('path');
 const EXCLUDED = {
   'voice-e2e': 'runs in .github/workflows/test-voice.yml (needs STT model fixtures)',
   'voice-real-pipeline': 'runs in .github/workflows/test-voice.yml (needs real inference)',
-  // Broken harness, not coverage. Both hardcode a server port (11500 / 11501)
-  // that nothing starts, so every test fails with ERR_CONNECTION_REFUSED —
-  // verified locally. Wiring them in would add 20 permanently-red tests, which
-  // is worse than the current gap because it trains people to ignore red.
-  // The fixed ports are also what blocks parallelising them. Fix by moving
-  // them onto the ephemeral-port server-factory the other suites use, then
-  // delete these two entries.
-  'journey': 'harness broken: hardcoded port 11500, no server started (ERR_CONNECTION_REFUSED)',
-  'journey-auth': 'harness broken: hardcoded port 11501, no server started (ERR_CONNECTION_REFUSED)',
 };
 
 // Projects that only run on a subset of platforms, with the reason.

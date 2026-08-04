@@ -1,22 +1,16 @@
 // journey.spec.js — scenario-based exploratory user journey through the
-// live ai-or-die UI. Drives a HEADED Chromium against an out-of-tree
-// dev server (port 11500, --disable-auth) so the test exercises the
-// real product, not a per-test fresh server.
-//
-// Per task #9: this is exploratory, not isolation testing. We walk the
-// 12-step journey end-to-end, capturing screenshots and findings at
-// each step. Each `test.step` is a checkpoint with PASS/FAIL semantics.
+// live ai-or-die UI. Boots an isolated server on an ephemeral port and
+// walks the 12-step journey end-to-end, capturing screenshots and findings
+// at each step. Each `test.step` is a checkpoint with PASS/FAIL semantics.
 // Findings get logged to attachments + saved to /tmp/journey-findings.md.
-//
-// PRE-REQ: dev server already running at http://127.0.0.1:11500 with
-// --disable-auth.
 
 const { test, expect } = require('@playwright/test');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const { createServer } = require('../../helpers/server-factory');
 
-const APP_URL = 'http://127.0.0.1:11500';
+let appUrl;
 const SHOTS_DIR = '/tmp/ai-or-die-journey-screenshots';
 const FINDINGS_PATH = '/tmp/journey-findings.md';
 const EXPRESS_DIR = '/tmp/express';   // cloned in setup; used for "real repo" steps
@@ -28,7 +22,7 @@ function findingHeader() {
   return [
     '# Journey findings — ' + new Date().toISOString(),
     '',
-    'Server: ' + APP_URL + ' (--disable-auth)',
+    'Server: ' + appUrl + ' (--disable-auth)',
     'Browser: headed Chromium',
     '',
   ].join('\n');
@@ -91,11 +85,13 @@ async function sendInput(page, data) {
 test.describe.configure({ mode: 'serial' });
 
 test.describe('User Journey through live ai-or-die UI', () => {
+  let server;
   let context;
   let page;
   let cwdChangedFrames = [];
 
   test.beforeAll(async ({ browser }) => {
+    ({ server, url: appUrl } = await createServer());
     if (!fs.existsSync(SHOTS_DIR)) fs.mkdirSync(SHOTS_DIR, { recursive: true });
     fs.writeFileSync(FINDINGS_PATH, findingHeader());
     context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -118,6 +114,7 @@ test.describe('User Journey through live ai-or-die UI', () => {
   test.afterAll(async () => {
     if (page) await page.close().catch(() => {});
     if (context) await context.close().catch(() => {});
+    if (server) await server.close();
     // Final findings dump.
     fs.writeFileSync(FINDINGS_PATH, fs.readFileSync(FINDINGS_PATH, 'utf8') +
       '\n\n## End of journey — ' + new Date().toISOString() + '\n');
@@ -127,7 +124,7 @@ test.describe('User Journey through live ai-or-die UI', () => {
   // Step 2: Fresh context, navigate to app
   // ─────────────────────────────────────────────────────────────────────
   test('Step 2 — fresh context loads the app', async () => {
-    await page.goto(APP_URL);
+    await page.goto(appUrl);
     await page.waitForFunction(() => !!(window.app && window.app.terminal), { timeout: 30000 });
     await shot(page, '02-app-loaded');
     // Sanity: terminal element rendered
@@ -363,7 +360,22 @@ test.describe('User Journey through live ai-or-die UI', () => {
     // (npm test in express takes too long for an exploratory pass; the
     // regex coverage is already proven by 58-click-stack-trace.spec.js.)
     const printed = 'at module (lib/router.js:42:8)';
-    await sendInput(page, "printf '%s\\n' '" + printed + "'\r");
+    // `printf` is POSIX-only and does not exist in pwsh, which is the shell the
+    // bridge spawns on Windows — so this step could never have run there. Use a
+    // node one-liner, which is platform-neutral.
+    //
+    // The Ctrl-C is NOT a principled fix and should not be read as one. Step 4
+    // installs a bash PROMPT_COMMAND and a zsh chpwd function (see :286, :291),
+    // both pure POSIX syntax that pwsh cannot parse. On Windows that step
+    // therefore asserts nothing about OSC 7 and leaves the prompt mid-parse;
+    // this cancels that pending state so the rest of the journey can proceed.
+    // The real fix is to make Step 4 install the pwsh OSC 7 prompt hook on
+    // Windows — the contract documented in docs/specs/file-browser.md — at which
+    // point this cancel becomes unnecessary. Tracked separately; deliberately
+    // left visible here rather than hidden behind a passing run.
+    await sendInput(page, '\x03');
+    await page.waitForTimeout(200);
+    await sendInput(page, 'node -e "console.log(\'' + printed + '\')"\r');
     await waitForTerminalText(page, printed, 10000);
     await shot(page, '06-stack-trace-printed');
 
