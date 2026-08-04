@@ -47,6 +47,17 @@ jobs:
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "No [update-baselines] marker in the head commit message; nothing to do."
           fi
+          # Playwright suffixes every snapshot with the platform it was taken
+          # on. Each matrix leg must upload ONLY its own platform's files:
+          # the collector below merges the artifacts into one directory, so a
+          # leg that uploaded the whole snapshot set would overwrite the other
+          # leg's freshly regenerated images with its own stale checked-out
+          # copies, and the commit step would then see no change at all.
+          case "$RUNNER_OS" in
+            Windows) echo "snapshot_suffix=win32" >> "$GITHUB_OUTPUT" ;;
+            macOS)   echo "snapshot_suffix=darwin" >> "$GITHUB_OUTPUT" ;;
+            *)       echo "snapshot_suffix=linux" >> "$GITHUB_OUTPUT" ;;
+          esac
       - uses: actions/checkout@v4
         if: steps.guard.outputs.enabled == 'true'
         # persist-credentials (default true) keeps the token so we can push.
@@ -87,7 +98,8 @@ jobs:
         if: ${{ !cancelled() && steps.guard.outputs.enabled == 'true' }}
         with:
           name: visual-baselines-${{ runner.os }}
-          path: e2e/tests/**/*-snapshots/
+          # Platform-scoped on purpose — see the suffix note in the guard step.
+          path: e2e/tests/**/*-snapshots/*-${{ steps.guard.outputs.snapshot_suffix }}.png
           retention-days: 14
 
   commit-baselines:
