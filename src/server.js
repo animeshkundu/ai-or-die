@@ -4140,15 +4140,21 @@ class ClaudeCodeWebServer {
     //
     // Re-check liveness first. The await above can take up to 300ms, and wsInfo
     // was captured before it. If the socket closed inside that window,
-    // cleanupWebSocketConnection already removed wsId from webSocketConnections
-    // and (harmlessly) from session.connections — and then this add would put a
-    // DEAD id back, permanently. Nothing removes it afterwards, so
-    // session.connections grows monotonically across reconnect storms and
-    // _flushSessionOutput's `connections.size === 0` idle short-circuit never
-    // fires again for that session: every PTY flush then pays a join, a regex
-    // pass and a Buffer copy for zero real subscribers.
-    if (!this.webSocketConnections.has(wsId)) return;
-    session.connections.add(wsId);
+    // cleanupWebSocketConnection already removed wsId from session.connections
+    // (harmlessly — it was not there yet), and adding it here would put a DEAD
+    // id back permanently. Nothing removes it afterwards, so session.connections
+    // grows monotonically across reconnect storms and _flushSessionOutput's
+    // `connections.size === 0` idle short-circuit never fires again for that
+    // session: every PTY flush then pays a join, a regex pass and a Buffer copy
+    // for zero real subscribers.
+    //
+    // Gate on the socket's own readyState rather than on webSocketConnections
+    // membership. An earlier version returned early on the map lookup and broke
+    // a legitimate join path — the map is bookkeeping, readyState is the actual
+    // liveness signal. Only the subscription is skipped; the join response below
+    // is still sent, because a caller that is still open deserves an answer.
+    const wsStillOpen = wsInfo && wsInfo.ws && wsInfo.ws.readyState === WebSocket.OPEN;
+    if (wsStillOpen) session.connections.add(wsId);
     this.sendToWebSocket(wsInfo.ws, {
       type: 'session_joined',
       sessionId: claudeSessionId,
