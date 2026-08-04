@@ -2674,11 +2674,26 @@ class ClaudeCodeWebInterface {
         this.send({ type: 'join_session', sessionId });
     }
 
-    _releaseFlowPauseForJoin() {
+    _releaseFlowPauseForJoin(preserveReplayObligation) {
         if (this._ingressPaused || this._outputPaused || this._flowPauseNeedsReplay) {
             this.send({ type: 'flow_control', action: 'resume' });
         }
+        // A stale join must NOT discharge the replay obligation. The server
+        // drops frames for a paused client rather than buffering them per
+        // client, so _flowPauseNeedsReplay records that a span was dropped and
+        // still has to be recovered by a re-join. _resetFlowControlState()
+        // clears that flag, and this used to run for stale joins too — so a
+        // rapid A->B->C switch could resume the stream and throw away the
+        // obligation without ever performing the replay, losing the dropped
+        // span permanently and with no gap indicator.
+        //
+        // The session's outputBuffer on the server DOES retain those frames
+        // (server.js:5582 pushes before the broadcast at 5585, and _flowPaused
+        // is only consulted later at 6592), so the obligation is always
+        // recoverable — provided it survives long enough to be acted on.
+        const owed = this._flowPauseNeedsReplay;
         this._resetFlowControlState();
+        if (preserveReplayObligation && owed) this._flowPauseNeedsReplay = true;
     }
 
     // Write a bounded amount per animation frame so WebKit's many-small-frame
@@ -2973,7 +2988,7 @@ class ClaudeCodeWebInterface {
                 if (isStaleJoin && this._cachePaintedForSession === message.sessionId) {
                     this._cachePaintedForSession = null;
                 }
-                this._releaseFlowPauseForJoin();
+                this._releaseFlowPauseForJoin(isStaleJoin);
                 if (!isStaleJoin) {
                     // The server's outputBuffer is authoritative at this boundary.
                     // Drop bytes queued by the closed socket before replaying it,
