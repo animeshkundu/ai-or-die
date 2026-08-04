@@ -2683,11 +2683,42 @@ class ClaudeCodeWebInterface {
 
     // Write a bounded amount per animation frame so WebKit's many-small-frame
     // delivery pattern cannot turn into one long xterm task.
+    /**
+     * Drain the whole pending binary queue synchronously, ignoring the
+     * per-frame budget.
+     *
+     * Ordering guard. Binary output is deferred to the next animation frame,
+     * but JSON messages are handled synchronously in handleMessage. Without
+     * this, a JSON message SENT AFTER some binary output TAKES EFFECT BEFORE
+     * it — a `clear` wipes the screen and the queued binary then paints on top
+     * of the cleared terminal, which is the opposite of what the server said.
+     *
+     * Any handler that mutates the terminal out-of-band must call this first.
+     * The budget exists to keep a steady stream off the main thread; it must
+     * not be allowed to reorder the stream against itself.
+     */
+    _drainPendingWritesNow() {
+        if (!this._pendingWrites || this._pendingWrites.length === 0) return;
+        // Bounded loop: takeChunkBudget always consumes at least one chunk, so
+        // this terminates. Guarded anyway rather than trusting that invariant.
+        let guard = 0;
+        while (this._pendingWrites.length > 0 && guard++ < 10000) {
+            this._flushWritesChunk();
+        }
+        this._afterDrainBookkeeping();
+    }
+
     _flushWrites() {
         this._rafPending = false;
         if (this._joinRepaintInProgress) return;
         if (this._pendingWrites.length === 0) return;
         this._applyIngressBackpressure();
+        this._flushWritesChunk();
+        this._afterDrainBookkeeping();
+    }
+
+    _flushWritesChunk() {
+        if (this._pendingWrites.length === 0) return;
         const combined = OutputFrameBatcher.takeChunkBudget(
             this._pendingWrites,
             this._WRITE_FRAME_BUDGET
@@ -2730,6 +2761,12 @@ class ClaudeCodeWebInterface {
             }, 400);
         }
 
+    }
+
+    /** Scheduling/backpressure bookkeeping after a drain. Kept out of
+     *  _flushWritesChunk so the synchronous drain loop cannot schedule a
+     *  redundant frame per chunk. */
+    _afterDrainBookkeeping() {
         if (this._pendingWrites.length > 0 && !this._rafPending) {
             if (this._ingressPaused && this._pendingWriteBytes < 128 * 1024) {
                 this._ingressPaused = false;
@@ -2741,7 +2778,6 @@ class ClaudeCodeWebInterface {
             this._ingressPaused = false;
             if (!this._outputPaused) this._resumeOutputFlow();
         }
-
     }
 
     _releaseJoinRepaint(generation) {
@@ -2825,6 +2861,23 @@ class ClaudeCodeWebInterface {
                 
             case 'session_joined':
                 console.log('[session_joined] Message received, active:', message.active, 'tabs:', this.sessionTabManager?.tabs.size);
+                // Discard bytes queued under the OUTGOING session before
+                // switching the id. _flushWrites attributes whatever it drains
+                // to this.currentClaudeSessionId at flush time, not at receive
+                // time, so leaving them queued across the transition would
+                // stamp the previous session's output with the new session:
+                // wrong-tab activity badge, wrong _outputTail, and
+                // planDetector able to raise a plan-approval prompt sourced
+                // from a session the user is no longer looking at.
+                //
+                // Unconditional on purpose. This runs before the isStaleJoin
+                // check below, and the stale path is exactly the one that used
+                // to leave the queue dirty.
+                if (this.currentClaudeSessionId !== message.sessionId
+                    && this._pendingWrites && this._pendingWrites.length > 0) {
+                    this._pendingWrites.length = 0;
+                    this._pendingWriteBytes = 0;
+                }
                 this.currentClaudeSessionId = message.sessionId;
                 this.currentClaudeSessionName = message.sessionName;
                 this.updateWorkingDir(message.workingDir);
@@ -2925,6 +2978,14 @@ class ClaudeCodeWebInterface {
                     // snapshot is used ONLY for non-live (exited/idle) sessions.
                     // See join-repaint.js for the decision matrix.
                     const replayBuffer = () => {
+                        // Drop anything still queued from BEFORE this replay.
+                        // The replay is authoritative for the joined session,
+                        // and the wipe below would otherwise be painted over by
+                        // stale bytes belonging to the previously-viewed one —
+                        // which is also how queued output got attributed to the
+                        // wrong session.
+                        this._pendingWrites.length = 0;
+                        this._pendingWriteBytes = 0;
                         this.terminal.write('\x1bc');
                         message.outputBuffer.forEach(data => {
                             this.terminal.write(data);
@@ -3127,6 +3188,11 @@ class ClaudeCodeWebInterface {
             }
                 
             case 'output':
+                // Drain queued binary FIRST. Binary output defers to the next
+                // animation frame while this path writes synchronously, so
+                // without this a JSON frame sent AFTER pending binary takes
+                // effect BEFORE it and the two streams render out of order.
+                this._drainPendingWritesNow();
                 this.terminal.write(message.data);
                 
                 // Update session activity indicator with output data

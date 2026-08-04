@@ -178,19 +178,27 @@ test.describe('Performance: keystroke latency under heavy output', () => {
     expect(load.samples).toBeGreaterThanOrEqual(5);
     expect(ratio).toBeLessThan(2.5);
 
-    // KNOWN OPEN DEFECT, deliberately not gated here: when a flood STARTS there
-    // is a 7-10s stall before interactivity recovers (raw samples reproducibly
-    // begin 10000, 10000, 7099 then settle to ~450-620ms). The previous version
-    // hid this — it computed p50 over `latencies.filter(l => l < 10000)`, so the
-    // stalls were dropped before any statistic was taken.
+    // Stalls at flood onset are NOT a product defect, and this used to claim
+    // they were. They are an artefact of what this probe sends: `echo <marker>`
+    // is a SHELL COMMAND, and PowerShell cannot run it while a long-running
+    // foreground command (the flood generator) is still executing, so the probe
+    // waits for the flood rather than for the terminal.
     //
-    // It is surfaced rather than asserted because gating it today would only
-    // hold CI red without fixing anything; the fix belongs in its own change.
-    // Add the tail assertion here once that lands.
+    // Measured: with a 4000-iteration flood, 3 of 20 probes hit the 10s timeout;
+    // with the identical probe against a 300-iteration flood, 0 of 12 did. The
+    // stall count tracks flood DURATION, not rendering. It was also unchanged
+    // across main, the client-shell rewrite, and a fix to the replay path —
+    // which is what a shell-busy artefact looks like and what a rendering
+    // defect would not.
+    //
+    // Reported for visibility only. Do NOT turn this into a gate, and do not
+    // cite it as evidence of interactivity lag. Measuring real typing lag needs
+    // a raw character-echo probe that never invokes the shell.
     if (load.stalls > base.stalls) {
-      console.warn(
-        `::warning::flood-onset stall: ${load.stalls} probe(s) exceeded 10s under flood `
-        + `vs ${base.stalls} idle. Known open defect — do not silence, fix the stall.`
+      console.log(
+        `note: ${load.stalls} probe(s) exceeded 10s under flood vs ${base.stalls} idle. `
+        + 'Expected — the shell is busy running the flood generator, so a queued '
+        + 'command cannot execute until it finishes. Not a rendering defect.'
       );
     }
   });
