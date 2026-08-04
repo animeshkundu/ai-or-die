@@ -157,15 +157,14 @@ jobs:
   #   - `actions/cache` saves with post-if: success(), so when a two-browser
   #     install died on the second browser the first one's completed download
   #     was thrown away. One browser per job removes the partial-failure case.
-  #   - The two downloads now run concurrently, so wall-clock is one browser
-  #     (~10 min at the measured rate) rather than two (~20 min).
+  #   - The browsers download concurrently rather than serially.
   #
   # macOS is here because longevity-smoke runs a macOS cell and had no producer
   # anywhere — it could only ever cold-download on its own budget.
   prewarm-browsers:
     name: prewarm ${{ matrix.browser }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -190,13 +189,9 @@ jobs:
         uses: ./.github/actions/install-playwright
         with:
           browsers: ${{ matrix.browser }}
-          # ONE long attempt. GitHub scopes caches to the creating branch, its
-          # PR base, or the default branch, and nothing in this repo runs on
-          # main, so every PR branch starts fully cold. At the ~0.28 MB/s
-          # measured from these runners a ~170MB browser needs ~10 min, so give
-          # it 20 and let the single attempt finish rather than restarting.
-          attempt-timeout-ms: '1200000'
-          attempts: '1'
+          # Uses the action's defaults. A healthy install is ~20s, so the
+          # default 5-minute bound is ample; this job exists to publish ONE
+          # cache entry per browser, not to absorb a long transfer.
 
   # ---------------------------------------------------------------------------
   # Derived browser matrix.
@@ -258,11 +253,9 @@ jobs:
     needs: [browser-matrix, prewarm-browsers, prewarm-stt]
     if: ${{ !cancelled() && needs.browser-matrix.result == 'success' }}
     runs-on: ${{ matrix.os }}
-    # 25 -> 35. These cells normally restore the cache prewarm-browsers built,
-    # which costs seconds. But they are no longer gated on that job succeeding
-    # (see above), so a cell CAN fall through to its own 15-min bounded install,
-    # and 25 left no room for that plus the tests themselves.
-    timeout-minutes: 35
+    # These cells normally restore the cache prewarm-browsers built, and a
+    # fall-through install is only tens of seconds, so 25 is ample again.
+    timeout-minutes: 25
     strategy:
       # Never cancel siblings. fail-fast defaults to TRUE, which would let one
       # red project hide every other result in the matrix — the same

@@ -10,14 +10,14 @@ name: Warm caches (default branch)
 # main and nothing ever published a cache that a fresh PR branch could restore.
 # Every new branch therefore started 100% cold, every time.
 #
-# That was survivable for the ML models, which come from a fast host. It was
-# fatal for the Playwright browsers: measured throughput from these runners to
-# cdn.playwright.dev is ~0.28 MB/s, so a ~170MB browser cannot finish inside a
-# normal job budget. Jobs burned their whole allocation downloading and timed
-# out — and because `actions/cache` saves with post-if: success(), a job that
-# timed out saved nothing, so the next run started from zero as well.
+# Publishing on main fixes that once, for every branch, permanently: a PR that
+# would otherwise install browsers from scratch just restores them instead.
 #
-# Publishing on main breaks that loop once, for every branch, permanently.
+# This is an optimisation, not a correctness fix. It was written while a
+# Playwright install bug (Node >=24.16 + Playwright <1.60.0 hanging in
+# extraction, microsoft/playwright#41000) made cold installs look impossible,
+# and the real fix for that was upgrading Playwright. Warming main is still
+# worth keeping: it turns a cold install into a cache restore for every PR.
 #
 # NOTE this cannot warm a version that main does not have yet: a PR that bumps
 # Playwright still pays one cold download, which then serves that branch.
@@ -59,7 +59,7 @@ jobs:
   browsers:
     name: ${{ matrix.browser }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -82,10 +82,7 @@ jobs:
       - uses: ./.github/actions/install-playwright
         with:
           browsers: ${{ matrix.browser }}
-          # Generous single attempt: this job's whole purpose is to absorb the
-          # slow cold download once, on main, so no PR ever has to.
-          attempt-timeout-ms: '1200000'
-          attempts: '1'
+          # Action defaults are fine: a healthy install is ~20s.
 
   models:
     name: stt (${{ matrix.os }})

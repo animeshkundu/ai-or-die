@@ -13,26 +13,25 @@ inputs:
   attempt-timeout-ms:
     description: >-
       Hard per-attempt wall-clock budget. Bounds a HANG, which a retry loop
-      alone cannot. Default 15 min: a ~170MB browser needs ~10.1 min at the
-      ~0.28 MB/s measured from these runners, and a budget set at the estimate
-      itself fails on a coin flip. Callers that expect a cache hit still pay
-      nothing; this is the size of the fallback, not the common path.
+      alone cannot — and this action exists because of a real one: on Node
+      >=24.16 with Playwright <1.60.0, `playwright install` downloads every byte
+      and then hangs forever in extraction (microsoft/playwright#41000). The
+      download itself is fast (167 MiB in ~1s on a runner), so 5 min is roughly
+      15x headroom over a healthy install while still failing a hang quickly.
     required: false
-    default: '900000'
+    default: '300000'
   skip-deps:
     description: Set to "1" to skip the Linux host-dependency phase.
     required: false
     default: '0'
   attempts:
     description: >-
-      Attempts per phase. Defaults to 1 deliberately. Retries help a transfer
-      that FAILS; they do nothing for one that is merely slow, because each
-      retry restarts from zero — three 600s attempts against this CDN burned
-      30 minutes and never got past the same point. Callers install ONE browser
-      per cache entry, so there is no intra-job progress for a retry to build
-      on either. Prefer a single generous attempt-timeout-ms.
+      Attempts per phase. 2 is cheap now that a healthy install is ~20s, so a
+      transient network blip costs seconds to retry rather than restarting a
+      long transfer. Note a retry cannot rescue a genuine HANG — only the
+      per-attempt timeout above bounds that.
     required: false
-    default: '1'
+    default: '2'
 
 runs:
   using: composite
@@ -45,11 +44,12 @@ runs:
     # theory; a regression in practice — it orphaned every warm cache the repo
     # already had, so every job cold-downloaded.
     #
-    # And the cold path does not work in this environment. Measured on a SINGLE
-    # smoke job (so not contention): the ~170MB Chromium download from
-    # cdn.playwright.dev stalled past a 240s budget on three consecutive
-    # attempts. The old jobs passed because they restored a warm cache and
-    # never actually downloaded.
+    # The cold path was broken for a while, and NOT for the reason it looked
+    # like. `playwright install` appeared to stall on the download; it was
+    # actually downloading every byte in about a second and then hanging in
+    # extraction, a Node >=24.16 + Playwright <1.60.0 bug
+    # (microsoft/playwright#41000). Jobs passed only while they restored a warm
+    # cache and never invoked the installer. Fixed by upgrading Playwright.
     #
     # So: match the historical path and key exactly so those caches restore,
     # and keep the bounded installer below for the miss case.
@@ -102,16 +102,16 @@ runs:
     # purge old binaries, so restoring v1.5x's browsers and installing v1.6x on
     # top saves a `-complete` entry holding BOTH, and every subsequent bump
     # compounds it until the repo's cache quota evicts the entries that matter.
-    # A version bump therefore starts clean. It costs one cold download, on the
-    # bumping PR only, and warm-caches.yml republishes on main immediately after
-    # the merge because that bump necessarily touches package-lock.json.
+    # A version bump therefore starts clean. That costs one real download on the
+    # bumping PR (tens of seconds), and warm-caches.yml republishes on main right
+    # after the merge, because such a bump necessarily touches package-lock.json.
     #
     # The remaining same-version fallback is what picks up a `-partial-*` entry.
     #
     # RESTORE AND SAVE ARE SPLIT ON PURPOSE. `actions/cache` runs its save with
     # post-if: success(), so a job that times out mid-download saves NOTHING and
-    # the next job starts from zero — which is how a slow CDN turned into an
-    # unbreakable loop. Splitting lets a failed install still bank its progress.
+    # the next job starts from zero. Splitting lets a failed install still bank
+    # whatever completed, so a re-run resumes rather than repeating it.
     #
     # The two saves use DIFFERENT keys, and that distinction is load-bearing.
     # Cache entries are immutable, so if a partial install wrote the exact
@@ -167,7 +167,7 @@ runs:
 
     # Install failed, but whatever finished before it did is still on disk.
     # Banking it under a unique key means the next attempt resumes instead of
-    # restarting from zero, which is the entire reason a slow CDN was fatal.
+    # restarting from zero.
     - name: Save Playwright browser cache (partial, resumable)
       if: steps.pwcache.outputs.cache-hit != 'true' && steps.pwinstall.outcome == 'failure'
       uses: actions/cache/save@v4
