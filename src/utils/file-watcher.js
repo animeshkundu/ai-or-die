@@ -248,6 +248,9 @@ class FileWatcher extends EventEmitter {
     // Both can coexist; an event matching either set is emitted exactly
     // once (Set semantics + early return on first match).
     this._subscriptions = new Set();
+    // Memo for _canonicalizeCached(). Latency optimisation only — never a
+    // correctness store, so clearing it wholesale is always safe.
+    this._canonCache = new Map();
     this._dirSubscriptions = new Set();
 
     // Watched parent directory set (chokidar add()/unwatch() targets).
@@ -547,7 +550,31 @@ class FileWatcher extends EventEmitter {
    * so both sides of the comparison are already in canonical form.
    */
   hasSubscription(absPath) {
-    const canonical = path.resolve(absPath);
+    // Subscription keys are stored CANONICALIZED (see subscribe()), so a
+    // purely lexical lookup here silently missed every event whenever
+    // canonicalization was not the identity — most visibly on Windows, where
+    // an 8.3 short path like C:\Users\RUNNER~1\... canonicalizes to
+    // C:\Users\runneradmin\... and nothing ever matched. The watcher did not
+    // error; it just delivered nothing, which is the worst failure shape.
+    // CLAUDE.md states the rule: canonicalize BOTH sides before a lexical
+    // compare. This is the other side.
+    //
+    // Cost matters — this runs on every chokidar event, and HOT-02 exists to
+    // keep synchronous I/O off exactly this path. So try the cheap lexical
+    // compare first and only canonicalize when it misses; for paths that are
+    // already canonical (the common case) this adds nothing at all, and the
+    // memo keeps a repeatedly-rejected path from re-statting forever.
+    const lexical = path.resolve(absPath);
+    if (this._matchesSubscription(lexical)) return true;
+    const canonical = this._canonicalizeCached(lexical);
+    if (canonical !== lexical && this._matchesSubscription(canonical)) return true;
+    return false;
+  }
+
+  /**
+   * Pure set/prefix matching for an already-normalized absolute path.
+   */
+  _matchesSubscription(canonical) {
     if (this._subscriptions.has(canonical)) return true;
     for (const dirWithSep of this._dirSubscriptions) {
       // dirWithSep already ends with path.sep. Match the dir itself
@@ -556,6 +583,23 @@ class FileWatcher extends EventEmitter {
       if (canonical.startsWith(dirWithSep)) return true;
     }
     return false;
+  }
+
+  /**
+   * _canonicalize() with a bounded memo. Each miss costs a realpath syscall,
+   * and this sits on the per-event filter path.
+   */
+  _canonicalizeCached(resolved) {
+    let hit = this._canonCache.get(resolved);
+    if (hit === undefined) {
+      hit = this._canonicalize(resolved);
+      // Bound it: a watcher on a busy tree can see unboundedly many distinct
+      // non-subscribed paths. Clearing wholesale is fine — the cache is a
+      // latency optimisation, never a correctness store.
+      if (this._canonCache.size >= 4096) this._canonCache.clear();
+      this._canonCache.set(resolved, hit);
+    }
+    return hit;
   }
 
   /**

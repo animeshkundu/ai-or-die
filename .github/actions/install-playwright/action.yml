@@ -135,10 +135,27 @@ runs:
         restore-keys: |
           playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.pwver.outputs.set }}-${{ steps.pwver.outputs.version }}-
 
-    # Skipped entirely on an exact hit — the cache already holds exactly this
-    # browser set at exactly this version, so there is nothing to verify.
-    # A restore-key (prefix) hit still runs it: that cache is an older revision
-    # or a partial, and the installer downloads only the delta.
+    # Host dependencies run REGARDLESS of the cache, and that is the whole point
+    # of splitting them out. The cache holds browser binaries under
+    # ~/.cache/ms-playwright; the Linux host libraries are apt packages and are
+    # NOT in it. Gating this on a cache miss meant a cache HIT skipped the apt
+    # install, and WebKit then died at launch with
+    #   libwoff2dec.so.1.0.2: cannot open shared object file
+    # which reads like a corrupt browser rather than a missing system package.
+    # No-op on Windows and macOS.
+    - name: Install host dependencies (Linux)
+      if: runner.os == 'Linux' && inputs.skip-deps != '1'
+      shell: bash
+      env:
+        PLAYWRIGHT_INSTALL_ATTEMPT_TIMEOUT_MS: ${{ inputs.attempt-timeout-ms }}
+        PLAYWRIGHT_INSTALL_ATTEMPTS: ${{ inputs.attempts }}
+        PLAYWRIGHT_DEPS_ONLY: '1'
+      run: node scripts/ci-install-playwright.js ${{ inputs.browsers }}
+
+    # Skipped on an exact hit — the cache already holds exactly this browser set
+    # at exactly this version, so there is nothing to download. A restore-key
+    # (prefix) hit still runs it: that cache is a partial, and the installer
+    # fetches only the delta. Host deps above already ran either way.
     - name: Install browsers (bounded + instrumented)
       id: pwinstall
       if: steps.pwcache.outputs.cache-hit != 'true'
@@ -151,7 +168,8 @@ runs:
       env:
         PLAYWRIGHT_INSTALL_ATTEMPT_TIMEOUT_MS: ${{ inputs.attempt-timeout-ms }}
         PLAYWRIGHT_INSTALL_ATTEMPTS: ${{ inputs.attempts }}
-        PLAYWRIGHT_SKIP_DEPS: ${{ inputs.skip-deps }}
+        # Already handled above; do not pay for apt twice.
+        PLAYWRIGHT_SKIP_DEPS: '1'
       run: node scripts/ci-install-playwright.js ${{ inputs.browsers }}
 
     # Full set present: publish the authoritative entry every other job restores.

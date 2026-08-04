@@ -27,6 +27,13 @@
 //   PLAYWRIGHT_INSTALL_ATTEMPT_TIMEOUT_MS  per-attempt budget (default 240000)
 //   PLAYWRIGHT_INSTALL_ATTEMPTS            attempts per phase (default 3)
 //   PLAYWRIGHT_SKIP_DEPS=1                 skip the host-dependency phase
+//   PLAYWRIGHT_DEPS_ONLY=1                 run ONLY the host-dependency phase
+//
+// The two phases are separable on purpose. Browser binaries live in
+// ~/.cache/ms-playwright and are cacheable; the Linux host libraries are apt
+// packages and are NOT. So a cache hit means "skip the browsers", never "skip
+// the deps" — skipping both left WebKit unable to start with
+// `libwoff2dec.so.1.0.2: cannot open shared object file`.
 
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -142,9 +149,18 @@ async function main() {
   // elsewhere), time-boxed, and NON-FATAL: GitHub's ubuntu images already ship
   // the libraries Chromium needs, so a dpkg-lock stall must not sink the job.
   // Reported separately so a hang here is attributable.
+  //
+  // This phase runs even when the browser cache hit, because apt packages are
+  // not in that cache. WebKit in particular needs libwoff2dec/libwebp/etc, and
+  // a cached binary with no host libs fails at LAUNCH, far from the cause.
   if (process.platform === 'linux' && process.env.PLAYWRIGHT_SKIP_DEPS !== '1') {
     const depsOk = await withRetries(process.execPath, [cli, 'install-deps', ...browsers], 'host-deps');
     if (!depsOk) log('host-deps: FAILED or timed out — continuing; runner images usually satisfy these already');
+  }
+
+  if (process.env.PLAYWRIGHT_DEPS_ONLY === '1') {
+    log('deps-only: done');
+    return;
   }
 
   // Phase 2 — the browsers themselves. This one IS fatal: without a browser
