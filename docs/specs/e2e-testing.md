@@ -136,7 +136,7 @@ For the initial test suite, browser-level tests are **deferred**. The server E2E
 - **Isolated** -- Each test suite starts its own server on an ephemeral port
 - **Checkout-path independent** -- Playwright regular-expression `testMatch` entries are anchored to the test basename/path suffix so digits in a parent checkout directory cannot reassign specs between projects.
 - **No hidden integration red** -- `npm run test:integration` runs in the Ubuntu and Windows CI matrix alongside `npm test`.
-- **File-browser contract gate** -- the Ubuntu and Windows mobile-journey job also runs the complete `file-browser-v2` project, including artifact review and terminal click-to-open behavior.
+- **File-browser contract gate** -- the mobile-journey job also runs the complete `file-browser-v2` project, including artifact review and terminal click-to-open behavior. Ubuntu only: the OSC 7 emitter these specs drive (`osc7EmitCommand` in `e2e/helpers/file-browser-v2-helpers.js`) builds a single-quoted `printf` invocation targeting bash/zsh, pwsh emits OSC 7 differently, and spec 69 explicitly drives a bash session, so running the project against pwsh tests the emitter's shell portability rather than the file browser. The product's Windows OSC 7 handling is covered by the server-side specs.
 - **Recorded flake inventory** -- manual CI dispatch accepts
   `flake_inventory_runs`; `scripts/run-flake-inventory.js` records platform,
   Node version, exit code, wall time, and a structured report containing every

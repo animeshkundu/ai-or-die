@@ -878,6 +878,15 @@ jobs:
       - name: Run mobile journey tests
         run: npx playwright test --config e2e/playwright.config.js --project mobile-journeys
       - name: Run file browser and artifact contracts
+        # POSIX shells only. The OSC 7 emitter these specs drive
+        # (e2e/helpers/file-browser-v2-helpers.js `osc7EmitCommand`) builds a
+        # single-quoted `printf` invocation and documents itself as targeting
+        # bash/zsh; pwsh emits OSC 7 differently and spec 69 explicitly drives a
+        # bash session. Running the suite against pwsh on the Windows runner
+        # tests the emitter's shell portability, not the file browser. Making
+        # these specs pwsh-native is tracked separately; the product's Windows
+        # OSC 7 support is covered by the server-side specs.
+        if: runner.os != 'Windows'
         run: npx playwright test --config e2e/playwright.config.js --project file-browser-v2
       - name: Upload Playwright report
         uses: actions/upload-artifact@v4
