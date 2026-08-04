@@ -1,5 +1,33 @@
 # Client Application Specification
 
+## Terminal-first shell contract
+
+- The terminal is the primary content surface. Auxiliary UI is chrome above it.
+- Opening or closing file browsing, settings, command surfaces, input controls, or artifact review does not resize xterm or emit a PTY resize.
+- `FitCoordinator` is the sole owner of terminal resize calls and outbound resize messages.
+- Geometry measurement returns no value for detached or zero-axis containers. Values below 20 columns or 5 rows are never sent.
+- Split view is available only when at least 700 CSS pixels are available. Its separator implements keyboard resizing with Arrow, Home, and End keys.
+
+## Output path
+
+Binary WebSocket output is queued without per-frame side effects. One animation-frame flush writes at most 96 KiB, decodes the batch once with streaming UTF-8 state, then performs activity, plan-detection, and snapshot bookkeeping. Main and split terminal scrollback is capped at 1,000 lines.
+
+Split panes use the same per-frame output budget. On reconnect they rebuild from
+the bounded server replay before releasing queued live frames, then restore the
+pane viewport and selection.
+
+Main and split replay preserve the server's output bytes, including valid CSI cursor-control sequences. Focus reporting is disabled at both xterm instances instead of stripping ambiguous `CSI I` / `CSI O` sequences from replay output.
+
+Desktop terminals prefer the xterm WebGL renderer only when the browser reports a hardware-backed renderer. SwiftShader, llvmpipe, lavapipe, and other software rasterizers use xterm's DOM renderer because software WebGL produces substantially longer flood and scroll tasks.
+
+## Design and accessibility
+
+All application motion resolves through design tokens and respects reduced-motion preferences. Session tabs implement roving focus, `aria-selected`, `aria-controls`, and Arrow/Home/End navigation. Coarse-pointer controls use a minimum 44 by 44 CSS pixel target and carry an accessible name; this includes controls on transient surfaces such as the model-download banners, whose dismiss button keeps its 16px glyph while its hit area grows to the 44pt minimum.
+
+At short landscape heights, the assistant chooser anchors to the visible top edge, removes redundant identity and subtitle copy, uses a compact two-column card layout, and ends above the bottom navigation with every tool fully visible. The install prompt is suppressed while this blocking chooser is open so fixed controls cannot overlap its actions.
+
+The mobile bottom navigation remains above the assistant chooser but below modal surfaces. Files, voice, overflow actions, and settings therefore stay one-tap reachable before a terminal process starts, while drawers and dialogs still take visual priority once opened.
+
 The frontend is a single-page application served from `src/public/`. It runs entirely in the browser with no build step -- all JavaScript is loaded directly via `<script>` tags.
 
 ---
@@ -144,6 +172,7 @@ The main application controller. Instantiated once on page load.
 ### WebSocket Management
 
 - **Connection:** Constructs the URL with the session token via `authManager.getWebSocketUrl()`. Reconnects automatically with exponential backoff up to `maxReconnectAttempts`.
+- **Reconnect repaint:** Captures the active viewport and selection on disconnect. At `session_joined`, stale bytes queued by the closed socket are discarded. When the joined session is already rendered, a bounded text tail is reconciled with the server replay. A reconnect rebuilds xterm once from that merged stream; a repeated same-session join appends only an unseen suffix. Viewport and selection are restored after xterm drains the merge.
 - **Message handling:** Routes incoming messages by `type` field to appropriate handlers (output rendering, session state updates, usage updates, etc.).
 - **Model lifecycle negotiation:** After `connected`, advertises
   `model_host_lifecycle`. Legacy status still controls compatibility. The

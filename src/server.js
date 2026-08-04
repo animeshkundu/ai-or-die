@@ -4120,7 +4120,6 @@ class ClaudeCodeWebServer {
 
     // Join new session
     wsInfo.claudeSessionId = claudeSessionId;
-    session.connections.add(wsId);
     session.lastActivity = new Date();
     this._pushEvictionEntry(claudeSessionId); // PROC-04
     session.lastAccessed = Date.now();
@@ -4131,6 +4130,14 @@ class ClaudeCodeWebServer {
     if (session._ctlTranscript) {
       renderedSnapshot = (await this._peekWithTimeout(session._ctlTranscript, 200, 300)) || renderedSnapshot;
     }
+    // Drain any coalesced output that is already represented in outputBuffer
+    // before the new subscriber is added. Otherwise the pending coalescer flush
+    // sends those same bytes immediately after session_joined replays them.
+    this._flushSessionOutput(claudeSessionId);
+    // Do not subscribe the socket to live binary output until the replay payload
+    // is ready. Otherwise output emitted during the awaited snapshot peek is both
+    // broadcast live and included in outputBuffer, duplicating the boundary frame.
+    session.connections.add(wsId);
     this.sendToWebSocket(wsInfo.ws, {
       type: 'session_joined',
       sessionId: claudeSessionId,
@@ -4139,7 +4146,7 @@ class ClaudeCodeWebServer {
       active: session.active,
       wasActive: session.wasActive || false,
       agent: session.agent || null,
-      outputBuffer: session.outputBuffer.slice(-200), // Send last 200 lines
+      outputBuffer: this._buildJoinReplay(session),
       renderedSnapshot, // rendered last screen so idle/empty-buffer joins repaint
       stickyNote: session.stickyNote || null,
       autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
@@ -4153,6 +4160,22 @@ class ClaudeCodeWebServer {
     if (this.dev) {
       console.log(`WebSocket ${wsId} joined Claude session ${claudeSessionId}`);
     }
+  }
+
+  _buildJoinReplay(session, maxBytes = 256 * 1024) {
+    const items = session && session.outputBuffer && session.outputBuffer.toArray
+      ? session.outputBuffer.toArray()
+      : [];
+    let bytes = 0;
+    let start = items.length;
+    while (start > 0) {
+      const item = items[start - 1];
+      const itemBytes = Buffer.byteLength(typeof item === 'string' ? item : String(item || ''), 'utf8');
+      if (bytes > 0 && bytes + itemBytes > maxBytes) break;
+      bytes += itemBytes;
+      start--;
+    }
+    return items.slice(start);
   }
 
   async leaveClaudeSession(wsId) {

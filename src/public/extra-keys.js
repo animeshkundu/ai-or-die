@@ -347,10 +347,10 @@ class ExtraKeys {
 
   _updateRow2Visibility() {
     if (!this._row2 || !this._visible) return;
-    const vpHeight = window.visualViewport
-      ? window.visualViewport.height
-      : window.innerHeight;
-    const isLandscape = window.innerWidth > window.innerHeight;
+    const viewport = window.visualViewport;
+    const vpHeight = viewport ? viewport.height : window.innerHeight;
+    const vpWidth = viewport ? viewport.width : window.innerWidth;
+    const isLandscape = vpWidth > vpHeight;
     const threshold = isLandscape ? 280 : 400;
     if (vpHeight > threshold) {
       this._row2.classList.remove('extra-keys-row-hidden');

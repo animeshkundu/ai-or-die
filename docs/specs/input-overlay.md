@@ -66,6 +66,10 @@ While overlay is open, `planDetector._suppressDetection = true` to prevent echoe
 - Backdrop: semi-transparent overlay dims terminal, prevents click-through
 - Character count: displays in footer, warns at 200KB (yellow, bold)
 - Textarea: monospace font, auto-resize up to max-height 200px
+- The panel consumes left, right, and bottom safe-area tokens, including
+  landscape side insets, without changing the terminal rectangle.
+- Motion resolves through shared duration/easing tokens and reduced-motion
+  removes non-essential animation.
 
 ## CSS
 

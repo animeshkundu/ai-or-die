@@ -11,7 +11,7 @@
     max-height: 0;
     opacity: 0;
     overflow: hidden;
-    transition: max-height 0.15s ease-out, opacity 0.15s ease-out;
+    transition: max-height var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out);
     pointer-events: none;
 }
 
@@ -33,7 +33,7 @@
     -webkit-overflow-scrolling: touch;
     max-height: 60px;
     opacity: 1;
-    transition: max-height 0.15s ease-out, opacity 0.15s ease-out, padding 0.15s ease-out;
+    transition: max-height var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out), padding var(--duration-fast) var(--ease-out);
 }
 
 .extra-keys-row::-webkit-scrollbar { display: none; }
@@ -43,7 +43,7 @@
     opacity: 0;
     overflow: hidden;
     padding: 0;
-    transition: max-height 0.15s ease-out, opacity 0.15s ease-out, padding 0.15s ease-out;
+    transition: max-height var(--duration-fast) var(--ease-out), opacity var(--duration-fast) var(--ease-out), padding var(--duration-fast) var(--ease-out);
 }
 
 .extra-key {

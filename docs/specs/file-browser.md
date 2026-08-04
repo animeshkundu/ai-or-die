@@ -19,6 +19,14 @@ A web-based file manager that provides browsing, previewing, editing, uploading,
 | Click any path in terminal output | Single-click on a detected path token | Resolve via the candidate chain (absolute → liveCwd → workingDir → repoRoot); on a single hit open in preview tab; on multiple hits show an inline picker. See [Universal terminal-path detection](#terminalpathdetector-and-xterm-link-provider). |
 | Drop *any* file onto the page | Drag-drop a non-image file onto the terminal | Upload to `<workingDir>/.claude-attachments/`; inject `@<absolute-path>` into the terminal as bracketed paste. See [Generic file drop](#generic-file-drop). |
 
+### Presentation contract
+
+- The panel is always an overlay and never changes the terminal margin, columns, rows, or scroll position.
+- Desktop uses a right drawer without a modal backdrop. Narrow and touch layouts use a modal drawer with a backdrop, focus containment, `aria-modal="true"`, and an inert background application tree.
+- Focus moves into the panel on open and returns to the opener on close.
+- Closing removes the panel from layout with the `hidden` attribute.
+- Clicking a file continues to render the preview inside the same drawer.
+
 ### Data Flow
 
 ```

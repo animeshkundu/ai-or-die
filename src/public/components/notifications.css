@@ -38,7 +38,7 @@
     border: 2px solid var(--border-default);
     border-top-color: var(--accent-default);
     border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+    animation: spin var(--duration-spin) var(--ease-linear) infinite;
     vertical-align: middle;
 }
 
@@ -61,14 +61,14 @@
     border: 3px solid var(--border-default);
     border-top-color: var(--accent-default);
     border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+    animation: spin var(--duration-spin) var(--ease-linear) infinite;
 }
 
 /* Skeleton placeholder bars */
 .loading-skeleton {
     background: linear-gradient(90deg, var(--surface-tertiary) 25%, var(--surface-elevated) 50%, var(--surface-tertiary) 75%);
     background-size: 200% 100%;
-    animation: skeleton-shimmer 1.5s ease-in-out infinite;
+    animation: skeleton-shimmer var(--duration-pulse) var(--ease-in-out) infinite;
     border-radius: var(--radius-sm);
     height: 16px;
     margin-bottom: 8px;

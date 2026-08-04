@@ -33,6 +33,17 @@ const PLATFORM_LIMITS = {
   'ios-ipad11-landscape': { os: ['ubuntu-latest'], why: 'WebKit' },
   'ios-iphone16': { os: ['ubuntu-latest'], why: 'WebKit' },
   'ios-iphone16-landscape': { os: ['ubuntu-latest'], why: 'WebKit' },
+  // ADR-0049: Playwright-WebKit on the Windows runner wedges inbound WebSocket
+  // frame delivery ~15-30s after connect once the page is heavy enough — the
+  // tests pass and the job then fails in engine teardown. Bigger timeouts,
+  // disabling the service worker and vendoring assets were all tried and ruled
+  // out. Windows users run Edge (Chromium), which the chromium cells cover.
+  //
+  // Without this entry the derived matrix defaults the project to ubuntu AND
+  // windows, and scripts/ci-cache-keys.js --check fails with "no producer writes
+  // playwright-v2-Windows-X64-webkit-... needed by client-redesign-webkit
+  // (windows-latest)" — which is how this was caught on merge.
+  'client-redesign-webkit': { os: ['ubuntu-latest'], why: 'WebKit; ADR-0049 pins it to Linux' },
 };
 
 const DEFAULT_OS = ['ubuntu-latest', 'windows-latest'];

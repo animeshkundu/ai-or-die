@@ -15,6 +15,8 @@ update this doc when changing the surface.
 
 ## 1. xterm.js scrollback (bound)
 
+The output ingress queue is bounded per animation-frame write: each flush consumes at most 96 KiB and carries any remainder to the next frame. Above 1 MiB the existing flow-control channel pauses ingress until the queue falls below 128 KiB, then rejoins the session from the authoritative retained replay while preserving view state. Recovery is limited to the server's bounded replay window; a suspension that exceeds it can recover only the retained suffix. The queue is cleared on session switch so output from the outgoing socket cannot paint over the newly joined session. The client also retains at most 256 KiB of decoded output text for diagnostics and deterministic reconnect checks.
+
 ### Main terminal — `src/public/app.js`
 
 The primary terminal is constructed in
@@ -23,28 +25,23 @@ The primary terminal is constructed in
 ```js
 this.terminal = new Terminal({
   ...,
-  scrollback: 10000,
+  scrollback: 1000,
   ...
 });
 ```
 
-- **Bound**: 10000 lines (10x xterm.js default of 1000).
+- **Bound**: 1000 lines (xterm.js default, made explicit for longevity).
 - **Memory ceiling**: bounded; xterm.js evicts oldest lines once the buffer
   exceeds `scrollback + rows`.
-- **Why this number**: matches the server-side output buffer cap (~1000
-  lines per spec) plus a generous user-scroll headroom for long Claude
-  responses. Empirically large enough that users rarely lose context, small
-  enough that 10 concurrent sessions in one tab fit comfortably in <100 MB.
-- **Do not remove this option**: omitting `scrollback` reverts to xterm's
-  default of 1000, which is too small for the Claude UX. Increasing past
-  ~50000 starts to matter on low-RAM devices.
+- **Why this number**: matches the server-side output buffer cap and bounds
+  browser parsing, rendering, and memory growth during all-day sessions.
+- **Do not remove this option**: the explicit value is part of the client
+  longevity contract and must remain aligned with split terminals.
 
 ### Split-pane terminal — `src/public/splits.js`
 
 `SplitPaneManager` constructs additional terminals without specifying
-`scrollback`. These fall back to xterm.js's default of 1000 lines. This is
-**inconsistent** with the main terminal but **not a leak**. Future cleanup
-(out of scope for CLIENT-03): align to `scrollback: 10000`.
+`scrollback`. These use xterm.js's matching default of 1000 lines.
 
 ---
 
@@ -181,7 +178,7 @@ Rationale:
 
 - `buffers.plan_detector_bytes` growing without trim across consecutive
   samples once it crosses the CLIENT-01 cap.
-- `buffers.xterm_scrollback_lines` exceeding ~10100 (scrollback + viewport
+- `buffers.xterm_scrollback_lines` exceeding ~1100 (scrollback + viewport
   rows) — that is the natural ceiling; values above it indicate xterm.js
   or our buffer math is wrong.
 - `dom.total_nodes` growing monotonically across samples taken at the same

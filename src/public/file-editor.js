@@ -632,7 +632,7 @@
 
     var m = _createModal({
       maxWidth: '90vw',
-      maxHeight: '80vh',
+      maxHeight: '80dvh',
       flex: true,
       onClose: function () {
         modalClosed = true;
