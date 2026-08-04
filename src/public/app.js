@@ -2818,6 +2818,18 @@ class ClaudeCodeWebInterface {
             this._writtenBytes = 0;
             if (!this._outputPaused && this._pendingCallbacks > this._HIGH_WATER) {
                 this._outputPaused = true;
+                // Mark the span for replay, exactly as the ingress-backpressure
+                // path does at _applyIngressBackpressure(). The server DROPS
+                // frames for a paused client rather than buffering them, so
+                // without this flag _resumeOutputFlow() issues a bare resume and
+                // never re-joins — the bytes the server discarded while paused
+                // are gone, silently and with no gap indicator.
+                //
+                // Caught by 74-client-shell-contract.spec.js "reconnect during
+                // output preserves sequence": 239 of 240 sequence numbers
+                // arrived. One dropped span is all this costs, and it is exactly
+                // the kind of loss that is invisible unless a test counts.
+                this._flowPauseNeedsReplay = true;
                 this.send({ type: 'flow_control', action: 'pause' });
             }
         } else {
