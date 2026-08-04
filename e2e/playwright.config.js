@@ -22,7 +22,20 @@ module.exports = defineConfig({
   testDir: './tests',
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
-  retries: 0,
+  // Retry-free everywhere except Windows CI, where ONE retry contains a
+  // third-party native crash we do not own: `@lydell/node-pty-win32-x64`'s
+  // `WindowsPtyAgent.kill()` forks `conpty_console_list_agent` without awaiting
+  // it, the agent's `AttachConsole` fails against the just-killed shell, and the
+  // teardown race can take the whole Playwright worker down with an access
+  // violation (`code=3221225477`). `createServer()` hosts the server — and so
+  // node-pty — inside the worker, which is why a native crash is fatal here.
+  // The agent ships only in the win32 binary package, so POSIX cannot reach the
+  // code path and stays at 0. This is CONTAINMENT, NOT a licence for flaky
+  // tests: one retry cannot rescue a deterministic failure, and Playwright still
+  // reports a retried-then-passed test as `flaky`, not `passed`. Full diagnosis
+  // and the exit criteria that force escalation live in
+  // docs/history/windows-conpty-worker-crash-2026.md.
+  retries: process.env.CI && process.platform === 'win32' ? 1 : 0,
   workers: process.env.CI ? 2 : 1,
   timeout: 60000,
   updateSnapshots: 'missing',

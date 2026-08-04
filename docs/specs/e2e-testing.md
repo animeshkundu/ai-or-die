@@ -131,8 +131,16 @@ For the initial test suite, browser-level tests are **deferred**. The server E2E
 - **Mock the tools, not the infrastructure** -- Use bash/echo as the "tool" instead of Claude/Copilot
 - **Cross-platform** -- Tests must pass on Linux and Windows CI; use `TerminalBridge` (shell) as the universal tool
 - **Deterministic** -- Avoid timing-dependent assertions; use event-driven waits with timeouts
-- **Retry-free browser gate** -- Playwright retries are disabled in CI; failures
-  retain traces, screenshots, and video rather than being hidden by a green retry.
+- **Retry-free browser gate** -- Playwright retries are disabled in CI on POSIX;
+  failures retain traces, screenshots, and video rather than being hidden by a
+  green retry. Windows CI is the single exception, at exactly one retry, because
+  `@lydell/node-pty-win32-x64` can take the whole Playwright worker down with an
+  access violation (`code=3221225477`) during ConPTY teardown -- a third-party
+  native crash, reachable only from the win32 binary package, in a harness that
+  hosts the server in-process. One retry cannot rescue a deterministic failure,
+  and a retried-then-passed test is reported as `flaky` rather than `passed`, so
+  the signal survives. Diagnosis and the exit criteria that force escalation:
+  `docs/history/windows-conpty-worker-crash-2026.md`.
 - **Isolated** -- Each test suite starts its own server on an ephemeral port
 - **Checkout-path independent** -- Playwright regular-expression `testMatch` entries are anchored to the test basename/path suffix so digits in a parent checkout directory cannot reassign specs between projects.
 - **No hidden integration red** -- `npm run test:integration` runs in the Ubuntu and Windows CI matrix alongside `npm test`.
