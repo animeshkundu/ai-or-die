@@ -113,6 +113,20 @@
   color: var(--text-primary);
 }
 
+/* Mobile: toast controls are the only way to act on or dismiss a toast, so
+   they need a thumb-sized hit area. The label and glyph keep their size; only
+   the target grows. */
+@media (pointer: coarse) {
+  .toast__action,
+  .toast__close {
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
 /* Enter animation */
 @keyframes toast-slide-in {
   from { opacity: 0; transform: translateX(100%); }

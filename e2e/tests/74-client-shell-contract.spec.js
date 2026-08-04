@@ -153,6 +153,15 @@ test.describe('Terminal-first client shell contract', () => {
         return originalSend.call(this, payload);
       };
       try {
+        // Split view is desktop-only: `createSplit` refuses below 700px of
+        // available width and tells the user to use session tabs instead. On a
+        // phone-class device profile `setViewportSize` moves the visual
+        // viewport but `width=device-width` keeps the layout viewport narrow,
+        // so which branch of the contract applies has to be measured, not
+        // assumed from the requested viewport.
+        const availableWidth = document.querySelector('.main')
+          ? document.querySelector('.main').getBoundingClientRect().width
+          : window.innerWidth;
         await window.app.splitContainer.createSplit(sessionId);
         await new Promise((resolve) => setTimeout(resolve, 500));
         window.dispatchEvent(new Event('resize'));
@@ -161,16 +170,36 @@ test.describe('Terminal-first client shell contract', () => {
           cols: split.terminal.cols,
           rows: split.terminal.rows,
         }));
+        const enabled = window.app.splitContainer.enabled;
         window.app.splitContainer.closeSplit();
         await new Promise((resolve) => setTimeout(resolve, 500));
-        return { sent, splitSizes };
+        const mainSize = {
+          cols: window.app.terminal.cols,
+          rows: window.app.terminal.rows,
+        };
+        return { sent, splitSizes, availableWidth, enabled, mainSize };
       } finally {
         WebSocket.prototype.send = originalSend;
       }
     }, rightSessionId);
-    expect(result.sent.length).toBeGreaterThan(0);
+
+    // The invariant under test, on every device class: nothing unusable ever
+    // reaches a PTY, whether the split opened or was refused.
     expect(result.sent.every(({ cols, rows }) => cols >= 20 && rows >= 5)).toBeTruthy();
     expect(result.splitSizes.every(({ cols, rows }) => cols >= 20 && rows >= 5)).toBeTruthy();
+    expect(result.mainSize.cols).toBeGreaterThanOrEqual(20);
+    expect(result.mainSize.rows).toBeGreaterThanOrEqual(5);
+
+    if (result.availableWidth >= 700) {
+      // Wide enough for split view, so the split must actually have opened and
+      // the panes must have told their PTYs their geometry.
+      expect(result.enabled).toBeTruthy();
+      expect(result.sent.length).toBeGreaterThan(0);
+    } else {
+      // Too narrow: split view is refused by design and no split PTY geometry
+      // exists to send.
+      expect(result.enabled).toBeFalsy();
+    }
   });
 
   test('reconnect during output preserves sequence, scroll position, and selection', async ({ page }) => {
@@ -352,16 +381,25 @@ test.describe('Terminal-first client shell contract', () => {
     expect(result.navFiles.height).toBeGreaterThanOrEqual(44);
 
     if (result.coarse) {
-      // Force the transient banners into view so their controls are measured
+      // Force the transient surfaces into view so their controls are measured
       // too. The speech-model download banner only appears while a model is
-      // downloading, so on a runner with warm model caches its dismiss button
-      // would otherwise never be sampled -- that is how it shipped at 21x27.
+      // downloading and the update toast only after a service-worker update, so
+      // on a runner with warm caches and no update neither would ever be
+      // sampled -- that is how they shipped at 21x27 and 17x16.
       await page.evaluate(() => {
         for (const id of ['voiceDownloadBanner', 'stickyNotesDownloadBanner']) {
           const banner = document.getElementById(id);
           if (banner) banner.style.display = 'flex';
         }
+        if (window.feedback) {
+          window.feedback.info('Touch target probe.', {
+            duration: 0,
+            action: 'Refresh Now',
+            onAction: () => {},
+          });
+        }
       });
+      await page.locator('.toast__action').first().waitFor({ state: 'visible' });
       const tooSmall = await page.locator(
         'button:visible, input:not([type="hidden"]):visible, select:visible, [role="button"]:visible, [role="tab"]:visible'
       ).evaluateAll((controls) => controls.map((control) => {
