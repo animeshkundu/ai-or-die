@@ -2640,6 +2640,20 @@ class ClaudeCodeWebInterface {
         const chunk = new Uint8Array(data);
         this._pendingWrites.push(chunk);
         this._pendingWriteBytes += chunk.byteLength;
+        // Evaluate backpressure on ARRIVAL, not only on drain.
+        //
+        // _flushWrites() returns early while a join repaint is in progress, and
+        // it was the only path to _applyIngressBackpressure() on a visible page
+        // (the 250ms interval that also calls it is armed only while the page is
+        // HIDDEN). So during a repaint on a visible page nothing capped the
+        // queue: bytes accumulated with no pause and no bound until the 5s
+        // repaint watchdog fired, which at a few MB/s is tens of MB of retained
+        // Uint8Arrays followed by a 96 KiB-per-frame drain lasting seconds.
+        //
+        // Backpressure is a property of how much is waiting, so the right
+        // trigger is arrival. Calling it here also covers the case the drain
+        // path cannot reach by construction.
+        this._applyIngressBackpressure();
         if (!this._rafPending && !this._joinRepaintInProgress) {
             this._rafPending = true;
             requestAnimationFrame(() => this._flushWrites());
