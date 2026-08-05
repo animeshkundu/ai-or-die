@@ -54,6 +54,10 @@ class SessionStore {
         // caller having to wrap saveSessions. Null after a successful
         // save; otherwise an Error-shaped object carrying .code.
         this._lastSaveError = null;
+        // If an unusable file cannot be preserved, writes stay blocked until
+        // the protected file is removed, replaced with valid data, or cleared.
+        this._saveBlockedReason = null;
+        this._saveBlockedWarningLogged = false;
         // DISK-04b: monotonically increasing counter of saveSessions()
         // calls that returned false. Surfaced in _collectDiagnostics so
         // the soak harness (and operators grepping the diagnostics log)
@@ -179,6 +183,7 @@ class SessionStore {
     }
 
     async saveSessions(sessions) {
+        if (await this._isSaveBlocked()) return false;
         if (!this._dirty) return true;
 
         // DISK-01 follow-up (SOAK-reported race): chain onto any prior
@@ -361,20 +366,18 @@ class SessionStore {
                 parsed = JSON.parse(data);
             } catch (parseError) {
                 console.error('Sessions file is corrupted, starting fresh:', parseError.message);
-                // Try to backup the corrupted file
-                try {
-                    await fs.rename(this.sessionsFile, `${this.sessionsFile}.corrupted.${Date.now()}`);
-                } catch (renameError) {
-                    // Ignore rename errors
-                }
+                await this._preserveUnusableSessionsFile('invalid JSON');
                 return new Map();
             }
             
             // Validate parsed data structure
             if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sessions)) {
                 console.log('Invalid sessions file format, starting fresh');
+                await this._preserveUnusableSessionsFile('invalid structure');
                 return new Map();
             }
+
+            this._clearSaveBlock();
             
             // Check if data is recent (within last 7 days)
             if (parsed.savedAt) {
@@ -419,9 +422,84 @@ class SessionStore {
         }
     }
 
+    _clearSaveBlock() {
+        this._saveBlockedReason = null;
+        this._saveBlockedWarningLogged = false;
+        if (this._lastSaveError && this._lastSaveError.code === 'ESESSIONBACKUPFAILED') {
+            this._lastSaveError = null;
+        }
+    }
+
+    async _preserveUnusableSessionsFile(reason) {
+        const backupFile = `${this.sessionsFile}.corrupted.${Date.now()}`;
+        let fileStats = null;
+        try {
+            fileStats = await fs.stat(this.sessionsFile);
+        } catch (_) {
+            // Preservation attempts below surface the actionable failure.
+        }
+
+        let renameError;
+        try {
+            await fs.rename(this.sessionsFile, backupFile);
+            this._clearSaveBlock();
+            return backupFile;
+        } catch (error) {
+            renameError = error;
+        }
+
+        try {
+            await fs.copyFile(this.sessionsFile, backupFile);
+            this._clearSaveBlock();
+            return backupFile;
+        } catch (copyError) {
+            this._saveBlockedReason = {
+                reason,
+                at: Date.now(),
+                file: this.sessionsFile,
+                size: fileStats ? fileStats.size : null,
+                mtimeMs: fileStats ? fileStats.mtimeMs : null,
+                renameError,
+                copyError
+            };
+            this._saveBlockedWarningLogged = false;
+            console.error(
+                `Failed to preserve unusable sessions file (${reason}); future saves are blocked:`,
+                copyError.message
+            );
+            return null;
+        }
+    }
+
+    async _isSaveBlocked() {
+        if (!this._saveBlockedReason) return false;
+
+        try {
+            await fs.access(this.sessionsFile);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                this._clearSaveBlock();
+                return false;
+            }
+        }
+
+        const error = new Error(
+            `Session save blocked because ${this.sessionsFile} could not be preserved`
+        );
+        error.code = 'ESESSIONBACKUPFAILED';
+        error.reason = this._saveBlockedReason;
+        this._lastSaveError = error;
+        if (!this._saveBlockedWarningLogged) {
+            this._saveBlockedWarningLogged = true;
+            console.error('Blocked session save to protect an unrecovered sessions file');
+        }
+        return true;
+    }
+
     async clearOldSessions() {
         try {
             await fs.unlink(this.sessionsFile);
+            this._clearSaveBlock();
             console.log('Cleared old sessions');
             return true;
         } catch (error) {

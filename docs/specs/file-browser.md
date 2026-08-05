@@ -331,6 +331,14 @@ Add a path to the active subscription set for a session's open SSE stream.
 
 The server's chokidar watcher watches the SUPERSET of all subscribed paths' parent directories — narrower than the entire `workingDir`, broader than per-file. Subsequent SSE events for `path` will arrive on the open EventSource for that session.
 
+Before registration or matching, watcher paths are canonicalized with
+`fs.realpathSync.native()` so Windows 8.3 aliases expand before chokidar sees
+them. One shared prefix helper handles both native extended-length forms:
+`\\?\C:\...` becomes `C:\...`, while `\\?\UNC\server\share\...` becomes
+`\\server\share\...`. It removes only the prefix and preserves drive spelling,
+separator style, and trailing separators. This keeps recursive subscriptions on
+Windows network shares absolute and matchable against descendant events.
+
 **Errors:** 401, 403, 404 (no open SSE stream for that session id), 409 (subscription already active for this path).
 
 #### `POST /api/files/watch/unsubscribe`

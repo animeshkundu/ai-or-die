@@ -49,6 +49,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
+const { stripWindowsLongPathPrefix } = require('./win-long-path');
 
 let _chokidar = null;
 
@@ -87,7 +88,7 @@ function _realpathStrict(p) {
     // 8.3 expansion is best-effort in that case.
     out = fs.realpathSync(p);
   }
-  return typeof out === 'string' && out.startsWith('\\\\?\\') ? out.slice(4) : out;
+  return stripWindowsLongPathPrefix(out);
 }
 
 function _getChokidar() {
