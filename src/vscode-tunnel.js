@@ -435,7 +435,17 @@ class VSCodeTunnelManager {
 
   _cmdLine(command, args) {
     const quote = (value) => `"${String(value).replace(/"/g, '""')}"`;
-    return [quote(command), ...args.map(quote)].join(' ');
+    // Plain tokens are passed through unquoted so batch wrappers that compare
+    // %1 directly still match; anything cmd.exe could reinterpret is quoted.
+    const isPlainToken = (value) => /^[A-Za-z0-9_.:\\/@+-]+$/.test(value);
+    const parts = [quote(command)];
+    for (const arg of args) {
+      const value = String(arg);
+      parts.push(isPlainToken(value) ? value : quote(value));
+    }
+    // `cmd.exe /s` strips the outermost quote pair before running the line, so
+    // the whole line is wrapped exactly as Node does for `shell: true`.
+    return `"${parts.join(' ')}"`;
   }
 
   _spawnCommand(command, args, options) {

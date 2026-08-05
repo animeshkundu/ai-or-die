@@ -559,6 +559,26 @@ describe('VSCodeTunnelManager', function () {
         assert.strictEqual(captured.options.windowsVerbatimArguments, true);
         assert(captured.args[3].includes('"C:\\Program Files\\Code\\code.cmd"'));
       });
+
+      it('wraps the cmd.exe line so /s does not strip the program quotes', function () {
+        manager._isCommandScript = () => true;
+        const line = manager._cmdLine('C:\\Program Files\\Code\\code.cmd', [
+          'serve-web',
+          '--port',
+          '9100',
+          '--server-data-dir',
+          'C:\\Users\\Ada Lovelace\\data',
+        ]);
+        // cmd.exe /s removes the first and last character when both are quotes,
+        // so the surviving line must still quote the program path itself.
+        assert.strictEqual(line[0], '"');
+        assert.strictEqual(line[line.length - 1], '"');
+        const stripped = line.slice(1, -1);
+        assert(stripped.startsWith('"C:\\Program Files\\Code\\code.cmd"'));
+        // Plain tokens stay unquoted so batch wrappers comparing %1 still match.
+        assert(stripped.includes(' serve-web --port 9100 '));
+        assert(stripped.endsWith('"C:\\Users\\Ada Lovelace\\data"'));
+      });
     });
 
     it('returns captured stderr when host exits before producing a URL', async function () {
