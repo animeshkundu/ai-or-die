@@ -15,6 +15,8 @@ test.describe('VS Code Tunnel button', () => {
   let server, port, url;
   let originalCommand, originalChecked, originalAvailable;
   let originalDevtunnelCommand, originalDevtunnelChecked, originalDevtunnelAvailable;
+  let originalCheckDevtunnelAuth, originalLoginDevtunnel;
+  let originalStart;
 
   test.beforeAll(async () => {
     const result = await createServer();
@@ -30,6 +32,9 @@ test.describe('VS Code Tunnel button', () => {
     originalDevtunnelCommand = server.vscodeTunnel._devtunnelCommand;
     originalDevtunnelChecked = server.vscodeTunnel._devtunnelChecked;
     originalDevtunnelAvailable = server.vscodeTunnel._devtunnelAvailable;
+    originalCheckDevtunnelAuth = server.vscodeTunnel._checkDevtunnelAuth;
+    originalLoginDevtunnel = server.vscodeTunnel._loginDevtunnel;
+    originalStart = server.vscodeTunnel.start;
   });
 
   test.afterAll(async () => {
@@ -49,6 +54,9 @@ test.describe('VS Code Tunnel button', () => {
       server.vscodeTunnel._devtunnelCommand = originalDevtunnelCommand;
       server.vscodeTunnel._devtunnelChecked = originalDevtunnelChecked;
       server.vscodeTunnel._devtunnelAvailable = originalDevtunnelAvailable;
+      server.vscodeTunnel._checkDevtunnelAuth = originalCheckDevtunnelAuth;
+      server.vscodeTunnel._loginDevtunnel = originalLoginDevtunnel;
+      server.vscodeTunnel.start = originalStart;
     }
     await attachFailureArtifacts(page, testInfo);
   });
@@ -174,10 +182,6 @@ test.describe('VS Code Tunnel button', () => {
   });
 
   test('mock stub shows starting banner then devtunnels.ms URL', async ({ page }) => {
-    // Skip on CI until mock stub timing is hardened — the core bug fix
-    // is validated by the not-found tests above. This test validates
-    // the happy-path UI with fake code + devtunnel binaries.
-    test.skip(!!process.env.CI, 'Mock stub test skipped on CI — runs locally');
     test.setTimeout(60000);
 
     // Determine the correct fake scripts for this platform
@@ -240,12 +244,67 @@ test.describe('VS Code Tunnel button', () => {
     );
     expect(hasRunningClass).toBe(true);
 
+    const openedUrl = await page.evaluate(() => {
+      const originalOpen = window.open;
+      let captured = null;
+      window.open = (target) => { captured = String(target); return null; };
+      document.querySelector('#vscodeTunnelBanner .vst-open-btn').click();
+      window.open = originalOpen;
+      return captured;
+    });
+    expect(openedUrl).toContain('mock-e2e-test.devtunnels.ms');
+
     // Cleanup: stop the tunnel
     await page.evaluate(() => document.querySelector('#vscodeTunnelBanner .vst-stop-btn').click());
     await page.waitForFunction(
       () => !document.getElementById('vscodeTunnelBanner').classList.contains('visible'),
       { timeout: 5000 }
     );
+  });
+
+  test('unauthenticated devtunnel shows the login command within five seconds', async ({ page }) => {
+    server.vscodeTunnel._command = 'fake-code';
+    server.vscodeTunnel._commandChecked = true;
+    server.vscodeTunnel._available = true;
+    server.vscodeTunnel._devtunnelCommand = 'fake-devtunnel';
+    server.vscodeTunnel._devtunnelChecked = true;
+    server.vscodeTunnel._devtunnelAvailable = true;
+    server.vscodeTunnel._checkDevtunnelAuth = async () => false;
+    server.vscodeTunnel._loginDevtunnel = async () => false;
+
+    await setupWithSession(page);
+    const startedAt = Date.now();
+    await page.evaluate(() => document.getElementById('vscodeTunnelBtn').click());
+    const error = await waitForWsMessage(page, 'recv', 'vscode_tunnel_error', 5000);
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+    expect(error.message).toContain('devtunnel user login');
+    await page.waitForSelector('#vscodeTunnelBanner.visible', { timeout: 5000 });
+    await expect(page.locator('#vscodeTunnelBanner')).toContainText('devtunnel user login');
+  });
+
+  test('public tunnel failure exposes the explicitly local-only VS Code URL', async ({ page }) => {
+    const localUrl = 'http://localhost:9100/?tkn=local-only';
+    server.vscodeTunnel.start = async () => ({
+      success: false,
+      error: 'network_unreachable',
+      message: `Tunnel network unavailable. VS Code is available only from the machine running this server: ${localUrl}`,
+      localUrl,
+      publicUrl: null,
+    });
+
+    await setupWithSession(page);
+    await page.evaluate(() => document.getElementById('vscodeTunnelBtn').click());
+    await expect(page.locator('#vscodeTunnelBanner')).toContainText('only from the machine running this server');
+    await expect(page.locator('#vscodeTunnelBanner .vst-open-btn')).toHaveText('Open Local');
+    const openedUrl = await page.evaluate(() => {
+      const originalOpen = window.open;
+      let captured = null;
+      window.open = (target) => { captured = String(target); return null; };
+      document.querySelector('#vscodeTunnelBanner .vst-open-btn').click();
+      window.open = originalOpen;
+      return captured;
+    });
+    expect(openedUrl).toBe(localUrl);
   });
 
   test('Ctrl+Shift+V keyboard shortcut triggers tunnel', async ({ page }) => {

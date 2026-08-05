@@ -133,8 +133,12 @@
 
         case 'vscode_tunnel_error':
           this._setStatus('error');
+          if (data.localUrl) {
+            this.localUrl = data.localUrl;
+            this.url = data.localUrl;
+          }
           this._bannerDismissed = false;
-          this._renderError(data.message || data.error, data.install);
+          this._renderError(data.message || data.error, data.install, data.error, data.localUrl);
           break;
       }
     }
@@ -411,8 +415,8 @@
       this._bindBannerEvents();
     }
 
-    _renderError(message, installInfo) {
-      const isNotFound = message === 'not_found' || (message && message.includes('not found'));
+    _renderError(message, installInfo, errorCode, localUrl) {
+      const isNotFound = errorCode === 'not_found' || message === 'not_found';
 
       if (isNotFound && installInfo) {
         this._renderNotFoundInstall(installInfo);
@@ -435,6 +439,7 @@
         </span>
         <span class="vst-message">${msgHtml}</span>
         <div class="vst-actions">
+          ${localUrl ? '<button class="vst-btn primary vst-open-btn">Open Local</button>' : ''}
           <button class="vst-btn vst-retry-btn">Retry</button>
         </div>
         <button class="vst-close vst-dismiss-btn" title="Dismiss">

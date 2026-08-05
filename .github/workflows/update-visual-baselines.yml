@@ -21,9 +21,24 @@ on:
 permissions:
   contents: write
 
+# Scoped to (ref, commit) and non-cancelling, for the same reason the marker is
+# checked in a step rather than a job-level `if:`: this workflow must never
+# report anything but "success" for a commit that is fine.
+#
+# A ref-scoped group with cancel-in-progress made the workflow cancel ITSELF.
+# When two push events arrive for the SAME head commit, both runs land in the
+# ref-scoped group and the newer one cancels the older — leaving "cancelled"
+# check runs attached to the current head SHA even though the surviving run for
+# that identical SHA went green. CI gates read the cancelled pair and see red.
+#
+# Keying on the SHA keeps unrelated commits out of each other's way, and
+# cancel-in-progress: false makes a duplicate run for one commit queue behind
+# its twin instead of killing it. The group is still worth keeping: when the
+# marker is present these jobs `git push` baselines back to the branch, and two
+# concurrent runs for one commit would race on that push.
 concurrency:
-  group: update-visual-baselines-${{ github.ref }}
-  cancel-in-progress: true
+  group: update-visual-baselines-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   generate-baselines:
