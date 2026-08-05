@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>main: high-priority defects</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212a; --line:#2a2f3a;
+    --fg:#e6e9ef; --dim:#9aa3b2; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --crit:#ff5f56; --warn:#ffbd2e; --ok:#27c93f; --acc:#6aa9ff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+       padding:32px 24px 64px}
+  .wrap{max-width:980px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);margin:0 0 28px;font-size:14px}
+  h2{font-size:17px;margin:34px 0 12px;letter-spacing:-.01em;
+     border-bottom:1px solid var(--line);padding-bottom:8px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:18px 20px;margin:14px 0}
+  .card.crit{border-left:3px solid var(--crit)}
+  .card.warn{border-left:3px solid var(--warn)}
+  .chip{display:inline-block;font-size:11px;font-weight:650;letter-spacing:.06em;
+        text-transform:uppercase;padding:3px 9px;border-radius:999px;margin-right:8px;
+        vertical-align:2px}
+  .chip.crit{background:rgba(255,95,86,.15);color:var(--crit);border:1px solid rgba(255,95,86,.35)}
+  .chip.warn{background:rgba(255,189,46,.15);color:var(--warn);border:1px solid rgba(255,189,46,.35)}
+  .t{font-weight:650;font-size:16px}
+  code,pre{font-family:var(--mono)}
+  code{background:var(--panel2);padding:1.5px 5px;border-radius:4px;font-size:13px}
+  pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+      padding:13px 15px;overflow-x:auto;font-size:12.5px;line-height:1.55;margin:12px 0}
+  .kw{color:var(--crit);font-weight:650}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{text-align:left;padding:8px 11px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:600;font-size:11.5px;letter-spacing:.05em;text-transform:uppercase}
+  td.n{font-family:var(--mono);text-align:right}
+  .up{color:var(--crit);font-weight:650}
+  .flat{color:var(--ok)}
+  .f{color:var(--dim);font-family:var(--mono);font-size:12.5px}
+  ul{margin:10px 0;padding-left:20px} li{margin:5px 0}
+  .note{color:var(--dim);font-size:13.5px;font-style:italic;margin-top:10px}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>What's broken on <code>main</code></h1>
+<p class="sub">Branch <code>main</code> @ <code>0780965</code> (v0.1.101). Findings below are measured, not inferred &mdash; sources cited per item.</p>
+
+<h2>Headline</h2>
+<div class="card crit">
+  <span class="chip crit">critical</span><span class="t">The server leaks memory without bound, and the suite built to catch that has never once passed.</span>
+  <p>Every scheduled longevity run on <code>main</code> fails: <strong>7 of 7 Nightly (4h) runs</strong> plus the <strong>Weekly 12h soak</strong>. All three platforms die identically:</p>
+  <pre>FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory
+Aborted (core dumped)  node test/longevity/harness/cli.js --duration=4h ...
+<span class="kw">exit code 134 (SIGABRT)</span>  &mdash; ubuntu-latest, windows-latest, macos-latest</pre>
+  <p>The soak OOMs about 68 minutes into a 4-hour window, so it has never reached its verdict and has never gated anything. <code>Release on main</code> is green throughout, which is why this stayed invisible.</p>
+</div>
+
+<h2>Evidence: what actually grows</h2>
+<p>From the uploaded <code>samples.jsonl</code> of run <code>30882191900</code> (68 min, 30s cadence):</p>
+<table>
+  <tr><th>metric</th><th>start</th><th>end</th><th>shape</th></tr>
+  <tr><td><code>heap_used_mb</code></td><td class="n">44</td><td class="n up">3,732</td><td class="up">monotonic, ~54 MB/min</td></tr>
+  <tr><td><code>rss_mb</code></td><td class="n">139</td><td class="n up">4,175</td><td class="up">monotonic</td></tr>
+  <tr><td><code>bytes_used_mb</code> (disk)</td><td class="n">0</td><td class="n up">227.7</td><td class="up">monotonic, 22% of quota</td></tr>
+  <tr><td><code>p99_ms</code> (loop lag)</td><td class="n">18</td><td class="n up">464</td><td class="up">25x degradation</td></tr>
+  <tr><td><code>ws_connections</code></td><td class="n">4</td><td class="n flat">4&ndash;5</td><td class="flat">flat</td></tr>
+  <tr><td><code>active_handles</code></td><td class="n">13</td><td class="n flat">13</td><td class="flat">flat</td></tr>
+  <tr><td><code>external_mb</code> / <code>array_buffers_mb</code></td><td class="n">4</td><td class="n flat">rise&nbsp;&amp;&nbsp;fall</td><td class="flat">collected fine</td></tr>
+</table>
+<p>Connections flat, handles flat, off-heap collected. The growth is <strong>entirely retained JS heap</strong>, accumulating per unit of <em>work</em> rather than per connection.</p>
+
+<div class="card">
+  <span class="t">Reproduced locally on Windows 11 in under 5 minutes</span>
+  <pre>node --max-old-space-size=700 test/longevity/harness/cli.js --duration=20m --interval=15s --workloads=all
+heap_used_mb  0m:60  0.5m:241  1.0m:360  1.5m:494  2.5m:532  4.5m:592
+rss_mb        0m:144 0.5m:445  1.0m:582  1.5m:725  2.5m:764</pre>
+  <p>The live <code>/diagnostics</code> payload at <strong>301 seconds of uptime</strong> named the retainer directly:</p>
+  <pre>"sessions":  { <span class="kw">"total": 17896</span>, "ws_connections": 4 }
+"retention": { "output_buffers": {
+    "active":   { "sessions": 4,     "items": 4000,  <span class="kw">"bytes": 262144000</span> },
+    "inactive": { "sessions": 17892, "items": 10650, "bytes": 2566650 } }}</pre>
+  <p><strong>17,896 sessions in five minutes</strong> (~59/sec), none ever reaped &mdash; while <code>ws_connections</code> held steady at 4. That is exactly why the connection metric looked flat while the heap climbed: it is not connections leaking, it is session objects.</p>
+</div>
+
+<h2>Root cause 1 &mdash; eviction is age-only, with no count or byte ceiling</h2>
+<div class="card crit">
+  <span class="chip crit">critical</span><span class="t">src/server.js:6632</span>
+  <pre>const sevenDaysAgo = Date.now() - <span class="kw">7 * 24 * 60 * 60 * 1000</span>;
+...
+if (currentLA >= sevenDaysAgo) {
+  this._maybeRebuildEvictionHeap();
+  <span class="kw">return evictedCount;</span>   // early-exit: nothing under 7 days is ever evicted
+}</pre>
+  <p>Age over seven days is the <strong>only</strong> eviction predicate. There is no cap on session count and none on retained bytes. Every accumulated session is minutes old, so the sweep early-exits on its first peek and frees nothing &mdash; forever.</p>
+  <p><strong>Failure scenario:</strong> any client that creates sessions without deleting them drives the server to OOM. Nothing in the product bounds it; the MinHeap and pop-budget machinery around it is sound but is gated behind a predicate that never fires. This is a resource-exhaustion path, not merely a slow leak.</p>
+  <p class="note">The same unbounded set is serialized to <code>sessions.json</code> every 30s, which is the disk curve above. One root cause, two symptoms.</p>
+</div>
+
+<h2>Root cause 2 &mdash; the output buffer caps items, not bytes</h2>
+<div class="card warn">
+  <span class="chip warn">latent / low real-world impact</span><span class="t">src/utils/circular-buffer.js + src/server.js:1482, 4060, 4708</span>
+  <pre>outputBuffer: new CircularBuffer(<span class="kw">1000</span>)   // 1000 <em>items</em>
+
+// circular-buffer.js — byteLength is COMPUTED on every push...
+this.byteLength += bytes;
+// ...but never ENFORCED. Only `capacity` (item count) bounds the buffer.</pre>
+  <p>The gap is real: nothing bounds the buffer in bytes. But I initially sized it wrong and am correcting that here.</p>
+  <p><strong>Correction.</strong> The 262 MB figure (65,536,000 bytes per session) is <em>synthetic</em>. <code>output-buffer-flood-workload.js:12</code> sets <code>chunkBytes = 64 * 1024</code> and pushes directly into <code>session.outputBuffer</code>, bypassing the PTY path entirely. That number measures the workload's chosen chunk size, not product behaviour.</p>
+  <p>The same diagnostics payload carries the honest number. Sessions fed through the <em>real</em> path show <strong>213 items / 51,333 bytes = 241 bytes per chunk</strong>. A genuine session therefore retains roughly <strong>241 KB</strong>, not 64 MB &mdash; about 270x smaller than I first reported.</p>
+  <p><strong>Revised assessment:</strong> a latent robustness gap worth closing cheaply (the class already computes the number it needs), but <strong>not</strong> a contributor to production memory growth. Downgraded from critical.</p>
+</div>
+
+<h2>Calibration &mdash; what the synthetic numbers do and do not prove</h2>
+<div class="card warn">
+  <span class="chip warn">read this before acting</span>
+  <p>Both headline magnitudes come from workloads that are adversarial by construction, and I want the limits of the evidence stated plainly rather than buried.</p>
+  <ul>
+    <li><strong>The ~59 sessions/sec is synthetic.</strong> The harness workloads create sessions and never delete them. No interactive user reaches 17,896 sessions in five minutes.</li>
+    <li><strong>The 64 MB/session buffer is synthetic</strong>, as corrected above. Real chunks are ~241 bytes.</li>
+    <li><strong>The CI OOM is fully explained by session count alone:</strong> ~59/sec &times; 4,080s &asymp; 240,000 sessions &times; ~17 KB each &asymp; 4 GB. That arithmetic matches the observed <code>heap_used</code> curve without needing any other leak.</li>
+  </ul>
+  <p><strong>Consequence I have to be straight about:</strong> I can no longer claim these explain the ~4 GB RSS you saw in real use. Under normal usage &mdash; a handful of sessions a day against a 7-day eviction window &mdash; neither mechanism produces meaningful growth. The earlier version of this report implied that link; it was not supported and I have removed it. Confirming the production cause needs <code>/diagnostics</code> (<code>sessions.total</code> + <code>retention.output_buffers</code>) pulled from your actual long-running server. That remains an open, separate question.</p>
+</div>
+
+<h2>What this leaves genuinely broken</h2>
+<div class="card crit">
+  <span class="chip crit">still critical</span>
+  <ol>
+    <li><strong>The longevity suite is 100% red and has never gated anything</strong> &mdash; 7/7 Nightly plus the Weekly. I dispatched a 45-minute baseline on current <code>main</code> (run <code>30978783388</code>): macOS OOM'd at <strong>31 minutes</strong>, same signature. The three PRs merged this session did not touch this. By the repo's own rule 8 this must go green regardless of origin.</li>
+    <li><strong>The product has no admission control.</strong> A client can drive the server to OOM through a documented endpoint.</li>
+  </ol>
+</div>
+
+<h2>Independent critique &mdash; where my diagnosis was too strong</h2>
+<div class="card warn">
+  <span class="chip warn">accepted corrections</span>
+  <p>A cross-lab critic reviewed the diagnosis. It landed several hits I accept rather than argue with:</p>
+  <ul>
+    <li><strong>My arithmetic is a consistency check, not causal isolation.</strong> Session objects account for ~300 MB of the 565 MB local heap. The remaining ~265 MB is unexplained, and I have not shown it is fixed rather than growing. &ldquo;Sessions are sufficient to explain the OOM&rdquo; is plausible; &ldquo;no other mechanism is involved&rdquo; is <em>not</em> established.</li>
+    <li><strong>The ~17 KB/session figure was derived by subtraction</strong>, not by a post-full-GC retained-size measurement. It is an estimate, and I presented it with more confidence than the method supports.</li>
+    <li><strong>A major confound I missed:</strong> <code>sessions.json</code> is re-serialized and rewritten every 30 s at ever-growing size (0 &rarr; 227 MB). <code>JSON.stringify</code> plus the write can transiently retain full copies, and overlapping async writes could queue several. Given the disk curve and the event-loop degradation, this could be contributing materially and is currently unmeasured.</li>
+    <li><strong>&ldquo;Unbounded&rdquo; was imprecise.</strong> The 7-day rule does eventually bound retention &mdash; at 59 sessions/sec that ceiling is ~35.7 million sessions. It is operationally useless, but the correct framing is an <em>admission/capacity</em> problem, not an unreachable-object leak.</li>
+    <li><strong>My option A was dangerous as stated.</strong> LRU eviction of durable sessions is not harmless cache eviction: a quiet, disconnected session may be deliberately awaiting reconnect from another device. Silent deletion would read as data corruption.</li>
+  </ul>
+  <p>Better options it raised that I had not considered: <strong>admission control</strong> (reject new sessions with an explicit status at capacity, rather than silently destroying old ones); <strong>protected session classes</strong> (never auto-evict running or attached sessions); <strong>output degradation before session deletion</strong> (truncate or spool buffers first); and splitting the soak into a <strong>churn test</strong> (creates and deletes, detects true post-lifecycle leaks) plus a separate <strong>saturation test</strong> (asserts documented behaviour at capacity instead of waiting for OOM). Option B alone would turn the job green while leaving the production gap untouched.</p>
+</div>
+
+<h2>Other verified defects</h2>
+<div class="card crit">
+  <span class="chip crit">high</span><span class="t">Watcher wedges permanently on a failed start &mdash; src/utils/file-watcher.js:306</span>
+  <pre>if (this._watcher) return;                 // guard
+this._watcher = chokidar.watch(...);       // assigned BEFORE the await
+// ...4 listeners registered...
+await new Promise((res, rej) =&gt; { ... onError = (e) =&gt; { cleanup(); <span class="kw">rej(e)</span>; } });</pre>
+  <p>If chokidar emits <code>error</code> before <code>ready</code>, <code>start()</code> throws but <code>this._watcher</code> stays non-null and is never <code>.close()</code>d. The native OS handle and four listeners leak. Worse: every later <code>start()</code> retry hits the guard and <strong>returns as if it succeeded</strong>, leaving a permanently dead watcher with no error surfaced.</p>
+  <p><strong>Scenario:</strong> a transient permission error or an invalid root on Windows at startup &mdash; file watching is silently dead for the process lifetime, and the caller believes it is running. Verified by reading the code path directly.</p>
+</div>
+
+<div class="card warn">
+  <span class="chip warn">medium</span><span class="t">Stream reader lock never released &mdash; src/utils/gguf-model-manager.js:139</span>
+  <pre>const reader = body.getReader();
+try { ...fileStream.write... }
+finally { await new Promise((r) =&gt; fileStream.end(r)); }   // no reader.cancel() / releaseLock()</pre>
+  <p>A disk-write error or a throwing <code>onProgress</code> leaves the HTTP body stream locked and the socket open until it times out. Error-path only, on a one-shot model download, so impact is bounded.</p>
+</div>
+
+<div class="card warn">
+  <span class="chip warn">low</span><span class="t">Per-session map never cleaned &mdash; src/server.js:4527</span>
+  <p><code>_controlSessionSeq</code> has <code>.set()</code> but <strong>no <code>.delete()</code> anywhere</strong>, while its sibling <code>activityBroadcastTimestamps</code> is cleaned in seven places including the DELETE handler and the eviction sweep. That asymmetry is the bug: session deletion appears to free memory but leaves this entry behind.</p>
+  <p>Honest sizing: it read <code>0</code> throughout my repro &mdash; these workloads never exercise the control-state path &mdash; so real-world magnitude is unproven and each entry is only a string key plus a number. A two-line fix, not a priority.</p>
+</div>
+
+<div class="card">
+  <span class="chip" style="background:rgba(39,201,63,.15);color:var(--ok);border:1px solid rgba(39,201,63,.35)">clean</span><span class="t">Crash-capable error paths: no defects found</span>
+  <p>WebSocket handling caps frame size before <code>JSON.parse</code>, wraps parsing in try/catch, validates field shapes before property access, and attaches <code>.catch()</code> to async handlers. The PTY lifecycle tracks listeners in <code>_ptyDisposables</code>, disposes them on exit/stop, rolls back <code>session.active</code> when spawn rejects, and has a 30 s spawn watchdog. Windows process-tree reaping uses Job Objects.</p>
+  <p class="note">One correction to my earlier mental model: <code>uncaughtException</code> dumps state and calls <code>process.exit(1)</code>, so an uncaught throw <em>is</em> fatal. <code>unhandledRejection</code> only logs and continues.</p>
+</div>
+
+<h2>Recommendation</h2>
+<div class="card">
+  <p>Nothing is fixed yet, deliberately. My suggested order, for your call:</p>
+  <ol>
+    <li><strong>file-watcher wedge</strong> &mdash; unambiguous, self-contained, no design question. Close <code>this._watcher</code> and null it on the error path. Safe to do now.</li>
+    <li><strong>Measure the confound before designing the session fix</strong> &mdash; run the soak with persistence disabled, and take post-GC retained-size heap snapshots at several session counts. That distinguishes session objects from <code>sessions.json</code> serialization pressure. Designing a capacity policy before knowing which dominates risks fixing the wrong thing.</li>
+    <li><strong>Then decide the capacity policy</strong> &mdash; admission control with protected session classes looks stronger than LRU eviction, because it does not silently destroy durable state a second device may be waiting to reattach to. Needs your input on the product contract.</li>
+    <li><strong>Split the soak</strong> into churn and saturation contracts so it can actually gate.</li>
+    <li>gguf reader lock and <code>_controlSessionSeq</code> &mdash; cheap cleanups, fold into whatever branch comes next.</li>
+  </ol>
+</div>
+
+<h2>Status</h2>
+<ul>
+  <li><span class="chip crit">open</span> Both root causes are diagnosed and reproduced. <strong>No fix written yet</strong> &mdash; the eviction policy is a design call (count ceiling vs. byte ceiling vs. LRU, and what to do with a pinned-but-idle session) and I did not want to pick it unilaterally.</li>
+  <li>A 45-minute soak is running on current <code>main</code> (run <code>30978783388</code>) to record the pre-fix baseline on all three platforms.</li>
+  <li>A parallel read-only survey is sweeping <code>src/</code> for other unbounded structures, listener/timer leaks, and process-killing error paths. Results will be appended here.</li>
+</ul>
+
+</div></body></html>

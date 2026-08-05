@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Terminal geometry: findings and revised plan</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--panel2:#1d212a;--line:#2a2f3a;--fg:#e6e9ef;
+        --dim:#9aa3b2;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+        --crit:#ff5f56;--warn:#ffbd2e;--ok:#27c93f;--acc:#6aa9ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:32px 24px 64px}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);margin:0 0 26px;font-size:14px}
+  h2{font-size:17px;margin:34px 0 12px;border-bottom:1px solid var(--line);padding-bottom:8px}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--acc)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0}
+  .card.crit{border-left:3px solid var(--crit)}
+  .card.ok{border-left:3px solid var(--ok)}
+  .card.acc{border-left:3px solid var(--acc)}
+  .card.warn{border-left:3px solid var(--warn)}
+  .chip{display:inline-block;font-size:11px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;
+        padding:3px 9px;border-radius:999px;margin-right:8px;vertical-align:2px}
+  .chip.crit{background:rgba(255,95,86,.15);color:var(--crit);border:1px solid rgba(255,95,86,.35)}
+  .chip.acc{background:rgba(106,169,255,.15);color:var(--acc);border:1px solid rgba(106,169,255,.35)}
+  .chip.ok{background:rgba(39,201,63,.15);color:var(--ok);border:1px solid rgba(39,201,63,.35)}
+  .chip.warn{background:rgba(255,189,46,.15);color:var(--warn);border:1px solid rgba(255,189,46,.35)}
+  .t{font-weight:650;font-size:16px}
+  code,pre{font-family:var(--mono)}
+  code{background:var(--panel2);padding:1.5px 5px;border-radius:4px;font-size:13px}
+  pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:13px 15px;
+      overflow-x:auto;font-size:12.5px;line-height:1.6;margin:12px 0}
+  .kw{color:var(--crit);font-weight:650}.add{color:var(--ok)}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:11.5px;letter-spacing:.05em;text-transform:uppercase}
+  .f{color:var(--crit);font-weight:650}.p{color:var(--ok);font-weight:650}
+  ul,ol{margin:10px 0;padding-left:20px} li{margin:6px 0}
+  .note{color:var(--dim);font-size:13.5px;font-style:italic;margin-top:10px}
+  .strike{text-decoration:line-through;color:var(--dim)}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>Terminal geometry: findings and revised plan</h1>
+<p class="sub">Measured on Windows 11 via <code>scripts/probe-multi-viewer-resize.js</code> and <code>scripts/probe-file-browser-geometry.js</code>. The plan below is <strong>revision 2</strong> &mdash; revision 1 was refuted by an independent critic and the refutation held up when I traced it.</p>
+
+<h2>Measured symptoms</h2>
+<table>
+  <tr><th>#</th><th>symptom</th><th>measured</th><th></th></tr>
+  <tr><td>1</td><td>Desktop resized, sole viewer</td><td>xterm 110x35 = PTY 110x35</td><td class="p">works</td></tr>
+  <tr><td>2</td><td>Phone joins &mdash; desktop goes stale</td><td>desktop renders 163, PTY is 38</td><td class="f">broken</td></tr>
+  <tr><td>3</td><td>Phone disconnects &mdash; no recovery</td><td>still 163 vs 38, permanent</td><td class="f">broken</td></tr>
+  <tr><td>4</td><td>File browser docked on desktop</td><td>350px panel hides ~40 of 163 cols</td><td class="f">broken</td></tr>
+</table>
+
+<div class="card crit">
+  <span class="chip crit">root cause</span><span class="t">Nothing owns &ldquo;what should this session's geometry be&rdquo;, and nothing re-asks when the inputs change.</span>
+  <p>Geometry is computed in one place &mdash; a single browser measuring its own container &mdash; and pushed at the PTY. Docked chrome that steals space, other viewers on the same PTY, and viewers arriving/leaving are all absent from that computation. Symptom 1 works only because it is the one case where a single browser's container is the whole truth.</p>
+</div>
+
+<h2>Revision 1 was wrong. What the critique found.</h2>
+<div class="card warn">
+  <span class="chip warn">retracted</span><span class="t">The &ldquo;dedup reclaims automatically&rdquo; trick is a feedback loop, not a fix.</span>
+  <p>I proposed that a letterboxed viewer set <code>target.last = applied</code>, so its next measurement would differ and it would reclaim the PTY. Traced concretely, two attached viewers ping-pong forever:</p>
+  <pre>desktop: last=38  capacity=163  -> next fit stimulus: 163 != 38  -> sends 163
+phone:   last=163 capacity=38   -> next fit stimulus:  38 != 163 -> sends 38
+                                 -> repeat, indefinitely</pre>
+  <p>A phone emits <code>visualViewport</code> events constantly (scroll, URL bar, keyboard), so this thrashes in practice. Each flip resizes the PTY, which forces a full TUI redraw and can discard scrollback. <strong>The clever part was the defect.</strong></p>
+  <p>Three further errors, all upheld:</p>
+  <ul>
+    <li><strong>Letterboxing only works when applied &lt; capacity.</strong> When the desktop wins at 163 columns, a 390px phone cannot letterbox 163 columns &mdash; it must scale, pan, or scroll. I did not address that direction at all.</li>
+    <li><strong>If letterboxing shrinks the observed container</strong>, the desktop subsequently measures 38 and can never reclaim. Outer capacity and inner rendered grid must be separate elements.</li>
+    <li><strong>One variable cannot carry four states.</strong> <code>localCapacity</code>, <code>lastAdvertised</code>, <code>authoritativeApplied</code> and <code>rendered</code> are distinct; overloading <code>target.last</code> was the underlying mistake.</li>
+  </ul>
+  <p>Also: <code>Map&lt;wsId,{cols,rows}&gt;</code> records no recency, so &ldquo;most-recent-writer wins&rdquo; was undefined as specified; and the Layer 1 pixel arithmetic was simply wrong &mdash; <code>floor(a/c) - floor(b/c) &ne; floor((a-b)/c)</code>, and panel width is not the visible overlap during a transform transition.</p>
+</div>
+
+<h2>Revision 2</h2>
+
+<div class="card acc">
+  <h3>Layer 1 &mdash; real layout, not pixel arithmetic (fixes symptom 4)</h3>
+  <p>Drop the reserve-subtraction idea. Make the terminal's usable area an actual CSS layout region whose width changes when the panel docks, and let <code>FitCoordinator</code> observe <em>that</em> element.</p>
+  <p>This removes the whole class of error at once: no fractional column conversion, no sampling a transform mid-transition, no <code>viewport &gt; 1024</code> guess that can disagree with the panel's real responsive mode, and drag-resizing the panel is handled by ResizeObserver for free. <code>reserve</code> goes back to meaning only fixed chrome.</p>
+  <p><strong>Independent of everything else. No protocol change. Safe to land first.</strong></p>
+  <p class="note">Also delete <code>_refitAllTerminals()</code> (<code>file-browser.js:858</code>) &mdash; fully implemented, never called. And <code>_adjustTerminal()</code>'s comment (&ldquo;non-terminal surfaces overlay the terminal and never change its geometry&rdquo;) is true on mobile and false above 1024px, which is plausibly how this survived review.</p>
+</div>
+
+<div class="card acc">
+  <h3>Layer 2 &mdash; explicit ownership, not incidental writes (fixes symptom 2)</h3>
+  <p>The decisive correction: <strong>advertising capacity must not claim the PTY.</strong> Every incidental layout event &mdash; orientation, keyboard, panel drag, a retry, a reconnect &mdash; became an ownership claim under revision 1. That is the feedback mechanism, and explicit ownership removes it rather than damping it.</p>
+  <ul>
+    <li>Each attachment <em>advertises</em> its capacity. This updates fallback state only.</li>
+    <li>Exactly one attachment holds an <strong>owner lease</strong>. Only the owner's capacity drives <code>pty.resize</code>.</li>
+    <li>Ownership transfers on a deliberate act &mdash; real user input from that device, or an explicit &ldquo;take control&rdquo; &mdash; not on a layout event. Typing on your phone is intentional; your phone's URL bar collapsing is not.</li>
+    <li>On owner disconnect, transfer deterministically to a surviving attachment and apply its capacity.</li>
+    <li>Server assigns a monotonic <strong>revision</strong>, serializes resize application per session, and validates geometry (integer, finite, positive, bounded). <code>applied</code> updates only after <code>pty.resize</code> succeeds. Clients ignore stale revisions.</li>
+    <li>A <strong>session epoch</strong> covers restart: the PTY survives but the attachment map does not, so persist applied geometry + revision alongside the session and have reconnecting clients re-advertise without claiming.</li>
+  </ul>
+  <p>Keying must be <code>(sessionId, connectionId, viewId)</code>, not <code>wsId</code> &mdash; one socket hosts multiple split panes, and <code>splits.js:129</code> has its own send path that must use the same protocol or it becomes a direct feedback loop.</p>
+</div>
+
+<div class="card acc">
+  <h3>Layer 3 &mdash; non-owner rendering</h3>
+  <ul>
+    <li>Separate client state: <code>localCapacity</code>, <code>lastAdvertised</code>, <code>authoritativeApplied + revision</code>, <code>rendered</code>.</li>
+    <li>Applying authoritative geometry runs under a <strong>suppression guard</strong> that cannot itself emit a resize.</li>
+    <li>Render the grid in an <strong>inner</strong> element so the observed outer capacity element is never perturbed by letterboxing.</li>
+    <li>Capacity &ge; applied: letterbox. Capacity &lt; applied: scale down or pan &mdash; letterboxing is impossible in that direction. For &ldquo;glance at the phone&rdquo;, scaling reads better than panning.</li>
+    <li>Below the 20x5 floor, send an explicit <strong>withdrawal</strong>. Otherwise a stale sub-floor desire sits in the server map and can become authoritative when the owner leaves.</li>
+  </ul>
+</div>
+
+<h2>Honest sequencing</h2>
+<div class="card">
+  <p>Revision 1 implied this was a modest change. It is not. Splitting by cost and risk:</p>
+  <ol>
+    <li><strong>Layer 1 &mdash; small, safe, high value.</strong> Fixes the file-browser occlusion you spotted. No protocol change, lands on its own.</li>
+    <li><strong>Owner-disconnect recovery &mdash; small, high value.</strong> Symptom 3 (the permanent wedge) does not need the full protocol: recompute on connection-set change and push to survivors. This is the worst user-facing bug and the cheapest real fix.</li>
+    <li><strong>Full multi-viewer ownership protocol &mdash; a real project.</strong> Epoch, revision, serialization, lease transfer, non-owner scaling, split-pane routing, withdrawal state, server validation and rate limiting. This is symptom 2, and it deserves an ADR superseding the single-viewer assumption in ADR-0046 rather than being bolted on.</li>
+  </ol>
+  <p>I would land 1 and 2 now and write the ADR for 3 before writing any of its code.</p>
+</div>
+
+<h2>Still unmeasured</h2>
+<div class="card">
+  <p>Stated rather than glossed: phone orientation change, iOS soft keyboard (needs WebKit, not Chromium &mdash; bespoke <code>visualViewport</code> handling plus a Safari polling fallback), split panes, and reconnect-after-drop. The plan is designed to cover them; designed-to is not measured.</p>
+  <p class="note">Unrelated but observed twice during these runs: the known Windows ConPTY teardown crash (<code>AttachConsole failed</code>) still reproduces on current main.</p>
+</div>
+
+</div></body></html>
