@@ -34,6 +34,7 @@ const { ShellIntegrationManager } = require('./shell-integration');
  */
 const OSC7_CACHE_MAX_ENTRIES = 256;
 const OSC7_CACHE_TTL_MS = 5000;
+const MAX_DEFERRED_SHELL_OUTPUT = 256 * 1024;
 
 class TerminalBridge extends BaseBridge {
   constructor() {
@@ -103,6 +104,7 @@ class TerminalBridge extends BaseBridge {
      */
     this._osc7ValidationCache = new Map();
     this._shellIntegration = new ShellIntegrationManager();
+    this._shellIntegrationStarts = new Map();
   }
 
   // Override async command discovery — use default shell instead of searching PATH
@@ -164,6 +166,16 @@ class TerminalBridge extends BaseBridge {
     }
     const { onCwdChange, validatePath, onOutput, ...rest } = options || {};
     const integration = this._shellIntegration.prepare(sessionId, this.command, process.env);
+    const startToken = integration ? Symbol(sessionId) : null;
+    if (startToken) this._shellIntegrationStarts.set(sessionId, startToken);
+    const isCurrentStart = () => (
+      !startToken || this._shellIntegrationStarts.get(sessionId) === startToken
+    );
+    const finishStart = () => {
+      if (startToken && this._shellIntegrationStarts.get(sessionId) === startToken) {
+        this._shellIntegrationStarts.delete(sessionId);
+      }
+    };
     const extraEnv = integration
       ? { ...((rest.extraEnv && typeof rest.extraEnv === 'object') ? rest.extraEnv : {}), ...integration.env }
       : rest.extraEnv;
@@ -172,14 +184,31 @@ class TerminalBridge extends BaseBridge {
     let deferredOutput = '';
     const spawnOptions = { ...rest, extraEnv };
     let fallbackAttempted = false;
+    const originalOnExit = typeof rest.onExit === 'function' ? rest.onExit : () => {};
+    const originalOnError = typeof rest.onError === 'function' ? rest.onError : () => {};
+    const cleanupSessionState = () => {
+      this._shellIntegration.cleanup(sessionId);
+      this._uninstallOsc7State(sessionId);
+      finishStart();
+    };
+    const finalOnExit = (...args) => {
+      cleanupSessionState();
+      originalOnExit(...args);
+    };
+    const finalOnError = (...args) => {
+      cleanupSessionState();
+      originalOnError(...args);
+    };
     if (integration) {
-      const originalOnExit = typeof rest.onExit === 'function' ? rest.onExit : () => {};
-      const originalOnError = typeof rest.onError === 'function' ? rest.onError : () => {};
       spawnOptions.onExit = (...args) => {
-        if (!integrationStarting) originalOnExit(...args);
+        if (!integrationStarting) {
+          finalOnExit(...args);
+        }
       };
       spawnOptions.onError = (...args) => {
-        if (!integrationStarting) originalOnError(...args);
+        if (!integrationStarting) {
+          finalOnError(...args);
+        }
       };
     }
 
@@ -207,7 +236,10 @@ class TerminalBridge extends BaseBridge {
           console.warn('terminal-bridge: OSC 7 handler threw:', err && err.message);
         }
       }
-      if (deferOutput) deferredOutput += chunk;
+      if (deferOutput) {
+        const remaining = MAX_DEFERRED_SHELL_OUTPUT - deferredOutput.length;
+        if (remaining > 0) deferredOutput += chunk.slice(0, remaining);
+      }
       else if (typeof onOutput === 'function') onOutput(chunk);
     };
 
@@ -224,39 +256,75 @@ class TerminalBridge extends BaseBridge {
       const session = await super.startSession(sessionId, { ...spawnOptions, onOutput: wrappedOnOutput });
       if (integration) {
         const state = await this._waitForShellIntegration(sessionId, integration);
-        if (state === 'exited') {
+        if (state !== 'ready') {
           await super.stopSession(sessionId);
           this._shellIntegration.cleanup(sessionId);
+          if (!isCurrentStart()) {
+            this._uninstallOsc7State(sessionId);
+            return null;
+          }
           integrationStarting = false;
           fallbackAttempted = true;
           deferredOutput = '';
-          const fallback = await super.startSession(sessionId, { ...rest, onOutput: wrappedOnOutput });
+          if (typeof onCwdChange === 'function') {
+            this._installOsc7State(sessionId, {
+              onCwdChange,
+              validatePath: typeof validatePath === 'function' ? validatePath : (p) => ({ valid: true, path: p }),
+            });
+          }
+          const fallback = await super.startSession(sessionId, {
+            ...rest,
+            onExit: finalOnExit,
+            onError: finalOnError,
+            onOutput: wrappedOnOutput,
+          });
+          finishStart();
           releaseOutput();
           return fallback;
         }
         integrationStarting = false;
+        finishStart();
         releaseOutput();
       }
       return session;
     } catch (err) {
       if (integration && !fallbackAttempted) {
         this._shellIntegration.cleanup(sessionId);
+        if (!isCurrentStart()) {
+          this._uninstallOsc7State(sessionId);
+          return null;
+        }
         try {
+          integrationStarting = false;
+          fallbackAttempted = true;
           deferredOutput = '';
-          const fallback = await super.startSession(sessionId, { ...rest, onOutput: wrappedOnOutput });
+          if (typeof onCwdChange === 'function') {
+            this._installOsc7State(sessionId, {
+              onCwdChange,
+              validatePath: typeof validatePath === 'function' ? validatePath : (p) => ({ valid: true, path: p }),
+            });
+          }
+          const fallback = await super.startSession(sessionId, {
+            ...rest,
+            onExit: finalOnExit,
+            onError: finalOnError,
+            onOutput: wrappedOnOutput,
+          });
+          finishStart();
           releaseOutput();
           return fallback;
         } catch (fallbackError) {
-          this._uninstallOsc7State(sessionId);
+          cleanupSessionState();
           throw fallbackError;
         }
       }
-      this._uninstallOsc7State(sessionId);
+      cleanupSessionState();
       throw err;
     }
   }
 
   async stopSession(sessionId) {
+    this._shellIntegrationStarts.delete(sessionId);
     try {
       return await super.stopSession(sessionId);
     } finally {
@@ -266,6 +334,7 @@ class TerminalBridge extends BaseBridge {
   }
 
   async cleanup() {
+    this._shellIntegrationStarts.clear();
     const ids = Array.from(this._osc7Hooks.keys());
     for (const id of ids) this._uninstallOsc7State(id);
     this._shellIntegration.cleanupAll();
@@ -285,7 +354,7 @@ class TerminalBridge extends BaseBridge {
       }
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    return this.sessions.has(sessionId) ? 'pending' : 'exited';
+    return this.sessions.has(sessionId) ? 'timed_out' : 'exited';
   }
 
   // ------------------------------------------------------------------------

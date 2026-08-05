@@ -4899,7 +4899,7 @@ class ClaudeCodeWebServer {
     session.agent = toolName;
     this.activityBroadcastTimestamps.set(sessionId, Date.now());
     try {
-      await bridge.startSession(sessionId, {
+      const startedBridgeSession = await bridge.startSession(sessionId, {
         workingDir: session.workingDir,
         cols, rows,
         dangerouslySkipPermissions: !!opts.dangerouslySkipPermissions,
@@ -4950,6 +4950,7 @@ class ClaudeCodeWebServer {
         },
         extraEnv,
       });
+      if (!startedBridgeSession) return;
       session.lastActivity = new Date();
       if (typeof this._pushEvictionEntry === 'function') this._pushEvictionEntry(sessionId);
       if (!session.sessionStartTime) session.sessionStartTime = new Date();
@@ -5593,7 +5594,7 @@ class ClaudeCodeWebServer {
         },
       } : {};
 
-      await bridge.startSession(sessionId, {
+      const startedBridgeSession = await bridge.startSession(sessionId, {
         workingDir: session.workingDir,
         cols: cols || 80,
         rows: rows || 24,
@@ -5661,6 +5662,7 @@ class ClaudeCodeWebServer {
           ...claudeArtifactEnv,
         }
       });
+      if (!startedBridgeSession) return;
 
       session.lastActivity = new Date();
       this._pushEvictionEntry(sessionId); // PROC-04

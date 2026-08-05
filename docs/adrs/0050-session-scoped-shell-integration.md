@@ -36,7 +36,7 @@ The generated URI uses an empty host for drive and POSIX paths, a meaningful hos
 
 Session artifacts are created below `os.tmpdir()/.ai-or-die-shell/` in random `mkdtempSync` directories. The root and session directories are private, shim files are exclusive-create and private, session identifiers are not used in names, stale directories older than one day are swept, and active artifacts are removed when the session stops.
 
-Each shim writes a ready sentinel after installing the hook. If the wrapped shell exits before the sentinel appears, `TerminalBridge` suppresses that failed attempt and starts the same shell again without integration. A setup, write, or spawn failure likewise falls back to the vanilla shell. A missing live-CWD feature is preferable to a broken terminal.
+Each shim writes a ready sentinel after installing the hook. If the wrapped shell exits or does not become ready within two seconds, `TerminalBridge` suppresses that failed attempt and starts the same shell again without integration. Startup output is bounded while the sentinel is pending. An explicit stop or server cleanup cancels startup instead of spawning a fallback shell. A setup, write, or spawn failure likewise falls back to the vanilla shell. A missing live-CWD feature is preferable to a broken terminal.
 
 `AIORDIE_DISABLE_SHELL_INTEGRATION=1` disables the wrapper for troubleshooting.
 
