@@ -108,10 +108,28 @@ Escalation paths, in order of preference:
    child process instead of the worker, and it closes the whole class rather than
    this instance. It rewrites the harness shared by most specs across every
    browser job, so it needs its own change and a Windows verification run.
-2. **Bypass the crashing branch.** Passing `useConptyDll: true` when spawning on
-   Windows takes the other branch of `kill()` and never forks the agent. This
-   switches the ConPTY backend on the primary production target and touches PTY
-   streaming, so it requires an ADR and Windows verification — not a ride-along.
+2. **Bypass the crashing branch.** ~~Passing `useConptyDll: true` when spawning
+   on Windows takes the other branch of `kill()` and never forks the agent.~~
+   **TRIED AND DISPROVEN — do not attempt again without new information.**
+
+   This was implemented and pushed (`604b93a`) and had to be reverted
+   (`06752ae`). The mechanism works exactly as predicted here: the agent is never
+   forked and the `AttachConsole failed` flood goes from dozens of lines per run
+   to **zero**, with `02-terminal-io` still passing 3/3 locally.
+
+   But it breaks Windows broadly. CI on `604b93a` failed **every** Windows job:
+   `test (windows-latest)` at 1988 passing / 4 failing (3 of those are
+   pre-existing) plus all five Windows browser buckets, including a clipboard
+   test that had been passing. The three runs before it were 31/31 green and the
+   PTY backend was the only difference; reverting restored 31/31 green on
+   attempt 1, confirming attribution. Why the DLL backend breaks Windows here was
+   not investigated.
+
+   This closes the gap in the "Honest limitation" below for this path
+   specifically: it has now been exercised on a real Windows machine and on the
+   Windows runners. Escalation path 1 (boot the server out-of-process) remains
+   unexercised and is now the preferred route — it also closes the whole class
+   rather than this instance.
 3. **Report upstream** the un-awaited `fork()` in `kill()` and the unguarded
    `getConsoleProcessList` call in the agent.
 
