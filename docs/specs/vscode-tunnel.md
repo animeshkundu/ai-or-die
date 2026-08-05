@@ -205,6 +205,8 @@ The tunnel start is a four-phase process:
 
 The host promise is discriminated: success contains the public URL; process error, early exit, and URL timeout contain an error code, exit code, and captured output tail. It never resolves as successful without a public URL. Permanent startup failures do not enter the crash-restart loop.
 
+Automatic restart uses the same failure contract. If only the public tunnel fails to restart, the local server stays available, status becomes `degraded`, and the client receives an actionable error with the local-only URL. If the local server cannot restart or accept connections, the client receives `server_start_failed` and the reserved port is released rather than leaving the session stuck in `starting`.
+
 ### Startup Failure Contract
 
 | Error code | Meaning and user action |

@@ -1,4 +1,5 @@
 const assert = require('assert');
+const { EventEmitter } = require('events');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -631,6 +632,98 @@ describe('VSCodeTunnelManager', function () {
       const failure = await manager._spawnTunnel('test-session');
       assert.strictEqual(failure.ok, false);
       assert.strictEqual(failure.error, 'url_timeout');
+    });
+  });
+
+  describe('restart failures', function () {
+    function restartState(serverProcess) {
+      return {
+        serverProcess,
+        tunnelProcess: null,
+        _loginProcess: null,
+        localPort: 9100,
+        connectionToken: 'token',
+        localUrl: 'http://localhost:9100/?tkn=token',
+        publicUrl: null,
+        tunnelId: 'aiordie-vscode-test',
+        status: 'degraded',
+        sessionId: 'test-session',
+        workingDir: '/tmp',
+        retryCount: 0,
+        stopping: false,
+        _lastSpawnTime: Date.now(),
+        _totalRestarts: 0,
+        _stabilityTimer: null,
+        _restartDelayTimer: null,
+        _restartDelayResolve: null,
+        _whichDied: null,
+      };
+    }
+
+    async function releaseRestartDelay(tunnel, pending) {
+      assert(tunnel._restartDelayResolve, 'restart delay was not installed');
+      clearTimeout(tunnel._restartDelayTimer);
+      tunnel._restartDelayResolve();
+      await pending;
+    }
+
+    it('surfaces a tunnel restart failure and keeps usable local access', async function () {
+      const serverProcess = new EventEmitter();
+      serverProcess.exitCode = null;
+      serverProcess.kill = () => {
+        serverProcess.exitCode = 0;
+        setImmediate(() => serverProcess.emit('exit', 0));
+      };
+      const tunnel = restartState(serverProcess);
+      tunnel._whichDied = 'tunnel';
+      manager.tunnels.set('test-session', tunnel);
+      manager._reservedPorts.add(9100);
+      manager._ensureDevtunnel = async () => ({ ok: true });
+      manager._spawnTunnel = async () => ({
+        ok: false,
+        error: 'network_unreachable',
+        message: 'Dev Tunnel could not reach the tunnel service.',
+      });
+      const events = [];
+      manager.onEvent = (_sessionId, event) => events.push(event);
+
+      const pending = manager._restart('test-session');
+      await releaseRestartDelay(tunnel, pending);
+
+      assert.strictEqual(tunnel.status, 'degraded');
+      assert.strictEqual(tunnel.serverProcess, serverProcess);
+      assert.strictEqual(manager._reservedPorts.has(9100), true);
+      const failure = events.find((event) => event.type === 'vscode_tunnel_error');
+      assert(failure, 'restart failure was not surfaced');
+      assert.strictEqual(failure.error, 'network_unreachable');
+      assert.strictEqual(failure.localUrl, tunnel.localUrl);
+      assert(failure.message.includes('only from the machine running this server'));
+    });
+
+    it('surfaces a server restart failure and releases the reserved port', async function () {
+      const tunnel = restartState(null);
+      tunnel._whichDied = 'server';
+      manager.tunnels.set('test-session', tunnel);
+      manager._reservedPorts.add(9100);
+      manager._spawnServer = async () => {
+        tunnel._serverFailure = {
+          error: 'server_start_failed',
+          message: 'VS Code Server could not restart.',
+        };
+        return false;
+      };
+      const events = [];
+      manager.onEvent = (_sessionId, event) => events.push(event);
+
+      const pending = manager._restart('test-session');
+      await releaseRestartDelay(tunnel, pending);
+
+      assert.strictEqual(manager.tunnels.has('test-session'), false);
+      assert.strictEqual(manager._reservedPorts.has(9100), false);
+      const failure = events.find((event) => event.type === 'vscode_tunnel_error');
+      assert(failure, 'server restart failure was not surfaced');
+      assert.strictEqual(failure.error, 'server_start_failed');
+      assert.strictEqual(failure.fatal, true);
     });
   });
 

@@ -396,6 +396,15 @@ class VSCodeTunnelManager {
     };
   }
 
+  _emitTunnelFailure(sessionId, failure, fatal = false) {
+    this._emitEvent(sessionId, 'vscode_tunnel_error', {
+      error: failure.error || 'host_failed',
+      message: failure.message || 'Dev Tunnel failed to start.',
+      ...(failure.localUrl ? { localUrl: failure.localUrl } : {}),
+      fatal,
+    });
+  }
+
   /**
    * Kill a child process with SIGTERM, escalating to SIGKILL after 5s.
    */
@@ -1256,20 +1265,74 @@ class VSCodeTunnelManager {
         // Restart tunnel only
         tunnel.status = 'starting';
         const tunnelReady = await this._ensureDevtunnel(sessionId);
-        if ((tunnelReady === true || (tunnelReady && tunnelReady.ok)) && !tunnel.stopping) {
-          await this._spawnTunnel(sessionId);
+        if (!(tunnelReady === true || (tunnelReady && tunnelReady.ok))) {
+          const failure = tunnelReady && tunnelReady.error
+            ? tunnelReady
+            : this._classifyDevtunnelFailure('', 'tunnel_create', null);
+          const result = this._degradedResult(tunnel, failure);
+          this._emitTunnelFailure(sessionId, result);
+          return;
+        }
+        if (!tunnel.stopping) {
+          const hostResult = await this._spawnTunnel(sessionId);
+          if (!hostResult || !hostResult.ok) {
+            const failure = hostResult && hostResult.error
+              ? hostResult
+              : this._classifyDevtunnelFailure('', 'host', null);
+            const result = this._degradedResult(tunnel, failure);
+            this._emitTunnelFailure(sessionId, result);
+          }
         }
       } else {
         // Restart both
         tunnel.status = 'starting';
         const serverOk = await this._spawnServer(sessionId);
-        if (serverOk && !tunnel.stopping) {
-          await this._waitForPort(tunnel.localPort, PORT_WAIT_TIMEOUT_MS);
-          if (!tunnel.stopping) {
-            const tunnelReady = await this._ensureDevtunnel(sessionId);
-            if ((tunnelReady === true || (tunnelReady && tunnelReady.ok)) && !tunnel.stopping) {
-              await this._spawnTunnel(sessionId);
-            }
+        if (!serverOk) {
+          const failure = tunnel._serverFailure || {
+            error: 'server_start_failed',
+            message: 'VS Code Server failed to restart. Check the `code` CLI, then click Retry.',
+          };
+          tunnel.status = 'error';
+          tunnel.lastError = failure.message;
+          this._emitTunnelFailure(sessionId, failure, true);
+          if (tunnel.serverProcess) await this._killProcess(tunnel.serverProcess);
+          this._cleanupTunnel(sessionId);
+          return;
+        }
+        if (tunnel.stopping) return;
+
+        const portReady = await this._waitForPort(tunnel.localPort, PORT_WAIT_TIMEOUT_MS);
+        if (!portReady) {
+          const failure = {
+            error: 'server_start_failed',
+            message: `VS Code Server restarted but did not accept connections on port ${tunnel.localPort}. Check the \`code serve-web\` output, then click Retry.`,
+          };
+          tunnel.status = 'error';
+          tunnel.lastError = failure.message;
+          tunnel.stopping = true;
+          if (tunnel.serverProcess) await this._killProcess(tunnel.serverProcess);
+          this._emitTunnelFailure(sessionId, failure, true);
+          this._cleanupTunnel(sessionId);
+          return;
+        }
+
+        if (!tunnel.stopping) {
+          const tunnelReady = await this._ensureDevtunnel(sessionId);
+          if (!(tunnelReady === true || (tunnelReady && tunnelReady.ok))) {
+            const failure = tunnelReady && tunnelReady.error
+              ? tunnelReady
+              : this._classifyDevtunnelFailure('', 'tunnel_create', null);
+            const result = this._degradedResult(tunnel, failure);
+            this._emitTunnelFailure(sessionId, result);
+            return;
+          }
+          const hostResult = await this._spawnTunnel(sessionId);
+          if (!hostResult || !hostResult.ok) {
+            const failure = hostResult && hostResult.error
+              ? hostResult
+              : this._classifyDevtunnelFailure('', 'host', null);
+            const result = this._degradedResult(tunnel, failure);
+            this._emitTunnelFailure(sessionId, result);
           }
         }
       }

@@ -63,7 +63,7 @@ test.describe('Terminal click: bash + cd + OSC 7 (user-reported flow)', () => {
     await attachFailureArtifacts(page, testInfo);
   });
 
-  test('bash session: session hook tracks cd into a spaced path and click opens via liveCwd', async ({ page }) => {
+  test('bash session: cd + OSC 7 emit + print path + click opens file via liveCwd', async ({ page }) => {
     setupPageCapture(page);
 
     const sessionId = await page.evaluate(async ({ origin, wd }) => {
