@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const search = require('./utils/search');
 const FileWatcher = require('./utils/file-watcher');
+const { stripWindowsLongPathPrefix } = require('./utils/win-long-path');
 const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -667,9 +668,7 @@ class ClaudeCodeWebServer {
       //   `\\?\UNC\server\share\…` → `\\server\share\…`
       // Without this, baseFolder (resolved before the prefix was added)
       // and the realpath'd target would still lexically disagree.
-      if (process.platform === 'win32' && out.startsWith('\\\\?\\')) {
-        out = out.startsWith('\\\\?\\UNC\\') ? '\\\\' + out.slice(8) : out.slice(4);
-      }
+      out = stripWindowsLongPathPrefix(out);
       return out;
     } catch (_) {
       // Path doesn't exist — recurse on the parent (which usually does)
