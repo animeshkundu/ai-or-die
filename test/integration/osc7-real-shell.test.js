@@ -76,7 +76,8 @@ const posixIt = (HAS_BASH && POSIX_SHELL) ? it : it.skip;
 // that this raw POSIX PTY harness cannot supply. The supported deployment
 // contract is Windows ConPTY, so exercise this scenario there rather than
 // reporting a harness-only Linux timeout as a product failure.
-const HAS_PWSH = process.platform === 'win32' && has('pwsh');
+const HAS_PWSH = has('pwsh');
+const HAS_WINDOWS_POWERSHELL = process.platform === 'win32' && has('powershell.exe');
 const HAS_SUDO_NOPASSWD = (() => {
   if (!has('sudo')) return false;
   try { execFileSync('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: 2000 }); return true; }
@@ -319,6 +320,137 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
 
   after(async function () {
     await stopServer();
+  });
+
+  posixIt('session-scoped bash hook emits cwd_changed without manual setup and preserves a custom prompt', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const originalHome = process.env.HOME;
+    const customHome = fs.mkdtempSync(path.join(baseDir, 'custom-home-'));
+    fs.writeFileSync(
+      path.join(customHome, '.bashrc'),
+      'PS1="CUSTOM> "\nPROMPT_COMMAND=\'printf "CUSTOM_PROMPT "\'\n'
+    );
+    server.terminalBridge.command = execFileSync('which', ['bash'], { encoding: 'utf8' }).trim();
+    process.env.HOME = customHome;
+    const sess = new Session();
+    try {
+      await sess.open(baseDir);
+      await sess.startTerminal();
+    } finally {
+      process.env.HOME = originalHome;
+    }
+
+    await sess.waitForOutput('CUSTOM_PROMPT', 5000);
+    sess.reset();
+    sess.send('cd ' + JSON.stringify(path.join(baseDir, 'foo bar')) + '\n');
+    const frame = await sess.waitForCwdChangedTo(fs.realpathSync(path.join(baseDir, 'foo bar')), 5000);
+    assert.strictEqual(path.resolve(frame.cwd), fs.realpathSync(path.join(baseDir, 'foo bar')));
+    await sess.waitForOutput('CUSTOM_PROMPT', 5000);
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  posixIt('a shell that rejects the injected rc file falls back to a live vanilla terminal', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const fakeBin = fs.mkdtempSync(path.join(baseDir, 'fallback-bin-'));
+    const fakeBash = path.join(fakeBin, 'bash');
+    fs.writeFileSync(
+      fakeBash,
+      '#!/bin/sh\nif [ "$1" = "--rcfile" ]; then exit 42; fi\nexec /bin/bash "$@"\n',
+      { mode: 0o700 }
+    );
+    server.terminalBridge.command = fakeBash;
+    const sess = new Session();
+    await sess.open(baseDir);
+    await sess.startTerminal();
+    sess.send('echo VANILLA_FALLBACK_OK\n');
+    await sess.waitForOutput('VANILLA_FALLBACK_OK', 5000);
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  (HAS_ZSH ? it : it.skip)('session-scoped zsh hook emits cwd_changed and preserves precmd', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const originalZdotdir = process.env.ZDOTDIR;
+    const customHome = fs.mkdtempSync(path.join(baseDir, 'zsh-home-'));
+    fs.writeFileSync(path.join(customHome, '.zshrc'), 'precmd_functions+=(user_precmd)\nuser_precmd() { print -n "CUSTOM_ZSH " }\n');
+    server.terminalBridge.command = execFileSync('which', ['zsh'], { encoding: 'utf8' }).trim();
+    process.env.ZDOTDIR = customHome;
+    const sess = new Session();
+    try {
+      await sess.open(baseDir);
+      await sess.startTerminal();
+    } finally {
+      if (originalZdotdir === undefined) delete process.env.ZDOTDIR;
+      else process.env.ZDOTDIR = originalZdotdir;
+    }
+    await sess.waitForOutput('CUSTOM_ZSH', 5000);
+    sess.reset();
+    sess.send('cd ' + JSON.stringify(path.join(baseDir, 'foo bar')) + '\n');
+    const frame = await sess.waitForCwdChangedTo(fs.realpathSync(path.join(baseDir, 'foo bar')), 5000);
+    assert.strictEqual(path.resolve(frame.cwd), fs.realpathSync(path.join(baseDir, 'foo bar')));
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  (HAS_PWSH ? it : it.skip)('session-scoped pwsh hook emits cwd_changed without manual setup', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const originalHome = process.env.HOME;
+    const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    let customHome = null;
+    server.terminalBridge.command = process.platform === 'win32'
+      ? execFileSync('where.exe', ['pwsh'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]
+      : execFileSync('which', ['pwsh'], { encoding: 'utf8' }).trim();
+    if (process.platform !== 'win32') {
+      customHome = fs.mkdtempSync(path.join(baseDir, 'pwsh-home-'));
+      const profileDir = path.join(customHome, 'config', 'powershell');
+      fs.mkdirSync(profileDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(profileDir, 'Microsoft.PowerShell_profile.ps1'),
+        'function prompt { "CUSTOM_PS> " }\nfunction ProfileProbe { "PROFILE_SCOPE_OK" }\n'
+      );
+      process.env.HOME = customHome;
+      process.env.XDG_CONFIG_HOME = path.join(customHome, 'config');
+    }
+    const sess = new Session();
+    try {
+      await sess.open(baseDir);
+      await sess.startTerminal();
+    } finally {
+      process.env.HOME = originalHome;
+      if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+    }
+    await sess.waitForOutput(process.platform === 'win32' ? 'PS ' : 'CUSTOM_PS', 10000);
+    if (customHome) {
+      sess.send('ProfileProbe\r');
+      await sess.waitForOutput('PROFILE_SCOPE_OK', 5000);
+    }
+    sess.reset();
+    const target = path.join(baseDir, 'foo bar').replace(/'/g, "''");
+    sess.send(`Set-Location -LiteralPath '${target}'\r`);
+    const frame = await sess.waitForCwdChangedTo(fs.realpathSync(path.join(baseDir, 'foo bar')), 15000);
+    assert.strictEqual(path.resolve(frame.cwd), fs.realpathSync(path.join(baseDir, 'foo bar')));
+    if (customHome) await sess.waitForOutput('CUSTOM_PS', 5000);
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  (process.platform === 'win32' ? it : it.skip)('session-scoped Windows PowerShell hook emits cwd_changed without manual setup', async function () {
+    assert.strictEqual(HAS_WINDOWS_POWERSHELL, true, 'powershell.exe must be available on Windows');
+    const originalCommand = server.terminalBridge.command;
+    server.terminalBridge.command = execFileSync('where.exe', ['powershell.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0];
+    const sess = new Session();
+    await sess.open(baseDir);
+    await sess.startTerminal();
+    await sess.waitForOutput('PS ', 10000);
+    sess.reset();
+    const target = path.join(baseDir, 'foo bar').replace(/'/g, "''");
+    sess.send(`Set-Location -LiteralPath '${target}'\r`);
+    const frame = await sess.waitForCwdChangedTo(fs.realpathSync(path.join(baseDir, 'foo bar')), 15000);
+    assert.strictEqual(path.resolve(frame.cwd), fs.realpathSync(path.join(baseDir, 'foo bar')));
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
   });
 
   // ──────────────────────────────────────────────────────────────────────

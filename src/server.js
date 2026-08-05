@@ -4174,6 +4174,28 @@ class ClaudeCodeWebServer {
       stickyNotesStatus: this.stickyNoteEngine.getStatus()
     });
 
+    const review = this.artifactReviews.get(claudeSessionId);
+    if (review && review.status !== 'ended' && review.visibility !== 'dismissed') {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'artifact_review_opened',
+        sessionId: claudeSessionId,
+        key: review.key,
+        file: review.file,
+        viewUrl: `/api/artifact/${encodeURIComponent(claudeSessionId)}/view`,
+      });
+    } else if (review && review.status === 'ended') {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'artifact_review_ended',
+        sessionId: claudeSessionId,
+      });
+    } else if (review && review.visibility === 'dismissed') {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'artifact_review_dismissed',
+        sessionId: claudeSessionId,
+        dismissed: true,
+      });
+    }
+
     if (this.dev) {
       console.log(`WebSocket ${wsId} joined Claude session ${claudeSessionId}`);
     }
@@ -7427,6 +7449,7 @@ class ClaudeCodeWebServer {
         type: 'vscode_tunnel_error',
         error: result.error,
         message: result.message || result.error,
+        ...(result.localUrl ? { localUrl: result.localUrl } : {}),
         ...(result.install ? { install: result.install } : {}),
       });
     }

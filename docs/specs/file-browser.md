@@ -851,25 +851,23 @@ This makes the documented bash/zsh/pwsh hooks work out of the box on macOS / Lin
 
 No platform-specific branches in production code beyond this single fallback — the heavy lifting is in `url.fileURLToPath()`.
 
-### Shell hooks — manual install (v1)
+### Shell hooks — session-scoped integration
 
-ai-or-die's terminal bridge listens for OSC 7. Modern terminals speak it; users get click-to-open the moment OSC 7 starts firing in the shell. **In v1, OSC 7 hook install is MANUAL for all shells** — one-line copy-paste into the user's shell rc file. Auto-install (per the deferred [ADR-0021](../adrs/0021-osc7-shell-hook-auto-install.md)) is planned for a future version but not shipped in v1.
+Per [ADR-0050](../adrs/0050-session-scoped-shell-integration.md), Terminal-bridge sessions install OSC 7 only in the shell process the server spawns. Nothing writes `$PROFILE`, `~/.bashrc`, `~/.zshrc`, `.zshenv`, `.zprofile`, or `.zlogin`. Private transient shims are removed with the session; a wrapper that exits during setup is replaced by a vanilla shell.
 
-**Per-shell status (v1):**
+**Per-shell status:**
 
-| Shell | v1 status | What user does |
+| Shell | Status | Behavior |
 |---|---|---|
-| **bash** | Manual install | Paste the one-line snippet below into `~/.bashrc`. |
-| **zsh** | Manual install | Paste the one-line snippet below into `~/.zshrc`. |
-| **fish** | Native | Nothing. fish emits OSC 7 unconditionally. |
-| **pwsh (PowerShell 7 + Windows PowerShell 5.1)** | Manual install | Paste the snippet below into `$PROFILE`. |
+| **bash** | Automatic, session-only | `--rcfile` sources the user's `.bashrc`, then appends a named hook to writable `PROMPT_COMMAND`. Readonly/nameref prompt state is left untouched. |
+| **zsh** | Automatic, session-only | A transient `ZDOTDIR` passes through all four user startup files, restores the effective user value, and appends to `precmd_functions`. |
+| **fish** | Native | No wrapper; fish emits OSC 7 unconditionally. |
+| **pwsh / powershell.exe** | Automatic, session-only | A dot-sourced `-NoProfile -Command` shim sources all four profile locations once in interactive scope, then wraps the resulting prompt function. |
 | **cmd.exe (Windows)** | Not supported | cmd.exe's `prompt` definition can't run arbitrary commands per prompt. Switch to PowerShell: `winget install Microsoft.PowerShell` or use Microsoft Store. |
 
-**Why manual in v1** (deferred from auto-install): four cross-lab review rounds on the auto-install wrapper design surfaced ~50 substantive items including a fatal Homebrew break on macOS zsh under naive ZDOTDIR restore. The wrapper design surface is more dynamic than the v1 critic cycle can clear safely. Manual install ships as the v1 baseline; auto-install may be revisited in a future ADR once Layer 5 + manual install has run in prod for ≥6 weeks and we have real usage data. See [ADR-0021](../adrs/0021-osc7-shell-hook-auto-install.md) Status header for the engineering history.
+Set `AIORDIE_DISABLE_SHELL_INTEGRATION=1` to start vanilla shells while diagnosing profile or prompt-framework behavior. The existing Layer 5 toast remains the safety net when integration is disabled, the prompt state is readonly, a framework replaces the prompt after startup, or OSC 7 is swallowed by a nested shell/tmux.
 
-**When click-to-open silently fails** in any shell, [Layer 5 toast](#resolver-failure-toast) Block A surfaces a copy-paste-friendly reference to the snippets below, contextually on the first failed click. Users don't need to read this spec; the toast tells them exactly what to do.
-
-#### Manual install snippets
+#### Manual fallback snippets
 
 **bash** (paste in `~/.bashrc`):
 
@@ -942,11 +940,11 @@ Many environments emit OSC 7 by default — check before adding the hook:
 
 If your distro already emits, the snippets above are harmless duplicates (the parser dedupes on `cwd === prev`).
 
-#### Why hooks aren't auto-injected into user rc files
+#### Why user rc files are not edited
 
 ai-or-die does NOT modify `~/.bashrc`, `~/.zshrc`, or `$PROFILE` files. User shell configuration is sacrosanct; persistent edits to user dotfiles would interact unpredictably with existing customizations, dotfile managers (chezmoi, yadm), and the user's next non-ai-or-die shell session.
 
-The pwsh wrapper (per ADR-0021) is **transient** — it creates a per-session tempfile shim that lives only for the spawned shell instance. Nothing is written to `$HOME`. Bash + zsh users get manual install snippets above; v2 may add the same kind of transient wrapper for bash + zsh after the design matures.
+All wrappers are transient and live under the system temp directory. User startup files are sourced to preserve PATH, prompt frameworks, and other customization, then wrapped in memory for this PTY only.
 
 **Note on `$HOSTNAME` / `$HOST`**: the bash/zsh snippets emit the local machine's hostname (`file://my-mac/Users/foo/...`). The bridge parser handles this transparently — see [Cross-platform path handling](#cross-platform-path-handling) above for the host-strip fallback. The pwsh snippet uses `file:///` (empty host) directly to skip the host-strip altogether — cleaner round-trip on Windows.
 
@@ -1350,7 +1348,7 @@ Horizontal slide animation: drill-down navigates right, back navigates left.
 - **Notebook (`.ipynb`) preview** falls through to JSON until `nbviewer.js` integration lands (task #3).
 - **Reactive sync is best-effort, not guaranteed.** The fs-watcher channel (ADR-0017) delivers events for the common case in <200ms but can miss events on EventSource reconnect, network partitions, platform watcher gaps (network filesystems, FUSE mounts), or coalescing-window edge cases. The hash-based 409-Conflict-on-save flow (ADR-0012) remains active as the correctness backstop. `.gitignore` is not parsed by the watcher; static `EXCLUDE_DIRS` list applies (deferred follow-up).
 - **Live CWD tracking only on Terminal-bridge sessions.** Per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md), AI CLI bridges (Claude / Codex / Gemini) do not `chdir` their host process and so report `liveCwd === null`. Their panel stays at `session.workingDir`; users who want to navigate elsewhere use the breadcrumbs.
-- **OSC 7 requires shell-side cooperation.** `bash` and `zsh` need a one-line hook (`PROMPT_COMMAND` / `chpwd`) on shells that don't ship with one; `fish` emits OSC 7 unconditionally. Bare zsh 5.x does not emit OSC 7 natively — the framework or distro provides it. Windows `cmd.exe` has no clean way to emit OSC 7 from a `prompt` definition; the recommended Windows shell for live-CWD tracking is `pwsh`. Documented snippets in the [Live CWD tracking (OSC 7)](#live-cwd-tracking-osc-7) section above.
+- **OSC 7 still requires an emitting shell.** Session-scoped integration covers PowerShell, bash, and zsh; fish emits natively. A readonly/nameref bash `PROMPT_COMMAND`, a framework that replaces the prompt after startup, nested shells, or `AIORDIE_DISABLE_SHELL_INTEGRATION=1` can leave tracking inactive. Windows `cmd.exe` has no clean command hook in `prompt`; switch to PowerShell for live tracking.
 - **tmux / screen swallow OSC 7.** Confirmed against tmux 3.x on macOS: tmux intercepts OSC 7 from the inner shell and does **not** forward it to the outer PTY (tmux speaks its own `OSC 1337 ; CurrentDir` multiplexer protocol instead). Sessions running a shell inside tmux get `liveCwd === undefined`. Workaround: run the shell directly in the Terminal bridge (don't wrap in tmux) when live-CWD matters. Parsing tmux's `OSC 1337 ; CurrentDir` extension is deferred to a future iteration.
 - **`cd` outside the `--folder` sandbox is silently rejected — no UI feedback.** When the user `cd`s to a directory outside the server's `--folder` baseFolder, `validatePath()` rejects the resolved path and the bridge drops the `cwd_changed` frame on purpose (per [ADR-0019](../adrs/0019-osc7-cwd-tracking.md)'s silent-rejection rule — a malicious sequence pointing outside the sandbox must not produce a side effect). The file browser panel then **freezes** at the last in-sandbox CWD with no visible signal that an emit was rejected, so users typing a perfectly normal `cd ~/other-repo` will think OSC 7 is broken. Workaround: `cd` back inside the sandbox, OR restart the server with a wider `--folder` scope. UI feedback for rejected emits (a small toast or a hint near the "📍 follow terminal" toggle) is a **Phase 2** candidate; out of scope for v1.
 - **Cmd-P fuzzy file-find is uncached.** Each query re-runs `rg --files` over the active root. Performant for repos under ~50k files (50–150 ms typical); above 50k, the response truncates at the 10k file enumeration cap and surfaces a "refine your search" hint. A real index is a follow-up only if user feedback shows pathological repos.

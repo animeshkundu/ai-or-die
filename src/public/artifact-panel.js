@@ -432,8 +432,8 @@
         sessionId,
         viewUrl: this._authUrl('/view', sessionId), // client-token URL, not the broadcast's
         file: message.file || null,
-        ready: false,
-        scroll: { x: 0, y: 0 },
+        ready: existing ? existing.ready === true : false,
+        scroll: (existing && existing.scroll) ? existing.scroll : { x: 0, y: 0 },
         // Per-session panel state (C-P0-2): the queue (pills) and chat log live
         // with the review, so switching tabs never drops queued annotations or
         // wipes chat. Preserved across re-open of the same session.

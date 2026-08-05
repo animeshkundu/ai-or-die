@@ -282,6 +282,10 @@ subscribers. Subscription and `session_joined` delivery then occur
 synchronously, so output already represented in `outputBuffer` cannot also
 arrive as a live boundary frame.
 
+Immediately after `session_joined`, the server sends the authoritative artifact-review state to that joining socket: `artifact_review_opened` for a live shown review, `artifact_review_dismissed` for a live dismissed review, or `artifact_review_ended` for a retained ended review. The open frame reuses the normal payload (`sessionId`, `key`, `file`, `viewUrl`), and none of these replay frames are broadcast to existing viewers. This restores a live review after browser refresh, lets a second device attach without reopening the review, and reconciles a client that missed a dismiss/end event while disconnected. Repeated delivery is idempotent in the panel.
+
+Artifact reviews remain in-memory state. Browser reconnect is supported, but a server process restart ends the review because `_reviews` is not persisted. Durable review persistence is outside this behavior change.
+
 ### Message Protocol
 
 All messages are JSON. The `type` field determines the handler.
@@ -320,7 +324,7 @@ All messages are JSON. The `type` field determines the handler.
 |---------------|-------------|
 | `connected` | Initial connection acknowledgment with `connectionId`. |
 | `session_created` | Session successfully created. Fields: `sessionId`, `sessionName`, `workingDir`. |
-| `session_joined` | Joined an existing session. Fields: `sessionId`, `sessionName`, `workingDir`, `active`, `outputBuffer`. |
+| `session_joined` | Joined an existing session. Fields: `sessionId`, `sessionName`, `workingDir`, `active`, `outputBuffer`; followed by a live shown artifact review replay when one exists. |
 | `session_left` | Successfully left the session. Fields: `sessionId`. |
 | `session_deleted` | Session was deleted by another client or via REST API. |
 | `claude_started` / `codex_started` / `agent_started` | Agent process launched. |

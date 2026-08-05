@@ -93,6 +93,29 @@ describe('artifact-panel.js (DOM: iframe + SSE + postMessage bridge)', function 
     assert.equal(panel.el.hidden, true);
   });
 
+  it('replaying open() for the same review preserves live state and does not reload the iframe', function () {
+    const panel = new ArtifactPanel(app);
+    panel.notifyActiveSessionChanged('sid-1');
+    panel.open({ sessionId: 'sid-1', viewUrl: 'x', file: '/ws/a.html' });
+    const review = panel.reviews.get('sid-1');
+    review.queue.push({ prompt: 'keep me' });
+    review.chat.push({ role: 'agent', text: 'still here' });
+    review.chatCursor = 7;
+    review.scroll = { x: 10, y: 200 };
+    review.ready = true;
+    const iframeSrc = panel._iframe.src;
+
+    panel.open({ sessionId: 'sid-1', viewUrl: 'x', file: '/ws/a.html' });
+
+    const replayed = panel.reviews.get('sid-1');
+    assert.deepStrictEqual(replayed.queue, [{ prompt: 'keep me' }]);
+    assert.deepStrictEqual(replayed.chat, [{ role: 'agent', text: 'still here' }]);
+    assert.strictEqual(replayed.chatCursor, 7);
+    assert.deepStrictEqual(replayed.scroll, { x: 10, y: 200 });
+    assert.strictEqual(replayed.ready, true);
+    assert.strictEqual(panel._iframe.src, iframeSrc);
+  });
+
   it('queues an iframe annotation as a pill; Send POSTs the structured array to /prompts', async function () {
     const panel = new ArtifactPanel(app);
     panel.notifyActiveSessionChanged('sid-1');

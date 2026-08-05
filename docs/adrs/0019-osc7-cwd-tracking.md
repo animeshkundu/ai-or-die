@@ -4,6 +4,8 @@
 
 **Accepted**
 
+The rejection of persistent user-rc modification remains accepted. ADR-0050 supersedes the rejection only for transient, session-scoped configuration of shells spawned by `TerminalBridge`.
+
 ## Date
 
 2026-05-15

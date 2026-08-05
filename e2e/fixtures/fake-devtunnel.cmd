@@ -4,6 +4,10 @@ REM Simulates the subcommands used by VSCodeTunnelManager's two-process model.
 
 REM --- user show: auth check (exit 0 = authenticated) ---
 if "%1"=="user" if "%2"=="show" (
+  if "%3"=="--json" (
+    echo {"status":"Logged in","user":{"name":"mock-user"},"provider":"GitHub"}
+    exit /b 0
+  )
   echo Logged in as mock-user using GitHub.
   exit /b 0
 )

@@ -84,6 +84,44 @@ function awaitDrain(page, sessionId, cursor) {
 }
 
 test.describe('Artifact panel v2 smoke', () => {
+  test('refresh and second-device joins rehydrate a live review; dismissed stays hidden', async ({ page, browser }) => {
+    setupPageCapture(page);
+    const sessionId = await createSessionViaApi(port, 'v2 reconnect');
+    await page.goto(url);
+    await waitForAppReady(page);
+    await openArtifact(page, sessionId, staticFile);
+
+    await page.evaluate(async ({ p, sid }) => {
+      await fetch(`http://127.0.0.1:${p}/api/artifact/${encodeURIComponent(sid)}/agent-reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: 'persisted review reply' }),
+      });
+    }, { p: port, sid: sessionId });
+    await expect(page.locator('#artifactChat')).toContainText('persisted review reply', { timeout: 10000 });
+
+    await page.reload();
+    await waitForAppReady(page);
+    await expect(page.locator('#artifactPanel')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#artifactChat')).toContainText('persisted review reply', { timeout: 10000 });
+
+    const secondContext = await browser.newContext();
+    const secondPage = await secondContext.newPage();
+    await secondPage.goto(url);
+    await waitForAppReady(secondPage);
+    await expect(secondPage.locator('#artifactPanel')).toBeVisible({ timeout: 15000 });
+    await expect(secondPage.locator('#artifactChat')).toContainText('persisted review reply', { timeout: 10000 });
+
+    await page.evaluate(() => window.app.hideOverlay());
+    await page.click('#artifactPanel .artifact-panel__btn[aria-label="Close panel"]');
+    await expect(page.locator('#artifactPanel')).toBeHidden({ timeout: 10000 });
+    await expect(secondPage.locator('#artifactPanel')).toBeHidden({ timeout: 10000 });
+    await page.reload();
+    await waitForAppReady(page);
+    await expect(page.locator('#artifactPanel')).toBeHidden({ timeout: 10000 });
+    await secondContext.close();
+  });
+
   test('HAPPY: comment -> /await -> single SSE reply -> dismiss -> re-open keeps chat/history', async ({ page }) => {
     setupPageCapture(page);
     const sessionId = await createSessionViaApi(port, 'v2 happy');

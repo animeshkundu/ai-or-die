@@ -11,8 +11,10 @@
 
 'use strict';
 
+const fs = require('fs');
 const BaseBridge = require('./base-bridge');
 const Osc7Parser = require('./osc7-parser');
+const { ShellIntegrationManager } = require('./shell-integration');
 
 /**
  * Process-wide OSC 7 validated-path cache size + TTL bounds.
@@ -100,6 +102,7 @@ class TerminalBridge extends BaseBridge {
      * @type {Map<string, {validated: {valid:boolean, path?:string}, expiresAt:number}>}
      */
     this._osc7ValidationCache = new Map();
+    this._shellIntegration = new ShellIntegrationManager();
   }
 
   // Override async command discovery — use default shell instead of searching PATH
@@ -112,7 +115,17 @@ class TerminalBridge extends BaseBridge {
       // Prefer PowerShell 7 (pwsh), fall back to Windows PowerShell, then cmd.exe
       const pwshPath = await this.resolveFullPathAsync('pwsh');
       if (pwshPath) return pwshPath;
-      return process.env.COMSPEC || 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+      const windowsPowerShell = await this.resolveFullPathAsync('powershell.exe');
+      if (windowsPowerShell) return windowsPowerShell;
+      const inBoxPowerShell = require('path').join(
+        process.env.SystemRoot || 'C:\\Windows',
+        'System32',
+        'WindowsPowerShell',
+        'v1.0',
+        'powershell.exe'
+      );
+      if (fs.existsSync(inBoxPowerShell)) return inBoxPowerShell;
+      return process.env.COMSPEC || 'cmd.exe';
     }
     return process.env.SHELL || '/bin/bash';
   }
@@ -122,9 +135,9 @@ class TerminalBridge extends BaseBridge {
     return true;
   }
 
-  // Terminal doesn't use dangerous flags or any special args
-  buildArgs() {
-    return [];
+  buildArgs(options = {}) {
+    const integration = this._shellIntegration.get(options.sessionId);
+    return integration ? integration.args.slice() : [];
   }
 
   /**
@@ -146,7 +159,29 @@ class TerminalBridge extends BaseBridge {
    * identically to BaseBridge (no OSC 7 parsing, no live CWD tracking).
    */
   async startSession(sessionId, options = {}) {
+    if (this.sessions.has(sessionId)) {
+      throw new Error(`Session ${sessionId} already exists`);
+    }
     const { onCwdChange, validatePath, onOutput, ...rest } = options || {};
+    const integration = this._shellIntegration.prepare(sessionId, this.command, process.env);
+    const extraEnv = integration
+      ? { ...((rest.extraEnv && typeof rest.extraEnv === 'object') ? rest.extraEnv : {}), ...integration.env }
+      : rest.extraEnv;
+    let integrationStarting = !!integration;
+    let deferOutput = !!integration;
+    let deferredOutput = '';
+    const spawnOptions = { ...rest, extraEnv };
+    let fallbackAttempted = false;
+    if (integration) {
+      const originalOnExit = typeof rest.onExit === 'function' ? rest.onExit : () => {};
+      const originalOnError = typeof rest.onError === 'function' ? rest.onError : () => {};
+      spawnOptions.onExit = (...args) => {
+        if (!integrationStarting) originalOnExit(...args);
+      };
+      spawnOptions.onError = (...args) => {
+        if (!integrationStarting) originalOnError(...args);
+      };
+    }
 
     // Install OSC 7 state up front so the wrapped onOutput can dereference
     // it on the first PTY chunk without a TOCTOU race.
@@ -172,14 +207,50 @@ class TerminalBridge extends BaseBridge {
           console.warn('terminal-bridge: OSC 7 handler threw:', err && err.message);
         }
       }
-      if (typeof onOutput === 'function') onOutput(chunk);
+      if (deferOutput) deferredOutput += chunk;
+      else if (typeof onOutput === 'function') onOutput(chunk);
+    };
+
+    const releaseOutput = () => {
+      deferOutput = false;
+      const pending = deferredOutput;
+      deferredOutput = '';
+      if (pending && typeof onOutput === 'function') {
+        setImmediate(() => onOutput(pending));
+      }
     };
 
     try {
-      return await super.startSession(sessionId, { ...rest, onOutput: wrappedOnOutput });
+      const session = await super.startSession(sessionId, { ...spawnOptions, onOutput: wrappedOnOutput });
+      if (integration) {
+        const state = await this._waitForShellIntegration(sessionId, integration);
+        if (state === 'exited') {
+          await super.stopSession(sessionId);
+          this._shellIntegration.cleanup(sessionId);
+          integrationStarting = false;
+          fallbackAttempted = true;
+          deferredOutput = '';
+          const fallback = await super.startSession(sessionId, { ...rest, onOutput: wrappedOnOutput });
+          releaseOutput();
+          return fallback;
+        }
+        integrationStarting = false;
+        releaseOutput();
+      }
+      return session;
     } catch (err) {
-      // If the spawn fails after we installed OSC 7 state, clean it up so
-      // a retry in the same sessionId starts from a fresh parser.
+      if (integration && !fallbackAttempted) {
+        this._shellIntegration.cleanup(sessionId);
+        try {
+          deferredOutput = '';
+          const fallback = await super.startSession(sessionId, { ...rest, onOutput: wrappedOnOutput });
+          releaseOutput();
+          return fallback;
+        } catch (fallbackError) {
+          this._uninstallOsc7State(sessionId);
+          throw fallbackError;
+        }
+      }
       this._uninstallOsc7State(sessionId);
       throw err;
     }
@@ -189,6 +260,7 @@ class TerminalBridge extends BaseBridge {
     try {
       return await super.stopSession(sessionId);
     } finally {
+      this._shellIntegration.cleanup(sessionId);
       this._uninstallOsc7State(sessionId);
     }
   }
@@ -196,11 +268,24 @@ class TerminalBridge extends BaseBridge {
   async cleanup() {
     const ids = Array.from(this._osc7Hooks.keys());
     for (const id of ids) this._uninstallOsc7State(id);
+    this._shellIntegration.cleanupAll();
     // The validation cache is process-wide (not per-session), but on
     // full bridge cleanup we drop it too so a fresh start gets a fresh
     // cache. This matches the behaviour callers got before HOT-06.
     this._osc7ValidationCache.clear();
     return super.cleanup();
+  }
+
+  async _waitForShellIntegration(sessionId, integration) {
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline) {
+      if (!this.sessions.has(sessionId)) return 'exited';
+      if (integration.readyFile && fs.existsSync(integration.readyFile)) {
+        return this.sessions.has(sessionId) ? 'ready' : 'exited';
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return this.sessions.has(sessionId) ? 'pending' : 'exited';
   }
 
   // ------------------------------------------------------------------------

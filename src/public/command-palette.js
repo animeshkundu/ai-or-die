@@ -19,12 +19,14 @@ class CommandPaletteManager {
     // ninja-keys is loaded as a module; the custom element may not be
     // defined immediately. Poll briefly to find it.
     const tryBind = () => {
-      this.ninja = document.querySelector('ninja-keys');
-      if (this.ninja) {
+      const candidate = document.querySelector('ninja-keys');
+      if (candidate && typeof candidate.open === 'function' && typeof candidate.close === 'function') {
+        this.ninja = candidate;
         this._bindActions();
         this._setupKeyboard();
       } else {
-        // Retry until the web component is ready (max ~3s)
+        this.ninja = null;
+        // Retry until the module upgrades the custom element.
         setTimeout(tryBind, 200);
       }
     };

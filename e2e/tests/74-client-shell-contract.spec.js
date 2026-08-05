@@ -78,6 +78,10 @@ test.describe('Terminal-first client shell contract', () => {
   test('settings, command palette, input, and artifact chrome never resize the terminal', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await setupPage(page);
+    await page.waitForFunction(() => {
+      const palette = window.commandPaletteManager && window.commandPaletteManager.ninja;
+      return palette && typeof palette.open === 'function' && typeof palette.close === 'function';
+    }, null, { timeout: 15000 });
     const result = await page.evaluate(async () => {
       let resizeCalls = 0;
       const terminal = window.app.terminal;

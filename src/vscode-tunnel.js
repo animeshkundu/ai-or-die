@@ -15,6 +15,8 @@ const STABILITY_THRESHOLD_MS = 60000;  // 60s uptime = "stable", resets retryCou
 const MIN_RESTART_DELAY_MS = 1000;
 const MAX_RESTART_DELAY_MS = 30000;    // cap backoff at 30s
 const LOGIN_TIMEOUT_MS = 120000;       // 2 minutes for user to complete device-code auth
+const PROBE_TIMEOUT_MS = 5000;
+const OUTPUT_TAIL_BYTES = 4096;
 const VSCODE_BASE_PORT = parseInt(process.env.VSCODE_BASE_PORT || '9100', 10);
 const VSCODE_PORT_RANGE = 100;         // ports 9100-9199
 const PORT_RETRY_MAX = 3;             // max retries on EADDRINUSE
@@ -32,12 +34,15 @@ class VSCodeTunnelManager {
     this.maxTunnels = parseInt(process.env.MAX_VSCODE_TUNNELS || String(DEFAULT_MAX_TUNNELS), 10);
     this.onEvent = options.onEvent || (() => {}); // callback(sessionId, event)
     this.dev = options.dev || false;
+    this._spawnProcess = options._spawnProcess || spawn;
 
     // PROC-02 gap 3: per-instance stability-threshold override so the
     // regression test (test/longevity/process/vscode-tunnel-respawn.test.js
     // test 3) can verify the reset-on-stable-uptime path without waiting
     // 60 s of wall-clock per cycle. Mirrors tunnel-manager.js:36.
     this._stabilityThresholdMs = options._stabilityThresholdMs || STABILITY_THRESHOLD_MS;
+    this._urlTimeoutMs = options._urlTimeoutMs || URL_TIMEOUT_MS;
+    this._probeTimeoutMs = options._probeTimeoutMs || PROBE_TIMEOUT_MS;
 
     // VS Code CLI discovery
     this._command = null;
@@ -94,6 +99,7 @@ class VSCodeTunnelManager {
       if (existing.status === 'running' || existing.status === 'starting') {
         return { success: false, error: 'Tunnel already active for this session', url: existing.publicUrl || existing.localUrl };
       }
+      await this.stop(sessionId);
     }
 
     // Rate limit
@@ -130,7 +136,7 @@ class VSCodeTunnelManager {
       connectionToken,
       localUrl: null,
       publicUrl: null,
-      tunnelId: `aiordie-vscode-${sessionId.slice(0, 12).replace(/[^a-z0-9-]/gi, '')}${this._authProvider === 'github' ? '-gh' : ''}`,
+      tunnelId: `aiordie-vscode-${sessionId.slice(0, 12).replace(/[^a-z0-9-]/gi, '')}`,
       status: 'starting',
       sessionId,
       workingDir: workingDir || process.cwd(),
@@ -142,6 +148,7 @@ class VSCodeTunnelManager {
       _restartDelayTimer: null,
       _restartDelayResolve: null,
       _whichDied: null, // 'server' | 'tunnel' | null
+      _serverFailure: null,
       // Diagnose-only counters for the startup stdout closures below. The
       // buffers themselves intentionally remain untouched in this audit.
       _serverOutputBytes: 0,
@@ -154,9 +161,19 @@ class VSCodeTunnelManager {
     console.warn(`[VSCODE-TUNNEL] Starting for session ${sessionId} (port: ${localPort}, cwd: ${tunnel.workingDir})`);
 
     // Check devtunnel auth (OS-level credential store)
-    const authed = await this._checkDevtunnelAuth();
+    const authed = await this._checkDevtunnelAuth(tunnel);
     if (!authed) {
+      const authCheck = tunnel._authCheck || this._lastAuthCheck;
+      if (authCheck && authCheck.error === 'cli_too_old') {
+        this._cleanupTunnel(sessionId);
+        return { success: false, ...authCheck };
+      }
       console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: devtunnel not authenticated, starting login flow`);
+      this._emitEvent(sessionId, 'vscode_tunnel_error', {
+        error: 'auth_required',
+        message: (authCheck && authCheck.message)
+          || 'Dev Tunnel is not authenticated. Run `devtunnel user login` on the server, or complete the sign-in flow shown here.',
+      });
       const loginOk = await this._loginDevtunnel(sessionId);
       if (tunnel.stopping) {
         this._cleanupTunnel(sessionId);
@@ -164,20 +181,23 @@ class VSCodeTunnelManager {
       }
       if (!loginOk) {
         tunnel.status = 'error';
-        tunnel.lastError = 'Authentication failed or was cancelled';
+        tunnel.lastError = 'Dev Tunnel authentication failed or was cancelled. Run `devtunnel user login` on the server, then click Retry.';
         this._cleanupTunnel(sessionId);
-        this._emitEvent(sessionId, 'vscode_tunnel_error', {
-          message: 'DevTunnel authentication failed or was cancelled. Click Retry to try again.',
-        });
-        return { success: false, error: 'Authentication failed or was cancelled' };
+        return { success: false, error: 'auth_required', message: tunnel.lastError };
       }
       console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: devtunnel login successful`);
       // Re-check to detect auth provider after fresh login
-      await this._checkDevtunnelAuth();
+      if (!(await this._checkDevtunnelAuth(tunnel))
+        && (!tunnel._authCheck || tunnel._authCheck.explicit !== false)) {
+        tunnel.status = 'error';
+        tunnel.lastError = 'Dev Tunnel sign-in did not produce an authenticated session. Run `devtunnel user login` on the server, then click Retry.';
+        this._cleanupTunnel(sessionId);
+        return { success: false, error: 'auth_failed', message: tunnel.lastError };
+      }
     }
 
     // Update tunnel ID with auth-provider suffix after detection
-    if (this._authProvider === 'github') {
+    if (tunnel._authProvider === 'github') {
       tunnel.tunnelId = `aiordie-vscode-${sessionId.slice(0, 12).replace(/[^a-z0-9-]/gi, '')}-gh`;
     }
 
@@ -188,10 +208,16 @@ class VSCodeTunnelManager {
     const serverOk = await this._spawnServer(sessionId);
     if (!serverOk) {
       const current = this.tunnels.get(sessionId);
+      const failure = (current && current._serverFailure) || {
+        error: 'server_start_failed',
+        message: 'VS Code Server failed to start. Check the `code serve-web` output and installation, then click Retry.',
+      };
       if (current) {
+        current.stopping = true;
+        if (current.serverProcess) await this._killProcess(current.serverProcess);
         this._cleanupTunnel(sessionId);
       }
-      return { success: false, error: 'Failed to start VS Code Server' };
+      return { success: false, ...failure };
     }
 
     // Wait for TCP readiness
@@ -204,28 +230,35 @@ class VSCodeTunnelManager {
 
     // Create devtunnel and spawn tunnel process
     const tunnelReady = await this._ensureDevtunnel(sessionId);
-    if (!tunnelReady) {
-      // Server is running but tunnel setup failed
-      tunnel.status = 'error';
-      tunnel.lastError = 'Failed to create devtunnel';
-      this._emitEvent(sessionId, 'vscode_tunnel_error', {
-        message: 'Failed to set up dev tunnel. VS Code Server is running locally.',
-      });
-      return { success: false, error: 'Failed to create devtunnel' };
+    if (!(tunnelReady === true || (tunnelReady && tunnelReady.ok))) {
+      const failure = tunnelReady && tunnelReady.error
+        ? tunnelReady
+        : this._classifyDevtunnelFailure('', 'tunnel_create', null);
+      return this._degradedResult(tunnel, failure);
     }
 
-    await this._spawnTunnel(sessionId);
+    const hostResult = await this._spawnTunnel(sessionId);
+    if (!hostResult || !hostResult.ok) {
+      const failure = hostResult && hostResult.error
+        ? hostResult
+        : this._classifyDevtunnelFailure('', 'host', null);
+      return this._degradedResult(tunnel, failure);
+    }
 
     const current = this.tunnels.get(sessionId);
     if (current && current.publicUrl) {
       return { success: true, url: current.publicUrl, localUrl: current.localUrl, publicUrl: current.publicUrl };
-    } else if (current && current.localUrl) {
-      return { success: true, url: current.localUrl, localUrl: current.localUrl, publicUrl: null };
     } else if (current && current.status === 'error') {
-      return { success: false, error: current.lastError || 'Failed to start tunnel' };
+      return this._degradedResult(current, {
+        error: 'host_failed',
+        message: current.lastError || 'Dev Tunnel failed to start.',
+      });
     }
 
-    return { success: true, url: null };
+    return this._degradedResult(tunnel, {
+      error: 'host_failed',
+      message: 'Dev Tunnel did not produce a public URL.',
+    });
   }
 
   /**
@@ -260,8 +293,7 @@ class VSCodeTunnelManager {
     // Step 2: Clean up devtunnel (fire-and-forget)
     if (this._devtunnelCommand) {
       const execOpts = { timeout: 10000 };
-      if (process.platform === 'win32') execOpts.shell = true;
-      execFile(this._devtunnelCommand, ['delete', tunnel.tunnelId, '-f'], execOpts, () => {});
+      this._execCommand(this._devtunnelCommand, ['delete', tunnel.tunnelId, '-f'], execOpts, () => {});
     }
 
     // Step 3: Kill server process
@@ -331,6 +363,24 @@ class VSCodeTunnelManager {
     this.tunnels.delete(sessionId);
   }
 
+  _degradedResult(tunnel, failure) {
+    const localUrl = tunnel && tunnel.localUrl ? tunnel.localUrl : null;
+    const localMessage = localUrl
+      ? ` VS Code is still available locally, only from the machine running this server: ${localUrl}`
+      : '';
+    if (tunnel) {
+      tunnel.status = localUrl ? 'degraded' : 'error';
+      tunnel.lastError = failure.message;
+    }
+    return {
+      success: false,
+      error: failure.error || 'host_failed',
+      message: `${failure.message || 'Dev Tunnel failed to start.'}${localMessage}`,
+      localUrl,
+      publicUrl: null,
+    };
+  }
+
   /**
    * Kill a child process with SIGTERM, escalating to SIGKILL after 5s.
    */
@@ -353,6 +403,38 @@ class VSCodeTunnelManager {
 
       try { proc.kill(); } catch {}
     });
+  }
+
+  _isCommandScript(command) {
+    return process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(String(command || ''));
+  }
+
+  _cmdLine(command, args) {
+    const quote = (value) => `"${String(value).replace(/"/g, '""')}"`;
+    return [quote(command), ...args.map(quote)].join(' ');
+  }
+
+  _spawnCommand(command, args, options) {
+    if (this._isCommandScript(command)) {
+      return this._spawnProcess(
+        process.env.ComSpec || 'cmd.exe',
+        ['/d', '/s', '/c', this._cmdLine(command, args)],
+        { ...options, windowsVerbatimArguments: true }
+      );
+    }
+    return this._spawnProcess(command, args, options);
+  }
+
+  _execCommand(command, args, options, callback) {
+    if (this._isCommandScript(command)) {
+      return execFile(
+        process.env.ComSpec || 'cmd.exe',
+        ['/d', '/s', '/c', this._cmdLine(command, args)],
+        { ...options, windowsVerbatimArguments: true },
+        callback
+      );
+    }
+    return execFile(command, args, options, callback);
   }
 
   // ── Port Allocation ──────────────────────────────────────────
@@ -479,24 +561,102 @@ class VSCodeTunnelManager {
    * Check if user is authenticated with devtunnel (OS-level credential store).
    * Also detects auth provider (GitHub vs Entra) for tunnel name suffixing.
    */
-  async _checkDevtunnelAuth() {
+  async _checkDevtunnelAuth(tunnel = null) {
     if (!this._devtunnelCommand) return false;
+    this._authProvider = null;
+    this._lastAuthCheck = null;
+    if (tunnel) {
+      tunnel._authProvider = null;
+      tunnel._authCheck = null;
+    }
+    const jsonProbe = await this._execDevtunnelProbe(['user', 'show', '--json']);
+    const jsonAuth = this._authenticatedIdentityFromJson(jsonProbe.stdout);
+    if (jsonAuth) {
+      this._authProvider = jsonAuth.provider;
+      if (tunnel) tunnel._authProvider = jsonAuth.provider;
+      return true;
+    }
+
+    const combined = `${jsonProbe.stdout}\n${jsonProbe.stderr}`;
+    const explicitLoggedOut = /not\s+logged\s+in|token\s+refresh\s+failed|unauthenticated/i.test(combined);
+    if (explicitLoggedOut) {
+      this._lastAuthCheck = {
+        error: 'auth_required',
+        message: 'Dev Tunnel is not authenticated. Run `devtunnel user login` on the server.',
+        explicit: true,
+      };
+      if (tunnel) tunnel._authCheck = this._lastAuthCheck;
+      return false;
+    }
+
+    const textProbe = await this._execDevtunnelProbe(['user', 'show']);
+    const text = `${textProbe.stdout}\n${textProbe.stderr}`;
+    const match = text.match(/logged\s+in\s+as\b[\s\S]*?\busing\s+(GitHub|Microsoft|Entra)\b/i);
+    if (textProbe.ok && match) {
+      this._authProvider = /github/i.test(match[1]) ? 'github' : 'microsoft';
+      if (tunnel) tunnel._authProvider = this._authProvider;
+      return true;
+    }
+    const unsupportedJson = /(?:unknown|unrecognized|unsupported|invalid|unexpected).{0,40}(?:option|argument|--json)/i.test(combined);
+    const textLoggedOut = /not\s+logged\s+in|token\s+refresh\s+failed|unauthenticated/i.test(text);
+    this._lastAuthCheck = unsupportedJson && !textLoggedOut
+      ? {
+        error: 'cli_too_old',
+        message: 'This devtunnel CLI cannot report authentication reliably. Update devtunnel, then run `devtunnel user login`.',
+        explicit: false,
+      }
+      : {
+        error: 'auth_required',
+        message: 'Dev Tunnel is not authenticated. Run `devtunnel user login` on the server.',
+        explicit: textLoggedOut,
+      };
+    if (tunnel) tunnel._authCheck = this._lastAuthCheck;
+    return false;
+  }
+
+  _execDevtunnelProbe(args) {
     return new Promise((resolve) => {
-      const execOpts = { timeout: 10000 };
-      if (process.platform === 'win32') execOpts.shell = true;
-      execFile(this._devtunnelCommand, ['user', 'show'], execOpts, (err, stdout) => {
-        if (err) {
-          resolve(false);
-        } else {
-          const output = (stdout || '').toString();
-          const match = output.match(/using\s+(GitHub)/i);
-          if (match) {
-            this._authProvider = 'github';
-          }
-          resolve(true);
-        }
+      const execOpts = { timeout: this._probeTimeoutMs, killSignal: 'SIGKILL' };
+      this._execCommand(this._devtunnelCommand, args, execOpts, (err, stdout, stderr) => {
+        resolve({
+          ok: !err,
+          stdout: (stdout || '').toString(),
+          stderr: (stderr || '').toString(),
+          error: err || null,
+        });
       });
     });
+  }
+
+  _authenticatedIdentityFromJson(raw) {
+    let parsed;
+    try {
+      parsed = JSON.parse(String(raw || '').trim());
+    } catch (_) {
+      return null;
+    }
+    const text = JSON.stringify(parsed);
+    if (/not\s+logged\s+in|token\s+refresh\s+failed|unauthenticated/i.test(text)) return null;
+
+    const values = [];
+    const visit = (value, key = '') => {
+      if (value && typeof value === 'object') {
+        for (const [childKey, child] of Object.entries(value)) visit(child, childKey);
+      } else if (typeof value === 'string') {
+        values.push({ key, value });
+      }
+    };
+    visit(parsed);
+    const providerValue = values.find(({ key, value }) =>
+      /provider|accountType|authType/i.test(key) && /github|microsoft|entra/i.test(value));
+    const identityValue = values.find(({ key, value }) =>
+      /user|name|email|identity|account/i.test(key) && value.trim().length > 0);
+    const positiveStatus = values.find(({ key, value }) =>
+      /status/i.test(key) && /logged\s*in|authenticated|signed\s*in/i.test(value));
+    const statusIdentity = positiveStatus && /logged\s*in\s+as\s+\S+/i.test(positiveStatus.value);
+    if ((!identityValue && !statusIdentity) || (!providerValue && !positiveStatus)) return null;
+    const providerText = providerValue ? providerValue.value : text;
+    return { provider: /github/i.test(providerText) ? 'github' : 'microsoft' };
   }
 
   /**
@@ -512,10 +672,9 @@ class VSCodeTunnelManager {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env },
     };
-    if (process.platform === 'win32') spawnOptions.shell = true;
 
     return new Promise((resolve) => {
-      tunnel._loginProcess = spawn(this._devtunnelCommand, ['user', 'login'], spawnOptions);
+      tunnel._loginProcess = this._spawnCommand(this._devtunnelCommand, ['user', 'login'], spawnOptions);
       tunnel._loginOutputBytes = 0;
 
       let outputBuffer = '';
@@ -632,27 +791,26 @@ class VSCodeTunnelManager {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env },
       };
-      // Windows .cmd/.bat files require shell to execute
-      if (process.platform === 'win32') {
-        spawnOptions.shell = true;
-      }
-
-      tunnel.serverProcess = spawn(this._command, args, spawnOptions);
+      const serverProcess = this._spawnCommand(this._command, args, spawnOptions);
+      tunnel.serverProcess = serverProcess;
       tunnel._serverOutputBytes = 0;
 
       let readyResolved = false;
+      let startupSucceeded = false;
+      let handedOff = false;
       let outputBuffer = '';
 
       const readyTimeout = setTimeout(() => {
         if (!readyResolved) {
           readyResolved = true;
+          startupSucceeded = true;
           // Server may still be starting — set localUrl optimistically
           tunnel.localUrl = `http://localhost:${tunnel.localPort}/?tkn=${tunnel.connectionToken}`;
           resolve(true);
         }
-      }, URL_TIMEOUT_MS);
+      }, this._urlTimeoutMs);
 
-      tunnel.serverProcess.stdout.on('data', (data) => {
+      serverProcess.stdout.on('data', (data) => {
         const output = data.toString();
         outputBuffer += output;
         tunnel._serverOutputBytes += Buffer.byteLength(output);
@@ -663,6 +821,7 @@ class VSCodeTunnelManager {
           || output.match(/Web UI available at/i);
         if (readyMatch && !readyResolved) {
           readyResolved = true;
+          startupSucceeded = true;
           clearTimeout(readyTimeout);
           tunnel.localUrl = `http://localhost:${tunnel.localPort}/?tkn=${tunnel.connectionToken}`;
           console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: VS Code Server ready at ${tunnel.localUrl}`);
@@ -670,7 +829,8 @@ class VSCodeTunnelManager {
         }
       });
 
-      tunnel.serverProcess.stderr.on('data', (data) => {
+      serverProcess.stderr.on('data', (data) => {
+        if (readyResolved || handedOff) return;
         const output = data.toString().trim();
         if (output) {
           if (this.dev) console.error(`  [vscode-server] ${output}`);
@@ -679,48 +839,76 @@ class VSCodeTunnelManager {
           if (output.includes('EADDRINUSE') || output.includes('address already in use')) {
             if (!readyResolved && retryAttempt < PORT_RETRY_MAX) {
               readyResolved = true;
+              handedOff = true;
               clearTimeout(readyTimeout);
               console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: port ${tunnel.localPort} in use, retrying...`);
-              try { tunnel.serverProcess.kill(); } catch {}
-              tunnel.serverProcess = null;
+              try { serverProcess.kill(); } catch {}
+              if (tunnel.serverProcess === serverProcess) tunnel.serverProcess = null;
 
-              // Release old port, allocate new one
-              this._reservedPorts.delete(tunnel.localPort);
+              // Keep the conflicting port reserved while selecting the next one,
+              // otherwise the allocator would immediately return the same port.
+              const previousPort = tunnel.localPort;
               const newPort = this._allocatePort();
               if (newPort === null) {
+                tunnel._serverFailure = {
+                  error: 'local_port_conflict',
+                  message: 'All VS Code Server ports are already in use. Stop the process using ports 9100-9199, then click Retry.',
+                };
                 resolve(false);
                 return;
               }
+              this._reservedPorts.delete(previousPort);
               tunnel.localPort = newPort;
               this._reservedPorts.add(newPort);
               this._spawnServer(sessionId, retryAttempt + 1).then(resolve);
               return;
             }
+            tunnel._serverFailure = {
+              error: 'local_port_conflict',
+              message: `VS Code Server port ${tunnel.localPort} is already in use after ${PORT_RETRY_MAX + 1} attempts. Stop the process using it, then click Retry.`,
+            };
+            readyResolved = true;
+            clearTimeout(readyTimeout);
+            try { serverProcess.kill(); } catch {}
+            if (tunnel.serverProcess === serverProcess) tunnel.serverProcess = null;
+            resolve(false);
           }
         }
       });
 
-      tunnel.serverProcess.on('error', (err) => {
+      serverProcess.on('error', (err) => {
         clearTimeout(readyTimeout);
         if (!readyResolved) {
           readyResolved = true;
           console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: server process error: ${err.message}`);
+          tunnel._serverFailure = {
+            error: /EADDRINUSE/i.test(err.message) ? 'local_port_conflict' : 'server_start_failed',
+            message: /EADDRINUSE/i.test(err.message)
+              ? `VS Code Server port ${tunnel.localPort} is already in use. Stop the process using it, then click Retry.`
+              : `VS Code Server could not start: ${err.message}`,
+          };
           resolve(false);
         }
       });
 
-      tunnel.serverProcess.on('exit', (code) => {
+      serverProcess.on('exit', (code) => {
         clearTimeout(readyTimeout);
-        tunnel._serverOutputBytes = 0;
-        tunnel.serverProcess = null;
+        if (tunnel.serverProcess === serverProcess) {
+          tunnel._serverOutputBytes = 0;
+          tunnel.serverProcess = null;
+        }
 
         if (!readyResolved) {
           readyResolved = true;
+          tunnel._serverFailure = tunnel._serverFailure || {
+            error: 'server_start_failed',
+            message: `VS Code Server exited before it became ready (exit code ${code}). Check the VS Code CLI installation, then click Retry.`,
+          };
           resolve(false);
         }
 
         // Auto-restart if not intentionally stopped
-        if (!tunnel.stopping && this.tunnels.has(sessionId)) {
+        if (startupSucceeded && !tunnel.stopping && this.tunnels.has(sessionId)) {
           tunnel._whichDied = 'server';
           this._restart(sessionId);
         }
@@ -736,46 +924,90 @@ class VSCodeTunnelManager {
    */
   async _ensureDevtunnel(sessionId) {
     const tunnel = this.tunnels.get(sessionId);
-    if (!tunnel || tunnel.stopping) return false;
+    if (!tunnel || tunnel.stopping) {
+      return { ok: false, error: 'tunnel_create_failed', message: 'Dev Tunnel creation was cancelled.' };
+    }
 
     // Step 1: Create the tunnel (allow anonymous so token handles access control)
     const tunnelCreated = await this._execDevtunnel(
       ['create', tunnel.tunnelId, '--allow-anonymous'],
       sessionId
     );
-    if (!tunnelCreated) return false;
+    if (!tunnelCreated.ok) {
+      return this._classifyDevtunnelFailure(tunnelCreated.output, 'tunnel_create', tunnelCreated.exitCode);
+    }
 
     // Step 2: Configure the port
     const portCreated = await this._execDevtunnel(
       ['port', 'create', tunnel.tunnelId, '-p', String(tunnel.localPort)],
       sessionId
     );
-    if (!portCreated) return false;
+    if (!portCreated.ok) {
+      return this._classifyDevtunnelFailure(portCreated.output, 'port_create', portCreated.exitCode);
+    }
 
-    return true;
+    return { ok: true };
   }
 
   /**
-   * Run a devtunnel command. Returns true on success or "Conflict" (already exists).
+   * Run a devtunnel command. "Conflict" means the idempotent resource already exists.
    */
   async _execDevtunnel(args, sessionId) {
     return new Promise((resolve) => {
       const execOpts = { timeout: 15000 };
-      if (process.platform === 'win32') execOpts.shell = true;
-      execFile(this._devtunnelCommand, args, execOpts, (err, stdout, stderr) => {
+      this._execCommand(this._devtunnelCommand, args, execOpts, (err, stdout, stderr) => {
         if (err) {
           const output = (stderr || stdout || '').toString();
           if (output.includes('Conflict')) {
-            resolve(true);
+            resolve({ ok: true, output, exitCode: err.code });
           } else {
             console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: devtunnel ${args[0]} failed: ${output || err.message}`);
-            resolve(false);
+            resolve({ ok: false, output: output || err.message, exitCode: err.code });
           }
         } else {
-          resolve(true);
+          resolve({ ok: true, output: (stdout || stderr || '').toString(), exitCode: 0 });
         }
       });
     });
+  }
+
+  _classifyDevtunnelFailure(rawOutput, stage, exitCode) {
+    const output = this._outputTail(rawOutput);
+    let error;
+    let message;
+    if (/not\s+logged\s+in|token\s+refresh\s+failed|unauthori[sz]ed|request\s+not\s+permitted|authentication/i.test(output)) {
+      error = 'auth_required';
+      message = 'Dev Tunnel is not authenticated or authorized. Run `devtunnel user login` on the server, then click Retry.';
+    } else if (/address\s+already\s+in\s+use|EADDRINUSE|port.+(?:bound|in use)/i.test(output)) {
+      error = 'local_port_conflict';
+      message = 'The VS Code port is already in use. Stop the process using that port, then click Retry.';
+    } else if (/ENOTFOUND|EAI_AGAIN|ETIMEDOUT|network|DNS|name resolution|timed out|connection (?:refused|timed out)|unable to connect/i.test(output)) {
+      error = 'network_unreachable';
+      message = 'Dev Tunnel could not reach the tunnel service. Check the server network, proxy, and firewall, then click Retry.';
+    } else if (/(?:unknown|unrecognized|unsupported|invalid|unexpected).{0,40}(?:option|argument|--allow-anonymous|--json)/i.test(output)) {
+      error = 'cli_too_old';
+      message = 'The installed devtunnel CLI is too old for this operation. Update devtunnel, then click Retry.';
+    } else if (stage === 'tunnel_create') {
+      error = 'tunnel_create_failed';
+      message = 'Dev Tunnel rejected tunnel creation. Check your account permissions and tunnel quota, then click Retry.';
+    } else if (stage === 'port_create') {
+      error = 'port_create_failed';
+      message = 'Dev Tunnel could not expose the VS Code port. Delete the stale tunnel or choose a free port, then click Retry.';
+    } else if (stage === 'url_timeout') {
+      error = 'url_timeout';
+      message = 'Dev Tunnel started but did not provide a public URL within 30 seconds. Check tunnel service connectivity, then click Retry.';
+    } else {
+      error = 'host_failed';
+      message = 'Dev Tunnel hosting failed. Check the devtunnel output and network, then click Retry.';
+    }
+    if (output) message += ` Details: ${output}`;
+    return { ok: false, error, message, reason: stage, exitCode, stderrTail: output };
+  }
+
+  _outputTail(value) {
+    const clean = String(value || '').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').trim();
+    if (Buffer.byteLength(clean) <= OUTPUT_TAIL_BYTES) return clean;
+    return Buffer.from(clean).subarray(-OUTPUT_TAIL_BYTES).toString().trim();
   }
 
   /**
@@ -783,38 +1015,29 @@ class VSCodeTunnelManager {
    */
   async _spawnTunnel(sessionId) {
     const tunnel = this.tunnels.get(sessionId);
-    if (!tunnel || tunnel.stopping) return;
+    if (!tunnel || tunnel.stopping) {
+      return { ok: false, error: 'host_failed', message: 'Dev Tunnel hosting was cancelled.' };
+    }
 
     const args = ['host', tunnel.tunnelId];
 
     return new Promise((resolve) => {
-      // Windows .cmd/.bat stubs require shell to execute
       const spawnOptions = { stdio: ['pipe', 'pipe', 'pipe'] };
-      if (process.platform === 'win32') spawnOptions.shell = true;
-      tunnel.tunnelProcess = spawn(this._devtunnelCommand, args, spawnOptions);
+      tunnel.tunnelProcess = this._spawnCommand(this._devtunnelCommand, args, spawnOptions);
 
-      let urlResolved = false;
-
-      const urlTimeout = setTimeout(() => {
-        if (!urlResolved) {
-          urlResolved = true;
-          console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: devtunnel started but no URL within ${URL_TIMEOUT_MS / 1000}s`);
-          resolve();
-        }
-      }, URL_TIMEOUT_MS);
-
-      tunnel.tunnelProcess.stdout.on('data', (data) => {
-        const output = data.toString();
-        if (this.dev) process.stdout.write(`  [devtunnel] ${output}`);
-
-        const match = output.match(/https:\/\/[\w.-]+\.devtunnels\.ms[^\s,]*/);
+      let startupSettled = false;
+      let startupSucceeded = false;
+      let outputBuffer = '';
+      const appendOutput = (data) => {
+        outputBuffer = this._outputTail(`${outputBuffer}\n${data.toString()}`);
+        const match = data.toString().match(/https:\/\/[\w.-]+\.devtunnels\.ms[^\s,\x1b]*/);
         if (match && !tunnel.publicUrl) {
-          // Append connection token to the public URL
           const baseUrl = match[0].trim();
           const separator = baseUrl.includes('?') ? '&' : '?';
           tunnel.publicUrl = `${baseUrl}${separator}tkn=${tunnel.connectionToken}`;
           tunnel.status = 'running';
-          urlResolved = true;
+          startupSettled = true;
+          startupSucceeded = true;
           clearTimeout(urlTimeout);
           this._startStabilityTimer(tunnel);
           this._emitEvent(sessionId, 'vscode_tunnel_started', {
@@ -823,26 +1046,40 @@ class VSCodeTunnelManager {
             publicUrl: tunnel.publicUrl,
           });
           console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: tunnel active at ${tunnel.publicUrl}`);
-          resolve();
+          resolve({ ok: true, url: tunnel.publicUrl });
         }
+      };
+
+      const urlTimeout = setTimeout(() => {
+        if (!startupSettled) {
+          startupSettled = true;
+          console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: devtunnel started but no URL within ${this._urlTimeoutMs / 1000}s`);
+          const failure = this._classifyDevtunnelFailure(outputBuffer, 'url_timeout', null);
+          try { tunnel.tunnelProcess.kill(); } catch {}
+          resolve(failure);
+        }
+      }, this._urlTimeoutMs);
+
+      tunnel.tunnelProcess.stdout.on('data', (data) => {
+        const output = data.toString();
+        if (this.dev) process.stdout.write(`  [devtunnel] ${output}`);
+        appendOutput(data);
       });
 
       tunnel.tunnelProcess.stderr.on('data', (data) => {
         const output = data.toString().trim();
         if (output) {
           if (this.dev) console.error(`  [devtunnel] ${output}`);
-          if (output.toLowerCase().includes('error') || output.toLowerCase().includes('failed')) {
-            this._emitEvent(sessionId, 'vscode_tunnel_error', { message: output });
-          }
+          appendOutput(data);
         }
       });
 
       tunnel.tunnelProcess.on('error', (err) => {
         clearTimeout(urlTimeout);
         console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: devtunnel process error: ${err.message}`);
-        if (!urlResolved) {
-          urlResolved = true;
-          resolve();
+        if (!startupSettled) {
+          startupSettled = true;
+          resolve(this._classifyDevtunnelFailure(`${outputBuffer}\n${err.message}`, 'host', err.code));
         }
       });
 
@@ -850,13 +1087,13 @@ class VSCodeTunnelManager {
         clearTimeout(urlTimeout);
         tunnel.tunnelProcess = null;
 
-        if (!urlResolved) {
-          urlResolved = true;
-          resolve();
+        if (!startupSettled) {
+          startupSettled = true;
+          resolve(this._classifyDevtunnelFailure(outputBuffer, 'host', code));
         }
 
         // Auto-restart tunnel only (server may still be alive)
-        if (!tunnel.stopping && this.tunnels.has(sessionId)) {
+        if (startupSucceeded && !tunnel.stopping && this.tunnels.has(sessionId)) {
           tunnel._whichDied = 'tunnel';
           this._restart(sessionId);
         }
@@ -999,7 +1236,7 @@ class VSCodeTunnelManager {
         // Restart tunnel only
         tunnel.status = 'starting';
         const tunnelReady = await this._ensureDevtunnel(sessionId);
-        if (tunnelReady && !tunnel.stopping) {
+        if ((tunnelReady === true || (tunnelReady && tunnelReady.ok)) && !tunnel.stopping) {
           await this._spawnTunnel(sessionId);
         }
       } else {
@@ -1010,7 +1247,7 @@ class VSCodeTunnelManager {
           await this._waitForPort(tunnel.localPort, PORT_WAIT_TIMEOUT_MS);
           if (!tunnel.stopping) {
             const tunnelReady = await this._ensureDevtunnel(sessionId);
-            if (tunnelReady && !tunnel.stopping) {
+            if ((tunnelReady === true || (tunnelReady && tunnelReady.ok)) && !tunnel.stopping) {
               await this._spawnTunnel(sessionId);
             }
           }

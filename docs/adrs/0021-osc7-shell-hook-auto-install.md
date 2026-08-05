@@ -2,7 +2,7 @@
 
 ## Status
 
-**Deferred — v1 cut after round-4 stop-loss.** Wrapper auto-install for ANY shell (pwsh + bash + zsh + fish) does NOT ship in v1. Users get manual one-line install per shell (see `docs/specs/file-browser.md` Shell hooks section). Click-to-open + diagnostic toast (Layer 5) ship in PR #108 as designed; they surface the manual-install snippet contextually on first failed click.
+**Superseded by [ADR-0050](0050-session-scoped-shell-integration.md).** This file remains the historical record of the deferred design and its review findings. ADR-0050 reopened the decision after the production-age gate elapsed and adopted a new session-scoped implementation without persistent user-rc edits.
 
 The full technical design from rounds 1–4 is preserved IN this file (below the Status / v1 deferral rationale sections) as the v2 starting point. Bash + zsh design preserved earlier (cut in round 3 E-shape decision; recoverable from the revision-3 snapshot in git history). Pwsh design preserved in the current file head; recoverable in-place.
 

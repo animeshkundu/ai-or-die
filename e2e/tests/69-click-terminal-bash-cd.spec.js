@@ -3,7 +3,7 @@
 // the split-pane regression (spec 67). Covers the user-reported
 // failure mode the team-lead surfaced in the post-fix clarification:
 // Terminal bridge spawns bash in fixtureRoot, user cd's into projA,
-// emits OSC 7, prints `src/onlyA.js`, clicks. The chain must resolve
+// receives the session-scoped OSC 7 hook, prints `src/onlyA.js`, and clicks. The chain must resolve
 // against the OSC-7 liveCwd (projA), not the spawn workingDir
 // (fixtureRoot — wrong dir).
 //
@@ -40,7 +40,6 @@ const {
   makeFixtureDir,
   cleanupFixture,
   writeFileInside,
-  osc7EmitCommand,
   activateTerminalLink,
 } = require('../helpers/file-browser-v2-helpers');
 
@@ -50,7 +49,7 @@ test.describe('Terminal click: bash + cd + OSC 7 (user-reported flow)', () => {
 
   test.beforeAll(async () => {
     fixtureRoot = makeFixtureDir('click-bash-cd');
-    projA = path.join(fixtureRoot, 'projA');
+    projA = path.join(fixtureRoot, 'proj A');
     writeFileInside(projA, 'src/onlyA.js', 'module.exports = "A";\n');
     ({ server, port, url } = await createServer());
   });
@@ -64,7 +63,7 @@ test.describe('Terminal click: bash + cd + OSC 7 (user-reported flow)', () => {
     await attachFailureArtifacts(page, testInfo);
   });
 
-  test('bash session: cd + OSC 7 emit + print path + click opens file via liveCwd', async ({ page }) => {
+  test('bash session: session hook tracks cd into a spaced path and click opens via liveCwd', async ({ page }) => {
     setupPageCapture(page);
 
     const sessionId = await page.evaluate(async ({ origin, wd }) => {
@@ -86,18 +85,13 @@ test.describe('Terminal click: bash + cd + OSC 7 (user-reported flow)', () => {
     await page.evaluate((sub) => {
       window.app.socket.send(JSON.stringify({
         type: 'input',
-        data: 'cd ' + sub + ' && echo OK_CD_A\r',
+        data: 'cd ' + JSON.stringify(sub) + ' && echo OK_CD_A\r',
       }));
     }, projA);
     await waitForTerminalText(page, 'OK_CD_A', 8000);
 
-    // Step 2 — emit OSC 7. Simulates a real bash PROMPT_COMMAND
-    // firing after the cd.
-    await page.evaluate((emitCmd) => {
-      window.app.socket.send(JSON.stringify({ type: 'input', data: emitCmd }));
-    }, osc7EmitCommand(projA));
-
-    // Wait for the server-side osc7 parser to broadcast cwd_changed
+    // The session-scoped bash hook fires with the prompt after cd. Wait for
+    // the server-side osc7 parser to broadcast cwd_changed
     // and the client to populate _liveCwd[sessionId] → projA.
     await page.waitForFunction(
       ({ sid, expected }) => {
@@ -109,7 +103,7 @@ test.describe('Terminal click: bash + cd + OSC 7 (user-reported flow)', () => {
       { timeout: 8000 }
     );
 
-    // Step 3 — print the path-shaped output.
+    // Step 2 — print the path-shaped output.
     await page.evaluate(() => {
       window.app.socket.send(JSON.stringify({
         type: 'input',
@@ -118,7 +112,7 @@ test.describe('Terminal click: bash + cd + OSC 7 (user-reported flow)', () => {
     });
     await waitForTerminalText(page, 'src/onlyA.js', 6000);
 
-    // Step 4 — drive the REGISTERED link provider's activate on the
+    // Step 3 — drive the REGISTERED link provider's activate on the
     // main terminal. Exact same code path xterm runs on a real click.
     const activated = await activateTerminalLink(page, 'src/onlyA.js');
     expect(activated, 'link-provider activate fired for src/onlyA.js').toBe(true);
