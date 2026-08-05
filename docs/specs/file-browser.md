@@ -288,6 +288,23 @@ Open a Server-Sent Events (SSE) stream of file-system change events for the acti
 
 The watcher runs with `chokidar`'s `awaitWriteFinish: { stabilityThreshold: 80, pollInterval: 30 }` (~110ms latency, suppresses mid-write false positives) plus a 100ms per-path debounce (collapses agent batch refactors) plus a 50ms server-side `add+change` dedup (collapses atomic-rename save). All three thresholds are tunable via `FS_WATCHER_STABILITY_MS`, `FS_WATCHER_POLL_MS`, and `FS_WATCHER_DEBOUNCE_MS` env vars.
 
+**Watcher startup lifecycle:** `FileWatcher.start()` is single-flight. Overlapping
+callers receive the same in-progress promise and one chokidar instance. A
+pre-`ready` chokidar error removes the `add`, `change`, `unlink`, and `error`
+handlers installed by that attempt, closes the chokidar instance exactly once,
+resets the watcher reference, and rejects every joined caller with the original
+error object. A close failure is reported separately as a non-fatal warning and
+does not replace the startup error. If the native close rejects, the failed
+instance retains only an inert error guard so a later native error cannot
+terminate the process. The `FileWatcher` remains open after a failed attempt,
+so a later `start()` creates a new chokidar instance and genuinely retries.
+Calling `close()` during startup rejects the pending start with `FileWatcher:
+closed while start was in progress`, shares the same one-time native close,
+and cannot leave the start promise pending. Chokidar errors are forwarded
+through the wrapper's `error` event only when a consumer has registered an
+error listener; an unobserved watcher error must not trigger Node's fatal
+unhandled-`error` behavior.
+
 **Ignored directories:** mirrors `/api/search`'s `EXCLUDE_DIRS` — `node_modules`, `.git`, `dist`, `build`, `target`, `.next`, `.cache`, `__pycache__`, `.venv`, `venv`, `.tox`, `.gradle`. Configurable via `FS_WATCHER_IGNORE` env var (comma-separated). `.gitignore` parsing deferred.
 
 **Initial state:** the stream emits ONLY changes, never an initial snapshot. Clients use `GET /api/files?path=<dir>` for the initial directory listing.

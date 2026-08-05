@@ -236,6 +236,9 @@ class FileWatcher extends EventEmitter {
 
     this._watcher = null;
     this._closed = false;
+    this._startPromise = null;
+    this._startAttempt = null;
+    this._watcherClosePromises = new WeakMap();
 
     // Subscription set: absolute paths the consumer cares about.
     // Events for paths NOT in this set are dropped on emit.
@@ -300,9 +303,37 @@ class FileWatcher extends EventEmitter {
     this._hashIdleWaiters = [];
   }
 
-  async start() {
-    if (this._closed) throw new Error('FileWatcher: cannot start a closed watcher');
-    if (this._watcher) return;
+  start() {
+    if (this._closed) {
+      return Promise.reject(new Error('FileWatcher: cannot start a closed watcher'));
+    }
+    if (this._startPromise) return this._startPromise;
+    if (this._watcher) return Promise.resolve();
+
+    const attempt = { cancel: null, watcher: null };
+    const startPromise = this._startWatcher(attempt);
+    this._startAttempt = attempt;
+    this._startPromise = startPromise;
+    startPromise.then(
+      () => this._clearStartAttempt(attempt, startPromise),
+      () => this._clearStartAttempt(attempt, startPromise)
+    );
+    return startPromise;
+  }
+
+  _clearStartAttempt(attempt, startPromise) {
+    if (this._startAttempt === attempt) this._startAttempt = null;
+    if (this._startPromise === startPromise) this._startPromise = null;
+  }
+
+  async _startWatcher(attempt) {
+    let watcher = null;
+    let onAdd;
+    let onChange;
+    let onUnlink;
+    let onWatcherError;
+    let onCleanupError;
+    let removeReadyListeners = () => {};
 
     const chokidar = _getChokidar();
 
@@ -320,52 +351,122 @@ class FileWatcher extends EventEmitter {
     // The narrower-watch optimization is a follow-up if user reports
     // kernel-watch exhaustion (typical inotify_max_user_watches is 8192;
     // a typical project after ignores is well under that).
-    this._watcher = chokidar.watch(this._watchRoot, {
-      persistent: true,
-      ignoreInitial: true,
-      ignored: this._ignoreRegexes,
-      followSymlinks: false,
-      // alwaysStat: true is required for inode-based rename detection
-      // (ADR-0017 §Rename detection — same-inode unlink+add coalescing).
-      alwaysStat: true,
-      awaitWriteFinish: this._awaitWriteFinishDisabled
-        ? false
-        : { stabilityThreshold: this._stabilityMs, pollInterval: this._pollIntervalMs },
-      // usePolling enables a fs.stat-loop watcher backend instead of
-      // FSEvents/inotify. Used in tests on macOS to bypass FSEvents
-      // flakiness with sync writeFileSync; production stays on the
-      // OS-native backend.
-      usePolling: this._usePolling,
-      interval: this._usePolling ? this._pollIntervalMs : undefined,
-      atomic: false,
-      // depth: 0 confines chokidar to direct children of every watched
-      // path (the watchRoot + anything later added via subscribe). The
-      // server passes this for the file-browser SSE path; subscriptions
-      // drive what's actually watched beyond the watchRoot via
-      // chokidar.add(). This is the load-bearing knob that bounds the
-      // active_handles cost on large/multi-worktree trees. `undefined`
-      // (the default) restores chokidar's recursive behaviour for
-      // backward compat in callers that haven't migrated.
-      depth: this._depth,
-    });
+    try {
+      watcher = chokidar.watch(this._watchRoot, {
+        persistent: true,
+        ignoreInitial: true,
+        ignored: this._ignoreRegexes,
+        followSymlinks: false,
+        // alwaysStat: true is required for inode-based rename detection
+        // (ADR-0017 §Rename detection — same-inode unlink+add coalescing).
+        alwaysStat: true,
+        awaitWriteFinish: this._awaitWriteFinishDisabled
+          ? false
+          : { stabilityThreshold: this._stabilityMs, pollInterval: this._pollIntervalMs },
+        // usePolling enables a fs.stat-loop watcher backend instead of
+        // FSEvents/inotify. Used in tests on macOS to bypass FSEvents
+        // flakiness with sync writeFileSync; production stays on the
+        // OS-native backend.
+        usePolling: this._usePolling,
+        interval: this._usePolling ? this._pollIntervalMs : undefined,
+        atomic: false,
+        // depth: 0 confines chokidar to direct children of every watched
+        // path (the watchRoot + anything later added via subscribe). The
+        // server passes this for the file-browser SSE path; subscriptions
+        // drive what's actually watched beyond the watchRoot via
+        // chokidar.add(). This is the load-bearing knob that bounds the
+        // active_handles cost on large/multi-worktree trees. `undefined`
+        // (the default) restores chokidar's recursive behaviour for
+        // backward compat in callers that haven't migrated.
+        depth: this._depth,
+      });
+      attempt.watcher = watcher;
+      this._watcher = watcher;
 
-    this._watcher.on('add', (p, stat) => this._onChokidar('add', p, stat));
-    this._watcher.on('change', (p, stat) => this._onChokidar('change', p, stat));
-    this._watcher.on('unlink', (p) => this._onChokidar('unlink', p, null));
-    this._watcher.on('error', (err) => this.emit('error', err));
-
-    await new Promise((resolve, reject) => {
-      const onReady = () => { cleanup(); resolve(); };
-      const onError = (err) => { cleanup(); reject(err); };
-      const cleanup = () => {
-        this._watcher.off('ready', onReady);
-        this._watcher.off('error', onError);
+      onAdd = (p, stat) => this._onChokidar('add', p, stat);
+      onChange = (p, stat) => this._onChokidar('change', p, stat);
+      onUnlink = (p) => this._onChokidar('unlink', p, null);
+      onWatcherError = (err) => {
+        if (this.listenerCount('error') > 0) this.emit('error', err);
       };
-      this._watcher.once('ready', onReady);
-      this._watcher.once('error', onError);
-    });
 
-    this.emit('ready');
+      const readyPromise = new Promise((resolve, reject) => {
+        let settled = false;
+        const settle = (fn, value) => {
+          if (settled) return;
+          settled = true;
+          removeReadyListeners();
+          attempt.cancel = null;
+          fn(value);
+        };
+        const onReady = () => settle(resolve);
+        const onError = (err) => settle(reject, err);
+        removeReadyListeners = () => {
+          watcher.off('ready', onReady);
+          watcher.off('error', onError);
+        };
+        attempt.cancel = (err) => settle(reject, err);
+        watcher.once('ready', onReady);
+        watcher.once('error', onError);
+      });
+
+      watcher.on('add', onAdd);
+      watcher.on('change', onChange);
+      watcher.on('unlink', onUnlink);
+      watcher.on('error', onWatcherError);
+
+      await readyPromise;
+
+      if (this._closed) {
+        throw new Error('FileWatcher: closed while start was in progress');
+      }
+      this.emit('ready');
+    } catch (startError) {
+      attempt.cancel = null;
+      removeReadyListeners();
+      if (watcher) {
+        watcher.off('add', onAdd);
+        watcher.off('change', onChange);
+        watcher.off('unlink', onUnlink);
+        onCleanupError = () => {};
+        watcher.on('error', onCleanupError);
+        watcher.off('error', onWatcherError);
+        if (this._watcher === watcher) this._watcher = null;
+        let closed = false;
+        try {
+          await this._closeWatcherOnce(watcher);
+          closed = true;
+        } catch (cleanupError) {
+          try {
+            this._reportCleanupError(cleanupError);
+          } catch (_) {
+            // Reporting cleanup is best-effort; the startup error remains authoritative.
+          }
+        } finally {
+          // A failed close can leave the native watcher alive. Keep its no-op
+          // guard in that case so a later error cannot terminate the process.
+          if (closed) watcher.off('error', onCleanupError);
+        }
+      }
+      throw startError;
+    }
+  }
+
+  _closeWatcherOnce(watcher) {
+    let closePromise = this._watcherClosePromises.get(watcher);
+    if (!closePromise) {
+      closePromise = Promise.resolve().then(() => watcher.close());
+      this._watcherClosePromises.set(watcher, closePromise);
+    }
+    return closePromise;
+  }
+
+  _reportCleanupError(error) {
+    if (this.listenerCount('warning') > 0) {
+      this.emit('warning', error);
+      return;
+    }
+    console.warn(`FileWatcher: failed to close watcher after startup failure: ${error.message}`);
   }
 
   /**
@@ -872,10 +973,17 @@ class FileWatcher extends EventEmitter {
     this._hashPending.length = 0;
     this._hashCache.clear();
     this._fireHashIdleWaiters();
-    if (this._watcher) {
-      try { await this._watcher.close(); } catch (_) {}
-      this._watcher = null;
+    const startPromise = this._startPromise;
+    const startAttempt = this._startAttempt;
+    if (startAttempt && startAttempt.cancel) {
+      startAttempt.cancel(new Error('FileWatcher: closed while start was in progress'));
     }
+    const watcher = this._watcher;
+    this._watcher = null;
+    if (watcher) {
+      try { await this._closeWatcherOnce(watcher); } catch (_) {}
+    }
+    if (startPromise) await startPromise.catch(() => {});
     this.emit('close');
   }
 

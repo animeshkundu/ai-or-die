@@ -28,5 +28,6 @@ e2e/.claude-attachments/
 .tmp-e2e-artifact-*/
 
 # Verification artifacts from pipeline runs (screenshots, HTML reports)
+test/longevity/results/
 playwright-report/
 screenshots/
