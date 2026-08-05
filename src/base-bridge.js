@@ -312,31 +312,7 @@ class BaseBridge {
         env,
         cols,
         rows,
-        name: 'xterm-256color',
-        // Windows: use the ConPTY DLL backend. This is a teardown fix, not a
-        // performance preference.
-        //
-        // On the legacy backend, WindowsPtyAgent.kill() calls
-        // _getConsoleProcessList(), which child_process.fork()s a helper to read
-        // the console process list. That helper immediately throws
-        // "AttachConsole failed" — the noise on every Windows teardown — so it
-        // never replies, and the parent falls back to a 5000ms timer. Neither
-        // the forked child nor that timer is unref'd, so each PTY kill arms two
-        // active libuv handles. That is a direct mechanism for
-        // "worker-N process did not exit within 300000ms after stop", which CI
-        // hit intermittently on Windows browser buckets.
-        //
-        // useConptyDll skips the whole branch (guarded at windowsPtyAgent.js:105
-        // and :161), so no fork and no timer. conpty.dll ships in the package at
-        // prebuilds/win32-x64/conpty/conpty.dll — checked, not assumed.
-        //
-        // Nothing is lost by skipping it. That code path exists to reap orphaned
-        // grandchildren, and it never worked here anyway: the 5s fallback
-        // resolves to [innerPid], the shell already being killed, so the real
-        // console list was never obtained. We reap descendants with a
-        // KILL_ON_JOB_CLOSE Windows Job Object instead (see _refPtyJob below and
-        // the note at the onExit handler), which is why this is safe.
-        useConptyDll: this.isWindows === true
+        name: 'xterm-256color'
       });
 
       const session = {
