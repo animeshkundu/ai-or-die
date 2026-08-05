@@ -47,7 +47,7 @@ function buildOrphanSweepScript(currentPid) {
     '    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue',
     '  }',
     '}',
-  ].join('; ');
+  ].join('\n');
 }
 
 function sweepOrphanHosts(options = {}) {

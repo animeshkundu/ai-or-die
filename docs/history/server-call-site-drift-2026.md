@@ -37,10 +37,11 @@ Fail-first coverage observed zero process launches and zero warnings when the
 Windows path was injected on a non-Windows test host.
 
 Review of the now-visible launch failure also found that the entrypoint regex used
-an invalid backslash-escaped quote inside a PowerShell double-quoted string. The
-operand now uses a PowerShell single-quoted string, and Windows coverage submits
-the generated command to the in-box PowerShell 5.1 parser without executing the
-sweep.
+an invalid backslash-escaped quote inside a PowerShell double-quoted string, and
+the builder inserted statement separators after continuation operators. The
+operand now uses a PowerShell single-quoted string, the builder follows the
+repository's newline-joined script pattern, and Windows coverage submits the
+generated command to the in-box PowerShell 5.1 parser without executing the sweep.
 
 ## Invalid session structure
 

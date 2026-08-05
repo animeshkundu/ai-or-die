@@ -23,6 +23,7 @@ describe('model-host Windows orphan sweep', function () {
       script,
       /-match '\(\?:\^\|\[\\\\\/\]\)\(\?:stt-host\|sticky-note-host\)\\\.js\(\?:"\|\\s\)' -and/
     );
+    assert.doesNotMatch(script, /-and;/);
   });
 
   it('does not classify shell executables as model hosts', function () {
