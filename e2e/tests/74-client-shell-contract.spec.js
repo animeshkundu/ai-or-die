@@ -262,7 +262,13 @@ test.describe('Terminal-first client shell contract', () => {
     expect(before.selected).not.toBe('');
 
     await page.waitForFunction(
-      () => window.app.socket !== window.__reconnectSocket
+      // app.socket is null for a window during reconnect — the old socket is
+      // dropped before the new one is constructed. Without the guard this
+      // predicate throws `Cannot read properties of null (reading 'readyState')`
+      // and waitForFunction propagates it as a test failure instead of simply
+      // polling again, which is exactly the state it is waiting to leave.
+      () => window.app.socket
+        && window.app.socket !== window.__reconnectSocket
         && window.app.socket.readyState === WebSocket.OPEN,
       { timeout: 20000 }
     );
