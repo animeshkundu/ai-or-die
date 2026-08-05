@@ -109,7 +109,15 @@ class Split {
             }
         }
 
-        this._fitId = `split-${this.index}`;
+        // Monotonic instance id, NOT the positional index. register() calls
+        // unregister(id) first, so two panes sharing an id silently tear down
+        // each other's ResizeObserver: close pane 1, open a new pane that takes
+        // index 1, and the old pane's deferred destroy -> unregister(this._fitId)
+        // disconnects the NEW pane's observer. It then never re-fits and its PTY
+        // keeps a stale size. The index is reused by design; the fit identity
+        // must not be.
+        Split._fitSeq = (Split._fitSeq || 0) + 1;
+        this._fitId = `split-${this.index}-${Split._fitSeq}`;
         if (this.app && this.app.fitCoordinator) {
             this.app.fitCoordinator.register(this._fitId, {
                 container: terminalDiv,

@@ -3060,7 +3060,14 @@ class ClaudeCodeWebInterface {
                             this._outputTail = replayText.slice(-this._OUTPUT_TAIL_LIMIT);
                         } else if (action === 'snapshot') {
                             this.terminal.write('\x1bc');
-                            this.terminal.write(message.renderedSnapshot.replace(/\n/g, '\r\n'));
+                            // /\r?\n/g, not /\n/g. The snapshot is a rendered
+                            // terminal tail produced server-side, and on Windows
+                            // it already contains CRLF — so translating bare \n
+                            // would turn an existing \r\n into \r\r\n and insert
+                            // a spurious carriage return on every line of the
+                            // repaint. Matching the optional \r makes this
+                            // idempotent on both platforms.
+                            this.terminal.write(message.renderedSnapshot.replace(/\r?\n/g, '\r\n'));
                             this._outputTailSessionId = message.sessionId;
                             this._outputTail = '';
                         } else if (!cacheAlreadyPainted) {
