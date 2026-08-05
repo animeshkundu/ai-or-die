@@ -51,6 +51,27 @@ function busyWait(ms) {
   while (Date.now() < end) { /* spin */ }
 }
 
+// Mirror FileWatcher's own canonicalization (`_realpathStrict` in
+// src/utils/file-watcher.js): `realpathSync.native` plus the `\\?\` strip.
+// Plain `fs.realpathSync` is NOT enough on Windows — it leaves 8.3 short names
+// intact, and GitHub's Windows runners hand back an `os.tmpdir()` of
+// `C:\Users\RUNNER~1\AppData\Local\Temp`. `_canonicalize` would then store the
+// expanded `runneradmin` form in `_subscriptions` while `hasSubscription()`
+// (which only does `path.resolve`) looks up the unexpanded `RUNNER~1` form, so
+// every event is silently dropped and the burst never reaches `_flush` — the
+// "expected >= 20 flush events; got 0" sanity failure. Canonicalizing the same
+// way the product does makes this test actually exercise the hot path on
+// Windows instead of asserting against zero work.
+function realpathNative(p) {
+  let out;
+  try {
+    out = fs.realpathSync.native(p);
+  } catch (_) {
+    out = fs.realpathSync(p);
+  }
+  return typeof out === 'string' && out.startsWith('\\\\?\\') ? out.slice(4) : out;
+}
+
 describe('HOT-02: FileWatcher sync MD5 on hot path (event-loop block under bulk edits)', function () {
   this.timeout(20000);
 
@@ -62,11 +83,11 @@ describe('HOT-02: FileWatcher sync MD5 on hot path (event-loop block under bulk 
   beforeEach(() => {
     // Use a unique tmpdir per test to avoid cross-test contamination if
     // mocha is later configured to run files in parallel.
-    // Canonicalize via realpath so /var → /private/var on macOS matches
-    // FileWatcher._canonicalize (which also realpaths). Without this,
-    // hasSubscription() (which uses path.resolve, NOT realpath) misses
-    // and every event is silently dropped.
-    tmpRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hot02-fw-')));
+    // Canonicalize exactly as FileWatcher._canonicalize does, so /var →
+    // /private/var on macOS AND `RUNNER~1` → `runneradmin` on Windows both
+    // match. Without this, hasSubscription() (which uses path.resolve, NOT
+    // realpath) misses and every event is silently dropped.
+    tmpRoot = realpathNative(fs.mkdtempSync(path.join(os.tmpdir(), 'hot02-fw-')));
     filePaths = [];
     for (let i = 0; i < 20; i++) {
       const p = path.join(tmpRoot, `f${i}.bin`);
@@ -95,6 +116,26 @@ describe('HOT-02: FileWatcher sync MD5 on hot path (event-loop block under bulk 
   afterEach(() => {
     fs.readFileSync = origReadFileSync;
     try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (_) {}
+  });
+
+  it('canonicalizes tmpRoot the same way FileWatcher does, so events are not silently dropped', () => {
+    const w = new FileWatcher({ watchRoot: tmpRoot, includeHash: true });
+    for (const p of filePaths) {
+      // The key subscribe() would store...
+      const stored = w._canonicalize(p);
+      // ...must be the key hasSubscription() looks up. On Windows these
+      // diverge whenever the path carries an 8.3 short name and the caller
+      // canonicalized with plain realpathSync: _canonicalize expands it via
+      // realpathSync.native, hasSubscription's path.resolve does not.
+      w._subscriptions.add(stored);
+      assert.ok(
+        w.hasSubscription(p),
+        `subscription key ${stored} is unreachable from hasSubscription(${p}) — `
+          + '8.3 / realpath canonicalization mismatch would drop every event '
+          + 'and make the burst assertions below vacuous'
+      );
+      w._subscriptions.delete(stored);
+    }
   });
 
   it('does not call fs.readFileSync synchronously inside _flush() under a 20-file change burst', async () => {
