@@ -62,6 +62,12 @@ Both click-to-toggle and push-to-talk are supported:
 
 **Both modes end the same way**: text is injected directly into the terminal input. No preview modal, no auto-Enter. The user reviews, edits if needed, and presses Enter when satisfied.
 
+On mobile, `#navVoice` is the one-action entry point and mirrors every state
+from `computeMicButtonState`: idle, recording, processing, downloading,
+loading, unavailable, insecure-context, and hidden. Under coarse pointers its
+target is at least 44 by 44 CSS pixels; the hidden desktop toolbar control is
+not treated as the mobile hit target.
+
 ### Keyboard Shortcuts
 
 | Shortcut | Action |

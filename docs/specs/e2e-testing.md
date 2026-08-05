@@ -2,6 +2,28 @@
 
 This document outlines the end-to-end testing strategy for the ai-or-die web application, covering framework selection, architectural decisions, and the full test plan.
 
+## Terminal-first shell gate
+
+`e2e/tests/74-client-shell-contract.spec.js` runs in desktop Chromium, coarse-pointer mobile Chromium, and WebKit projects. It verifies that file preview remains inside the geometry-neutral browser with focus return, every non-terminal surface leaves terminal geometry untouched, split creation never emits unsafe resize messages, hidden-page output backpressure remains active while animation frames are suspended, visible coarse-pointer controls meet 44 by 44 CSS pixels and carry an accessible name, and the assistant chooser remains reachable at the 852x393 landscape viewport. The touch-target sweep force-shows the transient model-download banners so their controls are measured on a runner with warm model caches.
+
+The reconnect case asserts no duplicated frames against the *rendered* buffer, not against the raw byte stream, and asserts that all 240 sequence numbers are present in BOTH so the duplicate check cannot pass vacuously on an empty screen. Counting occurrences only in `app._outputTail` conflates client duplication with a legitimate PTY repaint: Windows ConPTY re-emits the visible screen when the reconnecting client sends its geometry, so roughly one screenful of lines appears twice on the wire while the screen the user sees stays correct.
+
+`e2e/tests/75-client-performance-report.spec.js` records cold readiness, keystroke-to-echo latency, 4,000-line flood drain time, binary WebSocket frame count and bytes, flood-window and whole-test animation-frame gaps, long-task timing, 60-step deep-scrollback p95/max frame gaps, scrollback length, and residual client queues at 1280x800 and 393x852. Results are attached as `client-performance.json`.
+
+Its budgets are split in two. *Engine-independent invariants* are asserted on every project: the client drained the flood with nothing left queued, plan detection stayed bounded, the frame probe collected samples, server-side coalescing held (the flood arrived in at most 120 binary frames), and the scrollback filled. *Absolute frame-time ceilings* -- `flood.medianGapMs`, `flood.maxLongTaskMs`, `scroll.p95GapMs` -- are asserted on Chromium only, per ADR-0049; headless WebKit on Linux composites in software with no GPU and measures roughly an order of magnitude slower for identical client code, so the same ceilings there grade the CI container. The spec still runs on WebKit and its numbers are still printed and attached on every engine.
+
+The flood gate reads the median frame gap rather than the maximum. On an unchanged, healthy pipeline the flood-window maximum measured 16.8ms locally, 50ms on the Windows runner and 66.6ms on the Linux runner within one hour: a maximum over roughly twenty samples on a shared two-core runner measures contention. The median is robust to that and still fails on a real regression, because a pipeline that stopped bounding work per animation frame moves the whole distribution. Maximum and p95 are still recorded. See ADR-0049.
+
+Budgets are also scoped to the phase each one is named for. The flood budget is sampled from the start of the flood until one animation frame after the client write queue drains, entirely in-page so the cross-process harness round-trip is not charged to the flood window, and so the gap created by the final write task and any late `longtask` record are included. The scroll budget reads `scroll.p95GapMs`. The whole-test `maxRafGapMs` is reported for context but is not a budget, because the probe spans the deliberate scroll-jank loop and every harness round-trip, which made it report the scroll phase rather than the output pipeline.
+
+The split-geometry case asserts the documented behaviour for the device class it actually got, because split view is desktop-only: it measures the available width, and requires the split to have opened and its panes to have sent geometry when that width is at least 700px, or the split to have been refused when it is narrower. The invariant the case is named for -- no geometry below 20 columns or 5 rows ever reaches a PTY -- is asserted unconditionally, including on the main terminal after the split closes. The case does not run on `client-redesign-webkit`; see ADR-0049.
+
+`e2e/tests/76-client-visual-evidence.spec.js` attaches dark and light screenshots at 1280x800, 393x852, and 852x393 on all redesign projects, while asserting the blocking chooser stays within horizontal bounds, clears the elevated tab strip, and initially displays every tool card without clipping in short landscape.
+
+`waitForTerminalText` in `e2e/helpers/terminal-helpers.js` is wrap-aware: rows flagged `isWrapped` are rejoined into their logical line before the search. A logical line wider than the terminal spans several buffer rows and `translateToString` returns one row, so a naive per-row search never matches text straddling the wrap point. The terminal is narrower on Windows than on Linux at the same CSS viewport (38 versus 41 columns at 393px wide, from font metrics), so a marker that fits on one row on Linux can wrap on Windows and hang the search until timeout.
+
+The accepted ADR-0037 WebKit specs 77 through 79 are hard gates: inability to initialize `window.app`, the terminal, or required mobile controls fails the job rather than being converted to a skipped test.
+
 ## 1. Research Findings
 
 ### 1.1 Testing WebSocket-Based Node.js Apps
@@ -114,6 +136,7 @@ For the initial test suite, browser-level tests are **deferred**. The server E2E
 - **Isolated** -- Each test suite starts its own server on an ephemeral port
 - **Checkout-path independent** -- Playwright regular-expression `testMatch` entries are anchored to the test basename/path suffix so digits in a parent checkout directory cannot reassign specs between projects.
 - **No hidden integration red** -- `npm run test:integration` runs in the Ubuntu and Windows CI matrix alongside `npm test`.
+- **File-browser contract gate** -- the mobile-journey job also runs the complete `file-browser-v2` project, including artifact review and terminal click-to-open behavior. Ubuntu only: the OSC 7 emitter these specs drive (`osc7EmitCommand` in `e2e/helpers/file-browser-v2-helpers.js`) builds a single-quoted `printf` invocation targeting bash/zsh, pwsh emits OSC 7 differently, and spec 69 explicitly drives a bash session, so running the project against pwsh tests the emitter's shell portability rather than the file browser. The product's Windows OSC 7 handling is covered by the server-side specs.
 - **Recorded flake inventory** -- manual CI dispatch accepts
   `flake_inventory_runs`; `scripts/run-flake-inventory.js` records platform,
   Node version, exit code, wall time, and a structured report containing every
@@ -282,6 +305,24 @@ Browser-level tests run Chromium via Playwright, validating the full stack from 
 - Focus terminal via `page.evaluate(() => terminal.focus())` before keyboard input
 - Failure artifacts: terminal buffer, WebSocket log, console log, screenshot
 - CI: separate `test-browser` job on ubuntu-latest + windows-latest
+
+**Playwright version floor (>= 1.60.0):**
+
+Playwright releases before 1.60.0 download every browser byte and then hang
+indefinitely during extraction when run on Node >= 24.16
+(microsoft/playwright#41000). CI pins `node-version: '26'`, so every
+`Install Playwright browsers` step stalled until the job-level timeout killed
+it and no browser suite could run. The retry loop around the install cannot
+recover from this: the installer never exits, so it never retries.
+
+`@playwright/test` therefore must stay at or above 1.60.0.
+`test/playwright-version-floor.test.js` asserts the floor in both
+`package.json` and `package-lock.json` so a later dependency edit cannot walk
+back under it. Confirmed on Node 26.6.0: 1.58.2 hangs, 1.60.0 completes.
+
+The bundled Chromium moves from 145 to 148 with this floor; the committed
+`09-visual-regression` baselines were re-verified against Chromium 148 and
+still match within the configured `maxDiffPixelRatio: 0.01` tolerance.
 
 ### 5.2 Mock Tool Scripts
 

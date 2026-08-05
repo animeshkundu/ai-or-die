@@ -113,7 +113,7 @@
 
 .input-overlay-voice.recording {
   color: var(--status-error);
-  animation: voice-pulse 1.5s ease-in-out infinite;
+  animation: voice-pulse var(--duration-pulse) var(--ease-in-out) infinite;
 }
 
 .input-overlay-spacer {
@@ -143,6 +143,13 @@
 .tab-action-btn-overlay:hover {
   color: var(--accent-default);
   background: var(--accent-soft);
+}
+
+@media (pointer: coarse) {
+  .tab-action-btn-overlay {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 /* Reduced motion: disable animations */

@@ -63,6 +63,8 @@ test.describe('P0-1: Install button vs bottom nav overlap', () => {
 
     expect(installBox).not.toBeNull();
     expect(navBox).not.toBeNull();
+    expect(installBox.width).toBeGreaterThanOrEqual(44);
+    expect(installBox.height).toBeGreaterThanOrEqual(44);
 
     // Install button bottom must be above or at the bottom nav top (no overlap)
     expect(installBox.y + installBox.height).toBeLessThanOrEqual(navBox.y + 1); // +1 for rounding

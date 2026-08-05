@@ -23,6 +23,13 @@ class Split {
         this._reconnectAttempts = 0;
         this._maxReconnectAttempts = 10;
         this._closing = false;
+        this._pendingWrites = [];
+        this._rafPending = false;
+        this._rafHandle = null;
+        this._repainting = false;
+        this._repaintTimer = null;
+        this._repaintGeneration = 0;
+        this._reconnectViewState = null;
 
         this.createTerminal();
     }
@@ -47,6 +54,9 @@ class Split {
             cursorBlink: true,
             convertEol: true,
             allowProposedApi: true,
+            windowOptions: {
+                reportFocus: false
+            },
             theme: this.app?.terminal?.options?.theme || {
                 background: '#0d1117',
                 foreground: '#c9d1d9',
@@ -99,21 +109,38 @@ class Split {
             }
         }
 
-        // Re-render split terminal when fonts finish loading
+        // Monotonic instance id, NOT the positional index. register() calls
+        // unregister(id) first, so two panes sharing an id silently tear down
+        // each other's ResizeObserver: close pane 1, open a new pane that takes
+        // index 1, and the old pane's deferred destroy -> unregister(this._fitId)
+        // disconnects the NEW pane's observer. It then never re-fits and its PTY
+        // keeps a stale size. The index is reused by design; the fit identity
+        // must not be.
+        Split._fitSeq = (Split._fitSeq || 0) + 1;
+        this._fitId = `split-${this.index}-${Split._fitSeq}`;
+        if (this.app && this.app.fitCoordinator) {
+            this.app.fitCoordinator.register(this._fitId, {
+                container: terminalDiv,
+                terminal: this.terminal,
+                proposeDimensions: () => this.fitAddon.proposeDimensions(),
+                reserve: { cols: 6, rows: 0 },
+                send: ({ cols, rows }) => {
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+                        return true;
+                    }
+                    return false;
+                }
+            });
+        }
+
+        // Refresh the atlas once when fonts settle; geometry is owned by the
+        // coordinator and ResizeObserver resumes deferred hidden panes.
         if (document.fonts) {
             document.fonts.ready.then(() => {
                 this.terminal.clearTextureAtlas();
                 this.terminal.refresh(0, this.terminal.rows - 1);
-                if (this.fitAddon) {
-                    try { this.fitAddon.fit(); } catch (_) {}
-                }
-            });
-            document.fonts.addEventListener('loadingdone', () => {
-                this.terminal.clearTextureAtlas();
-                this.terminal.refresh(0, this.terminal.rows - 1);
-                if (this.fitAddon) {
-                    try { this.fitAddon.fit(); } catch (_) {}
-                }
+                this.fit();
             });
         }
 
@@ -222,13 +249,6 @@ class Split {
             }
         });
         
-        // Setup resize handler
-        this.terminal.onResize(({ cols, rows }) => {
-            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
-            }
-        });
-        
         this.fit();
     }
 
@@ -274,16 +294,13 @@ class Split {
             this._reconnectAttempts = 0;
             this._startHeartbeat();
             console.log(`[Split ${this.index}] Connected to session ${sessionId}`);
-            // Send initial resize
-            const { cols, rows } = this.terminal;
-            try { ws.send(JSON.stringify({ type: 'resize', cols, rows })); } catch (_) {}
+            this.app.fitCoordinator?.request(this._fitId, { forceSend: true });
         };
 
         ws.onmessage = (event) => {
             if (!isCurrent()) return;
             if (event.data instanceof ArrayBuffer) {
-                // Binary frame = raw terminal output (Uint8Array direct write)
-                this.terminal.write(new Uint8Array(event.data));
+                this._queueOutput(new Uint8Array(event.data));
             } else {
                 try {
                     const msg = JSON.parse(event.data);
@@ -300,6 +317,14 @@ class Split {
             if (this._heartbeat) { this._heartbeat.stop(); this._heartbeat = null; }
             if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
             if (this._pongTimer) { clearTimeout(this._pongTimer); this._pongTimer = null; }
+            const buffer = this.terminal && this.terminal.buffer && this.terminal.buffer.active;
+            this._reconnectViewState = {
+                sessionId: this.sessionId,
+                viewportY: buffer ? buffer.viewportY : 0,
+                selection: this.terminal && this.terminal.getSelectionPosition
+                    ? this.terminal.getSelectionPosition()
+                    : null
+            };
             if (this._closing || this._reconnectAttempts >= this._maxReconnectAttempts) {
                 console.log(`[Split ${this.index}] Disconnected from session ${sessionId}`);
                 return;
@@ -352,6 +377,53 @@ class Split {
         this._pongTimer = null;
     }
 
+    _queueOutput(chunk) {
+        this._pendingWrites.push(chunk);
+        if (!this._rafPending && !this._repainting) {
+            this._rafPending = true;
+            this._rafHandle = requestAnimationFrame(() => this._flushOutput());
+        }
+    }
+
+    _flushOutput() {
+        this._rafPending = false;
+        this._rafHandle = null;
+        if (this._repainting || this._pendingWrites.length === 0) return;
+        const combined = OutputFrameBatcher.takeChunkBudget(this._pendingWrites, 96 * 1024);
+        this.terminal.write(combined);
+        if (this._pendingWrites.length > 0) {
+            this._rafPending = true;
+            this._rafHandle = requestAnimationFrame(() => this._flushOutput());
+        }
+    }
+
+    _finishReplay(generation, restoreView, view) {
+        if (generation !== this._repaintGeneration) return;
+        if (this._repaintTimer) {
+            clearTimeout(this._repaintTimer);
+            this._repaintTimer = null;
+        }
+        this._repainting = false;
+        if (this._pendingWrites.length > 0 && !this._rafPending) {
+            this._rafPending = true;
+            this._rafHandle = requestAnimationFrame(() => this._flushOutput());
+        }
+        if (restoreView === false) return;
+        if (view) {
+            const buffer = this.terminal.buffer && this.terminal.buffer.active;
+            if (buffer) this.terminal.scrollToLine(Math.min(view.viewportY, Math.max(0, buffer.baseY)));
+            const selection = view.selection;
+            if (selection && selection.start && selection.end) {
+                const length = Math.max(
+                    0,
+                    (selection.end.y - selection.start.y) * this.terminal.cols
+                        + selection.end.x - selection.start.x
+                );
+                if (length > 0) this.terminal.select(selection.start.x, selection.start.y, length);
+            }
+        }
+    }
+
     handleMessage(msg) {
         switch (msg.type) {
             case 'output':
@@ -362,13 +434,30 @@ class Split {
                 if (this._heartbeat) this._heartbeat.onPong();
                 break;
 
-            case 'session_joined':
-                // Replay output buffer
-                if (msg.outputBuffer && msg.outputBuffer.length > 0) {
-                    const joined = msg.outputBuffer.join('');
-                    this.terminal.write(joined);
-                }
+            case 'session_joined': {
+                const repaintGeneration = ++this._repaintGeneration;
+                this._repainting = true;
+                this._pendingWrites.length = 0;
+                const reconnectView = this._reconnectViewState
+                    && this._reconnectViewState.sessionId === msg.sessionId
+                    ? this._reconnectViewState
+                    : null;
+                this._reconnectViewState = null;
+                const joined = Array.isArray(msg.outputBuffer)
+                    ? msg.outputBuffer.join('')
+                    : '';
+                if (this._repaintTimer) clearTimeout(this._repaintTimer);
+                this._repaintTimer = setTimeout(() => {
+                    if (repaintGeneration !== this._repaintGeneration) return;
+                    console.warn(`[Split ${this.index}] replay timed out; resuming queued output`);
+                    this._finishReplay(repaintGeneration, false, null);
+                }, 5000);
+                this.terminal.write(
+                    '\x1bc' + joined,
+                    () => this._finishReplay(repaintGeneration, true, reconnectView)
+                );
                 break;
+            }
                 
             case 'claude_started':
             case 'codex_started':
@@ -443,21 +532,22 @@ class Split {
             }
             this.socket = null;
         }
+        if (this._rafHandle !== null && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(this._rafHandle);
+        }
+        this._rafHandle = null;
+        this._rafPending = false;
+        this._pendingWrites.length = 0;
+        this._repainting = false;
+        this._repaintGeneration += 1;
+        if (this._repaintTimer) {
+            clearTimeout(this._repaintTimer);
+            this._repaintTimer = null;
+        }
     }
 
     fit() {
-        try {
-            if (this.fitAddon) {
-                this.fitAddon.fit();
-                // Subtract 6 cols for scrollbar width
-                const adjustedCols = Math.max(1, this.terminal.cols - 6);
-                if (adjustedCols !== this.terminal.cols) {
-                    this.terminal.resize(adjustedCols, this.terminal.rows);
-                }
-            }
-        } catch (error) {
-            // Ignore fit errors
-        }
+        this.app.fitCoordinator?.request(this._fitId);
     }
 
     updateActiveState() {
@@ -482,6 +572,7 @@ class Split {
 
     destroy() {
         this.disconnect();
+        this.app.fitCoordinator?.unregister(this._fitId);
         // Tear down drop/paste handlers (listeners + any in-flight uploads)
         // before disposing the terminal so nothing fires against a dead pane.
         try { if (this._genericDropHandler && this._genericDropHandler.destroy) this._genericDropHandler.destroy(); } catch (_) {}
@@ -528,6 +619,13 @@ class SplitContainer {
         // Create divider
         this.divider = document.createElement('div');
         this.divider.className = 'split-divider';
+        this.divider.setAttribute('role', 'separator');
+        this.divider.setAttribute('aria-label', 'Resize terminal panes');
+        this.divider.setAttribute('aria-orientation', 'vertical');
+        this.divider.setAttribute('aria-valuemin', '20');
+        this.divider.setAttribute('aria-valuemax', '80');
+        this.divider.setAttribute('aria-valuenow', '50');
+        this.divider.tabIndex = 0;
         this.setupDividerDrag();
 
         // Create right split
@@ -596,6 +694,19 @@ class SplitContainer {
                 this.saveState();
             }
         });
+
+        this.divider.addEventListener('keydown', (e) => {
+            let next = this.dividerPosition;
+            if (e.key === 'ArrowLeft') next -= 5;
+            else if (e.key === 'ArrowRight') next += 5;
+            else if (e.key === 'Home') next = 20;
+            else if (e.key === 'End') next = 80;
+            else return;
+            e.preventDefault();
+            this.dividerPosition = Math.max(20, Math.min(80, next));
+            this.updateDividerPosition();
+            this.saveState();
+        });
     }
 
     updateDividerPosition() {
@@ -605,6 +716,7 @@ class SplitContainer {
         if (leftSplit && rightSplit) {
             leftSplit.style.width = `${this.dividerPosition}%`;
             rightSplit.style.width = `${100 - this.dividerPosition}%`;
+            this.divider.setAttribute('aria-valuenow', String(Math.round(this.dividerPosition)));
             
             // Fit both terminals
             this.splits.forEach(split => split.fit());
@@ -613,6 +725,11 @@ class SplitContainer {
 
     async createSplit(sessionId) {
         if (this.enabled) return; // Already split
+        const availableWidth = document.querySelector('.main')?.getBoundingClientRect().width || window.innerWidth;
+        if (availableWidth < 700) {
+            if (window.feedback) window.feedback.info('Split view needs a wider screen. Use session tabs on this device.');
+            return;
+        }
 
         this.enabled = true;
         

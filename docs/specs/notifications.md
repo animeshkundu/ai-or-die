@@ -85,6 +85,21 @@ Stored in `localStorage` key `cc-web-settings`:
 
 Settings accessible from Settings modal under "Notifications" section.
 
+System-alert capability is presented honestly:
+
+- insecure context: static HTTPS requirement
+- API absent outside standalone: static install-to-check status
+- API absent in standalone: static unsupported status
+- permission denied: static blocked-in-settings status
+- API available: live system-alert toggle
+
+The status is non-focusable and capability is determined from `window.isSecureContext`, display mode, API presence, and permission. Sound and volume remain live in every state.
+
+Permission is requested only from the explicit Enable action, never during
+session-manager construction or page load. Both Promise and callback forms of
+`Notification.requestPermission` are supported, and capability status refreshes
+after the decision.
+
 ## Suppression Rules
 
 - Notifications are **never** sent for the active tab

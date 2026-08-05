@@ -11,7 +11,7 @@
 .settings-modal .modal-content {
   width: 760px;
   max-width: 94vw;
-  max-height: 86vh;
+  max-height: 86dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden; /* header/footer fixed; the panes scroll, not the whole box */
@@ -353,7 +353,7 @@
 @media (max-width: 820px) {
   .settings-modal .modal-content {
     width: 96vw;
-    max-height: 90vh;
+    max-height: 90dvh;
   }
   .settings-layout {
     flex-direction: column;
@@ -419,4 +419,10 @@
   .settings-modal .setting-group select {
     transition: none;
   }
+}
+.setting-capability-status {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  max-width: 28rem;
 }

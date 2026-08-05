@@ -4120,7 +4120,6 @@ class ClaudeCodeWebServer {
 
     // Join new session
     wsInfo.claudeSessionId = claudeSessionId;
-    session.connections.add(wsId);
     session.lastActivity = new Date();
     this._pushEvictionEntry(claudeSessionId); // PROC-04
     session.lastAccessed = Date.now();
@@ -4131,6 +4130,31 @@ class ClaudeCodeWebServer {
     if (session._ctlTranscript) {
       renderedSnapshot = (await this._peekWithTimeout(session._ctlTranscript, 200, 300)) || renderedSnapshot;
     }
+    // Drain any coalesced output that is already represented in outputBuffer
+    // before the new subscriber is added. Otherwise the pending coalescer flush
+    // sends those same bytes immediately after session_joined replays them.
+    this._flushSessionOutput(claudeSessionId);
+    // Do not subscribe the socket to live binary output until the replay payload
+    // is ready. Otherwise output emitted during the awaited snapshot peek is both
+    // broadcast live and included in outputBuffer, duplicating the boundary frame.
+    //
+    // Re-check liveness first. The await above can take up to 300ms, and wsInfo
+    // was captured before it. If the socket closed inside that window,
+    // cleanupWebSocketConnection already removed wsId from session.connections
+    // (harmlessly — it was not there yet), and adding it here would put a DEAD
+    // id back permanently. Nothing removes it afterwards, so session.connections
+    // grows monotonically across reconnect storms and _flushSessionOutput's
+    // `connections.size === 0` idle short-circuit never fires again for that
+    // session: every PTY flush then pays a join, a regex pass and a Buffer copy
+    // for zero real subscribers.
+    //
+    // Gate on the socket's own readyState rather than on webSocketConnections
+    // membership. An earlier version returned early on the map lookup and broke
+    // a legitimate join path — the map is bookkeeping, readyState is the actual
+    // liveness signal. Only the subscription is skipped; the join response below
+    // is still sent, because a caller that is still open deserves an answer.
+    const wsStillOpen = wsInfo && wsInfo.ws && wsInfo.ws.readyState === WebSocket.OPEN;
+    if (wsStillOpen) session.connections.add(wsId);
     this.sendToWebSocket(wsInfo.ws, {
       type: 'session_joined',
       sessionId: claudeSessionId,
@@ -4139,7 +4163,7 @@ class ClaudeCodeWebServer {
       active: session.active,
       wasActive: session.wasActive || false,
       agent: session.agent || null,
-      outputBuffer: session.outputBuffer.slice(-200), // Send last 200 lines
+      outputBuffer: this._buildJoinReplay(session),
       renderedSnapshot, // rendered last screen so idle/empty-buffer joins repaint
       stickyNote: session.stickyNote || null,
       autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
@@ -4153,6 +4177,22 @@ class ClaudeCodeWebServer {
     if (this.dev) {
       console.log(`WebSocket ${wsId} joined Claude session ${claudeSessionId}`);
     }
+  }
+
+  _buildJoinReplay(session, maxBytes = 256 * 1024) {
+    const items = session && session.outputBuffer && session.outputBuffer.toArray
+      ? session.outputBuffer.toArray()
+      : [];
+    let bytes = 0;
+    let start = items.length;
+    while (start > 0) {
+      const item = items[start - 1];
+      const itemBytes = Buffer.byteLength(typeof item === 'string' ? item : String(item || ''), 'utf8');
+      if (bytes > 0 && bytes + itemBytes > maxBytes) break;
+      bytes += itemBytes;
+      start--;
+    }
+    return items.slice(start);
   }
 
   async leaveClaudeSession(wsId) {
@@ -7513,6 +7553,20 @@ class ClaudeCodeWebServer {
     }
     if (this.server) {
       this.server.close();
+      // close() stops accepting NEW connections and then waits for existing ones
+      // to end by themselves — it does not touch idle keep-alive sockets. Every
+      // browser page load holds one, so an e2e run that boots ~100 servers in a
+      // single job leaves ~100 sockets parked in the OS. On Windows that shows
+      // up as `net::ERR_NO_BUFFER_SPACE` on a later page.goto (observed in
+      // 14-nerd-font-rendering after ~97 tests in one bucket): the runner has
+      // run out of ephemeral ports, and it presents as an unrelated test
+      // failing to navigate.
+      //
+      // Same defect and same fix as test/control/artifact-routes.test.js. Guard
+      // the call so this stays safe on older runtimes.
+      if (typeof this.server.closeAllConnections === 'function') {
+        try { this.server.closeAllConnections(); } catch (_) { /* best effort */ }
+      }
     }
     // In HTTPS mode `this.server` is the TLS-sniffing proxy that owns the
     // listening port; the TLS app server and the http->https redirect server sit

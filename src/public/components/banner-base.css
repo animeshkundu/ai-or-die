@@ -85,7 +85,7 @@
 
 /* Loading spinner for status-loading */
 .status-indicator.status-loading svg {
-  animation: spin 1s linear infinite;
+  animation: spin var(--duration-rotation) var(--ease-linear) infinite;
 }
 
 @media (pointer: coarse) {

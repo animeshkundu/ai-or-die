@@ -17,7 +17,7 @@
 }
 
 .dropdown-arrow {
-    transition: transform var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    transition: transform var(--duration-normal) var(--ease-default);
 }
 
 .session-dropdown-menu {
@@ -64,7 +64,7 @@
     justify-content: space-between;
     align-items: center;
     cursor: pointer;
-    transition: background-color var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    transition: background-color var(--duration-normal) var(--ease-default);
 }
 
 .session-item:hover {
@@ -214,12 +214,12 @@
     border: 1px solid var(--border);
     width: 400px;
     max-width: 90vw;
-    max-height: 80vh;
+    max-height: 80dvh;
     overflow-y: auto;
     position: relative;
     margin: 20px auto;
     box-shadow: var(--shadow-xl);
-    animation: modalEnter var(--duration-normal, 200ms) var(--ease-out, ease-out);
+    animation: modalEnter var(--duration-normal) var(--ease-out);
 }
 
 @keyframes modalEnter {
@@ -239,12 +239,12 @@
 }
 
 .modal-content.closing {
-    animation: modalExit var(--duration-fast, 150ms) var(--ease-in, ease-in) forwards;
+    animation: modalExit var(--duration-fast) var(--ease-in) forwards;
 }
 
 /* Backdrop fade transitions */
 .modal-backdrop {
-    transition: opacity var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    transition: opacity var(--duration-normal) var(--ease-default);
 }
 .modal-backdrop.closing { opacity: 0; }
 
@@ -277,8 +277,8 @@
     justify-content: center;
     border-radius: var(--radius-sm);
     -webkit-tap-highlight-color: transparent;
-    transition: background-color var(--duration-fast, 150ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
-                opacity var(--duration-fast, 150ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    transition: background-color var(--duration-fast) var(--ease-default),
+                opacity var(--duration-fast) var(--ease-default);
     opacity: 0.6;
 }
 
@@ -383,7 +383,7 @@
 .setting-section-header::after {
     content: '\25BE';
     font-size: 10px;
-    transition: transform 0.2s;
+    transition: transform var(--duration-normal) var(--ease-default);
 }
 
 .setting-section.collapsed .setting-section-header::after {
@@ -405,7 +405,7 @@
     background-color: var(--status-success, #22c55e) !important;
     border-color: var(--status-success, #22c55e) !important;
     color: white !important;
-    transition: background-color 0.3s, border-color 0.3s;
+    transition: background-color var(--duration-slow), border-color var(--duration-slow);
 }
 
 .modal-footer {
@@ -426,7 +426,7 @@
     height: 100%;
     background-color: var(--overlay-backdrop);
     z-index: var(--z-modal);
-    animation: fadeIn var(--duration-slow, 300ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    animation: fadeIn var(--duration-slow) var(--ease-default);
 }
 
 .plan-modal.active {
@@ -440,7 +440,7 @@
     border-radius: 12px;
     width: 90%;
     max-width: 800px;
-    max-height: 80vh;
+    max-height: 80dvh;
     display: flex;
     flex-direction: column;
     box-shadow: var(--shadow-xl);
@@ -481,7 +481,7 @@
     height: 10px;
     border-radius: 50%;
     background-color: var(--status-success);
-    animation: plan-indicator-pulse 2s infinite;
+    animation: plan-indicator-pulse var(--duration-attention) var(--ease-default) infinite;
 }
 
 @keyframes plan-indicator-pulse {
@@ -503,7 +503,7 @@
     line-height: var(--leading-relaxed);
     color: var(--text-primary);
     overflow-y: auto;
-    max-height: 60vh;
+    max-height: 60dvh;
 }
 
 /* Fallback for when marked.js is not loaded */
@@ -626,7 +626,7 @@
 .folder-browser-content {
     width: 90%;
     max-width: 700px;
-    max-height: 80vh;
+    max-height: 80dvh;
     display: flex;
     flex-direction: column;
 }
@@ -657,7 +657,7 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     cursor: pointer;
-    transition: all var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    transition: all var(--duration-normal) var(--ease-default);
     min-width: 36px;
     height: 36px;
 }
@@ -750,7 +750,7 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     cursor: pointer;
-    transition: all var(--duration-normal, 200ms) var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
+    transition: all var(--duration-normal) var(--ease-default);
     font-size: 14px;
     min-height: 44px;
 }

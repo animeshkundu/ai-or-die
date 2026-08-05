@@ -107,6 +107,16 @@ async function readTerminalContent(page) {
 /**
  * Wait for specific text to appear in the terminal buffer.
  * Uses page.waitForFunction for efficient polling.
+ *
+ * Wrap-aware: a logical line wider than the terminal occupies several buffer
+ * rows, and `translateToString` returns ONE row, so a naive per-row
+ * `includes()` never matches text that straddles the wrap point. The terminal
+ * is narrower on Windows than on Linux at the same CSS viewport (font metrics
+ * differ — 38 vs 41 cols at a 393px-wide viewport), so a marker that fits on
+ * one row on Linux can wrap on Windows and make the search hang until timeout.
+ * Rows flagged `isWrapped` are joined back into their logical line before the
+ * search, which is what a user reading the screen actually sees.
+ *
  * @param {import('@playwright/test').Page} page
  * @param {string} text - Text to search for
  * @param {number} [timeoutMs=15000]
@@ -117,13 +127,21 @@ async function waitForTerminalText(page, text, timeoutMs = 15000) {
       const term = window.app && window.app.terminal;
       if (!term) return false;
       const buffer = term.buffer.active;
+      let logical = '';
       for (let i = 0; i < buffer.length; i++) {
         const line = buffer.getLine(i);
-        if (line && line.translateToString(true).includes(searchText)) {
-          return true;
+        if (!line) continue;
+        // `false` keeps trailing whitespace so wrapped halves rejoin exactly.
+        const row = line.translateToString(line.isWrapped ? false : true);
+        if (line.isWrapped) {
+          logical += row;
+        } else {
+          if (logical.includes(searchText)) return true;
+          logical = row;
         }
+        if (logical.includes(searchText)) return true;
       }
-      return false;
+      return logical.includes(searchText);
     },
     text,
     { timeout: timeoutMs, polling: 200 }

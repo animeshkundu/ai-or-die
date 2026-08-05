@@ -179,10 +179,17 @@ async function run() {
   // sticky-note-host.js) less the 2 worker files they replace = +5 net. The
   // same change also stopped .docs/ shipping (10 files of local research that
   // matched no .npmignore rule), so the real delta from main is 170 -> 175.
+  // Raised to 190 for the client shell rebuild: +5 runtime modules under
+  // src/public (fit-coordinator, notification-capability, output-frame-batcher,
+  // terminal-geometry, viewport-regime), taking the tarball 176 -> 181. Verified
+  // by listing the pack: 170 of the 181 files are src/, and the five additions
+  // are exactly those modules — no stray class of file crept in. The before/after
+  // review screenshots added in the same change do NOT ship; docs/ was already
+  // excluded, which is worth stating because it was my first (wrong) suspect.
   // v0.1.51's 206-file regression was a separate issue (different file class);
-  // 180 stays well clear of it and leaves headroom for normal growth.
+  // 190 stays clear of it and restores the headroom 180 no longer had.
   const entryCount = entry.entryCount || 0;
-  assert(entryCount > 0 && entryCount <= 180, `Tarball file count ${entryCount} <= 180`);
+  assert(entryCount > 0 && entryCount <= 190, `Tarball file count ${entryCount} <= 190`);
 
   // Step 2: Install in temp directory
   console.log('\nStep 2: Installing tarball in temp directory');
