@@ -306,25 +306,6 @@ jobs:
       # per project inside the job, so a failure stays attributable.
       - name: Run ${{ matrix.projects }}
         shell: bash
-        env:
-          # Diagnostic only — attaches a reporter to every process in the run,
-          # including each Playwright worker. It prints active libuv resource
-          # types on an UNREF'D interval, so it can never keep a worker alive
-          # and a healthy run is unaffected.
-          #
-          # It exists for "worker-N process did not exit within 300000ms after
-          # stop, force-killed it", an intermittent on the Windows runners that
-          # reports NO failing assertions: the tests pass and the worker refuses
-          # to exit. It does not reproduce locally — the exact failing bucket
-          # runs clean here in 154s with the worker exiting normally — so the
-          # holding handle has to be observed on the runner.
-          #
-          # An unref'd timer still fires while the loop is alive for some other
-          # reason, which is exactly the hang, so a stuck worker keeps reporting
-          # and the last line before the force-kill names the resource class.
-          # Remove this once the cause is identified.
-          NODE_OPTIONS: --require ./scripts/ci-worker-handle-probe.js
-          HANDLE_PROBE_LABEL: worker-probe-${{ matrix.os }}
         run: |
           args=""
           for p in ${{ matrix.projects }}; do args="$args --project $p"; done
