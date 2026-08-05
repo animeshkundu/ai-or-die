@@ -129,15 +129,18 @@ test.describe('Nerd Font rendering infrastructure', () => {
         const term = window.app.terminal;
         const results = {};
 
-        // Helper: clear screen, write string, measure cursor delta
+        // Helper: clear screen, write string, measure cursor position.
+        // The reset and the payload must go out as a SINGLE write chunk.
+        // xterm's WriteBuffer invokes a chunk's callback the moment that
+        // chunk is parsed, so PTY output queued between two separate writes
+        // (the shell redrawing its prompt) is parsed in the gap and shifts
+        // the cursor before the payload lands. \x1b[H homes the cursor, so
+        // the post-write cursorX is the payload's cell width outright.
         function measure(label, str) {
           return new Promise((res) => {
-            term.write('\x1b[2J\x1b[H', () => {
-              const startX = term.buffer.active.cursorX;
-              term.write(str, () => {
-                results[label] = term.buffer.active.cursorX - startX;
-                res();
-              });
+            term.write('\x1b[2J\x1b[H' + str, () => {
+              results[label] = term.buffer.active.cursorX;
+              res();
             });
           });
         }
@@ -342,14 +345,18 @@ test.describe('Nerd Font rendering infrastructure', () => {
         const term = window.app.terminal;
         const results = {};
 
+        // The cursor reset and the measured payload must go out as a SINGLE
+        // write chunk. xterm's WriteBuffer invokes a chunk's callback the
+        // moment that chunk is parsed, so PTY output queued between two
+        // separate writes (the shell redrawing its prompt after the command
+        // above) is parsed in the gap and shifts the cursor before the
+        // payload lands. \x1b[H homes the cursor, so the post-write cursorX
+        // is the payload's cell width outright.
         function measure(label, str) {
           return new Promise((res) => {
-            term.write('\x1b[2J\x1b[H', () => {
-              const startX = term.buffer.active.cursorX;
-              term.write(str, () => {
-                results[label] = term.buffer.active.cursorX - startX;
-                res();
-              });
+            term.write('\x1b[2J\x1b[H' + str, () => {
+              results[label] = term.buffer.active.cursorX;
+              res();
             });
           });
         }
