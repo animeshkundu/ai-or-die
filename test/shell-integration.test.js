@@ -73,7 +73,7 @@ describe('session-scoped shell integration', function () {
     const powershell = manager.prepare('ps-session', 'powershell.exe', { HOME: home });
     assert.deepStrictEqual(
       powershell.args.slice(0, 7),
-      ['-NoLogo', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', `. '${powershell.script.replace(/'/g, "''")}'`]
+      ['-NoLogo', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', powershell.script]
     );
 
     const zsh = manager.prepare('zsh-session', '/usr/bin/zsh', { HOME: home, ZDOTDIR: home });

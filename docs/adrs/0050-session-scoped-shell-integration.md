@@ -26,7 +26,7 @@ The material distinction from the rejected design is lifetime and ownership: the
 
 `TerminalBridge` installs OSC 7 integration by changing only the spawned shell's argv and environment:
 
-- PowerShell 7 and Windows PowerShell use `-NoLogo -NoProfile -NoExit -ExecutionPolicy Bypass -Command ". '<session-shim>'"`. Dot-sourcing keeps profile functions, aliases, variables, and imported modules in the interactive global scope. The shim sources the four standard profile locations once, captures the resulting prompt script block, and wraps it.
+- PowerShell 7 and Windows PowerShell use `-NoLogo -NoProfile -NoExit -ExecutionPolicy Bypass -File <session-shim>`. The shim sources the four standard profile locations once, captures the resulting prompt script block, and installs a global wrapper so the prompt remains active after the startup script completes.
 - bash uses `--rcfile <session-shim>`. The shim sources the user's `.bashrc` first, then appends a named function to a writable scalar or bash 5.1+ array `PROMPT_COMMAND`. Readonly and nameref values are left untouched.
 - zsh uses a temporary `ZDOTDIR` with pass-through `.zshenv`, `.zprofile`, `.zshrc`, and `.zlogin` files. The user's effective `ZDOTDIR` is restored, and the hook is appended through `precmd_functions` without depending on `fpath`.
 - fish is unchanged because it already emits OSC 7.

@@ -387,6 +387,34 @@ describe('VSCodeTunnelManager', function () {
       assert.strictEqual(manager.tunnels.get('test-session').status, 'degraded');
       assert(manager.tunnels.get('test-session').serverProcess, 'local server remains running');
     });
+
+    it('does not publish a tunnel when the local VS Code port never becomes reachable', async function () {
+      manager._command = 'fake-code';
+      manager._commandChecked = true;
+      manager._available = true;
+      manager._devtunnelCommand = 'fake-devtunnel';
+      manager._devtunnelChecked = true;
+      manager._devtunnelAvailable = true;
+      manager._checkDevtunnelAuth = async () => true;
+      manager._spawnServer = async (sessionId) => {
+        manager.tunnels.get(sessionId).serverProcess = { pid: 123 };
+        return true;
+      };
+      manager._waitForPort = async () => false;
+      let devtunnelStarted = false;
+      manager._ensureDevtunnel = async () => {
+        devtunnelStarted = true;
+        return { ok: true };
+      };
+      manager._killProcess = async () => {};
+
+      const result = await manager.start('test-session', '/tmp');
+      assert.strictEqual(result.success, false);
+      assert.strictEqual(result.error, 'server_start_failed');
+      assert.strictEqual(devtunnelStarted, false);
+      assert.strictEqual(manager.tunnels.has('test-session'), false);
+      assert.strictEqual(manager._reservedPorts.size, 0);
+    });
   });
 
   describe('devtunnel authentication', function () {
@@ -554,6 +582,33 @@ describe('VSCodeTunnelManager', function () {
       assert.strictEqual(failure.error, 'auth_required');
       assert(failure.stderrTail.includes('Request not permitted'));
       assert(failure.message.includes('devtunnel user login'));
+    });
+
+    it('recognizes a public URL split across stdout chunks', async function () {
+      const { EventEmitter } = require('events');
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.kill = () => {};
+      manager._spawnProcess = () => child;
+      manager._devtunnelCommand = 'fake-devtunnel';
+      manager.tunnels.set('test-session', {
+        sessionId: 'test-session',
+        tunnelId: 'test',
+        connectionToken: 'token',
+        localUrl: 'http://localhost:9100/?tkn=token',
+        status: 'starting',
+        stopping: false,
+        retryCount: 0,
+      });
+
+      const pending = manager._spawnTunnel('test-session');
+      child.stdout.emit('data', Buffer.from('Connect via https://split.dev'));
+      child.stdout.emit('data', Buffer.from('tunnels.ms'));
+      const result = await pending;
+
+      assert.strictEqual(result.ok, true);
+      assert.strictEqual(result.url, 'https://split.devtunnels.ms?tkn=token');
     });
 
     it('returns url_timeout instead of silently resolving when no URL appears', async function () {

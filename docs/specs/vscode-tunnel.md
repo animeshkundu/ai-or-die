@@ -193,6 +193,7 @@ The tunnel start is a four-phase process:
 **Phase 3 -- TCP Readiness Wait:**
 1. `_waitForPort(port, PORT_WAIT_TIMEOUT_MS)` polls TCP connect to `127.0.0.1:<port>`
 2. Polls every 200ms until a connection succeeds or `PORT_WAIT_TIMEOUT_MS` (10s) expires
+3. A timeout stops the local process, releases its reserved port, and returns `server_start_failed`; tunnel setup never publishes an unusable local or public URL
 
 **Phase 4 -- Tunnel Setup:**
 1. `devtunnel create <tunnelId> --allow-anonymous` (idempotent; "Conflict" = already exists)

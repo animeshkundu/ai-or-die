@@ -202,8 +202,7 @@ class ShellIntegrationManager {
         const script = path.join(dir, 'profile.ps1');
         this._writeExclusive(script, powershellShim());
         integration.script = script;
-        const dotSource = `. '${script.replace(/'/g, "''")}'`;
-        integration.args = ['-NoLogo', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-Command', dotSource];
+        integration.args = ['-NoLogo', '-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', script];
       } else if (kind === 'bash') {
         const script = path.join(dir, 'bashrc');
         this._writeExclusive(script, bashShim());

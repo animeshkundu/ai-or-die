@@ -4,10 +4,8 @@ REM Handles both `code serve-web` (new two-process model) and legacy `code tunne
 
 REM --- serve-web subcommand (local VS Code HTTP server) ---
 if "%1"=="serve-web" (
-  echo Web UI available at http://localhost:9100
-  REM Stay alive until killed (real code serve-web is a long-running server)
-  ping -n 3601 127.0.0.1 >nul
-  exit /b 0
+  node "%~dp0fake-code-server.js" %*
+  exit /b %errorlevel%
 )
 
 REM --- Legacy: tunnel subcommand ---

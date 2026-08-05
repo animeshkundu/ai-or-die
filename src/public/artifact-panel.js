@@ -460,7 +460,21 @@
     dismissedByServer(message) {
       const sessionId = message && message.sessionId ? String(message.sessionId) : this.activeSessionId;
       if (!sessionId) return;
-      const review = this.reviews.get(sessionId);
+      let review = this.reviews.get(sessionId);
+      if (!review && message && message.dismissed) {
+        review = {
+          sessionId,
+          viewUrl: this._authUrl('/view', sessionId),
+          file: null,
+          ready: false,
+          scroll: { x: 0, y: 0 },
+          queue: [],
+          chat: [],
+          chatCursor: 0,
+          dismissed: true,
+        };
+        this.reviews.set(sessionId, review);
+      }
       if (review) review.dismissed = !!(message && message.dismissed);
       if (sessionId !== this.activeSessionId) return;
       if (review && review.dismissed) { this._collapsed = true; this._hide(); }

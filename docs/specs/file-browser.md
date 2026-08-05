@@ -862,7 +862,7 @@ Per [ADR-0050](../adrs/0050-session-scoped-shell-integration.md), Terminal-bridg
 | **bash** | Automatic, session-only | `--rcfile` sources the user's `.bashrc`, then appends a named hook to writable `PROMPT_COMMAND`. Readonly/nameref prompt state is left untouched. |
 | **zsh** | Automatic, session-only | A transient `ZDOTDIR` passes through all four user startup files, restores the effective user value, and appends to `precmd_functions`. |
 | **fish** | Native | No wrapper; fish emits OSC 7 unconditionally. |
-| **pwsh / powershell.exe** | Automatic, session-only | A dot-sourced `-NoProfile -Command` shim sources all four profile locations once in interactive scope, then wraps the resulting prompt function. |
+| **pwsh / powershell.exe** | Automatic, session-only | A private `-NoProfile -File` shim sources all four profile locations once, then installs a global wrapper around the resulting prompt function. |
 | **cmd.exe (Windows)** | Not supported | cmd.exe's `prompt` definition can't run arbitrary commands per prompt. Switch to PowerShell: `winget install Microsoft.PowerShell` or use Microsoft Store. |
 
 Set `AIORDIE_DISABLE_SHELL_INTEGRATION=1` to start vanilla shells while diagnosing profile or prompt-framework behavior. The existing Layer 5 toast remains the safety net when integration is disabled, the prompt state is readonly, a framework replaces the prompt after startup, or OSC 7 is swallowed by a nested shell/tmux.

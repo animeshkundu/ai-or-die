@@ -220,8 +220,23 @@ class VSCodeTunnelManager {
       return { success: false, ...failure };
     }
 
-    // Wait for TCP readiness
-    await this._waitForPort(tunnel.localPort, PORT_WAIT_TIMEOUT_MS);
+    // The CLI can print a readiness-looking line before its listener is
+    // reachable. Do not publish either a public or local URL until TCP proves
+    // that the local VS Code endpoint is usable.
+    const portReady = await this._waitForPort(tunnel.localPort, PORT_WAIT_TIMEOUT_MS);
+    if (!portReady) {
+      const current = this.tunnels.get(sessionId);
+      const failure = {
+        error: 'server_start_failed',
+        message: `VS Code Server did not accept connections on port ${tunnel.localPort}. Check the \`code serve-web\` output, then click Retry.`,
+      };
+      if (current) {
+        current.stopping = true;
+        if (current.serverProcess) await this._killProcess(current.serverProcess);
+        this._cleanupTunnel(sessionId);
+      }
+      return { success: false, ...failure };
+    }
 
     if (tunnel.stopping) {
       this._cleanupTunnel(sessionId);
@@ -1027,10 +1042,15 @@ class VSCodeTunnelManager {
 
       let startupSettled = false;
       let startupSucceeded = false;
+      let stdoutBuffer = '';
+      let stderrBuffer = '';
       let outputBuffer = '';
-      const appendOutput = (data) => {
-        outputBuffer = this._outputTail(`${outputBuffer}\n${data.toString()}`);
-        const match = data.toString().match(/https:\/\/[\w.-]+\.devtunnels\.ms[^\s,\x1b]*/);
+      const appendOutput = (data, stream) => {
+        const text = data.toString();
+        if (stream === 'stdout') stdoutBuffer = this._outputTail(`${stdoutBuffer}${text}`);
+        else stderrBuffer = this._outputTail(`${stderrBuffer}${text}`);
+        outputBuffer = this._outputTail(`${stdoutBuffer}\n${stderrBuffer}`);
+        const match = outputBuffer.match(/https:\/\/[\w.-]+\.devtunnels\.ms[^\s,\x1b]*/);
         if (match && !tunnel.publicUrl) {
           const baseUrl = match[0].trim();
           const separator = baseUrl.includes('?') ? '&' : '?';
@@ -1063,14 +1083,14 @@ class VSCodeTunnelManager {
       tunnel.tunnelProcess.stdout.on('data', (data) => {
         const output = data.toString();
         if (this.dev) process.stdout.write(`  [devtunnel] ${output}`);
-        appendOutput(data);
+        appendOutput(data, 'stdout');
       });
 
       tunnel.tunnelProcess.stderr.on('data', (data) => {
         const output = data.toString().trim();
         if (output) {
           if (this.dev) console.error(`  [devtunnel] ${output}`);
-          appendOutput(data);
+          appendOutput(data, 'stderr');
         }
       });
 

@@ -116,6 +116,23 @@ describe('artifact-panel.js (DOM: iframe + SSE + postMessage bridge)', function 
     assert.strictEqual(panel._iframe.src, iframeSrc);
   });
 
+  it('rehydrates a dismissed review as a hidden, reopenable panel', function () {
+    const panel = new ArtifactPanel(app);
+    panel.notifyActiveSessionChanged('sid-1');
+
+    panel.dismissedByServer({ sessionId: 'sid-1', dismissed: true });
+
+    const review = panel.reviews.get('sid-1');
+    assert(review, 'dismissed review state was rehydrated');
+    assert.strictEqual(review.dismissed, true);
+    assert.strictEqual(panel.el.hidden, true);
+    assert.strictEqual(panel._reopenBadge.hidden, false);
+
+    panel.expand();
+    assert.strictEqual(panel.el.hidden, false);
+    assert.strictEqual(panel._reopenBadge.hidden, true);
+  });
+
   it('queues an iframe annotation as a pill; Send POSTs the structured array to /prompts', async function () {
     const panel = new ArtifactPanel(app);
     panel.notifyActiveSessionChanged('sid-1');
