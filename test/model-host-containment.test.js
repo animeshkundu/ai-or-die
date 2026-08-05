@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('assert');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const KeepaliveManager = require('../src/keepalive-manager');
@@ -18,12 +19,36 @@ describe('model-host Windows orphan sweep', function () {
     assert.match(script, /--host=\(\?:stt\|sticky-note\)/);
     assert.match(script, /ParentProcessId -eq \$ownerPid/);
     assert.match(script, /\$ownerPid -ne \$self/);
+    assert.match(
+      script,
+      /-match '\(\?:\^\|\[\\\\\/\]\)\(\?:stt-host\|sticky-note-host\)\\\.js\(\?:"\|\\s\)' -and/
+    );
   });
 
   it('does not classify shell executables as model hosts', function () {
     const script = buildOrphanSweepScript(1234);
     assert.match(script, /\^\(\?:node\|bun\)/);
     assert.ok(!script.includes('powershell|pwsh|cmd'));
+  });
+
+  it('produces syntax accepted by Windows PowerShell 5.1', function () {
+    if (process.platform !== 'win32') return this.skip();
+
+    const source = Buffer.from(buildOrphanSweepScript(1234), 'utf8').toString('base64');
+    const parser = [
+      `$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${source}'))`,
+      '$tokens = $null',
+      '$errors = $null',
+      '[void][Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)',
+      'if ($errors.Count) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }',
+    ].join('; ');
+    const result = spawnSync(
+      KeepaliveManager.powershellPath(),
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', parser],
+      { encoding: 'utf8', windowsHide: true }
+    );
+
+    assert.strictEqual(result.status, 0, result.stderr || result.error);
   });
 
   it('spawns the existing anchored PowerShell path without consulting PATH', function () {

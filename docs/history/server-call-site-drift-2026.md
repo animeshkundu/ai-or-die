@@ -36,6 +36,12 @@ so startup remains non-fatal but never silent.
 Fail-first coverage observed zero process launches and zero warnings when the
 Windows path was injected on a non-Windows test host.
 
+Review of the now-visible launch failure also found that the entrypoint regex used
+an invalid backslash-escaped quote inside a PowerShell double-quoted string. The
+operand now uses a PowerShell single-quoted string, and Windows coverage submits
+the generated command to the in-box PowerShell 5.1 parser without executing the
+sweep.
+
 ## Invalid session structure
 
 Malformed JSON was preserved before recovery, but valid JSON with the wrong

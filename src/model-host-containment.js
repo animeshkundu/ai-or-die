@@ -35,7 +35,7 @@ function buildOrphanSweepScript(currentPid) {
     '$self = ' + currentPid,
     '$hosts = Get-CimInstance Win32_Process | Where-Object {',
     '  $_.Name -match "^(?:node|bun)(?:\\.exe)?$" -and',
-    '  $_.CommandLine -match "(?:^|[\\\\/])(?:stt-host|sticky-note-host)\\.js(?:\\"|\\s)" -and',
+    '  $_.CommandLine -match \'(?:^|[\\\\/])(?:stt-host|sticky-note-host)\\.js(?:"|\\s)\' -and',
     '  $_.CommandLine -match "(?:^|\\s)--ai-or-die-model-host(?:\\s|$)" -and',
     '  $_.CommandLine -match "(?:^|\\s)--core-pid=(\\d+)(?:\\s|$)" -and',
     '  $_.CommandLine -match "(?:^|\\s)--host=(?:stt|sticky-note)(?:\\s|$)"',
