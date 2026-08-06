@@ -129,15 +129,18 @@ test.describe('Nerd Font rendering infrastructure', () => {
         const term = window.app.terminal;
         const results = {};
 
-        // Helper: clear screen, write string, measure cursor delta
+        // Clear + payload MUST go in ONE term.write() call. xterm parses each
+        // queued write completely before starting the next, so a single call
+        // cannot be interrupted; splitting them left a gap in which the live
+        // shell's own output (the prompt redrawn after a command exits, ~50
+        // columns on CI) was queued between homing the cursor and writing the
+        // glyph, inflating the measurement by the prompt width. \x1b[H homes
+        // the cursor to column 0, so cursorX after the write IS the width.
         function measure(label, str) {
           return new Promise((res) => {
-            term.write('\x1b[2J\x1b[H', () => {
-              const startX = term.buffer.active.cursorX;
-              term.write(str, () => {
-                results[label] = term.buffer.active.cursorX - startX;
-                res();
-              });
+            term.write('\x1b[2J\x1b[H' + str, () => {
+              results[label] = term.buffer.active.cursorX;
+              res();
             });
           });
         }
@@ -342,14 +345,18 @@ test.describe('Nerd Font rendering infrastructure', () => {
         const term = window.app.terminal;
         const results = {};
 
+        // Clear + payload MUST go in ONE term.write() call. xterm parses each
+        // queued write completely before starting the next, so a single call
+        // cannot be interrupted; splitting them left a gap in which the live
+        // shell's own output (the prompt redrawn after a command exits, ~50
+        // columns on CI) was queued between homing the cursor and writing the
+        // glyph, inflating the measurement by the prompt width. \x1b[H homes
+        // the cursor to column 0, so cursorX after the write IS the width.
         function measure(label, str) {
           return new Promise((res) => {
-            term.write('\x1b[2J\x1b[H', () => {
-              const startX = term.buffer.active.cursorX;
-              term.write(str, () => {
-                results[label] = term.buffer.active.cursorX - startX;
-                res();
-              });
+            term.write('\x1b[2J\x1b[H' + str, () => {
+              results[label] = term.buffer.active.cursorX;
+              res();
             });
           });
         }
@@ -388,8 +395,13 @@ test.describe('Nerd Font rendering infrastructure', () => {
         term.write('\x1b[2J\x1b[H', () => {
           const startX = term.buffer.active.cursorX;
 
-          // Write bold text with PUA codepoints
-          term.write('\x1b[1m\ue0b0\ue0a0AB\x1b[0m', () => {
+          // Write bold text with PUA codepoints. The clear/home sequence is
+          // repeated INSIDE this write so the measurement cannot be split:
+          // xterm parses each queued write completely before starting the
+          // next, so the live shell's own output (the prompt redrawn after a
+          // command exits) cannot land between homing the cursor and writing
+          // the payload and inflate endX by the prompt width.
+          term.write('\x1b[2J\x1b[H\x1b[1m\ue0b0\ue0a0AB\x1b[0m', () => {
             const endX = term.buffer.active.cursorX;
             const delta = endX - startX;
 

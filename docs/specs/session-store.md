@@ -79,11 +79,13 @@ Restores sessions from disk into an in-memory `Map`.
 2. Reads file contents as UTF-8.
 3. Handles empty/whitespace-only files by returning an empty `Map`.
 4. Parses JSON with error recovery:
-   - On parse failure, renames the corrupted file to `sessions.json.corrupted.<timestamp>` for forensics, then returns an empty `Map`.
+   - On parse failure, preserves the unusable file as `sessions.json.corrupted.<timestamp>` for forensics, then returns an empty `Map`.
 5. Validates the parsed structure:
    - Must be a non-null object with a `sessions` array property.
-   - Returns an empty `Map` if the structure is invalid.
-6. Checks the `savedAt` timestamp -- if older than **7 days**, the data is considered stale and an empty `Map` is returned.
+   - Preserves valid JSON with the wrong structure through the same corruption-recovery path before returning an empty `Map`.
+   - Preservation first renames the source and falls back to a byte-for-byte copy if rename is unavailable.
+   - If neither operation succeeds, the store keeps the source in place and blocks later saves with `ESESSIONBACKUPFAILED` so autosave cannot overwrite unrecovered bytes.
+6. Checks the `savedAt` timestamp -- if older than **7 days**, the data is considered stale and an empty `Map` is returned. This intentional expiry does not create a corruption backup.
 7. For each session entry:
    - Skips entries without an `id` field.
    - Deserializes `created` and `lastActivity` back to `Date` objects.
@@ -176,7 +178,8 @@ The server calls `SessionStore` in these contexts:
 The store handles corruption gracefully:
 
 1. **Empty file** -- Detected by checking `!data || !data.trim()`. Returns empty Map.
-2. **Invalid JSON** -- Caught by `JSON.parse` try/catch. The corrupted file is renamed with a `.corrupted.<timestamp>` suffix for manual inspection, then returns empty Map.
-3. **Invalid structure** -- If parsed data is not an object or lacks a `sessions` array, returns empty Map.
-4. **Stale data** -- Sessions older than 7 days are discarded entirely.
-5. **Invalid session entries** -- Individual entries without an `id` field are silently skipped.
+2. **Invalid JSON** -- Caught by `JSON.parse` try/catch. The unusable file is moved to a `.corrupted.<timestamp>` sibling, or copied there if rename fails, then returns empty Map.
+3. **Invalid structure** -- Valid JSON that is not an object with a `sessions` array uses the same byte-preserving backup path before returning empty Map.
+4. **Backup failure** -- If both rename and copy fail, the source remains untouched and subsequent saves return `false` with `ESESSIONBACKUPFAILED` without incrementing the ordinary save-failure counter. The in-memory block clears when the protected file is removed, a later load parses successfully, or `clearOldSessions()` removes it.
+5. **Stale data** -- Sessions older than 7 days are intentionally discarded without a backup; a well-formed expired file is not labelled as corruption.
+6. **Invalid session entries** -- Individual entries without an `id` field are silently skipped.

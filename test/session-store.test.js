@@ -17,9 +17,7 @@ describe('SessionStore', function() {
       // Directory might already exist
     }
 
-    sessionStore = new SessionStore();
-    // Override the default session file path for testing
-    sessionStore.storageDir = tempDir;
+    sessionStore = new SessionStore({ storageDir: tempDir });
     sessionStore.sessionsFile = path.join(tempDir, 'test-sessions.json');
   });
 
@@ -66,6 +64,201 @@ describe('SessionStore', function() {
       assert(loadedSessions instanceof Map);
       assert.strictEqual(loadedSessions.size, 1);
       assert(loadedSessions.has('session1'));
+    });
+
+    const invalidStructures = [
+      ['object sessions', '{"sessions": {}}'],
+      ['string sessions', '{"sessions": "x"}'],
+      ['array root', '[]'],
+      ['null root', 'null'],
+      ['numeric sessions', '{"sessions": 3}'],
+    ];
+
+    for (const [name, bytes] of invalidStructures) {
+      it(`preserves exact bytes for invalid structure: ${name}`, async function () {
+        await fs.writeFile(sessionStore.sessionsFile, bytes);
+
+        const loaded = await sessionStore.loadSessions();
+        const files = await fs.readdir(tempDir);
+        const backups = files.filter((file) => (
+          file.startsWith(`${path.basename(sessionStore.sessionsFile)}.corrupted.`)
+        ));
+
+        assert(loaded instanceof Map);
+        assert.strictEqual(loaded.size, 0);
+        assert.strictEqual(backups.length, 1);
+        const backupBytes = await fs.readFile(path.join(tempDir, backups[0]));
+        assert.strictEqual(Buffer.compare(backupBytes, Buffer.from(bytes)), 0);
+        await assert.rejects(fs.access(sessionStore.sessionsFile), { code: 'ENOENT' });
+      });
+    }
+
+    it('preserves corrupt JSON through the same byte-exact backup path', async function () {
+      const bytes = Buffer.from('{"sessions":[');
+      await fs.writeFile(sessionStore.sessionsFile, bytes);
+
+      const loaded = await sessionStore.loadSessions();
+      const files = await fs.readdir(tempDir);
+      const backup = files.find((file) => (
+        file.startsWith(`${path.basename(sessionStore.sessionsFile)}.corrupted.`)
+      ));
+
+      assert.strictEqual(loaded.size, 0);
+      assert.ok(backup);
+      assert.strictEqual(
+        Buffer.compare(await fs.readFile(path.join(tempDir, backup)), bytes),
+        0
+      );
+    });
+
+    it('copies invalid data to the backup when rename fails', async function () {
+      const bytes = Buffer.from('{"sessions": "x"}');
+      await fs.writeFile(sessionStore.sessionsFile, bytes);
+      const originalRename = fs.rename;
+      fs.rename = async () => {
+        const error = new Error('rename unavailable');
+        error.code = 'EACCES';
+        throw error;
+      };
+
+      try {
+        const loaded = await sessionStore.loadSessions();
+        const files = await fs.readdir(tempDir);
+        const backup = files.find((file) => (
+          file.startsWith(`${path.basename(sessionStore.sessionsFile)}.corrupted.`)
+        ));
+        assert.strictEqual(loaded.size, 0);
+        assert.ok(backup);
+        assert.strictEqual(
+          Buffer.compare(await fs.readFile(path.join(tempDir, backup)), bytes),
+          0
+        );
+        assert.strictEqual(
+          Buffer.compare(await fs.readFile(sessionStore.sessionsFile), bytes),
+          0
+        );
+      } finally {
+        fs.rename = originalRename;
+      }
+    });
+
+    it('blocks saves without altering bytes when every backup method fails', async function () {
+      const bytes = Buffer.from('{"sessions": "x"}');
+      await fs.writeFile(sessionStore.sessionsFile, bytes);
+      const originalRename = fs.rename;
+      const originalCopyFile = fs.copyFile;
+      const originalConsoleError = console.error;
+      const errors = [];
+      fs.rename = async () => {
+        const error = new Error('rename unavailable');
+        error.code = 'EACCES';
+        throw error;
+      };
+      fs.copyFile = async () => {
+        const error = new Error('copy unavailable');
+        error.code = 'EACCES';
+        throw error;
+      };
+      console.error = (...args) => errors.push(args.join(' '));
+
+      try {
+        const loaded = await sessionStore.loadSessions();
+        assert.strictEqual(loaded.size, 0);
+        assert.ok(sessionStore._saveBlockedReason);
+
+        sessionStore.markDirty();
+        const saved = await sessionStore.saveSessions(new Map());
+        assert.strictEqual(saved, false);
+        assert.strictEqual(await sessionStore.saveSessions(new Map()), false);
+        assert.strictEqual(sessionStore._lastSaveError.code, 'ESESSIONBACKUPFAILED');
+        assert.strictEqual(sessionStore._saveFailureCount, 0);
+        assert.strictEqual(
+          Buffer.compare(await fs.readFile(sessionStore.sessionsFile), bytes),
+          0
+        );
+
+        const blockedSaveWarnings = errors.filter((message) => (
+          message.includes('Blocked session save')
+        ));
+        assert.strictEqual(blockedSaveWarnings.length, 1);
+      } finally {
+        fs.rename = originalRename;
+        fs.copyFile = originalCopyFile;
+        console.error = originalConsoleError;
+      }
+    });
+
+    it('clears the backup-failure latch when the protected file is removed', async function () {
+      const bytes = Buffer.from('{"sessions": "x"}');
+      await fs.writeFile(sessionStore.sessionsFile, bytes);
+      const originalRename = fs.rename;
+      const originalCopyFile = fs.copyFile;
+      fs.rename = async () => { throw new Error('rename unavailable'); };
+      fs.copyFile = async () => { throw new Error('copy unavailable'); };
+
+      try {
+        await sessionStore.loadSessions();
+      } finally {
+        fs.rename = originalRename;
+        fs.copyFile = originalCopyFile;
+      }
+
+      await fs.unlink(sessionStore.sessionsFile);
+      sessionStore.markDirty();
+      assert.strictEqual(await sessionStore.saveSessions(new Map()), true);
+      assert.strictEqual(sessionStore._saveBlockedReason, null);
+    });
+
+    it('clears the backup-failure latch after a later valid load', async function () {
+      await fs.writeFile(sessionStore.sessionsFile, '{"sessions": "x"}');
+      const originalRename = fs.rename;
+      const originalCopyFile = fs.copyFile;
+      fs.rename = async () => { throw new Error('rename unavailable'); };
+      fs.copyFile = async () => { throw new Error('copy unavailable'); };
+
+      try {
+        await sessionStore.loadSessions();
+      } finally {
+        fs.rename = originalRename;
+        fs.copyFile = originalCopyFile;
+      }
+
+      await fs.writeFile(sessionStore.sessionsFile, JSON.stringify({
+        savedAt: new Date().toISOString(),
+        sessions: [],
+      }));
+      await sessionStore.loadSessions();
+      assert.strictEqual(sessionStore._saveBlockedReason, null);
+    });
+
+    it('clears the backup-failure latch after clearOldSessions removes the file', async function () {
+      await fs.writeFile(sessionStore.sessionsFile, '{"sessions": "x"}');
+      const originalRename = fs.rename;
+      const originalCopyFile = fs.copyFile;
+      fs.rename = async () => { throw new Error('rename unavailable'); };
+      fs.copyFile = async () => { throw new Error('copy unavailable'); };
+
+      try {
+        await sessionStore.loadSessions();
+      } finally {
+        fs.rename = originalRename;
+        fs.copyFile = originalCopyFile;
+      }
+
+      assert.strictEqual(await sessionStore.clearOldSessions(), true);
+      assert.strictEqual(sessionStore._saveBlockedReason, null);
+    });
+
+    it('does not preserve intentionally expired session data as corruption', async function () {
+      await fs.writeFile(sessionStore.sessionsFile, JSON.stringify({
+        savedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+        sessions: [{ id: 'expired' }],
+      }));
+
+      const loaded = await sessionStore.loadSessions();
+      const files = await fs.readdir(tempDir);
+      assert.strictEqual(loaded.size, 0);
+      assert.strictEqual(files.some((file) => file.includes('.corrupted.')), false);
     });
   });
 

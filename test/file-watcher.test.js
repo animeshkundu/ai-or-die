@@ -22,7 +22,9 @@
 'use strict';
 
 const assert = require('assert');
+const EventEmitter = require('events');
 const fs = require('fs');
+const Module = require('module');
 const os = require('os');
 const path = require('path');
 
@@ -395,5 +397,265 @@ describe('FileWatcher async hash queue (HOT-07)', function () {
       w._fireHashIdleWaiters();
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+class StubChokidarWatcher extends EventEmitter {
+  constructor(closeError, closeEventError) {
+    super();
+    this.closeError = closeError || null;
+    this.closeEventError = closeEventError || null;
+    this.closeCalls = 0;
+  }
+
+  async close() {
+    this.closeCalls++;
+    if (this.closeEventError) this.emit('error', this.closeEventError);
+    if (this.closeError) throw this.closeError;
+  }
+
+  add() {}
+  unwatch() {}
+}
+
+function loadFileWatcherWithChokidar(watchers) {
+  const fileWatcherPath = require.resolve('../src/utils/file-watcher');
+  const chokidarPath = require.resolve('chokidar');
+  const originalFileWatcher = require.cache[fileWatcherPath];
+  const originalChokidar = require.cache[chokidarPath];
+  let watchCalls = 0;
+  const fakeChokidar = {
+    watch() {
+      const watcher = watchers[watchCalls++];
+      if (!watcher) throw new Error(`Unexpected chokidar.watch() call ${watchCalls}`);
+      return watcher;
+    },
+    get watchCalls() {
+      return watchCalls;
+    },
+  };
+  const restore = () => {
+    delete require.cache[fileWatcherPath];
+    delete require.cache[chokidarPath];
+    if (originalFileWatcher) require.cache[fileWatcherPath] = originalFileWatcher;
+    if (originalChokidar) require.cache[chokidarPath] = originalChokidar;
+  };
+
+  let StubbedFileWatcher;
+  try {
+    delete require.cache[fileWatcherPath];
+    delete require.cache[chokidarPath];
+    const fakeModule = new Module(chokidarPath);
+    fakeModule.filename = chokidarPath;
+    fakeModule.loaded = true;
+    fakeModule.exports = fakeChokidar;
+    require.cache[chokidarPath] = fakeModule;
+    StubbedFileWatcher = require(fileWatcherPath);
+  } catch (error) {
+    restore();
+    throw error;
+  }
+
+  return {
+    FileWatcher: StubbedFileWatcher,
+    fakeChokidar,
+    restore,
+  };
+}
+
+describe('FileWatcher startup lifecycle', function () {
+  let loaded;
+  let root;
+
+  beforeEach(function () {
+    loaded = null;
+    root = mkdtemp();
+  });
+
+  afterEach(function () {
+    if (loaded) loaded.restore();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('cleans up a pre-ready error and genuinely retries with the original error', async function () {
+    const failedWatcher = new StubChokidarWatcher(null, new Error('close-time watcher error'));
+    const retryWatcher = new StubChokidarWatcher();
+    loaded = loadFileWatcherWithChokidar([failedWatcher, retryWatcher]);
+    const watcher = new loaded.FileWatcher({ watchRoot: root });
+    const originalError = new Error('pre-ready failure');
+
+    const firstStart = watcher.start();
+    failedWatcher.emit('error', originalError);
+    await assert.rejects(firstStart, (error) => {
+      assert.strictEqual(error, originalError);
+      return true;
+    });
+
+    assert.strictEqual(failedWatcher.closeCalls, 1);
+    for (const eventName of ['add', 'change', 'unlink', 'error']) {
+      assert.strictEqual(failedWatcher.listenerCount(eventName), 0, `${eventName} listener leaked`);
+    }
+    assert.strictEqual(watcher._watcher, null);
+    assert.strictEqual(watcher._isClosed, false);
+
+    const retryStart = watcher.start();
+    assert.strictEqual(loaded.fakeChokidar.watchCalls, 2);
+    retryWatcher.emit('ready');
+    await retryStart;
+    await watcher.start();
+    assert.strictEqual(loaded.fakeChokidar.watchCalls, 2);
+    assert.strictEqual(watcher._watcher, retryWatcher);
+    await watcher.close();
+  });
+
+  it('preserves the start error when cleanup close fails and remains retryable', async function () {
+    const cleanupError = new Error('cleanup close failure');
+    const failedWatcher = new StubChokidarWatcher(cleanupError);
+    const retryWatcher = new StubChokidarWatcher();
+    loaded = loadFileWatcherWithChokidar([failedWatcher, retryWatcher]);
+    const watcher = new loaded.FileWatcher({ watchRoot: root });
+    const warnings = [];
+    watcher.on('warning', (warning) => warnings.push(warning));
+    const originalError = new Error('startup failure');
+
+    const firstStart = watcher.start();
+    failedWatcher.emit('error', originalError);
+    await assert.rejects(firstStart, (error) => {
+      assert.strictEqual(error, originalError);
+      return true;
+    });
+
+    assert.strictEqual(failedWatcher.closeCalls, 1);
+    assert.deepStrictEqual(warnings, [cleanupError]);
+    assert.strictEqual(watcher._watcher, null);
+    assert.strictEqual(watcher._isClosed, false);
+    assert.strictEqual(failedWatcher.listenerCount('error'), 1);
+    assert.doesNotThrow(() => {
+      failedWatcher.emit('error', new Error('error after rejected close'));
+    });
+
+    const retryStart = watcher.start();
+    assert.strictEqual(loaded.fakeChokidar.watchCalls, 2);
+    retryWatcher.emit('ready');
+    await retryStart;
+    await watcher.close();
+  });
+
+  it('preserves the start error when a registered error handler closes the watcher', async function () {
+    const nativeWatcher = new StubChokidarWatcher();
+    loaded = loadFileWatcherWithChokidar([nativeWatcher]);
+    const watcher = new loaded.FileWatcher({ watchRoot: root });
+    const originalError = new Error('startup failure observed by consumer');
+    let observedError;
+    let closing;
+    watcher.on('error', (error) => {
+      observedError = error;
+      closing = watcher.close();
+    });
+
+    const pendingStart = watcher.start();
+    nativeWatcher.emit('error', originalError);
+
+    await assert.rejects(pendingStart, (error) => {
+      assert.strictEqual(error, originalError);
+      return true;
+    });
+    await closing;
+    assert.strictEqual(observedError, originalError);
+    assert.strictEqual(nativeWatcher.closeCalls, 1);
+  });
+
+  it('warns without replacing the start error when cleanup close fails', async function () {
+    const cleanupError = new Error('cleanup warning');
+    const nativeWatcher = new StubChokidarWatcher(cleanupError);
+    loaded = loadFileWatcherWithChokidar([nativeWatcher]);
+    const watcher = new loaded.FileWatcher({ watchRoot: root });
+    const originalError = new Error('startup failure');
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (message) => warnings.push(message);
+
+    try {
+      const pendingStart = watcher.start();
+      nativeWatcher.emit('error', originalError);
+      await assert.rejects(pendingStart, (error) => {
+        assert.strictEqual(error, originalError);
+        return true;
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.deepStrictEqual(warnings, [
+      'FileWatcher: failed to close watcher after startup failure: cleanup warning',
+    ]);
+  });
+
+  it('joins overlapping starts for both successful and failed attempts', async function () {
+    const successfulWatcher = new StubChokidarWatcher();
+    const failedWatcher = new StubChokidarWatcher();
+    loaded = loadFileWatcherWithChokidar([successfulWatcher, failedWatcher]);
+
+    const successful = new loaded.FileWatcher({ watchRoot: root });
+    let readyEvents = 0;
+    successful.on('ready', () => { readyEvents++; });
+    const successA = successful.start();
+    const successB = successful.start();
+    assert.strictEqual(successA, successB);
+    assert.strictEqual(loaded.fakeChokidar.watchCalls, 1);
+    successfulWatcher.emit('ready');
+    await Promise.all([successA, successB]);
+    assert.strictEqual(readyEvents, 1);
+    assert.strictEqual(successful._watcher, successfulWatcher);
+    await successful.start();
+    assert.strictEqual(loaded.fakeChokidar.watchCalls, 1);
+    await successful.close();
+
+    const failed = new loaded.FileWatcher({ watchRoot: root });
+    const failureA = failed.start();
+    const failureB = failed.start();
+    assert.strictEqual(failureA, failureB);
+    assert.strictEqual(loaded.fakeChokidar.watchCalls, 2);
+    const originalError = new Error('shared startup failure');
+    failedWatcher.emit('error', originalError);
+    const settled = await Promise.allSettled([failureA, failureB]);
+    assert.strictEqual(settled[0].status, 'rejected');
+    assert.strictEqual(settled[1].status, 'rejected');
+    assert.strictEqual(settled[0].reason, originalError);
+    assert.strictEqual(settled[1].reason, originalError);
+    await failed.close();
+  });
+
+  it('settles a close during start without double-closing the native watcher', async function () {
+    const nativeWatcher = new StubChokidarWatcher();
+    loaded = loadFileWatcherWithChokidar([nativeWatcher]);
+    const watcher = new loaded.FileWatcher({ watchRoot: root });
+
+    const pendingStart = watcher.start();
+    const closing = watcher.close();
+    await assert.rejects(pendingStart, /closed while start was in progress/);
+    await closing;
+
+    assert.strictEqual(nativeWatcher.closeCalls, 1);
+    assert.strictEqual(watcher._watcher, null);
+    assert.strictEqual(watcher._isClosed, true);
+  });
+
+  it('rejects when closed after native readiness but before start completes', async function () {
+    const nativeWatcher = new StubChokidarWatcher();
+    loaded = loadFileWatcherWithChokidar([nativeWatcher]);
+    const watcher = new loaded.FileWatcher({ watchRoot: root });
+    let readyEvents = 0;
+    watcher.on('ready', () => { readyEvents++; });
+
+    const pendingStart = watcher.start();
+    nativeWatcher.emit('ready');
+    const closing = watcher.close();
+
+    await assert.rejects(pendingStart, /closed while start was in progress/);
+    await closing;
+    assert.strictEqual(readyEvents, 0);
+    assert.strictEqual(nativeWatcher.closeCalls, 1);
+    assert.strictEqual(watcher._watcher, null);
   });
 });

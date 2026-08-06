@@ -1,7 +1,8 @@
 'use strict';
 
-const { execFile } = require('child_process');
+const { execFile: defaultExecFile } = require('child_process');
 const jobGuard = require('./job-guard');
+const KeepaliveManager = require('./keepalive-manager');
 
 function attachHost(child) {
   if (process.platform !== 'win32') return { ok: true, job: null };
@@ -34,7 +35,7 @@ function buildOrphanSweepScript(currentPid) {
     '$self = ' + currentPid,
     '$hosts = Get-CimInstance Win32_Process | Where-Object {',
     '  $_.Name -match "^(?:node|bun)(?:\\.exe)?$" -and',
-    '  $_.CommandLine -match "(?:^|[\\\\/])(?:stt-host|sticky-note-host)\\.js(?:\\"|\\s)" -and',
+    '  $_.CommandLine -match \'(?:^|[\\\\/])(?:stt-host|sticky-note-host)\\.js(?:"|\\s)\' -and',
     '  $_.CommandLine -match "(?:^|\\s)--ai-or-die-model-host(?:\\s|$)" -and',
     '  $_.CommandLine -match "(?:^|\\s)--core-pid=(\\d+)(?:\\s|$)" -and',
     '  $_.CommandLine -match "(?:^|\\s)--host=(?:stt|sticky-note)(?:\\s|$)"',
@@ -46,16 +47,48 @@ function buildOrphanSweepScript(currentPid) {
     '    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue',
     '  }',
     '}',
-  ].join('; ');
+  ].join('\n');
 }
 
-function sweepOrphanHosts() {
-  if (process.platform !== 'win32' || process.env.AI_OR_DIE_SKIP_ORPHAN_SWEEP === '1') return;
+function sweepOrphanHosts(options = {}) {
+  const platform = options.platform || process.platform;
+  const env = options.env || process.env;
+  const execFile = options.execFile || defaultExecFile;
+  const logger = options.logger || console;
+  if (platform !== 'win32' || env.AI_OR_DIE_SKIP_ORPHAN_SWEEP === '1') return;
+
   const script = buildOrphanSweepScript(process.pid);
-  execFile('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-    windowsHide: true,
-    timeout: 10000,
-  }, () => {});
+  const powershell = KeepaliveManager.powershellPath(env);
+  let warned = false;
+  const warnFailure = (error) => {
+    if (warned) return;
+    warned = true;
+    const message = error && error.code === 'ENOENT'
+      ? `PowerShell executable not found at ${powershell}; orphan model-host sweep did not run`
+      : `Orphan model-host sweep failed using ${powershell}: ${error && error.message ? error.message : error}`;
+    try {
+      if (logger && typeof logger.warn === 'function') logger.warn(message);
+    } catch (_) {
+      // Startup containment is best-effort and must not fail server boot.
+    }
+  };
+
+  try {
+    execFile(
+      powershell,
+      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+      {
+        windowsHide: true,
+        timeout: 10000,
+        env,
+      },
+      (error) => {
+        if (error) warnFailure(error);
+      }
+    );
+  } catch (error) {
+    warnFailure(error);
+  }
 }
 
 module.exports = { attachHost, closeHostJob, sweepOrphanHosts, buildOrphanSweepScript };

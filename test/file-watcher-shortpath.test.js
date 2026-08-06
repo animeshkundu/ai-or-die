@@ -19,6 +19,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { stripWindowsLongPathPrefix } = require('../src/utils/win-long-path');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -58,7 +59,7 @@ describe('file-watcher 8.3 short-path canonicalization (Windows)', function () {
       return this.skip();
     }
     const viaJs = fs.realpathSync(short);
-    const viaNative = fs.realpathSync.native(short).replace(/^\\\\\?\\/, '');
+    const viaNative = stripWindowsLongPathPrefix(fs.realpathSync.native(short));
 
     assert.notStrictEqual(
       viaJs.toLowerCase(),

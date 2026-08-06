@@ -76,7 +76,8 @@ const posixIt = (HAS_BASH && POSIX_SHELL) ? it : it.skip;
 // that this raw POSIX PTY harness cannot supply. The supported deployment
 // contract is Windows ConPTY, so exercise this scenario there rather than
 // reporting a harness-only Linux timeout as a product failure.
-const HAS_PWSH = process.platform === 'win32' && has('pwsh');
+const HAS_PWSH = has('pwsh');
+const HAS_WINDOWS_POWERSHELL = process.platform === 'win32' && has('powershell.exe');
 const HAS_SUDO_NOPASSWD = (() => {
   if (!has('sudo')) return false;
   try { execFileSync('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: 2000 }); return true; }
@@ -306,7 +307,9 @@ function realB() { return fs.realpathSync(path.join(baseDir, 'b')); }
 // The suite
 // ---------------------------------------------------------------------------
 
-const suite = (ClaudeCodeWebServer && HAS_BASH) ? describe : describe.skip;
+const suite = (ClaudeCodeWebServer && (HAS_BASH || HAS_PWSH || HAS_WINDOWS_POWERSHELL))
+  ? describe
+  : describe.skip;
 
 suite('OSC 7 real-shell integration (ADR-0019)', function () {
   // 60 s per-suite timeout — startServer alone can take ~5s on a cold
@@ -319,6 +322,207 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
 
   after(async function () {
     await stopServer();
+  });
+
+  posixIt('session-scoped bash hook emits cwd_changed without manual setup and preserves a custom prompt', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const originalHome = process.env.HOME;
+    const customHome = fs.mkdtempSync(path.join(baseDir, 'custom-home-'));
+    fs.writeFileSync(
+      path.join(customHome, '.bashrc'),
+      'PS1="CUSTOM> "\nPROMPT_COMMAND=\'printf "CUSTOM_PROMPT "\'\n'
+    );
+    server.terminalBridge.command = execFileSync('which', ['bash'], { encoding: 'utf8' }).trim();
+    process.env.HOME = customHome;
+    const sess = new Session();
+    try {
+      await sess.open(baseDir);
+      await sess.startTerminal();
+    } finally {
+      process.env.HOME = originalHome;
+    }
+
+    await sess.waitForOutput('CUSTOM_PROMPT', 5000);
+    sess.reset();
+    sess.send('cd ' + JSON.stringify(path.join(baseDir, 'foo bar')) + '\n');
+    const frame = await sess.waitForCwdChangedTo(fs.realpathSync(path.join(baseDir, 'foo bar')), 5000);
+    assert.strictEqual(path.resolve(frame.cwd), fs.realpathSync(path.join(baseDir, 'foo bar')));
+    await sess.waitForOutput('CUSTOM_PROMPT', 5000);
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  posixIt('a shell that rejects the injected rc file falls back to a live vanilla terminal', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const fakeBin = fs.mkdtempSync(path.join(baseDir, 'fallback-bin-'));
+    const fakeBash = path.join(fakeBin, 'bash');
+    fs.writeFileSync(
+      fakeBash,
+      '#!/bin/sh\nif [ "$1" = "--rcfile" ]; then exit 42; fi\nexec /bin/bash "$@"\n',
+      { mode: 0o700 }
+    );
+    server.terminalBridge.command = fakeBash;
+    const sess = new Session();
+    await sess.open(baseDir);
+    await sess.startTerminal();
+    sess.send('echo VANILLA_FALLBACK_OK\n');
+    await sess.waitForOutput('VANILLA_FALLBACK_OK', 5000);
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  posixIt('a shell that does not report integration readiness falls back to a live vanilla terminal', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const fakeBin = fs.mkdtempSync(path.join(baseDir, 'fallback-timeout-bin-'));
+    const fakeBash = path.join(fakeBin, 'bash');
+    fs.writeFileSync(
+      fakeBash,
+      '#!/bin/sh\nif [ "$1" = "--rcfile" ]; then printf "\\033]7;file://%s\\007" "$PWD"; sleep 3; exit 42; fi\nexec /bin/bash "$@"\n',
+      { mode: 0o700 }
+    );
+    server.terminalBridge.command = fakeBash;
+    const sess = new Session();
+    await sess.open(baseDir);
+    await sess.startTerminal();
+    assert.strictEqual(server.terminalBridge.getLiveCwd(sess.sessionId), null);
+    sess.send('echo VANILLA_TIMEOUT_FALLBACK_OK\n');
+    await sess.waitForOutput('VANILLA_TIMEOUT_FALLBACK_OK', 5000);
+    sess.send('exit\n');
+    const deadline = Date.now() + 5000;
+    while (server.terminalBridge._osc7Parsers.has(sess.sessionId) && Date.now() < deadline) {
+      await sleep(25);
+    }
+    assert.strictEqual(server.terminalBridge._osc7Parsers.has(sess.sessionId), false);
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  posixIt('an explicit stop during integration startup does not spawn a fallback shell', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const fakeBin = fs.mkdtempSync(path.join(baseDir, 'cancel-start-bin-'));
+    const fakeBash = path.join(fakeBin, 'bash');
+    fs.writeFileSync(
+      fakeBash,
+      '#!/bin/sh\nif [ "$1" = "--rcfile" ]; then sleep 3; exit 42; fi\nexec /bin/bash "$@"\n',
+      { mode: 0o700 }
+    );
+    server.terminalBridge.command = fakeBash;
+    const sess = new Session();
+    await sess.open(baseDir);
+    sess.ws.send(JSON.stringify({ type: 'start_terminal', cols: 80, rows: 24 }));
+    await sleep(100);
+    sess.ws.send(JSON.stringify({ type: 'stop' }));
+    await sleep(2500);
+    assert.strictEqual(server.terminalBridge.sessions.has(sess.sessionId), false);
+    assert.strictEqual(server.terminalBridge._shellIntegration.get(sess.sessionId), null);
+    assert.strictEqual(server.terminalBridge._shellIntegrationStarts.has(sess.sessionId), false);
+    assert.strictEqual(sess.frames.some((frame) => frame.type === 'terminal_started'), false);
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  posixIt('natural shell exit removes the session integration artifacts', async function () {
+    const originalCommand = server.terminalBridge.command;
+    server.terminalBridge.command = execFileSync('which', ['bash'], { encoding: 'utf8' }).trim();
+    const sess = new Session();
+    await sess.open(baseDir);
+    await sess.startTerminal();
+    const integration = server.terminalBridge._shellIntegration.get(sess.sessionId);
+    assert(integration, 'expected active shell integration');
+    assert(fs.existsSync(integration.dir), 'expected integration directory');
+    sess.send('exit\n');
+    const deadline = Date.now() + 5000;
+    while (server.terminalBridge._shellIntegration.get(sess.sessionId) && Date.now() < deadline) {
+      await sleep(25);
+    }
+    assert.strictEqual(server.terminalBridge._shellIntegration.get(sess.sessionId), null);
+    assert.strictEqual(fs.existsSync(integration.dir), false);
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  (HAS_ZSH && POSIX_SHELL ? it : it.skip)('session-scoped zsh hook emits cwd_changed and preserves precmd', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const originalZdotdir = process.env.ZDOTDIR;
+    const customHome = fs.mkdtempSync(path.join(baseDir, 'zsh-home-'));
+    fs.writeFileSync(path.join(customHome, '.zshrc'), 'precmd_functions+=(user_precmd)\nuser_precmd() { print -n "CUSTOM_ZSH " }\n');
+    server.terminalBridge.command = execFileSync('which', ['zsh'], { encoding: 'utf8' }).trim();
+    process.env.ZDOTDIR = customHome;
+    const sess = new Session();
+    try {
+      await sess.open(baseDir);
+      await sess.startTerminal();
+    } finally {
+      if (originalZdotdir === undefined) delete process.env.ZDOTDIR;
+      else process.env.ZDOTDIR = originalZdotdir;
+    }
+    await sess.waitForOutput('CUSTOM_ZSH', 5000);
+    sess.reset();
+    sess.send('cd ' + JSON.stringify(path.join(baseDir, 'foo bar')) + '\n');
+    const frame = await sess.waitForCwdChangedTo(fs.realpathSync(path.join(baseDir, 'foo bar')), 5000);
+    assert.strictEqual(path.resolve(frame.cwd), fs.realpathSync(path.join(baseDir, 'foo bar')));
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  (HAS_PWSH ? it : it.skip)('session-scoped pwsh hook emits cwd_changed without manual setup', async function () {
+    const originalCommand = server.terminalBridge.command;
+    const originalHome = process.env.HOME;
+    const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    let customHome = null;
+    server.terminalBridge.command = process.platform === 'win32'
+      ? execFileSync('where.exe', ['pwsh'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0]
+      : execFileSync('which', ['pwsh'], { encoding: 'utf8' }).trim();
+    if (process.platform !== 'win32') {
+      customHome = fs.mkdtempSync(path.join(baseDir, 'pwsh-home-'));
+      const profileDir = path.join(customHome, 'config', 'powershell');
+      fs.mkdirSync(profileDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(profileDir, 'Microsoft.PowerShell_profile.ps1'),
+        'function prompt { "CUSTOM_PS> " }\nfunction ProfileProbe { "PROFILE_SCOPE_OK" }\n'
+      );
+      process.env.HOME = customHome;
+      process.env.XDG_CONFIG_HOME = path.join(customHome, 'config');
+    }
+    const sess = new Session();
+    try {
+      await sess.open(baseDir);
+      await sess.startTerminal();
+    } finally {
+      process.env.HOME = originalHome;
+      if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+    }
+    await sess.waitForOutput(process.platform === 'win32' ? 'PS ' : 'CUSTOM_PS', 10000);
+    if (customHome) {
+      sess.send('ProfileProbe\r');
+      await sess.waitForOutput('PROFILE_SCOPE_OK', 5000);
+    }
+    sess.reset();
+    const target = path.join(baseDir, 'foo bar').replace(/'/g, "''");
+    sess.send(`Set-Location -LiteralPath '${target}'\r`);
+    const frame = await sess.waitForCwdChangedTo(fs.realpathSync(path.join(baseDir, 'foo bar')), 15000);
+    assert.strictEqual(path.resolve(frame.cwd), fs.realpathSync(path.join(baseDir, 'foo bar')));
+    if (customHome) await sess.waitForOutput('CUSTOM_PS', 5000);
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
+  });
+
+  (process.platform === 'win32' ? it : it.skip)('session-scoped Windows PowerShell hook emits cwd_changed without manual setup', async function () {
+    assert.strictEqual(HAS_WINDOWS_POWERSHELL, true, 'powershell.exe must be available on Windows');
+    const originalCommand = server.terminalBridge.command;
+    server.terminalBridge.command = execFileSync('where.exe', ['powershell.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0];
+    const sess = new Session();
+    await sess.open(baseDir);
+    await sess.startTerminal();
+    await sess.waitForOutput('PS ', 10000);
+    sess.reset();
+    const target = path.join(baseDir, 'foo bar').replace(/'/g, "''");
+    sess.send(`Set-Location -LiteralPath '${target}'\r`);
+    const frame = await sess.waitForCwdChangedTo(fs.realpathSync(path.join(baseDir, 'foo bar')), 15000);
+    assert.strictEqual(path.resolve(frame.cwd), fs.realpathSync(path.join(baseDir, 'foo bar')));
+    await sess.close();
+    server.terminalBridge.command = originalCommand;
   });
 
   // ──────────────────────────────────────────────────────────────────────
@@ -352,7 +556,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   // 2. Zsh chpwd hook (verbatim from spec).
   // ──────────────────────────────────────────────────────────────────────
 
-  (HAS_ZSH ? it : it.skip)('zsh --no-rcs + spec chpwd → cwd_changed on cd', async function () {
+  (HAS_ZSH && POSIX_SHELL ? it : it.skip)('zsh --no-rcs + spec chpwd → cwd_changed on cd', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -372,7 +576,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   //     emit OSC 7 without an explicit hook on macOS. (Spec previously
   //     claimed "emits natively under terminfo profile" — corrected
   //     post-task #7 amendment.)
-  (HAS_ZSH ? it : it.skip)('zsh without an explicit hook does NOT emit OSC 7 — hook is required', async function () {
+  (HAS_ZSH && POSIX_SHELL ? it : it.skip)('zsh without an explicit hook does NOT emit OSC 7 — hook is required', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -433,7 +637,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   //     documents the limitation as an explicit assertion (it would FAIL
   //     if tmux ever started forwarding OSC 7, at which point we'd want
   //     to revise the spec).
-  (HAS_TMUX ? it : it.skip)('tmux wrapping bash SWALLOWS OSC 7 (documented limitation)', async function () {
+  (HAS_TMUX && POSIX_SHELL ? it : it.skip)('tmux wrapping bash SWALLOWS OSC 7 (documented limitation)', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();
@@ -459,7 +663,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
   });
 
   // 4b. sudo subshell — only runs unattended if NOPASSWD is configured.
-  (HAS_SUDO_NOPASSWD ? it : it.skip)('sudo bash subshell still surfaces OSC 7', async function () {
+  (HAS_SUDO_NOPASSWD && POSIX_SHELL ? it : it.skip)('sudo bash subshell still surfaces OSC 7', async function () {
     const sess = new Session();
     await sess.open(baseDir);
     await sess.startTerminal();

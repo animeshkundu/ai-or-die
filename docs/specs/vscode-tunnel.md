@@ -156,8 +156,12 @@ Authentication uses the `devtunnel` CLI's OS-level credential store (Microsoft/G
 
 | Step | Command | Behavior |
 |------|---------|----------|
-| Auth check | `devtunnel user show` | 10s timeout. Exit code 0 = authenticated. |
+| Auth check | `devtunnel user show --json` | 5s timeout. Authentication requires positive structured identity evidence; exit code alone is never trusted. |
 | Login | `devtunnel user login` | Spawned as child process. Stdout/stderr parsed for device code URLs. |
+
+`devtunnel user show` is known to print `Not logged in.` or token-refresh failures and still exit zero. The manager therefore fails closed unless the JSON response contains both identity and authenticated provider/status evidence. A CLI that does not support `--json` gets a bounded text fallback which accepts only `Logged in as ... using <provider>`; an older CLI that cannot provide positive identity is reported as `cli_too_old`.
+
+Before the interactive login starts, the joining client receives actionable guidance naming `devtunnel user login`. A failed, cancelled, or ineffective login returns `auth_required`/`auth_failed` with the same command instead of waiting for host URL timeout.
 
 **Device code detection** parses output for:
 - `https://microsoft.com/devicelogin` with code pattern `[A-Z0-9]{6,9}` (primary)
@@ -189,14 +193,37 @@ The tunnel start is a four-phase process:
 **Phase 3 -- TCP Readiness Wait:**
 1. `_waitForPort(port, PORT_WAIT_TIMEOUT_MS)` polls TCP connect to `127.0.0.1:<port>`
 2. Polls every 200ms until a connection succeeds or `PORT_WAIT_TIMEOUT_MS` (10s) expires
+3. A timeout stops the local process, releases its reserved port, and returns `server_start_failed`; tunnel setup never publishes an unusable local or public URL
 
 **Phase 4 -- Tunnel Setup:**
 1. `devtunnel create <tunnelId> --allow-anonymous` (idempotent; "Conflict" = already exists)
 2. `devtunnel port create <tunnelId> -p <localPort>` (idempotent)
 3. `devtunnel host <tunnelId>` spawned as long-running child process
-4. Stdout parsed for `https://<id>.devtunnels.ms` URL
+4. Both stdout and stderr parsed for `https://<id>.devtunnels.ms` URL while retaining a bounded diagnostic tail
 5. Connection token appended: `<baseUrl>?tkn=<token>` (or `&tkn=<token>` if URL already has query params)
 6. On URL detection, status set to `running`, emit `vscode_tunnel_started`
+
+The host promise is discriminated: success contains the public URL; process error, early exit, and URL timeout contain an error code, exit code, and captured output tail. It never resolves as successful without a public URL. Permanent startup failures do not enter the crash-restart loop.
+
+Automatic restart uses the same failure contract. If only the public tunnel fails to restart, the local server stays available, status becomes `degraded`, and the client receives an actionable error with the local-only URL. If the local server cannot restart or accept connections, the client receives `server_start_failed` and the reserved port is released rather than leaving the session stuck in `starting`.
+
+### Startup Failure Contract
+
+| Error code | Meaning and user action |
+|------------|-------------------------|
+| `not_found` | Install the missing `code` or `devtunnel` binary using the platform-specific instructions. |
+| `auth_required` | Run `devtunnel user login`; includes authorization-rejection output when present. |
+| `auth_failed` | The login process completed but no authenticated identity was established; log in again. |
+| `cli_too_old` | Update the Dev Tunnel CLI before retrying. |
+| `tunnel_create_failed` | Tunnel creation was rejected; check account permissions and quota. |
+| `port_create_failed` | Port publication was rejected; remove stale tunnel state or select a free port. |
+| `local_port_conflict` | Stop the local process already bound to the selected port. |
+| `server_start_failed` | `code serve-web` failed before readiness; check the VS Code CLI output and installation. |
+| `network_unreachable` | Check DNS, proxy, firewall, and tunnel-service connectivity. |
+| `host_failed` | Hosting exited or failed to spawn; the captured output is included. |
+| `url_timeout` | Hosting produced no public URL within 30 seconds; captured stdout/stderr is included. |
+
+If `code serve-web` is already running when public tunnel setup fails, the result remains `success: false` and includes `localUrl`. The server process is deliberately left alive. The message labels that URL as usable only from the machine running the server; it is not presented as equivalent remote access. The client error banner renders the reason, an **Open Local** action when `localUrl` exists, and Retry. This is a surgical client change; tunnel detection and recovery remain server-owned.
 
 ### Tunnel ID Format
 
