@@ -2894,12 +2894,19 @@ class ClaudeCodeWebInterface {
         // Ignore superseded frames. The server serializes application and
         // stamps a monotonic revision per epoch, so an out-of-order delivery
         // must not be allowed to reinstate an older grid.
+        //
+        // Epochs are per-SESSION and restart at 1, so this comparison is only
+        // meaningful within one session. The guard is therefore scoped by
+        // sessionId: without that, moving from a long-lived session at epoch 2
+        // to a freshly spawned one at epoch 1 would silently drop every frame
+        // the new session sends, leaving the terminal stuck on stale geometry.
         const epoch = Number.isInteger(message.epoch) ? message.epoch : 0;
         const revision = Number.isInteger(message.revision) ? message.revision : 0;
         const seen = this._geometrySeen;
-        if (seen && (epoch < seen.epoch
-            || (epoch === seen.epoch && revision < seen.revision))) return;
-        this._geometrySeen = { epoch, revision };
+        if (seen && seen.sessionId === (message.sessionId || null)
+            && (epoch < seen.epoch
+                || (epoch === seen.epoch && revision < seen.revision))) return;
+        this._geometrySeen = { sessionId: message.sessionId || null, epoch, revision };
 
         const cols = message.cols;
         const rows = message.rows;
@@ -3035,6 +3042,18 @@ class ClaudeCodeWebInterface {
                 // is actually wrapping at, which is the original defect.
                 if (message.geometry) {
                     try { this._applyGeometryFrame(message.geometry); } catch (_) { /* non-fatal */ }
+                } else {
+                    // No geometry for this session (not started yet). Drop any
+                    // carried over from the previous one — presenting a grid
+                    // from a different session is worse than presenting none.
+                    this._geometryApplied = null;
+                    this._geometryIsOwner = null;
+                    this._geometrySeen = null;
+                    const stage = document.getElementById('terminal');
+                    if (stage) {
+                        stage.style.transform = '';
+                        delete stage.dataset.regime;
+                    }
                 }
                 // Discard bytes queued under the OUTGOING session before
                 // switching the id. _flushWrites attributes whatever it drains

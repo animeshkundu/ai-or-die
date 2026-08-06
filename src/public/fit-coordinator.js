@@ -190,7 +190,14 @@
       if (!target) return;
       let proposed = null;
       try {
-        proposed = target.proposeDimensions();
+        // `measureCapacity` measures the OUTER element directly and is preferred
+        // when a target supplies it: a target rendering through a Layer 3
+        // transform (ADR-0052) must not derive capacity from the transformed
+        // stage, because that folds presentation back into measurement.
+        // `proposeDimensions` remains the path for targets without a stage.
+        proposed = typeof target.measureCapacity === 'function'
+          ? target.measureCapacity()
+          : target.proposeDimensions();
       } catch (error) {
         this._logger.warn('[terminal-fit] measurement failed', error);
         target.deferred = true;
@@ -215,7 +222,14 @@
       let sendSucceeded = !this._forceSend.has(id);
       try {
         if (!unchanged) {
-          target.terminal.resize(next.cols, next.rows);
+          // In authoritative mode the local grid is owned by the server's
+          // applied frame (ADR-0052), so a capacity change is an ADVERTISEMENT
+          // only — resizing the grid here would fight applyAuthoritative and
+          // repeatedly destroy the presented buffer. `target.last` still tracks
+          // what we measured so the dedup and retry logic behave normally.
+          if (!target.authoritativeMode) {
+            target.terminal.resize(next.cols, next.rows);
+          }
           target.last = next;
         }
         if ((!unchanged || this._forceSend.has(id)) && typeof target.send === 'function') {
