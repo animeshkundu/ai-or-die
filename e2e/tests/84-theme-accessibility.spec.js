@@ -24,12 +24,22 @@ test.describe('AC-9 rendered accessibility', () => {
   test.afterAll(async () => { if (server) await server.close().catch(() => {}); });
 
   for (const theme of THEMES) {
-    test(`${theme}: rendered text meets WCAG AA against its painted background`, async ({ page }) => {
+    test(`${theme}: rendered text meets WCAG AA against its painted background`, async ({ page }, testInfo) => {
       await page.goto(url);
       await waitForAppReady(page);
       await waitForTerminalCanvas(page);
       await page.evaluate((t) => { document.documentElement.setAttribute('data-theme', t); }, theme);
       await page.waitForTimeout(400);
+
+      // AC-10 review artifact. The existing visual evidence only ever captured
+      // the default theme, so the light palette — where the contrast
+      // corrections landed — had no reviewable record at all. Attaching from
+      // the audit means the evidence and the assertion always describe the
+      // same render.
+      await testInfo.attach(`shell-${theme}.png`, {
+        body: await page.screenshot({ animations: 'disabled' }),
+        contentType: 'image/png',
+      });
 
       const failures = await page.evaluate(() => {
         const parse = (s) => {
