@@ -705,7 +705,21 @@ describe('E2E: Terminal tool session', function () {
     // If we get here without an error, resize was accepted. Send a command to
     // verify the session is still alive.
     wsSend(ws, { type: 'input', data: 'echo resize-ok\n' });
-    const outputs = await collectMessages(ws, 'output', 3000);
+    // 8s, not 3s. A resize is now a transaction: the server holds session
+    // output from the moment it begins applying geometry until the applied
+    // frame has been broadcast, so resize-caused redraw can never render
+    // against the old dimensions. The echo below is therefore buffered for the
+    // duration of the PTY resize rather than streaming immediately.
+    //
+    // On Windows that duration is load-dependent — ConPTY resize slows down
+    // markedly once several PTYs from earlier tests in this file are alive.
+    // Measured on Windows: the marker lands inside 3s when this test runs
+    // alone, but needs between 3s and 5s once the whole describe block has run
+    // first. The wait is bounded (the hold carries a 15s watchdog that releases
+    // buffered output and reports geometry_transaction_timeout), so the budget
+    // is sized for the slow case rather than the assertion being weakened — it
+    // still requires the marker to actually arrive.
+    const outputs = await collectMessages(ws, 'output', 8000);
     const combined = outputs.map(m => m.data).join('');
     assert(combined.includes('resize-ok'), 'Expected terminal to still be responsive after resize');
 
