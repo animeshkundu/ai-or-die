@@ -4,70 +4,36 @@
    ============================================================ */
 
 /* ---- Panel Layout ---- */
-.file-browser-dock {
-  --fb-dock-width: 380px;
-  flex: 0 0 0;
-  min-width: 0;
-  height: 100%;
-  overflow: visible;
-  position: relative;
-  transition: flex-basis var(--duration-drawer) var(--ease-emphasis);
-}
-
-.file-browser-dock.open {
-  flex-basis: var(--fb-dock-width);
-}
-
-.file-browser-dock.resizing {
-  transition: none;
-}
-
 .file-browser-panel {
-  position: relative;
-  inset: auto;
-  width: 100%;
-  height: 100%;
+  position: fixed;
+  top: var(--chrome-tab-height); right: 0; bottom: 0;
+  width: 350px;
   z-index: var(--z-tooltip);
   background: var(--surface-secondary);
   border-left: 1px solid var(--border-default);
   box-shadow: -4px 0 12px rgba(0, 0, 0, 0.15);
   display: flex;
   flex-direction: column;
+  transform: translateX(100%);
+  transition: transform var(--duration-drawer) var(--ease-emphasis);
   overflow: hidden;
 }
-.file-browser-panel.open { transform: none; }
+.file-browser-panel.open { transform: translateX(0); }
 .file-browser-panel[hidden] { display: none; }
+.file-browser-panel.editor-active { width: min(500px, 50vw); }
 
 /* ---- Resize Handle ---- */
 .file-browser-resize-handle {
-  display: none;
   position: absolute;
   top: 0; left: 0; bottom: 0;
-  width: 12px;
+  width: 4px;
   cursor: col-resize;
-  z-index: calc(var(--z-tooltip) + 1);
+  z-index: 5;
   background: transparent;
-  touch-action: none;
+  transition: background var(--duration-fast);
 }
-
-.file-browser-dock.open > .file-browser-resize-handle {
-  display: block;
-}
-
-.file-browser-resize-handle::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 2px;
-  background: transparent;
-  transition: background var(--duration-fast) var(--ease-default);
-}
-
-.file-browser-resize-handle:hover::after,
-.file-browser-resize-handle:focus-visible::after,
-.file-browser-resize-handle.dragging::after {
+.file-browser-resize-handle:hover,
+.file-browser-resize-handle.dragging {
   background: var(--accent-default);
 }
 
@@ -230,18 +196,10 @@
   transition: opacity var(--duration-fast);
 }
 .file-browser-item:hover .file-item-edit { opacity: 0.6; }
-.file-browser-item:focus-within .file-item-edit,
-.file-item-edit:focus-visible { opacity: 0.6; }
 .file-item-edit:hover {
   opacity: 1;
   background: var(--accent-soft);
   color: var(--accent-default);
-}
-
-@media (pointer: coarse) and (min-width: 1025px) {
-  .file-browser-resize-handle {
-    width: 44px;
-  }
 }
 
 /* ---- Preview Container ---- */
@@ -903,19 +861,7 @@
    Responsive — Medium Viewports (tablet overlay)
    ============================================================ */
 @media (min-width: 769px) and (max-width: 1024px) {
-  .file-browser-dock { flex-basis: 0 !important; overflow: visible; }
-  .file-browser-resize-handle { display: none !important; }
-  .file-browser-panel {
-    position: fixed;
-    top: var(--chrome-tab-height);
-    right: 0;
-    bottom: 0;
-    width: var(--fb-dock-width);
-    height: auto;
-    transform: translateX(100%);
-    transition: transform var(--duration-drawer) var(--ease-emphasis);
-  }
-  .file-browser-panel.open { transform: translateX(0); }
+  .file-browser-panel { top: var(--chrome-tab-height); }
   .file-browser-panel.open { z-index: var(--z-modal); }
 }
 
@@ -923,20 +869,7 @@
    Responsive — Small Viewports (mobile full-width)
    ============================================================ */
 @media (max-width: 768px) {
-  .file-browser-dock { flex-basis: 0 !important; overflow: visible; }
-  .file-browser-resize-handle { display: none !important; }
-  .file-browser-panel {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 100%;
-    height: auto;
-    z-index: var(--z-modal);
-    transform: translateX(100%);
-    transition: transform var(--duration-drawer) var(--ease-emphasis);
-  }
-  .file-browser-panel.open { transform: translateX(0); }
+  .file-browser-panel { top: 0; width: 100%; z-index: var(--z-modal); }
 
   .file-browser-header {
     height: 52px;

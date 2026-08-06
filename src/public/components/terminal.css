@@ -72,6 +72,16 @@
     position: relative;
     display: flex;
     flex-direction: column;
+    /* AC-4 (ADR-0052): a docked file browser is position:fixed and therefore
+       outside layout flow, so without this the terminal renders underneath it
+       and those columns are simply invisible. --fb-dock-width is published by
+       FileBrowserPanel._adjustTerminal only while the panel is docked (it is
+       absent in overlay mode, where covering the terminal is the intent), and
+       it is the single owner of dock width so drag and editor-active compose
+       rather than fight. Shrinking here changes .terminal-wrapper's rect,
+       which FitCoordinator already observes, so the refit happens through the
+       normal path with no extra plumbing. */
+    padding-right: var(--fb-dock-width, 0px);
 }
 
 .terminal-wrapper {

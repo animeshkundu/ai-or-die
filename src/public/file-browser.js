@@ -421,12 +421,8 @@
     // Resize handle
     var resizeHandle = document.createElement('div');
     resizeHandle.className = 'file-browser-resize-handle';
-    resizeHandle.setAttribute('role', 'separator');
-    resizeHandle.setAttribute('aria-label', 'Resize file workspace');
-    resizeHandle.setAttribute('aria-orientation', 'vertical');
-    resizeHandle.setAttribute('aria-valuemin', '360');
-    resizeHandle.tabIndex = 0;
     this._setupResizeHandle(resizeHandle, panel);
+    panel.appendChild(resizeHandle);
 
     // Header row (merged breadcrumbs + actions)
     var header = document.createElement('div');
@@ -606,9 +602,9 @@
         e.stopPropagation();
         e.preventDefault();
       } else if (e.key === 'Tab' && this._isOverlayMode()) {
-        var focusable = [resizeHandle].concat(Array.from(panel.querySelectorAll(
+        var focusable = Array.from(panel.querySelectorAll(
           'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        ))).filter(function (node) { return !node.hidden && node.offsetParent !== null; });
+        )).filter(function (node) { return !node.hidden && node.offsetParent !== null; });
         if (focusable.length) {
           var first = focusable[0];
           var last = focusable[focusable.length - 1];
@@ -625,15 +621,7 @@
       }
     }.bind(this));
 
-    var dock = document.getElementById('fileBrowserDock');
-    if (dock) {
-      dock.appendChild(resizeHandle);
-      dock.appendChild(panel);
-    } else {
-      panel.insertBefore(resizeHandle, panel.firstChild);
-      document.body.appendChild(panel);
-    }
-    this._dockEl = dock;
+    document.body.appendChild(panel);
     this._panelEl = panel;
     this._onViewportResize = function () {
       if (this._open) this._updateOverlayMode();
@@ -706,70 +694,28 @@
   };
 
   FileBrowserPanel.prototype._setupResizeHandle = function (handle, panel) {
-    var startX, startWidth, pointerId;
-    var maxWidth = function () {
-      return Math.max(360, Math.floor(window.innerWidth * 0.6));
-    };
-    var applyWidth = function (width) {
-      var newWidth = Math.min(Math.max(width, 360), maxWidth());
-      this._userDockWidth = newWidth;
-      if (this._dockEl) this._dockEl.style.setProperty('--fb-dock-width', newWidth + 'px');
-      handle.setAttribute('aria-valuemax', String(maxWidth()));
-      handle.setAttribute('aria-valuenow', String(Math.round(newWidth)));
-    }.bind(this);
-    var onPointerMove = function (e) {
-      if (e.pointerId !== pointerId) return;
+    var startX, startWidth;
+    var onMouseMove = function (e) {
       var delta = startX - e.clientX;
-      applyWidth(startWidth + delta);
-    }.bind(this);
-    var onPointerUp = function (e) {
-      if (e.pointerId !== pointerId) return;
-      handle.removeEventListener('pointermove', onPointerMove);
-      handle.removeEventListener('pointerup', onPointerUp);
-      handle.removeEventListener('pointercancel', onPointerUp);
+      var newWidth = Math.min(Math.max(startWidth + delta, 280), window.innerWidth * 0.6);
+      panel.style.width = newWidth + 'px';
+    };
+    var onMouseUp = function () {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
-      handle.classList.remove('dragging');
-      if (this._dockEl) this._dockEl.classList.remove('resizing');
-      pointerId = null;
     }.bind(this);
 
-    handle.addEventListener('pointerdown', function (e) {
-      if (e.button !== 0) return;
-      pointerId = e.pointerId;
+    handle.addEventListener('mousedown', function (e) {
       startX = e.clientX;
-      startWidth = this._userDockWidth || panel.offsetWidth;
-      handle.setPointerCapture(e.pointerId);
-      handle.addEventListener('pointermove', onPointerMove);
-      handle.addEventListener('pointerup', onPointerUp);
-      handle.addEventListener('pointercancel', onPointerUp);
-      handle.classList.add('dragging');
-      if (this._dockEl) this._dockEl.classList.add('resizing');
+      startWidth = panel.offsetWidth;
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
       document.body.style.userSelect = 'none';
       document.body.style.cursor = 'col-resize';
       e.preventDefault();
-    }.bind(this));
-    handle.addEventListener('keydown', function (e) {
-      if (e.key === 'Tab' && e.shiftKey) {
-        var focusable = Array.from(panel.querySelectorAll(
-          'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        )).filter(function (node) { return !node.hidden && node.offsetParent !== null; });
-        if (focusable.length) {
-          e.preventDefault();
-          focusable[focusable.length - 1].focus();
-        }
-        return;
-      }
-      var width = this._userDockWidth || panel.getBoundingClientRect().width;
-      if (e.key === 'ArrowLeft') width += 16;
-      else if (e.key === 'ArrowRight') width -= 16;
-      else if (e.key === 'Home') width = 360;
-      else if (e.key === 'End') width = maxWidth();
-      else return;
-      e.preventDefault();
-      applyWidth(width);
-    }.bind(this));
-    applyWidth(panel.offsetWidth || this._userDockWidth || 380);
+    });
   };
 
   FileBrowserPanel.prototype._setupDragDrop = function (panel) {
@@ -822,7 +768,6 @@
     this._panelEl.hidden = false;
     this._panelEl.classList.add('open');
     this._updateOverlayMode();
-    this._adjustTerminal();
     // fs-watcher (#41 / ADR-0017): bring up the single-EventSource-per-
     // session SSE channel BEFORE navigateTo fires its initial fetch so
     // the watcher is ready by the time _reconcileListingSubscriptions
@@ -853,7 +798,6 @@
     this._panelEl.hidden = true;
     this._backdropEl.classList.remove('active');
     this._setBackgroundInert(false);
-    this._adjustTerminal();
     // Drop the fs-watcher when the panel closes — the SSE consumes a
     // server-side chokidar watcher (kernel resource) per the
     // MAX_CONCURRENT_WATCHERS=5/IP cap. Re-opens the next time the
@@ -908,15 +852,51 @@
   };
 
   FileBrowserPanel.prototype._adjustTerminal = function () {
-    // Docked mode owns real layout space; overlay mode remains out of flow.
-    if (!this._dockEl) return;
+    // AC-4 (ADR-0052): docked chrome must occlude ZERO terminal columns.
+    //
+    // The panel is position:fixed, so it is outside layout flow and the
+    // terminal happily renders underneath it — 40 of 163 columns were drawn
+    // where the user cannot see them, while the PTY kept its full width. The
+    // old comment here ("non-terminal surfaces overlay the terminal") is true
+    // on mobile, where the panel IS a modal overlay, and false above 1024px,
+    // where it docks beside a still-interactive terminal.
+    //
+    // The fix is a real layout region rather than pixel arithmetic on the
+    // terminal's own measurement: publish the dock width as a custom property
+    // and let CSS shrink the terminal's usable area. FitCoordinator observes
+    // .terminal-wrapper, so ResizeObserver reports the change and the refit
+    // (and the resulting advertisement) happen through the normal path.
+    //
+    // --fb-dock-width is the SINGLE owner of dock width, so a drag and an
+    // editor-active state compose instead of fighting.
+    var root = document.documentElement;
+    if (!root) return;
     var docked = this._open && !this._isOverlayMode();
-    this._dockEl.classList.toggle('open', docked);
-    var base = this._userDockWidth || 380;
-    var desired = this._panelEl && this._panelEl.classList.contains('editor-active')
-      ? Math.max(base, Math.min(500, window.innerWidth * 0.5))
-      : base;
-    this._dockEl.style.setProperty('--fb-dock-width', Math.round(desired) + 'px');
+    if (!docked) {
+      root.style.removeProperty('--fb-dock-width');
+      return;
+    }
+    var width = 0;
+    try {
+      width = this._panelEl ? this._panelEl.getBoundingClientRect().width : 0;
+    } catch (_) {
+      width = 0;
+    }
+    if (width > 0) root.style.setProperty('--fb-dock-width', width + 'px');
+    else root.style.removeProperty('--fb-dock-width');
+  };
+
+  FileBrowserPanel.prototype._refitAllTerminals = function () {
+    // Refit main terminal
+    if (this.app && this.app.fitAddon) {
+      try { this.app.fitTerminal(); } catch (e) { /* ignore */ }
+    }
+    // Refit split pane terminals
+    if (this.app && this.app.splitContainer && this.app.splitContainer.splits) {
+      this.app.splitContainer.splits.forEach(function (split) {
+        try { split.fit(); } catch (e) { /* ignore */ }
+      });
+    }
   };
 
   FileBrowserPanel.prototype._isOverlayMode = function () {
@@ -933,7 +913,6 @@
       this._panelEl.setAttribute('aria-modal', 'false');
       this._setBackgroundInert(false);
     }
-    this._adjustTerminal();
   };
 
   FileBrowserPanel.prototype._setBackgroundInert = function (inert) {
@@ -941,30 +920,13 @@
     var appRoot = document.getElementById('app');
     if (!appRoot) return;
     if (inert && !this._backgroundInertApplied) {
-      var nodes = Array.from(appRoot.children).filter(function (node) {
-        return !node.classList.contains('main') && !node.matches('[aria-live]');
-      });
-      var main = appRoot.querySelector('.main');
-      if (main) {
-        nodes = nodes.concat(Array.from(main.children).filter(function (node) {
-          return node.id !== 'fileBrowserDock';
-        }));
-      }
-      this._backgroundInertNodes = nodes.map(function (node) {
-        return { node: node, wasInert: !!node.inert };
-      });
-      this._backgroundInertNodes.forEach(function (entry) {
-        entry.node.inert = true;
-      });
-      appRoot.dataset.overlayInert = 'true';
+      this._backgroundWasInert = appRoot.inert;
+      appRoot.inert = true;
       this._backgroundInertApplied = true;
     } else if (!inert && this._backgroundInertApplied) {
-      (this._backgroundInertNodes || []).forEach(function (entry) {
-        entry.node.inert = entry.wasInert;
-      });
-      delete appRoot.dataset.overlayInert;
+      appRoot.inert = !!this._backgroundWasInert;
       this._backgroundInertApplied = false;
-      this._backgroundInertNodes = null;
+      this._backgroundWasInert = false;
     }
   };
 
