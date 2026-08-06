@@ -16,6 +16,10 @@ class Split {
         this.fitAddon = null;
         this.webLinksAddon = null;
         this.socket = null;
+        this.connectionId = null;
+        this.geometryViewId = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+            ? globalThis.crypto.randomUUID()
+            : `split-${index}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         this._socketGeneration = 0;
         this._heartbeatTimer = null;
         this._pongTimer = null;
@@ -30,6 +34,8 @@ class Split {
         this._repaintTimer = null;
         this._repaintGeneration = 0;
         this._reconnectViewState = null;
+        this._wheelInputPending = false;
+        this._connectReady = null;
 
         this.createTerminal();
     }
@@ -41,7 +47,30 @@ class Split {
         
         const terminalDiv = document.createElement('div');
         terminalDiv.id = `split-terminal-${this.index}`;
+        terminalDiv.className = 'split-terminal-capacity';
+        const terminalStage = document.createElement('div');
+        terminalStage.className = 'terminal-stage';
+        terminalDiv.appendChild(terminalStage);
         wrapper.appendChild(terminalDiv);
+
+        const controlStatus = document.createElement('div');
+        controlStatus.className = 'terminal-control-status split-terminal-control-status';
+        controlStatus.setAttribute('role', 'status');
+        controlStatus.setAttribute('aria-live', 'polite');
+        controlStatus.setAttribute('aria-atomic', 'true');
+        controlStatus.hidden = true;
+        controlStatus.innerHTML = '<span data-terminal-control-message>Viewing another device\'s terminal size</span>'
+            + '<button type="button">Take control</button>';
+        controlStatus.querySelector('button').addEventListener('click', () => {
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.socket.send(JSON.stringify({
+                    type: 'geometry_take_control',
+                    viewId: this.geometryViewId
+                }));
+            }
+        });
+        wrapper.appendChild(controlStatus);
+        this._controlStatus = controlStatus;
         
         this.container.appendChild(wrapper);
         
@@ -77,7 +106,7 @@ class Split {
             this.terminal.unicode.activeVersion = '11';
         }
 
-        this.terminal.open(terminalDiv);
+        this.terminal.open(terminalStage);
 
         // Trackpad/mouse-wheel policy (same as the main terminal): preempt
         // xterm's alt-buffer wheel->arrow translation so scrolling doesn't
@@ -86,7 +115,11 @@ class Split {
             this._wheelHandler = window.attachTerminalWheel(
                 this.terminal,
                 terminalDiv,
-                () => (this.app && this.app._wheelScrollMode) || 'dontHijack'
+                () => (this.app && this.app._wheelScrollMode) || 'dontHijack',
+                () => {
+                    this._wheelInputPending = true;
+                    queueMicrotask(() => { this._wheelInputPending = false; });
+                }
             );
         }
 
@@ -121,18 +154,39 @@ class Split {
         if (this.app && this.app.fitCoordinator) {
             this.app.fitCoordinator.register(this._fitId, {
                 container: terminalDiv,
+                stage: terminalStage,
                 terminal: this.terminal,
-                proposeDimensions: () => this.fitAddon.proposeDimensions(),
+                authoritativeMode: true,
+                measureCapacity: () => TerminalGeometry.measureOuterTerminalCapacity(
+                    terminalDiv,
+                    this.terminal
+                ),
                 reserve: { cols: 6, rows: 0 },
                 send: ({ cols, rows }) => {
                     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                        this.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+                        this.socket.send(JSON.stringify({
+                            type: 'resize',
+                            cols,
+                            rows,
+                            viewId: this.geometryViewId
+                        }));
                         return true;
                     }
                     return false;
-                }
+                },
+                withdraw: () => {
+                    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                        this.socket.send(JSON.stringify({
+                            type: 'geometry_withdraw',
+                            viewId: this.geometryViewId
+                        }));
+                    }
+                },
+                onAuthoritative: (frame) => this._updateControlStatus(frame)
             });
         }
+
+        this.terminal.onCursorMove(() => this.app.fitCoordinator?.requestRendered(this._fitId));
 
         // Refresh the atlas once when fonts settle; geometry is owned by the
         // coordinator and ResizeObserver resumes deferred hidden panes.
@@ -146,9 +200,7 @@ class Split {
 
         // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
         attachClipboardHandler(this.terminal, (data) => {
-            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(JSON.stringify({ type: 'input', data }));
-            }
+            this._sendInput(data);
         });
 
         // Wire clickable file paths (xterm registerLinkProvider) +
@@ -231,7 +283,7 @@ class Split {
                         normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
                     }
                     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                        this.socket.send(JSON.stringify({ type: 'input', data: normalized }));
+                        this._sendInput(normalized);
                     }
                 },
                 onError: (basename, msg) => {
@@ -244,9 +296,7 @@ class Split {
 
         // Setup terminal input handler
         this.terminal.onData((data) => {
-            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(JSON.stringify({ type: 'input', data }));
-            }
+            this._sendInput(data);
         });
         
         this.fit();
@@ -271,6 +321,41 @@ class Split {
         this.updateActiveState();
     }
 
+    _updateControlStatus(frame) {
+        const status = this._controlStatus;
+        if (!status) return;
+        const owner = frame && frame.owner;
+        const isOwner = !!(owner
+            && owner.connectionId === this.connectionId
+            && owner.viewId === this.geometryViewId);
+        const hasGeometry = Number.isInteger(frame && frame.cols)
+            && Number.isInteger(frame && frame.rows);
+        const message = status.querySelector('[data-terminal-control-message]');
+        if (message) {
+            message.textContent = owner
+                ? 'Viewing another device\'s terminal size'
+                : 'Terminal control is available';
+        }
+        status.hidden = !hasGeometry || isOwner;
+        status.dataset.owner = isOwner ? 'local' : (owner ? 'remote' : 'vacant');
+    }
+
+    _sendInput(data) {
+        data = typeof data === 'string' ? data.replace(/\x1b\[\[?[IO]/g, '') : data;
+        if (!data) return;
+        const wheelGenerated = this._wheelInputPending
+            && TerminalGeometry.isWheelArrowInput(data);
+        this._wheelInputPending = false;
+        if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+            this.socket.send(JSON.stringify({
+                type: 'input',
+                data,
+                claim: !(wheelGenerated || TerminalGeometry.isNonClaimingTerminalInput(data)),
+                viewId: this.geometryViewId
+            }));
+        }
+    }
+
     async connect(sessionId) {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         let wsUrl = `${protocol}//${location.host}?sessionId=${encodeURIComponent(sessionId)}`;
@@ -288,6 +373,14 @@ class Split {
         ws.binaryType = 'arraybuffer';
         this.socket = ws;
         const isCurrent = () => ws === this.socket && gen === this._socketGeneration;
+        const ready = new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                if (!this._connectReady || this._connectReady.generation !== gen) return;
+                this._connectReady = null;
+                reject(new Error(`Split ${this.index} session join timed out`));
+            }, 15000);
+            this._connectReady = { generation: gen, resolve, reject, timer };
+        });
 
         ws.onopen = () => {
             if (!isCurrent()) return;
@@ -314,6 +407,7 @@ class Split {
         ws.onclose = () => {
             // Stale-socket fence: ignore close events from prior sockets.
             if (!isCurrent()) return;
+            this._rejectConnectReady(gen, new Error(`Split ${this.index} disconnected before session join`));
             if (this._heartbeat) { this._heartbeat.stop(); this._heartbeat = null; }
             if (this._heartbeatTimer) { clearInterval(this._heartbeatTimer); this._heartbeatTimer = null; }
             if (this._pongTimer) { clearTimeout(this._pongTimer); this._pongTimer = null; }
@@ -353,8 +447,26 @@ class Split {
 
         ws.onerror = (error) => {
             if (!isCurrent()) return;
+            this._rejectConnectReady(gen, new Error(`Split ${this.index} WebSocket connection failed`));
             console.error(`[Split ${this.index}] WebSocket error:`, error);
         };
+        return ready;
+    }
+
+    _resolveConnectReady(generation) {
+        const ready = this._connectReady;
+        if (!ready || ready.generation !== generation) return;
+        clearTimeout(ready.timer);
+        this._connectReady = null;
+        ready.resolve();
+    }
+
+    _rejectConnectReady(generation, error) {
+        const ready = this._connectReady;
+        if (!ready || ready.generation !== generation) return;
+        clearTimeout(ready.timer);
+        this._connectReady = null;
+        ready.reject(error);
     }
 
     _startHeartbeat() {
@@ -397,6 +509,20 @@ class Split {
         }
     }
 
+    _drainOutputNow() {
+        if (this._pendingWrites.length === 0) return;
+        if (this._rafHandle !== null && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(this._rafHandle);
+        }
+        this._rafHandle = null;
+        this._rafPending = false;
+        let guard = 0;
+        while (this._pendingWrites.length > 0 && guard++ < 10000) {
+            const combined = OutputFrameBatcher.takeChunkBudget(this._pendingWrites, 96 * 1024);
+            this.terminal.write(combined);
+        }
+    }
+
     _finishReplay(generation, restoreView, view) {
         if (generation !== this._repaintGeneration) return;
         if (this._repaintTimer) {
@@ -426,7 +552,19 @@ class Split {
 
     handleMessage(msg) {
         switch (msg.type) {
+            case 'connected':
+                this.connectionId = msg.connectionId;
+                break;
+
+            case 'geometry_applied':
+                if (!msg.sessionId || msg.sessionId === this.sessionId) {
+                    this._drainOutputNow();
+                    this.app.fitCoordinator?.applyAuthoritative(this._fitId, msg);
+                }
+                break;
+
             case 'output':
+                this._drainOutputNow();
                 this.terminal.write(msg.data);
                 break;
 
@@ -435,7 +573,11 @@ class Split {
                 break;
 
             case 'session_joined': {
+                if (msg.geometry) this.app.fitCoordinator?.applyAuthoritative(this._fitId, msg.geometry);
+                else this.app.fitCoordinator?.clearAuthoritative(this._fitId, msg.sessionId);
+                this.app.fitCoordinator?.request(this._fitId, { forceSend: true });
                 const repaintGeneration = ++this._repaintGeneration;
+                const connectionGeneration = this._socketGeneration;
                 this._repainting = true;
                 this._pendingWrites.length = 0;
                 const reconnectView = this._reconnectViewState
@@ -451,10 +593,14 @@ class Split {
                     if (repaintGeneration !== this._repaintGeneration) return;
                     console.warn(`[Split ${this.index}] replay timed out; resuming queued output`);
                     this._finishReplay(repaintGeneration, false, null);
+                    this._resolveConnectReady(connectionGeneration);
                 }, 5000);
                 this.terminal.write(
                     '\x1bc' + joined,
-                    () => this._finishReplay(repaintGeneration, true, reconnectView)
+                    () => {
+                        this._finishReplay(repaintGeneration, true, reconnectView);
+                        this._resolveConnectReady(connectionGeneration);
+                    }
                 );
                 break;
             }
@@ -488,7 +634,7 @@ class Split {
                         : normalized;
                 }
                 if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                    this.socket.send(JSON.stringify({ type: 'input', data: normalized }));
+                    this._sendInput(normalized);
                 }
                 this._pendingImageCaption = null;
                 break;
@@ -506,6 +652,10 @@ class Split {
     disconnect() {
         // Mark as user-initiated close so onclose's reconnect logic bails out.
         this._closing = true;
+        this._rejectConnectReady(
+            this._socketGeneration,
+            new Error(`Split ${this.index} disconnected before session join`)
+        );
         // Cancel any deferred reconnect from a prior onclose so it cannot fire
         // after a user-initiated setSession() and spawn a parallel socket.
         if (this._reconnectTimer) {
@@ -731,24 +881,29 @@ class SplitContainer {
             return;
         }
 
+        // Set sessions - left gets current session, right gets the dragged session
+        const currentSessionId = this.app.currentClaudeSessionId;
+        try {
+            await this.splits[0].setSession(currentSessionId);
+            await this.splits[1].setSession(sessionId);
+        } catch (error) {
+            this.splits.forEach((split) => {
+                split.disconnect();
+                split.sessionId = null;
+            });
+            throw error;
+        }
+
         this.enabled = true;
-        
-        // Hide single terminal container
+
+        // Hide single terminal container only after both pane joins are ready.
         const terminalContainer = document.getElementById('terminalContainer');
         if (terminalContainer) {
             terminalContainer.style.display = 'none';
         }
 
-        // Show split container
         this.splitContainerEl.style.display = 'flex';
-
-        // Update divider position
         this.updateDividerPosition();
-
-        // Set sessions - left gets current session, right gets the dragged session
-        const currentSessionId = this.app.currentClaudeSessionId;
-        await this.splits[0].setSession(currentSessionId);
-        await this.splits[1].setSession(sessionId);
 
         // Focus right split (newly created)
         this.focusSplit(1);
@@ -788,12 +943,10 @@ class SplitContainer {
         
         this.activeSplitIndex = 0;
 
-        // Reconnect main terminal to current session if we have one
-        if (this.app.currentClaudeSessionId) {
-            setTimeout(() => {
-                this.app.connect();
-            }, 100);
-        }
+        // The main socket remains joined while split panes use their own
+        // connections. Reuse it instead of creating an overlapping socket whose
+        // delayed open can race a real reconnect.
+        this.app.fitCoordinator?.request('main', { forceSend: true });
 
         // Save state
         this.saveState();

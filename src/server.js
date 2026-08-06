@@ -19,6 +19,10 @@ const CopilotBridge = require('./copilot-bridge');
 const GeminiBridge = require('./gemini-bridge');
 const TerminalBridge = require('./terminal-bridge');
 const SessionStore = require('./utils/session-store');
+const {
+  TerminalGeometryCoordinator,
+  normalizeGeometry,
+} = require('./terminal-geometry-coordinator');
 const { getFileInfo, computeFileHash, isBinaryFile, sanitizeFileName, isBlockedExtension, formatFileSize, normalizePath, BLOCKED_EXTENSIONS } = require('./utils/file-utils');
 const UsageReader = require('./usage-reader');
 const UsageAnalytics = require('./usage-analytics');
@@ -56,6 +60,9 @@ const { detectAwaiting, detectTurnState } = require('./control/jsonl-awaiting');
 //
 // See docs/audits/hot-03-ws-frame-size.md.
 const MAX_WS_MESSAGE_BYTES = 1 * 1024 * 1024;
+const MAX_GEOMETRY_HOLD_BYTES = 8 * 1024 * 1024;
+const MAX_GEOMETRY_HOLD_CHUNKS = 1000;
+const GEOMETRY_HOLD_WATCHDOG_MS = 15000;
 
 // Fleet control-plane contract version (F19). Bumped when the cross-repo wire
 // shape (status fields, event kinds, snapshot/capabilities/permission-mode
@@ -310,6 +317,22 @@ class ClaudeCodeWebServer {
     });
 
     this.sessionStore = new SessionStore(options.sessionStoreOptions);
+    this.terminalGeometry = new TerminalGeometryCoordinator({
+      coalesceMs: 80,
+      isActive: (sessionId) => {
+        const session = this.claudeSessions.get(sessionId);
+        return !!(session && session.active && session.agent && !session._geometrySpawning);
+      },
+      applyResize: (sessionId, geometry) => this._applyTerminalGeometry(sessionId, geometry),
+      broadcast: (sessionId, frame) => this.broadcastToSession(sessionId, frame),
+      afterBroadcast: (sessionId) => this._releaseGeometryOutput(sessionId),
+      afterFailure: (sessionId) => this._releaseGeometryOutput(sessionId),
+      markDirty: () => this.sessionStore.markDirty(),
+      reject: (connectionId, frame) => {
+        const wsInfo = this.webSocketConnections.get(connectionId);
+        if (wsInfo) this.sendToWebSocket(wsInfo.ws, frame);
+      },
+    });
     this.usageReader = new UsageReader(this.sessionDurationHours);
     this.usageAnalytics = new UsageAnalytics({
       sessionDurationHours: this.sessionDurationHours,
@@ -355,6 +378,7 @@ class ClaudeCodeWebServer {
       for (const [id, session] of sessions) {
         if (!this.claudeSessions.has(id)) {
           this.claudeSessions.set(id, session);
+          this.terminalGeometry.initializeSession(id, session, { restored: true });
           this._pushEvictionEntry(id); // PROC-04
           // Rebuild the durable per-claude-session note store so a note resumes
           // after a server restart when the same claude session reopens.
@@ -1494,6 +1518,7 @@ class ClaudeCodeWebServer {
       };
       
       this.claudeSessions.set(sessionId, session);
+      if (this.terminalGeometry) this.terminalGeometry.initializeSession(sessionId, session);
       this._pushEvictionEntry(sessionId); // PROC-04
       this.sessionStore.markDirty();
 
@@ -1598,6 +1623,7 @@ class ClaudeCodeWebServer {
       if (this._foregroundSessionId === sessionId) this._foregroundSessionId = null;
 
       this.claudeSessions.delete(sessionId);
+      if (this.terminalGeometry) this.terminalGeometry.removeSession(sessionId);
       if (this.controlEventBus) this.controlEventBus.append(sessionId, 'session_deleted');
       this.activityBroadcastTimestamps.delete(sessionId);
       this.sessionStore.markDirty();
@@ -3685,6 +3711,11 @@ class ClaudeCodeWebServer {
           process.nextTick(() => {
             this.handleMessage(wsId, data).catch(error => {
               if (this.dev) console.error('Error handling input:', error);
+              this.sendToWebSocket(ws, {
+                type: 'error',
+                code: 'input_geometry_transaction_failed',
+                message: error.message || 'Input transaction failed',
+              });
             });
           });
         } else {
@@ -3751,19 +3782,19 @@ class ClaudeCodeWebServer {
         break;
 
       case 'start_claude':
-        await this.startToolSession(wsId, 'claude', this.claudeBridge, data.options || {}, data.cols, data.rows);
+        await this.startToolSession(wsId, 'claude', this.claudeBridge, data.options || {}, data.cols, data.rows, data.viewId);
         break;
       case 'start_codex':
-        await this.startToolSession(wsId, 'codex', this.codexBridge, data.options || {}, data.cols, data.rows);
+        await this.startToolSession(wsId, 'codex', this.codexBridge, data.options || {}, data.cols, data.rows, data.viewId);
         break;
       case 'start_copilot':
-        await this.startToolSession(wsId, 'copilot', this.copilotBridge, data.options || {}, data.cols, data.rows);
+        await this.startToolSession(wsId, 'copilot', this.copilotBridge, data.options || {}, data.cols, data.rows, data.viewId);
         break;
       case 'start_gemini':
-        await this.startToolSession(wsId, 'gemini', this.geminiBridge, data.options || {}, data.cols, data.rows);
+        await this.startToolSession(wsId, 'gemini', this.geminiBridge, data.options || {}, data.cols, data.rows, data.viewId);
         break;
       case 'start_terminal':
-        await this.startToolSession(wsId, 'terminal', this.terminalBridge, data.options || {}, data.cols, data.rows);
+        await this.startToolSession(wsId, 'terminal', this.terminalBridge, data.options || {}, data.cols, data.rows, data.viewId);
         break;
       
       case 'input':
@@ -3779,9 +3810,22 @@ class ClaudeCodeWebServer {
               try {
                 const inputBridge = this.getBridgeForAgent(session.agent);
                 if (inputBridge) {
-                  inputBridge.sendInput(wsInfo.claudeSessionId, data.data).catch(error => {
-                    if (this.dev) console.error(`Input write failed for session ${wsInfo.claudeSessionId}:`, error.message);
-                  });
+                  const sendInput = () => inputBridge.sendInput(wsInfo.claudeSessionId, data.data);
+                  if (data.claim === true && this.terminalGeometry) {
+                    await this.terminalGeometry.withDeliberateAction(
+                      wsInfo.claudeSessionId,
+                      wsId,
+                      data.viewId,
+                      sendInput
+                    );
+                  } else if (this.terminalGeometry) {
+                    await this.terminalGeometry.runSerialized(
+                      wsInfo.claudeSessionId,
+                      sendInput
+                    );
+                  } else {
+                    await sendInput();
+                  }
                 }
               } catch (error) {
                 if (this.dev) {
@@ -3789,7 +3833,8 @@ class ClaudeCodeWebServer {
                 }
                 this.sendToWebSocket(wsInfo.ws, {
                   type: 'error',
-                  message: 'Agent is not running in this session. Please start an agent first.'
+                  code: 'input_not_sent',
+                  message: `Input was not sent: ${error.message}`
                 });
               }
             } else {
@@ -3846,26 +3891,41 @@ class ClaudeCodeWebServer {
 
       case 'resize':
         if (wsInfo.claudeSessionId) {
-          // Verify the session exists and the WebSocket is part of it
           const session = this.claudeSessions.get(wsInfo.claudeSessionId);
           if (session && session.connections.has(wsId)) {
-            // Keep the summariser's headless terminal width in sync.
-            if (this.stickyNoteSummarizer.isEnabled(wsInfo.claudeSessionId)) {
-              this.stickyNoteSummarizer.resize(wsInfo.claudeSessionId, data.cols, data.rows);
-            }
-            // Only resize if an agent is actually running
-            if (session.active && session.agent) {
-              try {
-                const resizeBridge = this.getBridgeForAgent(session.agent);
-                if (resizeBridge) {
-                  await resizeBridge.resize(wsInfo.claudeSessionId, data.cols, data.rows);
-                }
-              } catch (error) {
-                if (this.dev) {
-                  console.log(`Resize ignored - agent not active in session ${wsInfo.claudeSessionId}`);
-                }
-              }
-            }
+            await this.terminalGeometry.advertise(
+              wsInfo.claudeSessionId,
+              wsId,
+              data.viewId,
+              data.cols,
+              data.rows
+            );
+          }
+        }
+        break;
+
+      case 'geometry_withdraw':
+        if (wsInfo.claudeSessionId) {
+          const session = this.claudeSessions.get(wsInfo.claudeSessionId);
+          if (session && session.connections.has(wsId)) {
+            await this.terminalGeometry.withdraw(
+              wsInfo.claudeSessionId,
+              wsId,
+              data.viewId
+            );
+          }
+        }
+        break;
+
+      case 'geometry_take_control':
+        if (wsInfo.claudeSessionId) {
+          const session = this.claudeSessions.get(wsInfo.claudeSessionId);
+          if (session && session.connections.has(wsId)) {
+            await this.terminalGeometry.takeControl(
+              wsInfo.claudeSessionId,
+              wsId,
+              data.viewId
+            );
           }
         }
         break;
@@ -4079,6 +4139,7 @@ class ClaudeCodeWebServer {
     };
     
     this.claudeSessions.set(sessionId, session);
+    if (this.terminalGeometry) this.terminalGeometry.initializeSession(sessionId, session);
     this._pushEvictionEntry(sessionId); // PROC-04
     wsInfo.claudeSessionId = sessionId;
     this.sessionStore.markDirty();
@@ -4168,6 +4229,7 @@ class ClaudeCodeWebServer {
       stickyNote: session.stickyNote || null,
       autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
       stickyNotesEnabled: session.stickyNotesEnabled === true,
+      geometry: this.terminalGeometry.getFrame(claudeSessionId),
       // Deliver the engine status on every join so the toolbar toggle reliably
       // appears once the model is ready (the broadcast-on-init can race a late
       // joiner; this never misses).
@@ -4180,9 +4242,14 @@ class ClaudeCodeWebServer {
   }
 
   _buildJoinReplay(session, maxBytes = 256 * 1024) {
-    const items = session && session.outputBuffer && session.outputBuffer.toArray
-      ? session.outputBuffer.toArray()
-      : [];
+    const holdingGeometry = session && Array.isArray(session._geometryOutputHold);
+    const items = holdingGeometry && Array.isArray(session._geometryReplayBuffer)
+      ? session._geometryReplayBuffer
+      : (
+        session && session.outputBuffer && session.outputBuffer.toArray
+          ? session.outputBuffer.toArray()
+          : []
+      );
     let bytes = 0;
     let start = items.length;
     while (start > 0) {
@@ -4204,6 +4271,7 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(leftSessionId);
     if (session) {
       session.connections.delete(wsId);
+      await this.terminalGeometry.detachConnection(leftSessionId, wsId);
       session.lastActivity = new Date();
       this._pushEvictionEntry(leftSessionId); // PROC-04
     }
@@ -4720,6 +4788,7 @@ class ClaudeCodeWebServer {
       };
 
       this.claudeSessions.set(sessionId, session);
+      if (this.terminalGeometry) this.terminalGeometry.initializeSession(sessionId, session);
       if (typeof this._pushEvictionEntry === 'function') this._pushEvictionEntry(sessionId);
       this.sessionStore.markDirty();
       this.saveSessionsToDisk();
@@ -4875,6 +4944,7 @@ class ClaudeCodeWebServer {
     try { session._ctlTranscript = new TranscriptBuffer({ cols, rows }); } catch (_) { session._ctlTranscript = null; }
     session.active = true;
     session.agent = toolName;
+    session._geometrySpawning = true;
     this.activityBroadcastTimestamps.set(sessionId, Date.now());
     try {
       await bridge.startSession(sessionId, {
@@ -4909,6 +4979,7 @@ class ClaudeCodeWebServer {
             if (typeof this._flushAndClearOutputTimer === 'function') this._flushAndClearOutputTimer(s, sessionId);
             s.active = false;
             s.agent = null;
+            s._geometrySpawning = false;
             s._lastExit = { code, signal };
             this.sessionStore.markDirty();
             // Persist the last rendered screen before disposing so a refresh
@@ -4923,11 +4994,23 @@ class ClaudeCodeWebServer {
         },
         onError: (error) => {
           const s = this.claudeSessions.get(sessionId);
-          if (s) { s.active = false; s.agent = null; this.sessionStore.markDirty(); }
+          if (s) {
+            s.active = false;
+            s.agent = null;
+            s._geometrySpawning = false;
+            this.sessionStore.markDirty();
+          }
           this.broadcastToSession(sessionId, { type: 'error', message: error.message });
         },
         extraEnv,
       });
+      if (this.terminalGeometry) {
+        await this.terminalGeometry.commitSpawn(sessionId, cols, rows);
+        session._geometrySpawning = false;
+        await this.terminalGeometry.reconcile(sessionId);
+      } else {
+        session._geometrySpawning = false;
+      }
       session.lastActivity = new Date();
       if (typeof this._pushEvictionEntry === 'function') this._pushEvictionEntry(sessionId);
       if (!session.sessionStartTime) session.sessionStartTime = new Date();
@@ -4937,7 +5020,7 @@ class ClaudeCodeWebServer {
       try { this._maybeStartStickyNotes(sessionId, toolName, cols, rows); } catch (_) { /* isolate */ }
       if (toolName === 'claude') this._controlReapTrustPrompt(sessionId);
     } catch (error) {
-      session.active = false; session.agent = null;
+      session.active = false; session.agent = null; session._geometrySpawning = false;
       this.activityBroadcastTimestamps.delete(sessionId);
       throw this._controlError('UPSTREAM_ERROR', `Failed to start ${toolName}: ${error.message}`, 500);
     }
@@ -5445,7 +5528,7 @@ class ClaudeCodeWebServer {
     }
   }
 
-  async startToolSession(wsId, toolName, bridge, options, cols, rows) {
+  async startToolSession(wsId, toolName, bridge, options, cols, rows, viewId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) {
       console.warn(`startToolSession(${toolName}): wsInfo not found for wsId=${wsId}`);
@@ -5474,6 +5557,17 @@ class ClaudeCodeWebServer {
     }
 
     const sessionId = wsInfo.claudeSessionId;
+
+    const advertised = normalizeGeometry(cols, rows);
+    if (advertised && this.terminalGeometry) {
+      await this.terminalGeometry.advertise(
+        sessionId,
+        wsId,
+        viewId,
+        advertised.cols,
+        advertised.rows
+      );
+    }
 
     if (session.active) {
       if (session.agent === toolName) {
@@ -5511,11 +5605,16 @@ class ClaudeCodeWebServer {
       return;
     }
 
+    if (advertised && this.terminalGeometry) {
+      await this.terminalGeometry.takeControl(sessionId, wsId, viewId);
+    }
+
     // Mark active BEFORE the async spawn to prevent TOCTOU races —
     // two concurrent start_terminal messages could both pass the
     // session.active check above and spawn duplicate PTY processes.
     session.active = true;
     session.agent = toolName;
+    session._geometrySpawning = true;
     this.activityBroadcastTimestamps.set(sessionId, Date.now());
 
     try {
@@ -5545,10 +5644,26 @@ class ClaudeCodeWebServer {
       const claudeArtifactEnv = (toolName === 'claude' || toolName === 'terminal')
         ? this._artifactEnvForSession(sessionId) : {};
 
+      const ownerCapacity = this.terminalGeometry
+        ? this.terminalGeometry.getOwnerCapacity(sessionId)
+        : null;
+      const persistedGeometry = session.terminalGeometry && session.terminalGeometry.applied;
+      const spawnGeometry = ownerCapacity
+        || normalizeGeometry(
+          persistedGeometry && persistedGeometry.cols,
+          persistedGeometry && persistedGeometry.rows
+        )
+        || { cols: 80, rows: 24 };
+
       // Rendered-screen buffer so a refresh/reconnect can repaint the last
       // screen even when the session is idle and the raw outputBuffer is empty
       // (manual-tab parity with the control path; mirrors 4523).
-      try { session._ctlTranscript = new TranscriptBuffer({ cols: cols || 80, rows: rows || 24 }); } catch (_) { session._ctlTranscript = null; }
+      try {
+        session._ctlTranscript = new TranscriptBuffer(spawnGeometry);
+      } catch (_) {
+        session._ctlTranscript = null;
+      }
+      this._beginGeometryOutputHold(sessionId);
 
       const osc7Hooks = (toolName === 'terminal') ? {
         validatePath: (p) => this.validatePath(p),
@@ -5573,8 +5688,8 @@ class ClaudeCodeWebServer {
 
       await bridge.startSession(sessionId, {
         workingDir: session.workingDir,
-        cols: cols || 80,
-        rows: rows || 24,
+        cols: spawnGeometry.cols,
+        rows: spawnGeometry.rows,
         ...osc7Hooks,
         onOutput: (data) => {
           const currentSession = this.claudeSessions.get(sessionId);
@@ -5582,7 +5697,7 @@ class ClaudeCodeWebServer {
           currentSession.outputBuffer.push(data);
           try { if (currentSession._ctlTranscript) currentSession._ctlTranscript.write(data); } catch (_) { /* isolate */ }
           this.sessionStore.markDirty();
-          this._throttledOutputBroadcast(sessionId, data);
+          this._broadcastOrHoldSessionOutput(sessionId, data);
           // Tap for the local-LLM summariser (off the hot path: this only
           // buffers into a headless terminal + arms timers, never inference).
           // Isolated so a summariser/parser fault can never break the terminal
@@ -5608,6 +5723,7 @@ class ClaudeCodeWebServer {
             this._flushAndClearOutputTimer(currentSession, sessionId);
             currentSession.active = false;
             currentSession.agent = null;
+            currentSession._geometrySpawning = false;
             currentSession._lastExit = { code, signal };
             this.sessionStore.markDirty();
             // Persist the last rendered screen before disposing so a later
@@ -5626,6 +5742,7 @@ class ClaudeCodeWebServer {
           if (currentSession) {
             currentSession.active = false;
             currentSession.agent = null;
+            currentSession._geometrySpawning = false;
             this.sessionStore.markDirty();
           }
           this.activityBroadcastTimestamps.delete(sessionId);
@@ -5639,6 +5756,23 @@ class ClaudeCodeWebServer {
           ...claudeArtifactEnv,
         }
       });
+
+      if (this.terminalGeometry) {
+        try {
+          await this.terminalGeometry.commitSpawn(
+            sessionId,
+            spawnGeometry.cols,
+            spawnGeometry.rows
+          );
+          session._geometrySpawning = false;
+          await this.terminalGeometry.reconcile(sessionId);
+        } finally {
+          this._releaseGeometryOutput(sessionId);
+        }
+      } else {
+        this._releaseGeometryOutput(sessionId);
+        session._geometrySpawning = false;
+      }
 
       session.lastActivity = new Date();
       this._pushEvictionEntry(sessionId); // PROC-04
@@ -5665,14 +5799,21 @@ class ClaudeCodeWebServer {
 
       // Spin up the per-tab summariser for AI-agent AND terminal sessions
       // (no-op when the tab is opted out, or when node-llama-cpp is unavailable).
-      session.cols = cols;
-      session.rows = rows;
-      this._maybeStartStickyNotes(sessionId, toolName, cols, rows);
+      session.cols = spawnGeometry.cols;
+      session.rows = spawnGeometry.rows;
+      this._maybeStartStickyNotes(
+        sessionId,
+        toolName,
+        spawnGeometry.cols,
+        spawnGeometry.rows
+      );
 
     } catch (error) {
       // Roll back the early active flag set before spawn
       session.active = false;
       session.agent = null;
+      session._geometrySpawning = false;
+      this._releaseGeometryOutput(sessionId);
       this.activityBroadcastTimestamps.delete(sessionId);
       if (this.dev) {
         console.error(`Error starting ${toolName} in session ${wsInfo.claudeSessionId}:`, error);
@@ -5736,6 +5877,105 @@ class ClaudeCodeWebServer {
         this.sendToWebSocket(wsInfo.ws, data);
       }
     });
+  }
+
+  async _applyTerminalGeometry(sessionId, geometry) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session || !session.active || !session.agent) {
+      throw new Error(`Session ${sessionId} has no active terminal`);
+    }
+    const bridge = this.getBridgeForAgent(session.agent);
+    if (!bridge) throw new Error(`No bridge for active agent ${session.agent}`);
+    if (!Array.isArray(session._geometryOutputHold)) {
+      this._beginGeometryOutputHold(sessionId);
+    }
+    await bridge.resize(sessionId, geometry.cols, geometry.rows);
+    session.cols = geometry.cols;
+    session.rows = geometry.rows;
+    if (session._ctlTranscript) {
+      try {
+        session._ctlTranscript.resize(geometry.cols, geometry.rows);
+      } catch (error) {
+        console.warn(`[terminal-geometry] transcript resize failed for ${sessionId}:`, error.message);
+      }
+    }
+    if (this.stickyNoteSummarizer.isEnabled(sessionId)) {
+      try {
+        this.stickyNoteSummarizer.resize(sessionId, geometry.cols, geometry.rows);
+      } catch (error) {
+        console.warn(`[terminal-geometry] sticky transcript resize failed for ${sessionId}:`, error.message);
+      }
+    }
+  }
+
+  _broadcastOrHoldSessionOutput(sessionId, data) {
+    const session = this.claudeSessions.get(sessionId);
+    if (session && Array.isArray(session._geometryOutputHold)) {
+      const value = typeof data === 'string' ? data : String(data || '');
+      session._geometryOutputHold.push(value);
+      session._geometryOutputHoldBytes = (session._geometryOutputHoldBytes || 0)
+        + Buffer.byteLength(value, 'utf8');
+      while (session._geometryOutputHold.length > MAX_GEOMETRY_HOLD_CHUNKS
+          || session._geometryOutputHoldBytes > MAX_GEOMETRY_HOLD_BYTES) {
+        const removed = session._geometryOutputHold.shift();
+        session._geometryOutputHoldBytes -= Buffer.byteLength(removed, 'utf8');
+        session._geometryOutputDropped = (session._geometryOutputDropped || 0) + 1;
+      }
+      return;
+    }
+    this._throttledOutputBroadcast(sessionId, data);
+  }
+
+  _beginGeometryOutputHold(sessionId, timeoutMs = GEOMETRY_HOLD_WATCHDOG_MS) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session || Array.isArray(session._geometryOutputHold)) return;
+    if (typeof this._flushAndClearOutputTimer === 'function') {
+      this._flushAndClearOutputTimer(session, sessionId);
+    }
+    session._geometryReplayBuffer = session.outputBuffer && session.outputBuffer.toArray
+      ? session.outputBuffer.toArray()
+      : [];
+    session._geometryOutputHold = [];
+    session._geometryOutputHoldBytes = 0;
+    session._geometryOutputDropped = 0;
+    session._geometryOutputHoldTimer = setTimeout(() => {
+      session._geometryOutputHoldTimer = null;
+      console.error(`[terminal-geometry] output hold timed out for ${sessionId}; releasing buffered output`);
+      try {
+        this.broadcastToSession(sessionId, {
+          type: 'error',
+          code: 'geometry_transaction_timeout',
+          message: 'Terminal geometry update timed out; output resumed at the last confirmed size.',
+        });
+      } finally {
+        this._releaseGeometryOutput(sessionId);
+      }
+    }, Math.max(1, timeoutMs));
+    if (session._geometryOutputHoldTimer.unref) session._geometryOutputHoldTimer.unref();
+  }
+
+  _releaseGeometryOutput(sessionId) {
+    const session = this.claudeSessions.get(sessionId);
+    if (!session || !Array.isArray(session._geometryOutputHold)) return;
+    if (session._geometryOutputHoldTimer) {
+      clearTimeout(session._geometryOutputHoldTimer);
+      session._geometryOutputHoldTimer = null;
+    }
+    const held = session._geometryOutputHold;
+    const dropped = session._geometryOutputDropped || 0;
+    session._geometryOutputHold = null;
+    session._geometryOutputHoldBytes = 0;
+    session._geometryOutputDropped = 0;
+    session._geometryReplayBuffer = null;
+    if (dropped > 0) {
+      console.warn(`[terminal-geometry] discarded ${dropped} old held chunks for ${sessionId}`);
+      this.broadcastToSession(sessionId, {
+        type: 'error',
+        code: 'geometry_output_truncated',
+        message: 'Terminal redraw exceeded the geometry buffer; reconnect to refresh the full screen.',
+      });
+    }
+    if (held.length > 0) this._throttledOutputBroadcast(sessionId, held.join(''));
   }
 
   broadcastToAll(data) {
@@ -6720,6 +6960,7 @@ class ClaudeCodeWebServer {
         try { this.stickyNoteSummarizer.cancel(top.id); } catch (_) { /* ignore */ }
         try { this._stickyJsonl.delete(top.id); } catch (_) { /* ignore */ }
         if (this._foregroundSessionId === top.id) this._foregroundSessionId = null;
+        if (this.terminalGeometry) this.terminalGeometry.removeSession(top.id);
         this.claudeSessions.delete(top.id);
         this.controlEventBus.append(top.id, 'session_deleted');
         this.activityBroadcastTimestamps.delete(top.id);
@@ -7374,6 +7615,10 @@ class ClaudeCodeWebServer {
       const session = this.claudeSessions.get(wsInfo.claudeSessionId);
       if (session) {
         session.connections.delete(wsId);
+        this.terminalGeometry.detachConnection(wsInfo.claudeSessionId, wsId)
+          .catch((error) => {
+            if (this.dev) console.error('[terminal-geometry] disconnect transfer failed:', error.message);
+          });
         session.lastActivity = new Date();
         this._pushEvictionEntry(wsInfo.claudeSessionId); // PROC-04
 
@@ -7618,6 +7863,7 @@ class ClaudeCodeWebServer {
     try { this.keepaliveManager.releaseSync(); } catch (_) { /* ignore */ }
 
     // Clear all data
+    if (this.terminalGeometry) this.terminalGeometry.clear();
     this.claudeSessions.clear();
     this.webSocketConnections.clear();
   }

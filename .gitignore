@@ -30,3 +30,5 @@ e2e/.claude-attachments/
 # Verification artifacts from pipeline runs (screenshots, HTML reports)
 playwright-report/
 screenshots/
+.claude-attachments/
+.recovered-logs/

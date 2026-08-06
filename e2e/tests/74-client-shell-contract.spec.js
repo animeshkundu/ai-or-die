@@ -25,14 +25,15 @@ test.describe('Terminal-first client shell contract', () => {
   });
 
   async function setupPage(page) {
-    await createSessionViaApi(port, 'Client shell contract');
+    const sessionId = await createSessionViaApi(port, 'Client shell contract');
     await page.goto(url);
     await waitForAppReady(page);
     await waitForTerminalCanvas(page);
     await page.waitForFunction(() => window.app && window.app.currentClaudeSessionId);
+    return sessionId;
   }
 
-  test('file browser overlays without resizing and restores focus', async ({ page }) => {
+  test('file browser reflows only in docked mode and restores focus', async ({ page }) => {
     await setupPage(page);
     await page.evaluate(() => {
       window.__shellProbe = { resizeCalls: 0 };
@@ -48,6 +49,8 @@ test.describe('Terminal-first client shell contract', () => {
     const before = await page.evaluate(() => ({
       cols: window.app.terminal.cols,
       rows: window.app.terminal.rows,
+      docked: window.innerWidth > 1024,
+      local: window.app.fitCoordinator.getState('main').localCapacity,
     }));
     await opener.click();
     const panel = page.locator('#fileBrowserPanel');
@@ -64,15 +67,36 @@ test.describe('Terminal-first client shell contract', () => {
       cols: window.app.terminal.cols,
       rows: window.app.terminal.rows,
       resizeCalls: window.__shellProbe.resizeCalls,
+      local: window.app.fitCoordinator.getState('main').localCapacity,
     }));
-    expect(during).toEqual({ ...before, resizeCalls: 0 });
+    if (before.docked) {
+      expect(during.local.cols).toBeLessThan(before.local.cols);
+      expect(during.cols).toBe(before.cols);
+      expect(during.rows).toBe(before.rows);
+      expect(during.resizeCalls).toBe(0);
+    } else {
+      expect(during).toEqual({
+        cols: before.cols,
+        rows: before.rows,
+        resizeCalls: 0,
+        local: before.local,
+      });
+    }
 
     await page.keyboard.press('Escape');
     await expect(page.locator('.fb-file-list')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(panel).toBeHidden();
     await expect(opener).toBeFocused();
-    expect(await page.evaluate(() => window.__shellProbe.resizeCalls)).toBe(0);
+    if (before.docked) {
+      await page.waitForFunction(
+        (cols) => window.app.fitCoordinator.getState('main').localCapacity.cols === cols,
+        before.local.cols
+      );
+      expect(await page.evaluate(() => window.__shellProbe.resizeCalls)).toBe(0);
+    } else {
+      expect(await page.evaluate(() => window.__shellProbe.resizeCalls)).toBe(0);
+    }
   });
 
   test('settings, command palette, input, and artifact chrome never resize the terminal', async ({ page }) => {
@@ -382,6 +406,7 @@ test.describe('Terminal-first client shell contract', () => {
         coarse: matchMedia('(pointer: coarse)').matches,
       };
     });
+
     expect(result.safeAreas.every(Boolean)).toBeTruthy();
     expect(result.navFiles.width).toBeGreaterThanOrEqual(44);
     expect(result.navFiles.height).toBeGreaterThanOrEqual(44);
@@ -403,19 +428,49 @@ test.describe('Terminal-first client shell contract', () => {
             action: 'Refresh Now',
             onAction: () => {},
           });
+
         }
       });
       await page.locator('.toast__action').first().waitFor({ state: 'visible' });
-      const tooSmall = await page.locator(
-        'button:visible, input:not([type="hidden"]):visible, select:visible, [role="button"]:visible, [role="tab"]:visible'
-      ).evaluateAll((controls) => controls.map((control) => {
-        const rect = control.getBoundingClientRect();
+      await page.evaluate(() => window.app.showSettings());
+      await expect(page.locator('#settingsModal')).toBeVisible();
+      await page.locator('#settingsModal').evaluate((modal) => Promise.all(
+        modal.getAnimations({ subtree: true }).map((animation) => animation.finished.catch(() => {}))
+      ));
+      const settingsBounds = await page.locator('#settingsModal').evaluate((modal) => {
+        const content = modal.querySelector('.modal-content').getBoundingClientRect();
+        const body = modal.querySelector('.modal-body').getBoundingClientRect();
+        const panes = modal.querySelector('.settings-panes').getBoundingClientRect();
+        const footer = modal.querySelector('.modal-footer').getBoundingClientRect();
         return {
-          label: control.getAttribute('aria-label') || control.textContent.trim().slice(0, 40),
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
+          contentRight: Math.round(content.right),
+          bodyRight: Math.round(body.right),
+          panesRight: Math.round(panes.right),
+          bodyBottom: Math.round(body.bottom),
+          panesBottom: Math.round(panes.bottom),
+          footerTop: Math.round(footer.top),
         };
-      }).filter(({ width, height }) => width < 44 || height < 44));
+      });
+      expect(settingsBounds.bodyRight).toBeLessThanOrEqual(settingsBounds.contentRight);
+      expect(settingsBounds.panesRight).toBeLessThanOrEqual(settingsBounds.contentRight);
+      expect(settingsBounds.bodyBottom).toBeLessThanOrEqual(settingsBounds.footerTop);
+      expect(settingsBounds.panesBottom).toBeLessThanOrEqual(settingsBounds.footerTop);
+      const tooSmall = [];
+      const settingsTabs = page.locator('#settingsModal [role="tab"]');
+      for (let index = 0; index < await settingsTabs.count(); index++) {
+        await settingsTabs.nth(index).click();
+        const failures = await page.locator(
+          'button:visible, input:not([type="hidden"]):visible, select:visible, [role="button"]:visible, [role="tab"]:visible'
+        ).evaluateAll((controls) => controls.map((control) => {
+          const rect = control.getBoundingClientRect();
+          return {
+            label: control.getAttribute('aria-label') || control.textContent.trim().slice(0, 40),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          };
+        }).filter(({ width, height }) => width < 44 || height < 44));
+        tooSmall.push(...failures);
+      }
       expect(tooSmall, JSON.stringify(tooSmall)).toEqual([]);
       // Every control also needs an accessible name, not just a glyph.
       const unnamed = await page.locator('button:visible').evaluateAll((controls) => controls
@@ -424,6 +479,47 @@ test.describe('Terminal-first client shell contract', () => {
           && !/[a-z0-9]/i.test(control.textContent || ''))
         .map((control) => control.id || control.className));
       expect(unnamed, JSON.stringify(unnamed)).toEqual([]);
+      const inconsistentIcons = await page.locator(
+        'button:visible svg, [role="button"]:visible svg, [role="tab"]:visible svg, [role="menuitem"]:visible svg'
+      ).evaluateAll((icons) => icons.map((icon) => ({
+        host: icon.closest('button, [role]')?.getAttribute('aria-label')
+          || icon.closest('button, [role]')?.textContent?.trim().slice(0, 40),
+        viewBox: icon.getAttribute('viewBox'),
+        normalized: icon.dataset.iconNormalized,
+        strokes: Array.from(icon.querySelectorAll('[stroke-width]'))
+          .map((node) => node.getAttribute('stroke-width')),
+      })).filter((icon) => icon.viewBox !== '0 0 24 24'
+        || icon.normalized !== 'true'
+        || icon.strokes.some((stroke) => stroke !== '2')));
+      expect(inconsistentIcons, JSON.stringify(inconsistentIcons)).toEqual([]);
+    }
+  });
+
+  test('mobile terminal search keeps every action reachable', async ({ page }) => {
+    await page.setViewportSize({ width: 393, height: 852 });
+    await setupPage(page);
+    await page.evaluate(() => window.app.hideOverlay());
+    await page.keyboard.press('Control+f');
+    await expect(page.locator('#terminalSearchBar')).toBeVisible();
+    const layout = await page.locator('#terminalSearchBar').evaluate((bar) => {
+      const viewportWidth = window.innerWidth;
+      const controls = Array.from(bar.querySelectorAll('input, button')).map((control) => {
+        const rect = control.getBoundingClientRect();
+        return {
+          id: control.id,
+          left: rect.left,
+          right: rect.right,
+          width: rect.width,
+          height: rect.height,
+        };
+      });
+      return { viewportWidth, controls };
+    });
+    for (const control of layout.controls) {
+      expect(control.left, control.id).toBeGreaterThanOrEqual(0);
+      expect(control.right, control.id).toBeLessThanOrEqual(layout.viewportWidth);
+      expect(control.width, control.id).toBeGreaterThanOrEqual(44);
+      expect(control.height, control.id).toBeGreaterThanOrEqual(44);
     }
   });
 
@@ -434,7 +530,8 @@ test.describe('Terminal-first client shell contract', () => {
     await page.locator('#navFiles').click();
     const panel = page.locator('#fileBrowserPanel');
     await expect(panel).toBeFocused();
-    await expect(page.locator('#app')).toHaveJSProperty('inert', true);
+    await expect(page.locator('#terminalContainer')).toHaveJSProperty('inert', true);
+    await expect(page.locator('#app')).toHaveAttribute('data-overlay-inert', 'true');
     await page.keyboard.press('Shift+Tab');
     expect(await page.evaluate(() => document.getElementById('fileBrowserPanel').contains(document.activeElement))).toBeTruthy();
     await page.keyboard.press('Escape');

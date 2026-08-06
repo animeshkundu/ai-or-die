@@ -43,6 +43,50 @@ new ClaudeCodeWebServer(options)
 | `isShuttingDown` | boolean | Prevents duplicate shutdown sequences |
 | `sttEngine` | `SttEngine` | Download prep and isolated STT model-host lifecycle |
 | `stickyNoteEngine` | `StickyNoteEngine` | Download prep and isolated sticky-note model-host lifecycle |
+| `terminalGeometry` | `TerminalGeometryCoordinator` | Per-session attachment capacity, owner lease, epoch/revision, and serialized resize transactions |
+
+### Multi-viewer terminal geometry
+
+Attachments are keyed by `(sessionId, connectionId, viewId)`. `resize` frames
+advertise valid 20..1000 by 5..500 integer capacity without claiming.
+`geometry_withdraw` makes an attachment ineligible, and deliberate input or
+`geometry_take_control` transfers the lease.
+
+Only the owner's capacity can call the bridge resize method. Owner disconnect
+selects a deterministic successor and immediately applies its stored capacity.
+Applied geometry and revision commit only after resize succeeds. The server
+holds resize-triggered output, broadcasts `geometry_applied`, then releases the
+output. Claim-carrying input is written after the same commit.
+If that transaction fails, the input remains unsent and the originating
+attachment receives an `input_not_sent` error with the actual failure reason;
+the server never reports a misleading success or writes against stale geometry.
+Held output is capped at 1,000 chunks and 8 MiB, retaining the newest redraw
+tail, and a 15-second watchdog surfaces `geometry_transaction_timeout` before
+resuming output. A cap overflow surfaces `geometry_output_truncated` so the
+viewer can reconnect for a complete repaint. Pending pre-transaction coalesced
+bytes flush before the hold starts; join replay then uses a snapshot captured
+when the hold begins, not the held chunk count, so circular-buffer rollover
+cannot erase pre-transaction replay.
+
+Owner layout advertisements are trailing-edge coalesced for 80 ms and only the
+newest advertised capacity is applied. Deliberate same-owner input commits any
+pending advertised capacity before its bytes are written, preserving the
+resize-before-input transaction. Bootstrap sizing, deliberate ownership
+transfer, disconnect failover, and spawn reconciliation remain immediate.
+Clients joining during a resize transaction replay only output that predates
+the hold; held redraw bytes arrive once, after the authoritative frame.
+
+A brand-new session assigns its first eligible attachment as bootstrap owner.
+The attachment that actually begins a successful tool spawn deliberately claims
+the lease; rejected and idempotent `start_*` requests only advertise and cannot
+steal control from an already-running viewer.
+After a lease becomes vacant, passive re-advertisement cannot reacquire it;
+restored sessions also remain vacant until a deliberate ownership act.
+
+Restored sessions increment a persisted epoch and clear the runtime lease.
+Spawn precedence is owner capacity, persisted applied geometry, then 80x24.
+Startup output is released in a finalizer even if the geometry coordinator loses
+the session while the bridge is spawning.
 
 ---
 

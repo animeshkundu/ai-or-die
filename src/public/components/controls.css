@@ -20,15 +20,26 @@
 
 .settings-modal .modal-body {
   flex: 1 1 auto;
+  display: flex;
   min-height: 0;
   padding: 0;
+  overflow: hidden;
 }
 
 .settings-layout {
+  flex: 1 1 auto;
   display: flex;
   align-items: stretch;
-  height: 100%;
+  width: 100%;
+  min-width: 0;
+  height: auto;
   min-height: 0;
+  overflow: hidden;
+}
+
+.settings-modal .modal-header,
+.settings-modal .modal-footer {
+  flex: 0 0 auto;
 }
 
 /* --- Left nav rail (ARIA tablist) --- */
@@ -36,6 +47,8 @@
   flex: 0 0 196px;
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
   gap: 2px;
   padding: var(--space-3);
   border-right: 1px solid var(--border-default);
@@ -93,7 +106,9 @@
 /* --- Right pane area --- */
 .settings-panes {
   flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
+  box-sizing: border-box;
   overflow-y: auto;
   padding: var(--space-5) var(--space-6);
 }

@@ -19,15 +19,16 @@ async function waitForAppReady(page, timeoutMs = 30000) {
  * @param {number} [timeoutMs=30000]
  */
 async function waitForTerminalCanvas(page, timeoutMs = 30000) {
-  await page.waitForSelector('[data-tid="terminal"] .xterm, #terminal .xterm', {
-    state: 'attached',
-    timeout: timeoutMs
-  });
   await page.waitForFunction(
     () => {
       const term = window.app && window.app.terminal;
-      return term && typeof term.cols === 'number' && term.cols > 0;
+      return term
+        && term.element
+        && term.element.isConnected
+        && typeof term.cols === 'number'
+        && term.cols > 0;
     },
+    null,
     { timeout: timeoutMs }
   );
 }

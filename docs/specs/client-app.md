@@ -3,9 +3,36 @@
 ## Terminal-first shell contract
 
 - The terminal is the primary content surface. Auxiliary UI is chrome above it.
-- Opening or closing file browsing, settings, command surfaces, input controls, or artifact review does not resize xterm or emit a PTY resize.
-- `FitCoordinator` is the sole owner of terminal resize calls and outbound resize messages.
-- Geometry measurement returns no value for detached or zero-axis containers. Values below 20 columns or 5 rows are never sent.
+- The desktop-docked file workspace is a real sibling layout region. Opening,
+  closing, and drag-resizing it changes terminal capacity without ever
+  overlapping live columns. At 1024px and below it remains an overlay and does
+  not reflow the terminal.
+- `FitCoordinator` owns capacity measurement, advertisements, authoritative
+  xterm resize, stale-revision rejection, and non-owner rendering. Advertising
+  never claims PTY ownership.
+- Geometry measurement uses the outer capacity region and xterm cell metrics;
+  the inner rendered stage is never measured. Detached and zero-axis regions
+  return no geometry. Values below 20 columns or 5 rows send an explicit
+  withdrawal.
+- Client geometry state is split into local capacity, last advertised,
+  authoritative applied plus revision, and rendered geometry.
+- Before an authoritative frame mutates xterm, binary output already queued by
+  the animation-frame batcher is drained synchronously. Split terminals apply
+  the same rule, so the browser cannot invert the server's
+  output-before-frame/frame-before-redraw ordering.
+- Split creation does not resolve until the selected session's replay has
+  completed (or its bounded replay fallback fires). Immediate keyboard, mouse,
+  and wheel interaction therefore cannot be erased by a late reset.
+- Closing split view reuses the main socket, which remains joined while split
+  panes own independent connections. It never creates an overlapping delayed
+  connection that can race a subsequent network reconnect.
+- Capacity larger than the applied grid centers the inner stage. Smaller
+  capacity pans without scaling and follows the cursor, preserving exact
+  pointer-to-cell mapping. On coarse pointers the outer stage owns both pan
+  axes, so xterm scrollback cannot trap access to hidden authoritative rows.
+- Main and split ownership status controls are polite live regions. Their Take
+  control action appears for remote and vacant leases and remains reachable by
+  keyboard and touch.
 - Split view is available only when at least 700 CSS pixels are available. Its separator implements keyboard resizing with Arrow, Home, and End keys.
 
 ## Output path
@@ -62,19 +89,21 @@ Three-tier token architecture loaded before `base.css`, component styles, and `s
 2. **Semantic tokens** — role-based references (e.g., `--surface-primary`, `--accent-default`)
 3. **Component tokens** — sparing, named values for component identity that should not follow the active theme accent
 
-Theme overrides use `[data-theme="name"]` blocks and override semantic tokens only.
+The saved `data-mode` policy is `system`, `dark`, or `light`. `data-theme`
+contains the resolved binary palette and overrides semantic tokens only.
 
-### Available Themes
+### Appearance modes
 
-| Theme | `data-theme` value | Default? |
-|-------|-------------------|----------|
-| Midnight | (none / omit attribute) | Yes |
-| Classic Dark | `classic-dark` | No |
-| Classic Light | `classic-light` or `light` | No |
-| Monokai | `monokai` | No |
-| Nord | `nord` | No |
-| Solarized Dark | `solarized-dark` | No |
-| Solarized Light | `solarized-light` | No |
+| Preference | `data-mode` | Resolved `data-theme` |
+|---|---|---|
+| System (default) | `system` | OS `prefers-color-scheme` |
+| Dark | `dark` | `dark` |
+| Light | `light` | `light` |
+
+The synchronous head script resolves the palette before first paint and sets
+native `color-scheme` plus browser `theme-color`. Legacy named palettes migrate
+totally to light or dark as recorded in ADR-0051. Theme changes rebuild all
+sixteen ANSI terminal colors and re-theme Monaco.
 
 ### Token Groups
 
@@ -651,7 +680,9 @@ The file navigation panel, rendered as a right-docked side panel on desktop or a
 | `navigateUp()` | Navigate to parent directory |
 | `navigateHome()` | Navigate to session working directory |
 
-The panel auto-switches to overlay mode when the terminal would be squeezed below 80 columns (`ensureMinTerminalWidth()`).
+The panel has one permanent DOM home in `#fileBrowserDock`. Desktop uses a
+real flex track controlled only by `--fb-dock-width`; tablet and mobile use a
+fixed overlay without reparenting the panel or losing editor/focus state.
 
 File list uses ARIA tree pattern (`role="tree"`, `role="treeitem"`, `aria-expanded`, `aria-selected`) with full W3C arrow-key navigation.
 

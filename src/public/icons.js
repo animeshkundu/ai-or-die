@@ -7,8 +7,8 @@
       width: attrs.width || 16,
       height: attrs.height || 16,
       viewBox: attrs.viewBox || '0 0 24 24',
-      fill: 'none',
-      stroke: 'currentColor',
+      fill: attrs.fill || 'none',
+      stroke: attrs.stroke === undefined ? 'currentColor' : attrs.stroke,
       'stroke-width': attrs.strokeWidth || 2,
       'stroke-linecap': 'round',
       'stroke-linejoin': 'round'
@@ -28,7 +28,12 @@
     folder: (s = 16) => toSvg('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>', { width: s, height: s }),
     download: (s = 16) => toSvg('<path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M5 21h14"/>', { width: s, height: s }),
     chartLine: (s = 16) => toSvg('<polyline points="3 17 9 11 13 15 21 7"/><line x1="3" y1="17" x2="3" y2="21"/><line x1="21" y1="7" x2="21" y2="11"/>', { width: s, height: s }),
-    dot: (s = 10) => toSvg(circle(12, 12, 5), { width: s, height: s, viewBox: '0 0 24 24', strokeWidth: 0 }),
+    dot: (s = 10) => toSvg(circle(12, 12, 5), {
+      width: s,
+      height: s,
+      fill: 'currentColor',
+      stroke: 'none'
+    }),
 
     // File browser icons
     file: (s = 16) => toSvg('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>', { width: s, height: s }),
@@ -50,6 +55,67 @@
     folderOpen: (s = 16) => toSvg('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/><path d="M2 10h20"/>', { width: s, height: s }),
   };
 
-  window.icons = icons;
-})();
+  const normalizeSvg = (svg) => {
+    if (!svg || svg.dataset.iconNormalized === 'true') return;
+    const viewBox = (svg.getAttribute('viewBox') || '').trim();
+    const match = /^0 0 (\d+(?:\.\d+)?) (\d+(?:\.\d+)?)$/.exec(viewBox);
+    if (match) {
+      const width = Number(match[1]);
+      const height = Number(match[2]);
+      if (width > 0 && height > 0 && (width !== 24 || height !== 24)) {
+        const content = Array.from(svg.childNodes);
+        const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        group.setAttribute('transform', `scale(${24 / width} ${24 / height})`);
+        for (const child of content) group.appendChild(child);
+        svg.appendChild(group);
+      }
+    }
+    svg.setAttribute('viewBox', '0 0 24 24');
+    if (svg.getAttribute('fill') === 'none' || svg.hasAttribute('stroke')) {
+      svg.setAttribute('stroke-width', '2');
+      svg.setAttribute('stroke-linecap', 'round');
+      svg.setAttribute('stroke-linejoin', 'round');
+      svg.querySelectorAll('[stroke-width]').forEach((node) => node.setAttribute('stroke-width', '2'));
+      svg.querySelectorAll('path, line, polyline, polygon, circle, rect, ellipse')
+        .forEach((node) => node.setAttribute('vector-effect', 'non-scaling-stroke'));
+    }
+    svg.dataset.iconNormalized = 'true';
+  };
 
+  const normalize = (root) => {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    const iconHost = 'button, [role="button"], [role="tab"], [role="menuitem"], .icon, .ctx-icon, .tab-icon, .tool-icon, .file-item-icon, .nav-icon, .settings-tab-icon';
+    const hostedIcons = iconHost.split(',')
+      .map((selector) => `${selector.trim()} svg`)
+      .join(', ');
+    if (root.matches && root.matches('svg') && root.closest(iconHost)) normalizeSvg(root);
+    root.querySelectorAll(hostedIcons).forEach(normalizeSvg);
+  };
+
+  const render = (name, size = 16) => {
+    const renderer = icons[name];
+    return renderer ? renderer(size) : '';
+  };
+
+  window.IconRegistry = Object.freeze({ render, normalize, grid: 24, strokeWidth: 2 });
+  window.icons = icons;
+
+  const start = () => {
+    normalize(document);
+    if (typeof MutationObserver !== 'undefined') {
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (node && node.nodeType === 1) normalize(node);
+          }
+        }
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
+})();

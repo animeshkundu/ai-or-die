@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Source survey: consolidated findings</title>
+<style>
+  :root{--bg:#0f1115;--panel:#171a21;--panel2:#1d212a;--line:#2a2f3a;--fg:#e6e9ef;
+        --dim:#9aa3b2;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+        --crit:#ff5f56;--warn:#ffbd2e;--ok:#27c93f;--acc:#6aa9ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:32px 24px 64px}
+  .wrap{max-width:1020px;margin:0 auto}
+  h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em}
+  .sub{color:var(--dim);margin:0 0 26px;font-size:14px}
+  h2{font-size:17px;margin:34px 0 12px;border-bottom:1px solid var(--line);padding-bottom:8px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 19px;margin:13px 0}
+  .card.crit{border-left:3px solid var(--crit)}
+  .card.warn{border-left:3px solid var(--warn)}
+  .card.ok{border-left:3px solid var(--ok)}
+  .card.acc{border-left:3px solid var(--acc)}
+  .chip{display:inline-block;font-size:10.5px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;
+        padding:3px 8px;border-radius:999px;margin-right:8px;vertical-align:2px}
+  .chip.crit{background:rgba(255,95,86,.15);color:var(--crit);border:1px solid rgba(255,95,86,.35)}
+  .chip.warn{background:rgba(255,189,46,.15);color:var(--warn);border:1px solid rgba(255,189,46,.35)}
+  .chip.ok{background:rgba(39,201,63,.15);color:var(--ok);border:1px solid rgba(39,201,63,.35)}
+  .chip.acc{background:rgba(106,169,255,.15);color:var(--acc);border:1px solid rgba(106,169,255,.35)}
+  .t{font-weight:650;font-size:15.5px}
+  code,pre{font-family:var(--mono)}
+  code{background:var(--panel2);padding:1.5px 5px;border-radius:4px;font-size:12.5px}
+  pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:12px 14px;
+      overflow-x:auto;font-size:12.5px;line-height:1.6;margin:11px 0}
+  .kw{color:var(--crit);font-weight:650}.good{color:var(--ok)}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:11px;letter-spacing:.05em;text-transform:uppercase}
+  ul,ol{margin:9px 0;padding-left:20px} li{margin:5px 0}
+  .note{color:var(--dim);font-size:13px;font-style:italic;margin-top:9px}
+  .big{font-size:15px;background:var(--panel2);border-radius:8px;padding:14px 16px;margin:14px 0;border:1px solid var(--line)}
+</style>
+</head>
+<body><div class="wrap">
+
+<h1>Source survey: consolidated findings</h1>
+<p class="sub">Four parallel surveys plus direct checks. <strong>Every finding below I verified against the source myself</strong> — the surveys produced a significant number of false positives, listed at the bottom so you can see what was filtered out.</p>
+
+<h2>The pattern worth more than any single bug</h2>
+<div class="big">
+  Six of the confirmed defects have the <em>identical shape</em>: <strong>the correct implementation already exists elsewhere in this repo, and one call site doesn't use it.</strong> Not knowledge gaps — drift.
+  <table style="margin-top:10px">
+    <tr><th>correct version lives at</th><th>drifted call site</th></tr>
+    <tr><td><code>artifact-review.js:52</code> uses <code>timingSafeEqual</code></td><td><code>server.js:1296</code> uses <code>===</code> on the <em>primary</em> auth token</td></tr>
+    <tr><td><code>server.js:670</code> handles <code>\\?\UNC\</code> correctly, <em>with a comment explaining it</em></td><td><code>file-watcher.js:90</code> blind-slices 4 chars</td></tr>
+    <tr><td>3 files anchor PowerShell to <code>SystemRoot</code></td><td><code>model-host-containment.js:55</code> resolves via <code>PATH</code></td></tr>
+    <tr><td><code>_perIpRateLimit</code> exists at <code>server.js:910</code></td><td>not applied to <code>/auth-verify</code></td></tr>
+    <tr><td><code>activityBroadcastTimestamps</code> deleted in 7 places</td><td><code>_controlSessionSeq</code> deleted in 0</td></tr>
+    <tr><td>corrupt-JSON load path backs the file up</td><td>invalid-structure path 3 lines below does not</td></tr>
+  </table>
+  <p style="margin-bottom:0">A one-off fix for each leaves the mechanism intact. This is what 208 mutable fields on one 8,163-line class produces: no single place owns an invariant, so cleanup and validation paths drift apart silently. The durable fix is lint rules or shared helpers that make the wrong version unwritable.</p>
+</div>
+
+<h2>Confirmed &mdash; ranked</h2>
+
+<div class="card crit">
+  <span class="chip crit">high</span><span class="t">1. Auth token compared non-constant-time, on an unthrottled pre-auth endpoint &mdash; <code>server.js:1296</code></span>
+  <pre>const valid = token === this.auth;    <span class="kw">// primary auth token, plain ===</span>
+
+// meanwhile, for the LESSER asset token:
+crypto.timingSafeEqual(expected, actual);   <span class="good">// artifact-review.js:52, :740</span></pre>
+  <p><code>/auth-verify</code> is registered at line 1290, <em>before</em> the auth middleware at 1306/1319, so it is reachable unauthenticated by design. <code>_perIpRateLimit</code> exists at <code>server.js:910</code> and is applied to <code>git-show</code> (30/60s) &mdash; but not here. So the endpoint is unauthenticated, unthrottled, and leaks comparison timing on the one secret that matters.</p>
+  <p><strong>Compounding it:</strong> <code>CLAUDE.md:142</code> documents <em>"Rate limiting (100 requests/minute per IP by default)"</em>. <strong>That global limiter does not exist.</strong> Rate limiting is opt-in per route on a handful of endpoints. Anyone reading the docs believes brute-force protection is on when it is not &mdash; which is worse than knowing it is off.</p>
+  <p><strong>Fix:</strong> <code>timingSafeEqual</code> over equal-length buffers, plus <code>_perIpRateLimit</code> on <code>/auth-verify</code>. Both primitives already exist. Then correct the documentation.</p>
+</div>
+
+<div class="card crit">
+  <span class="chip crit">high (windows)</span><span class="t">2. UNC paths silently corrupted &mdash; <code>utils/file-watcher.js:90</code></span>
+  <pre>return out.startsWith('\\\\?\\') ? out.slice(4) : out;              <span class="kw">// blind slice</span>
+
+out = out.startsWith('\\\\?\\UNC\\') ? '\\\\' + out.slice(8) : out.slice(4);   <span class="good">// server.js:670</span></pre>
+  <p><code>realpathSync.native</code> returns <code>\\?\UNC\server\share\project</code> for a UNC path. <code>slice(4)</code> yields <code>UNC\server\share\project</code> &mdash; an absolute network path silently becomes a malformed relative one, so watcher subscription matching fails on network shares. Windows is the primary target, and the repo already documents this exact trap ten files away.</p>
+</div>
+
+<div class="card warn">
+  <span class="chip warn">medium-high</span><span class="t">3. Unanchored PowerShell spawn &mdash; <code>model-host-containment.js:55</code></span>
+  <p><code>execFile('powershell.exe', ...)</code> resolves through <code>PATH</code>, while <code>server.js:7049</code>, <code>terminal-bridge.js:115</code> and <code>hibernation-guard.js:77</code> all anchor to <code>SystemRoot\System32\...</code>. With a stripped <code>PATH</code> the orphan model-host sweep silently never runs (so orphans accumulate unnoticed); with an attacker-ordered <code>PATH</code> it is an execution surface.</p>
+</div>
+
+<div class="card warn">
+  <span class="chip warn">medium</span><span class="t">4. Artifact panel does not survive a browser refresh &mdash; <em>your report, confirmed</em></span>
+  <p>Review state is broadcast as a one-shot <em>event</em> (<code>artifact_review_opened</code>, <code>artifact-review.js:913</code>) fired only inside <code>POST /:sessionId/open</code>, and never replayed. localStorage persists <strong>layout only</strong> (<code>left, top, width, height, minimized</code>). There is no rehydrate fetch. So a refresh yields an empty <code>reviews</code> Map while the server still holds the review in <code>ArtifactReviewStore._reviews</code>.</p>
+  <p><strong>Fix (server-side, no client change):</strong> re-emit <code>artifact_review_opened</code> on join when a live non-dismissed review exists. <code>session_joined</code> (<code>server.js:4159</code>) already replays state for exactly this reason. The client handler at <code>app.js:3338</code> is unchanged; it only needs idempotency. This also fixes a second case free: attaching from a phone mid-review currently shows nothing.</p>
+  <p class="note">Different failure, worth knowing: <code>_reviews</code> is in-memory only, so this covers refresh and reconnect but <strong>not</strong> a server restart, which loses the review outright.</p>
+</div>
+
+<div class="card warn">
+  <span class="chip warn">medium</span><span class="t">5. Session data destroyed without backup on malformed-but-parseable file &mdash; <code>utils/session-store.js:373</code></span>
+  <pre>} catch (parseError) {
+    await fs.rename(this.sessionsFile, `${this.sessionsFile}.corrupted.${Date.now()}`);  <span class="good">// backed up</span>
+    return new Map();
+}
+if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sessions)) {
+    console.log('Invalid sessions file format, starting fresh');
+    return new Map();          <span class="kw">// NO BACKUP</span>
+}</pre>
+  <p>Autosave overwrites the original within 30 seconds. Unlike its neighbour three lines up, this path is unrecoverable.</p>
+</div>
+
+<div class="card">
+  <span class="chip warn">low</span><span class="t">6. Smaller confirmed items</span>
+  <ul>
+    <li><strong><code>session-manager.js:139</code></strong> &mdash; overlapping notifications capture <code>&bull; title</code> as <code>originalTitle</code>, leaving a permanent bullet in the tab title.</li>
+    <li><strong><code>server.js:454</code></strong> &mdash; the <code>.crash</code> dump is a non-atomic <code>writeFileSync</code> to a fixed filename, so a kill mid-write truncates it and consecutive crashes overwrite. <code>writeFileSync</code> to temp + <code>renameSync</code> fixes it without breaking the sync constraint. (The <em>primary</em> <code>sessions.json</code> write is already properly atomic.)</li>
+  </ul>
+</div>
+
+<h2>Verified healthy &mdash; worth knowing what not to worry about</h2>
+<div class="card ok">
+  <span class="chip ok">clean</span>
+  <ul>
+    <li><strong>Path traversal:</strong> <code>_canonicalizePathSync</code> canonicalizes <em>both</em> sides with <code>realpathSync.native</code>, recurses to the parent for non-existent leaves, strips both <code>\\?\</code> and <code>\\?\UNC\</code>, and compares via <code>path.relative</code>. Correct.</li>
+    <li><strong><code>sessions.json</code> durability:</strong> temp file + <code>fsync</code> + rename, parent-dir fsync on POSIX, and an in-flight promise-chain lock serializing concurrent saves. Restore forces <code>active: false</code> with cleared connections.</li>
+    <li><strong>Crash-capable paths:</strong> WS frames size-capped before <code>JSON.parse</code>, parsing in try/catch, shapes validated, <code>.catch()</code> on async handlers, PTY listeners disposed, spawn rollback, 30s watchdog, Windows Job Objects for process-tree reaping.</li>
+    <li><strong>Secret redaction</strong> (PEM, bearer, AWS/GitHub/OpenAI keys) before text reaches the summarizer. <strong>Dependencies:</strong> zero vulnerabilities at any severity. <strong>Tests:</strong> no hidden skips &mdash; the alarming-looking guards are dormant (83 passing, 0 pending).</li>
+  </ul>
+</div>
+
+<h2>Passed along but NOT independently verified</h2>
+<div class="card acc">
+  <span class="chip acc">unverified</span>
+  <p>Plausible, not confirmed by me. Treat as leads:</p>
+  <ul>
+    <li>Artifact asset tokens are <code>HMAC(sessionId)</code> with no expiry and no per-path scope, so a leaked URL grants all assets in that session for the process lifetime.</li>
+    <li><code>artifact-review.js:654,684,694</code> use plain <code>realpathSync</code> rather than <code>.native</code>, so 8.3 short names survive and legitimate assets may 403 on CI runners.</li>
+    <li><code>session-store.js:46</code> test-sandbox guard compares raw strings &mdash; a short name or case variant could let a test write the real store.</li>
+    <li>No rate limiting on WS upgrade, file upload/download/write.</li>
+    <li>VS Code tunnel URLs embed <code>tkn=&lt;connectionToken&gt;</code> (confirmed at <code>vscode-tunnel.js:650,667,815</code>); whether they reach logs I did not confirm. Note this is VS Code's own mechanism, not an invention here.</li>
+    <li>EventSource cross-session desync in the file browser on rapid tab switching.</li>
+  </ul>
+</div>
+
+<h2>Rejected after checking</h2>
+<div class="card">
+  <p>Reported by the surveys, refuted against source. Recording these because the false-positive rate matters when weighing the rest:</p>
+  <ul>
+    <li><strong>All three "HIGH" client findings.</strong> Flow-control wedge &mdash; the decrement is the <em>first</em> statement, before anything throwable. Snapshot-cache unbounded growth &mdash; <code>pruneOrphans</code> <em>is</em> called (<code>app.js:341</code>), the agent searched the wrong name, and an LRU bounds it anyway. Session-creation lockout &mdash; the flag has one read site and routes rather than gating; it cannot lock anyone out.</li>
+    <li><code>_outputTail</code> not cleared on session switch &mdash; it is, at <code>app.js:2759</code>.</li>
+    <li>Crash-file prune regex mismatch &mdash; the pattern is <code>/^sessions\.json\.crash(\.\d+)?$/</code>; the suffix group is optional.</li>
+    <li>"Corrupted <code>sessions.json</code> causes permanent loss" &mdash; that path <em>does</em> back up. The unrecoverable one is its neighbour (finding 5).</li>
+    <li>Sessions older than 7 days discarded on load &mdash; consistent with the documented eviction policy, not a bug.</li>
+  </ul>
+</div>
+
+<h2>Structural</h2>
+<div class="card">
+  <table>
+    <tr><th></th><th>lines</th><th>methods</th><th>ctor fields</th></tr>
+    <tr><td><code>ClaudeCodeWebServer</code></td><td>8,163</td><td>159</td><td><strong>208</strong></td></tr>
+    <tr><td><code>ClaudeCodeWebInterface</code></td><td>7,091</td><td>174</td><td>&mdash;</td></tr>
+    <tr><td><code>file-browser.js</code></td><td>4,155</td><td>&mdash;</td><td>&mdash;</td></tr>
+  </table>
+  <p>Normally architectural debt rather than a defect &mdash; except that it is the plausible common cause of the drift pattern at the top of this page. With 208 shared mutable fields, no single place owns any invariant.</p>
+</div>
+
+</div></body></html>
