@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const search = require('./utils/search');
 const FileWatcher = require('./utils/file-watcher');
+const { stripWindowsLongPathPrefix } = require('./utils/win-long-path');
 const WebSocket = require('ws');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -691,9 +692,7 @@ class ClaudeCodeWebServer {
       //   `\\?\UNC\server\share\…` → `\\server\share\…`
       // Without this, baseFolder (resolved before the prefix was added)
       // and the realpath'd target would still lexically disagree.
-      if (process.platform === 'win32' && out.startsWith('\\\\?\\')) {
-        out = out.startsWith('\\\\?\\UNC\\') ? '\\\\' + out.slice(8) : out.slice(4);
-      }
+      out = stripWindowsLongPathPrefix(out);
       return out;
     } catch (_) {
       // Path doesn't exist — recurse on the parent (which usually does)
@@ -4236,6 +4235,28 @@ class ClaudeCodeWebServer {
       stickyNotesStatus: this.stickyNoteEngine.getStatus()
     });
 
+    const review = this.artifactReviews.get(claudeSessionId);
+    if (review && review.status !== 'ended' && review.visibility !== 'dismissed') {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'artifact_review_opened',
+        sessionId: claudeSessionId,
+        key: review.key,
+        file: review.file,
+        viewUrl: `/api/artifact/${encodeURIComponent(claudeSessionId)}/view`,
+      });
+    } else if (review && review.status === 'ended') {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'artifact_review_ended',
+        sessionId: claudeSessionId,
+      });
+    } else if (review && review.visibility === 'dismissed') {
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'artifact_review_dismissed',
+        sessionId: claudeSessionId,
+        dismissed: true,
+      });
+    }
+
     if (this.dev) {
       console.log(`WebSocket ${wsId} joined Claude session ${claudeSessionId}`);
     }
@@ -4947,7 +4968,7 @@ class ClaudeCodeWebServer {
     session._geometrySpawning = true;
     this.activityBroadcastTimestamps.set(sessionId, Date.now());
     try {
-      await bridge.startSession(sessionId, {
+      const startedBridgeSession = await bridge.startSession(sessionId, {
         workingDir: session.workingDir,
         cols, rows,
         dangerouslySkipPermissions: !!opts.dangerouslySkipPermissions,
@@ -5004,6 +5025,15 @@ class ClaudeCodeWebServer {
         },
         extraEnv,
       });
+      // Bail before committing geometry: a bridge session that never started
+      // has no PTY to size, so commitSpawn would publish a grid for something
+      // that does not exist. The spawning flag must still clear on this path —
+      // leaving it latched makes isActive() false forever, and the geometry
+      // coordinator would silently ignore the session for the rest of its life.
+      if (!startedBridgeSession) {
+        session._geometrySpawning = false;
+        return;
+      }
       if (this.terminalGeometry) {
         await this.terminalGeometry.commitSpawn(sessionId, cols, rows);
         session._geometrySpawning = false;
@@ -5686,7 +5716,7 @@ class ClaudeCodeWebServer {
         },
       } : {};
 
-      await bridge.startSession(sessionId, {
+      const startedBridgeSession = await bridge.startSession(sessionId, {
         workingDir: session.workingDir,
         cols: spawnGeometry.cols,
         rows: spawnGeometry.rows,
@@ -5756,6 +5786,7 @@ class ClaudeCodeWebServer {
           ...claudeArtifactEnv,
         }
       });
+      if (!startedBridgeSession) return;
 
       if (this.terminalGeometry) {
         try {
@@ -7672,6 +7703,7 @@ class ClaudeCodeWebServer {
         type: 'vscode_tunnel_error',
         error: result.error,
         message: result.message || result.error,
+        ...(result.localUrl ? { localUrl: result.localUrl } : {}),
         ...(result.install ? { install: result.install } : {}),
       });
     }

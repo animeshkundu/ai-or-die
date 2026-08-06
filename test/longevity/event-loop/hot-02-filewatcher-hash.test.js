@@ -44,6 +44,7 @@ const path = require('path');
 const { monitorEventLoopDelay } = require('perf_hooks');
 
 const FileWatcher = require('../../../src/utils/file-watcher');
+const { stripWindowsLongPathPrefix } = require('../../../src/utils/win-long-path');
 
 function busyWait(ms) {
   const end = Date.now() + ms;
@@ -69,7 +70,7 @@ function realpathNative(p) {
   } catch (_) {
     out = fs.realpathSync(p);
   }
-  return typeof out === 'string' && out.startsWith('\\\\?\\') ? out.slice(4) : out;
+  return stripWindowsLongPathPrefix(out);
 }
 
 describe('HOT-02: FileWatcher sync MD5 on hot path (event-loop block under bulk edits)', function () {

@@ -4,10 +4,8 @@
 
 # --- serve-web subcommand (local VS Code HTTP server) ---
 if [ "$1" = "serve-web" ]; then
-  echo "Web UI available at http://localhost:9100"
-  # Stay alive until killed (real code serve-web is a long-running server)
-  sleep 3600
-  exit 0
+  SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+  exec node "$SCRIPT_DIR/fake-code-server.js" "$@"
 fi
 
 # --- Legacy: tunnel subcommand ---

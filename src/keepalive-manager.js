@@ -152,8 +152,8 @@ class KeepaliveManager {
 
   // Absolute path to in-box Windows PowerShell 5.1 (PATH-hijack hardening --
   // never resolve a bare "powershell.exe" off PATH).
-  static powershellPath() {
-    const root = process.env.SystemRoot || process.env.windir || 'C:\\Windows';
+  static powershellPath(env = process.env) {
+    const root = env.SystemRoot || env.windir || 'C:\\Windows';
     return path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   }
 

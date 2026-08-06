@@ -5,6 +5,7 @@
 
 const { test, expect } = require('@playwright/test');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { createServer } = require('../helpers/server-factory');
@@ -16,8 +17,6 @@ const {
   joinSessionAndStartTerminal,
 } = require('../helpers/terminal-helpers');
 const {
-  makeFixtureDir,
-  cleanupFixture,
   dispatchDrop,
 } = require('../helpers/file-browser-v2-helpers');
 
@@ -42,13 +41,22 @@ test.describe('Drop generic file: PDF', () => {
   let fixture;
 
   test.beforeAll(async () => {
-    fixture = makeFixtureDir('drop-pdf');
-    ({ server, port, url } = await createServer());
+    // Keep the terminal injection path short enough that readline does not
+    // horizontally scroll the leading `@` out of xterm's visible buffer.
+    // The test asserts the user-visible prefix as well as the uploaded bytes.
+    fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'aod-pdf-'));
+    const originalCwd = process.cwd();
+    process.chdir(os.tmpdir());
+    try {
+      ({ server, port, url } = await createServer());
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 
   test.afterAll(async () => {
     if (server) await server.close();
-    cleanupFixture(fixture);
+    if (fixture) fs.rmSync(fixture, { recursive: true, force: true });
   });
 
   test.afterEach(async ({ page }, testInfo) => {

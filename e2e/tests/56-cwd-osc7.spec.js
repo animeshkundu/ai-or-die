@@ -20,13 +20,11 @@ const {
   setupPageCapture,
   attachFailureArtifacts,
   joinSessionAndStartTerminal,
-  waitForWsMessage,
 } = require('../helpers/terminal-helpers');
 const {
   makeFixtureDir,
   cleanupFixture,
   writeFileInside,
-  osc7EmitCommand,
 } = require('../helpers/file-browser-v2-helpers');
 
 test.describe('OSC 7 live CWD tracking', () => {
@@ -80,18 +78,30 @@ test.describe('OSC 7 live CWD tracking', () => {
   }
 
   /**
-   * Send a printf command into the running shell that emits an OSC 7
-   * escape for `targetDir`. The bridge's osc7-parser will catch the
-   * sequence in the PTY output stream and trigger a `cwd_changed` WS
-   * broadcast.
+   * Change the real shell directory. The session-scoped prompt hook emits
+   * OSC 7 after the command, and the bridge broadcasts cwd_changed.
    */
-  async function emitOsc7(page, targetDir) {
-    const cmd = osc7EmitCommand(targetDir);
+  async function changeCwd(page, targetDir) {
+    const cmd = `cd ${JSON.stringify(targetDir)}\r`;
     await page.evaluate((data) => {
       if (window.app && window.app.socket && window.app.socket.readyState === 1) {
         window.app.socket.send(JSON.stringify({ type: 'input', data }));
       }
     }, cmd);
+  }
+
+  async function waitForCwdFrame(page, targetDir, timeoutMs = 8000) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const frame = page._wsMessages.find(
+        (message) => message.dir === 'recv'
+          && message.type === 'cwd_changed'
+          && message.cwd === targetDir
+      );
+      if (frame) return frame;
+      await page.waitForTimeout(100);
+    }
+    return null;
   }
 
   test('cwd_changed WS frame fires on OSC 7 emit; panel re-roots when follow=on', async ({ page }) => {
@@ -110,10 +120,12 @@ test.describe('OSC 7 live CWD tracking', () => {
     // single OSC 7 emit, then assert the panel re-roots.
     await openBrowserAt(page, dirA);
 
-    await emitOsc7(page, dirB);
+    await changeCwd(page, dirB);
 
-    // Wait for the broadcast to land at the client side.
-    const cwdMsg = await waitForWsMessage(page, 'recv', 'cwd_changed', 8000);
+    // The automatic hook emits the initial spawn directory too, so wait for
+    // the frame matching the directory changed above rather than the first
+    // cwd_changed frame.
+    const cwdMsg = await waitForCwdFrame(page, dirB);
     expect(cwdMsg, 'cwd_changed WS frame should be broadcast').toBeTruthy();
     expect(cwdMsg.cwd).toBe(dirB);
     expect(cwdMsg.source).toBe('osc7');
@@ -146,8 +158,8 @@ test.describe('OSC 7 live CWD tracking', () => {
     // Establish a baseline liveCwd of dirB so the follow toggle button
     // becomes visible (it's hidden until the first liveCwd is observed
     // for the active session — see _refreshFollowToggleUI).
-    await emitOsc7(page, dirB);
-    await waitForWsMessage(page, 'recv', 'cwd_changed', 8000);
+    await changeCwd(page, dirB);
+    await waitForCwdFrame(page, dirB);
 
     await openBrowserAt(page, dirB);
     // Wait for panel to settle on dirB.
@@ -165,7 +177,7 @@ test.describe('OSC 7 live CWD tracking', () => {
     });
 
     // Emit OSC 7 for dirC; the panel must NOT re-root because follow=off.
-    await emitOsc7(page, dirC);
+    await changeCwd(page, dirC);
     // Wait for the WS frame so we know the server processed the emit.
     const c2 = await page.evaluate(async () => {
       return new Promise((resolve) => {
@@ -183,7 +195,7 @@ test.describe('OSC 7 live CWD tracking', () => {
     });
     // page._wsMessages is the canonical capture; the inline poll above
     // is just defensive — fall back to the helper for the assertion.
-    const cwdC = await waitForWsMessage(page, 'recv', 'cwd_changed', 8000);
+    const cwdC = await waitForCwdFrame(page, dirC);
     expect(cwdC).toBeTruthy();
     // Multiple cwd_changed frames may have arrived (one for B, one for C);
     // assert that AT LEAST one of them is for dirC.

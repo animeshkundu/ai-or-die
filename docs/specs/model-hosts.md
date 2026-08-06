@@ -95,6 +95,14 @@ only when that original owning core no longer exists. Shell processes whose
 command text happens to contain marker strings are never candidates, and a host
 owned by another live server instance is never retired.
 
+The sweep launches the in-box Windows PowerShell 5.1 executable by absolute path
+under `SystemRoot` (falling back through `windir` and then `C:\Windows`), never
+through `PATH`. A synchronous launch failure, missing executable, timeout, or
+non-zero exit emits one warning naming that path. Sweep failure remains
+non-fatal so server startup continues in degraded containment mode. Windows
+coverage parses the generated command with the in-box PowerShell 5.1 parser
+before the sweep contract is accepted.
+
 There remains a PID-reuse window between process creation and assignment because
 the launcher does not yet create the process suspended. This is documented, not
 claimed as closed.

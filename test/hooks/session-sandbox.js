@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const assert = require('assert');
+const { stripWindowsLongPathPrefix } = require('../../src/utils/win-long-path');
 
 const realStore = path.join(os.homedir(), '.ai-or-die');
 
@@ -25,7 +26,7 @@ const realStore = path.join(os.homedir(), '.ai-or-die');
   try {
     const current = os.tmpdir();
     let resolved = fs.realpathSync.native(current);
-    if (typeof resolved === 'string' && resolved.startsWith('\\\\?\\')) resolved = resolved.slice(4);
+    resolved = stripWindowsLongPathPrefix(resolved);
     if (resolved && resolved !== current) {
       for (const key of ['TEMP', 'TMP', 'TMPDIR']) {
         if (process.env[key]) process.env[key] = resolved;

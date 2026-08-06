@@ -471,6 +471,76 @@ describe('E2E: Session management', function () {
     await closeWs(ws);
   });
 
+  it('should replay a live artifact review only to each joining socket', async function () {
+    const createRes = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {
+      body: { name: 'Artifact replay target' }
+    });
+    const sessionId = createRes.body.sessionId;
+    const review = server.artifactReviews.open(sessionId, __filename);
+
+    const { ws: wsA } = await connectWs(port);
+    const framesA = [];
+    wsA.on('message', (raw, isBinary) => {
+      if (!isBinary) framesA.push(JSON.parse(raw.toString()));
+    });
+    wsSend(wsA, { type: 'join_session', sessionId });
+    await waitForMessage(wsA, 'artifact_review_opened');
+
+    assert.deepStrictEqual(
+      framesA.filter((frame) => frame.type === 'session_joined' || frame.type === 'artifact_review_opened').map((frame) => frame.type),
+      ['session_joined', 'artifact_review_opened']
+    );
+    const openedA = framesA.find((frame) => frame.type === 'artifact_review_opened');
+    assert.strictEqual(openedA.sessionId, sessionId);
+    assert.strictEqual(openedA.key, review.key);
+    assert.strictEqual(openedA.file, review.file);
+    assert(!openedA.viewUrl.includes('token='), 'join replay must not embed an auth token');
+
+    const aReplayCount = framesA.filter((frame) => frame.type === 'artifact_review_opened').length;
+    const { ws: wsB } = await connectWs(port);
+    wsSend(wsB, { type: 'join_session', sessionId });
+    const openedB = await waitForMessage(wsB, 'artifact_review_opened');
+    assert.strictEqual(openedB.key, review.key);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.strictEqual(
+      framesA.filter((frame) => frame.type === 'artifact_review_opened').length,
+      aReplayCount,
+      'joining a second device must not rebroadcast the replay to the first'
+    );
+
+    await Promise.all([closeWs(wsA), closeWs(wsB)]);
+  });
+
+  it('should not replay dismissed or ended artifact reviews', async function () {
+    const createRes = await httpRequest('POST', `http://127.0.0.1:${port}/api/sessions/create`, {
+      body: { name: 'Hidden artifact replay target' }
+    });
+    const sessionId = createRes.body.sessionId;
+    server.artifactReviews.open(sessionId, __filename);
+    server.artifactReviews.setVisibility(sessionId, 'dismissed');
+
+    const { ws: dismissedWs } = await connectWs(port);
+    const dismissedFrames = collectMessages(dismissedWs, 'artifact_review_opened', 300);
+    const dismissedState = waitForMessage(dismissedWs, 'artifact_review_dismissed');
+    wsSend(dismissedWs, { type: 'join_session', sessionId });
+    await waitForMessage(dismissedWs, 'session_joined');
+    assert.strictEqual((await dismissedState).dismissed, true);
+    assert.deepStrictEqual(await dismissedFrames, []);
+    await closeWs(dismissedWs);
+
+    const stored = server.artifactReviews.get(sessionId);
+    stored.visibility = 'shown';
+    stored.status = 'ended';
+    const { ws: endedWs } = await connectWs(port);
+    const endedFrames = collectMessages(endedWs, 'artifact_review_opened', 300);
+    const endedState = waitForMessage(endedWs, 'artifact_review_ended');
+    wsSend(endedWs, { type: 'join_session', sessionId });
+    await waitForMessage(endedWs, 'session_joined');
+    assert.strictEqual((await endedState).sessionId, sessionId);
+    assert.deepStrictEqual(await endedFrames, []);
+    await closeWs(endedWs);
+  });
+
   it('should return an error when joining a non-existent session', async function () {
     const { ws } = await connectWs(port);
     wsSend(ws, { type: 'join_session', sessionId: 'does-not-exist' });
