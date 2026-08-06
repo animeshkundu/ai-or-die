@@ -135,6 +135,44 @@ test.describe('Terminal-first client shell contract', () => {
     expect(await page.evaluate(() => window.__shellProbe.resizeCalls)).toBe(0);
   });
 
+  // The opener captured when the panel opens can be gone by the time it closes:
+  // both openers sit behind responsive breakpoints, so crossing 820px while the
+  // panel is up leaves the captured control connected but display:none.
+  // Focusing a hidden control strands focus on <body>, which is worse than
+  // either candidate outcome, so close() has to revalidate.
+  test('closing after a breakpoint change focuses a visible control, never nothing', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await setupPage(page);
+
+    const desktopOpener = page.locator('#browseFilesBtn');
+    await expect(desktopOpener).toBeVisible();
+    await desktopOpener.click();
+    const panel = page.locator('#fileBrowserPanel');
+    await expect(panel).toBeVisible();
+
+    // Narrow below the chrome breakpoint: the button that opened the panel is
+    // now hidden and the bottom-nav opener has taken its place.
+    await page.setViewportSize({ width: 500, height: 800 });
+    await expect(desktopOpener).toBeHidden();
+
+    await page.keyboard.press('Escape');
+    await expect(panel).toBeHidden();
+
+    // Whatever ends up focused, it must be something real and on screen.
+    const landed = await page.evaluate(() => {
+      const el = document.activeElement;
+      if (!el || el === document.body) return { ok: false, what: 'body-or-null' };
+      const rects = el.getClientRects();
+      return {
+        ok: rects.length > 0,
+        what: el.id || el.className || el.tagName,
+      };
+    });
+    expect(landed, `focus landed on ${landed.what}`).toMatchObject({ ok: true });
+    // And specifically not the control that is now hidden.
+    await expect(desktopOpener).not.toBeFocused();
+  });
+
   test('settings, command palette, input, and artifact chrome never resize the terminal', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await setupPage(page);

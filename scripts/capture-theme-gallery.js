@@ -40,6 +40,20 @@ async function main() {
   fs.mkdirSync(outDir, { recursive: true });
 
   const themes = shippedThemes();
+  const expected = new Set(themes.map((t) => `theme-${t}.png`));
+
+  // Prune first. Without this a palette deleted from tokens.css leaves its old
+  // screenshot behind, and the gallery would keep advertising a theme that no
+  // longer ships — the exact regression this evidence is meant to catch. Only
+  // generated theme-*.png files are considered, so anything else in the
+  // directory is left alone.
+  for (const entry of fs.readdirSync(outDir)) {
+    if (!/^theme-.+\.png$/.test(entry)) continue;
+    if (expected.has(entry)) continue;
+    fs.unlinkSync(path.join(outDir, entry));
+    process.stdout.write(`pruned ${entry} (no longer in tokens.css)\n`);
+  }
+
   const { server, port, url } = await createServer();
   const browser = await chromium.launch();
 

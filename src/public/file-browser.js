@@ -372,6 +372,10 @@
     this._homePath = null;
 
     this._open = false;
+    // Last value written to --fb-dock-width, so a repeated resize that measures
+    // the same width does not re-trigger the terminal refit. null means the
+    // property is not currently set.
+    this._publishedDockWidth = null;
     this._currentPath = null;
     this._basePath = null;
     this._items = [];
@@ -949,7 +953,12 @@
     if (!root) return;
     var docked = this._open && !this._isOverlayMode();
     if (!docked) {
-      root.style.removeProperty('--fb-dock-width');
+      // Clear unconditionally the first time, then track it, so the cache below
+      // can never claim a width is published after this branch removed it.
+      if (this._publishedDockWidth !== null) {
+        this._publishedDockWidth = null;
+        root.style.removeProperty('--fb-dock-width');
+      }
       return;
     }
     var width = 0;
@@ -958,7 +967,14 @@
     } catch (_) {
       width = 0;
     }
-    if (width > 0) root.style.setProperty('--fb-dock-width', width + 'px');
+    // Skip a write that would not change anything. Setting the property is not
+    // free: .terminal-container reserves it as padding, so every write the
+    // terminal wrapper's ResizeObserver sees turns into a refit. A drag-resize
+    // of a docked panel reports the same width for most frames.
+    var next = width > 0 ? width + 'px' : null;
+    if (next === this._publishedDockWidth) return;
+    this._publishedDockWidth = next;
+    if (next) root.style.setProperty('--fb-dock-width', next);
     else root.style.removeProperty('--fb-dock-width');
   };
 

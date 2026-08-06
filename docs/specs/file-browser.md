@@ -27,7 +27,31 @@ A web-based file manager that provides browsing, previewing, editing, uploading,
 - At 1024px and below the same permanent panel node is a fixed overlay with a
   backdrop, focus containment, `aria-modal="true"`, and an inert background
   application tree. Breakpoint changes never reparent Monaco or preview DOM.
+- Dock width is published as `--fb-dock-width` on the document element, which
+  `.terminal-container` reserves as padding; ADR-0052 makes that property the
+  single owner of dock width. It is set on open, cleared on close, and
+  republished when the viewport crosses the 1024px breakpoint while the panel
+  is open. Publication is part of the open/close lifecycle, not a side effect
+  of a view transition — a panel that reflows on open but not on close leaves
+  the terminal permanently narrow.
+- Resize-driven republication is coalesced to one animation frame and skipped
+  when the measured width has not changed, because each write drives a terminal
+  refit through the terminal wrapper's `ResizeObserver`.
 - Focus moves into the panel on open and returns to the opener on close.
+  - The opener is supplied by the caller and resolved by what is **rendered**,
+    not by what dispatched the event: the mobile bottom nav opens the panel by
+    synthesising a click on the hidden desktop button, and WebKit does not
+    focus a `<button>` on click at all, so `document.activeElement` is
+    unreliable at open time. It remains the fallback for keyboard opens
+    (`Ctrl+B`), where it is correct.
+  - The opener is revalidated on close. Both openers sit behind responsive
+    breakpoints, so a viewport change can leave the captured control connected
+    but `display: none`; focusing a hidden control strands focus on `<body>`.
+    When it is no longer visible, the currently-rendered equivalent opener is
+    used, and only then the terminal.
+  - The focus call is verified against `document.activeElement` afterwards,
+    since `focus()` silently no-ops on a hidden, disabled or inert target. The
+    terminal is the fallback when it did not take.
 - Closing removes the panel from layout with the `hidden` attribute.
 - Clicking a file continues to render the preview inside the same drawer.
 - The desktop resize separator is fully contained by the file-workspace track,
