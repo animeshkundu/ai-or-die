@@ -178,12 +178,12 @@ module.exports = defineConfig({
     },
     {
       name: 'client-redesign',
-      testMatch: /(?:^|[\\/])(?:7[4-6]-.*|8[1-4]-.*)\.spec\.js$/,
+      testMatch: /(?:^|[\\/])(?:7[4-6]-.*|8[1-5]-.*)\.spec\.js$/,
       timeout: 90000,
     },
     {
       name: 'client-redesign-webkit',
-      testMatch: /(?:^|[\\/])(?:7[4-6]-.*|8[1-4]-.*)\.spec\.js$/,
+      testMatch: /(?:^|[\\/])(?:7[4-6]-.*|8[1-5]-.*)\.spec\.js$/,
       // Split view is desktop-only: the client refuses it below 700px of
       // available width. Under WebKit's phone device profile `setViewportSize`
       // does not reliably yield a desktop-class layout (`width=device-width`

@@ -27,7 +27,7 @@
     margin-top: 8px;
     background-color: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
     min-width: 320px;
     max-width: 400px;
@@ -153,7 +153,7 @@
 
 .session-modal .modal-content {
     background-color: var(--bg-secondary);
-    border-radius: 12px;
+    border-radius: var(--radius-xl);
     border: 1px solid var(--border);
     width: 90%;
     max-width: 480px;
@@ -177,7 +177,7 @@
     padding: 8px 12px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: 13px;
@@ -210,7 +210,7 @@
 
 .modal-content {
     background-color: var(--bg-secondary);
-    border-radius: 12px;
+    border-radius: var(--radius-xl);
     border: 1px solid var(--border);
     width: 400px;
     max-width: 90vw;
@@ -311,7 +311,7 @@
     height: 4px;
     background: var(--border);
     outline: none;
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
 }
 
 .setting-group input[type="range"]::-webkit-slider-thumb {
@@ -320,7 +320,7 @@
     height: 16px;
     background: var(--accent);
     cursor: pointer;
-    border-radius: 50%;
+    border-radius: 50%;;
 }
 
 .setting-group select {
@@ -329,7 +329,7 @@
     background-color: var(--bg-tertiary);
     color: var(--text-primary);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-family: var(--font-mono);
 }
 
@@ -396,7 +396,7 @@
 
 .setting-group--warning {
     border: 1px solid var(--status-warning, #f59e0b);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     padding: 10px 12px;
     background: rgba(245, 158, 11, 0.08);
 }
@@ -437,7 +437,7 @@
 
 .plan-modal .modal-content {
     background-color: var(--bg-secondary);
-    border-radius: 12px;
+    border-radius: var(--radius-xl);
     width: 90%;
     max-width: 800px;
     max-height: 80dvh;
@@ -472,14 +472,14 @@
     gap: 10px;
     padding: 10px 15px;
     background-color: var(--bg-tertiary);
-    border-radius: 8px;
+    border-radius: var(--radius-lg);
     margin-bottom: 20px;
 }
 
 .plan-status-indicator {
     width: 10px;
     height: 10px;
-    border-radius: 50%;
+    border-radius: 50%;;
     background-color: var(--status-success);
     animation: plan-indicator-pulse var(--duration-attention) var(--ease-default) infinite;
 }
@@ -655,7 +655,7 @@
     background-color: var(--bg-tertiary);
     color: var(--text-primary);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-default);
     min-width: 36px;
@@ -685,7 +685,7 @@
     background-color: var(--bg-tertiary);
     color: var(--text-primary);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-family: var(--font-mono);
     font-size: 13px;
 }
@@ -697,7 +697,7 @@
     padding: 12px;
     background-color: var(--bg-tertiary);
     border: 1px solid var(--accent);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
 }
 
 .folder-name-input {
@@ -706,7 +706,7 @@
     background-color: var(--bg-primary);
     color: var(--text-primary);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     font-family: var(--font-mono);
     font-size: 13px;
 }
@@ -726,7 +726,7 @@
     min-height: 200px;
     max-height: 400px;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background-color: var(--bg-tertiary);
     overflow: hidden;
     display: flex;
@@ -748,7 +748,7 @@
     margin-bottom: 4px;
     background-color: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-default);
     font-size: 14px;

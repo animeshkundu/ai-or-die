@@ -17,7 +17,7 @@
   background: var(--panel-bg, #1b1d23);
   color: var(--panel-fg, #e6e6e6);
   border: 1px solid var(--panel-border, #33363f);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
   z-index: 40;
   overflow: hidden;
@@ -37,7 +37,7 @@
   gap: 6px;
   padding: 8px 12px;
   border: 1px solid var(--panel-border, #33363f);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--panel-header-bg, #232630);
   color: var(--panel-fg, #e6e6e6);
   font-size: 12px;
@@ -98,7 +98,7 @@
   font-size: 15px;
   line-height: 1;
   padding: 2px 6px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 .artifact-panel__btn:hover { background: rgba(255, 255, 255, 0.08); }
 .artifact-panel__btn:focus-visible { outline: 2px solid var(--accent-default, #2563eb); outline-offset: 1px; }
@@ -145,7 +145,7 @@
   gap: 6px;
   max-width: 100%;
   border: 1px solid var(--border-hover, #484f58);
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   background: var(--surface-elevated, #21262d);
   color: var(--panel-fg, #e6e6e6);
   padding: 4px 6px 4px 10px;
@@ -162,7 +162,7 @@
   width: 18px;
   height: 18px;
   border: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-full);
   padding: 0;
   background: var(--panel-border, #33363f);
   color: var(--panel-fg, #e6e6e6);
@@ -205,7 +205,7 @@
   background: var(--input-bg, #11131a);
   color: var(--panel-fg, #e6e6e6);
   border: 1px solid var(--panel-border, #33363f);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 6px 8px;
   font-size: 13px;
 }
@@ -213,7 +213,7 @@
   background: var(--accent-default, #2563eb);
   color: #fff;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 6px 12px;
   cursor: pointer;
   font-weight: 600;
@@ -304,7 +304,7 @@
     max-width: none;
     height: 70dvh !important;
     min-width: 0;
-    border-radius: 12px 12px 0 0;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
     box-sizing: border-box;
     padding-bottom: var(--sa-bottom, 0px);
     box-shadow: 0 -10px 32px rgba(0, 0, 0, 0.45);

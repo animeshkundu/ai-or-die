@@ -185,7 +185,7 @@
     width: 100px;
     background: var(--accent-soft);
     border: 2px dashed var(--accent-default);
-    border-radius: 8px;
+    border-radius: var(--radius-lg);
     pointer-events: none;
     z-index: var(--z-dropdown);
 }
@@ -237,7 +237,7 @@
     text-align: center;
     padding: 40px;
     background-color: var(--bg-secondary);
-    border-radius: 12px;
+    border-radius: var(--radius-xl);
     border: 1px solid var(--border);
     max-width: 520px;
 }
@@ -311,7 +311,7 @@
     height: 40px;
     border: 3px solid var(--border);
     border-top: 3px solid var(--accent);
-    border-radius: 50%;
+    border-radius: 50%;;
     animation: spin var(--duration-rotation) var(--ease-linear) infinite;
 }
 
@@ -371,7 +371,7 @@
 
 .xterm-viewport::-webkit-scrollbar-thumb {
     background: var(--border);
-    border-radius: 5px;
+    border-radius: var(--radius-sm);
 }
 
 .xterm-viewport::-webkit-scrollbar-thumb:hover {
@@ -379,7 +379,7 @@
 }
 
 /* Context menu for tabs */
-.pane-session-menu { position: absolute; z-index: var(--z-overlay); min-width: 220px; background: var(--bg-secondary); border:1px solid var(--border); border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.35); padding:6px; }
-.pane-session-item { padding:8px 10px; border-radius:6px; cursor:pointer; color: var(--text-primary); }
+.pane-session-menu { position: absolute; z-index: var(--z-overlay); min-width: 220px; background: var(--bg-secondary); border:1px solid var(--border); border-radius: var(--radius-lg); box-shadow:0 8px 24px rgba(0,0,0,.35); padding:6px; }
+.pane-session-item { padding:8px 10px; border-radius: var(--radius-md); cursor:pointer; color: var(--text-primary); }
 .pane-session-item.used { color: var(--text-secondary); }
 .pane-session-item:hover { background: var(--bg-tertiary); }

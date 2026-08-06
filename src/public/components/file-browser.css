@@ -145,7 +145,7 @@
 }
 .fb-file-list::-webkit-scrollbar { width: 10px; height: 10px; }
 .fb-file-list::-webkit-scrollbar-track { background: var(--surface-secondary); }
-.fb-file-list::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 5px; }
+.fb-file-list::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: var(--radius-sm); }
 .fb-file-list::-webkit-scrollbar-thumb:hover { background: var(--border-hover); }
 
 /* ---- File Items ---- */
@@ -528,7 +528,7 @@
 .fb-tab-dirty-dot {
   width: 6px;
   height: 6px;
-  border-radius: 50%;
+  border-radius: 50%;;
   background: var(--status-warning, #e5c07b);
   flex-shrink: 0;
 }
@@ -1408,7 +1408,7 @@
   flex-direction: column;
   background: var(--surface-elevated, var(--surface-secondary));
   border: 1px solid var(--border-default);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.35);
   overflow: hidden;
 }
@@ -1425,7 +1425,7 @@
   background: var(--surface-tertiary);
   color: var(--text-primary);
   border: 1px solid var(--border-default);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   font-family: var(--font-mono, 'JetBrains Mono', monospace);
   font-size: 13px;
   outline: none;
@@ -1437,7 +1437,7 @@
   color: var(--text-secondary);
   cursor: pointer;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .fb-find-close:hover { background: var(--surface-tertiary); color: var(--text-primary); }
 .fb-find-truncation {
@@ -1489,7 +1489,7 @@
   flex-direction: column;
   background: var(--surface-elevated, var(--surface-secondary));
   border: 1px solid var(--accent-default);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   overflow: hidden;
   font-family: var(--font-mono, 'JetBrains Mono', monospace);

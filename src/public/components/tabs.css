@@ -29,7 +29,7 @@
 
 .tabs-section::-webkit-scrollbar-thumb {
     background-color: var(--border);
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
 }
 
 .tabs-container {
@@ -46,7 +46,7 @@
     padding: 0 12px 0 0;
     background-color: var(--surface-tertiary);
     border: 1px solid var(--border-default);
-    border-radius: 6px 6px 0 0;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
     color: var(--text-secondary);
     font-size: 12px;
     cursor: pointer;
@@ -86,7 +86,7 @@
     width: 3px;
     align-self: stretch;
     flex-shrink: 0;
-    border-radius: 3px 0 0 0;
+    border-radius: var(--radius-sm) 0 0 0;
     transition: background-color var(--duration-normal) var(--ease-default);
     background-color: transparent;
 }
@@ -226,7 +226,7 @@
     color: var(--text-primary);
     background: var(--surface-primary);
     border: 1px solid var(--border-hover);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     padding: 2px 4px;
     outline: none;
 }
@@ -237,7 +237,7 @@
     align-items: center;
     flex-shrink: 0;
     margin-left: 4px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     overflow: hidden;
     border: 1px solid var(--border);
     height: 28px;
@@ -297,7 +297,7 @@
     justify-content: center;
     background-color: transparent;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-default);
@@ -392,7 +392,7 @@
         width: 100%;
         justify-content: flex-start;
         padding: 8px 12px;
-        border-radius: 0;
+        border-radius: 0;;
         gap: 8px;
         font-size: var(--text-sm);
     }
@@ -427,7 +427,7 @@
 
 .tab-tile {
   width: 28px; height: 28px; display:flex; align-items:center; justify-content:center;
-  background: transparent; border: 1px solid var(--border); border-radius: 4px;
+  background: transparent; border: 1px solid var(--border); border-radius: var(--radius-sm);
   color: var(--text-secondary); cursor: pointer; transition: all var(--duration-normal) var(--ease-default); flex-shrink: 0; margin-left: 4px;
 }
 .tab-tile:hover { background: var(--bg-tertiary); color: var(--text-primary); }
@@ -450,7 +450,7 @@
     border: none;
     color: var(--text-secondary);
     cursor: pointer;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     transition: all var(--duration-normal) var(--ease-default);
     margin-left: auto;
     flex-shrink: 0;
@@ -468,7 +468,7 @@
     color: var(--text-secondary);
     cursor: pointer;
     padding: 6px;
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -490,7 +490,7 @@
     right: 3px;
     width: 7px;
     height: 7px;
-    border-radius: 50%;
+    border-radius: 50%;;
     background: var(--accent, #5ac8fa);
     box-shadow: 0 0 0 1.5px var(--bg-primary, #1c1c22);
     pointer-events: none;
@@ -525,7 +525,7 @@
     padding: 0 8px;
     background-color: transparent;
     border: 1px solid var(--border);
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-default);
@@ -549,7 +549,7 @@
     right: 0;
     background-color: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     box-shadow: var(--shadow-md);
     min-width: 200px;
     max-width: 300px;
@@ -601,7 +601,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 3px;
+    border-radius: var(--radius-sm);
     color: var(--text-secondary);
     cursor: pointer;
     padding: 0;

@@ -266,4 +266,30 @@ describe('design system audit (AC-9)', function () {
     assert.deepStrictEqual(report, [],
       `var() references to undefined tokens — the fallback governs and the surface ignores the theme:\n${report.join('\n')}`);
   });
+
+  it('builds component geometry on the radius scale (AC-12)', function () {
+    // Coherence is structural, not a matter of taste: 67 hardcoded radii across
+    // the components meant corners were only incidentally similar, and ten of
+    // them (2, 3, 5, 10, 14px) were off the scale entirely. Components must
+    // reference the scale so a change to it actually changes the product.
+    const offenders = [];
+    for (const file of authoredCss()) {
+      if (!file.includes(`${path.sep}components${path.sep}`)) continue;
+      const css = fs.readFileSync(file, 'utf8');
+      const lines = css.split('\n');
+      lines.forEach((line, i) => {
+        const m = line.match(/border-radius:\s*([^;]+);/);
+        if (!m) return;
+        // 50% / 9999px round shapes are a shape, not a scale step.
+        if (/^\s*(?:50%|9999px|var\(--radius-full\))\s*$/.test(m[1])) return;
+        // A px INSIDE var(--token, fallback) is the fallback, not a bypass.
+        const withoutVars = m[1].replace(/var\([^)]*\)/g, '');
+        if (/\d+px/.test(withoutVars)) {
+          offenders.push(`${path.basename(file)}:${i + 1} border-radius: ${m[1].trim()}`);
+        }
+      });
+    }
+    assert.deepStrictEqual(offenders, [],
+      `component radii bypassing the scale:\n${offenders.join('\n')}`);
+  });
 });
