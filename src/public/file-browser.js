@@ -625,12 +625,24 @@
     this._panelEl = panel;
     this._onViewportResize = function () {
       if (!this._open) return;
-      this._updateOverlayMode();
-      // Crossing the dock/overlay breakpoint changes whether the terminal owes
-      // the panel any width at all, so the dock width has to be republished (or
-      // cleared) with it. Updating overlay mode alone leaves a docked width
-      // reserved after the layout has switched to overlay.
-      this._adjustTerminal();
+      // Coalesce to one frame. A drag-resize or orientation change fires
+      // `resize` continuously, and _adjustTerminal reads layout and then writes
+      // --fb-dock-width, which the terminal wrapper's ResizeObserver turns into
+      // a refit — so an uncoalesced handler produces a refit storm.
+      if (this._viewportFrame) return;
+      var schedule = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : function (fn) { return setTimeout(fn, 16); };
+      this._viewportFrame = schedule(function () {
+        this._viewportFrame = null;
+        if (!this._open) return;
+        this._updateOverlayMode();
+        // Crossing the dock/overlay breakpoint changes whether the terminal
+        // owes the panel any width at all, so the dock width has to be
+        // republished (or cleared) with it. Updating overlay mode alone leaves
+        // a docked width reserved after the layout has switched to overlay.
+        this._adjustTerminal();
+      }.bind(this));
     }.bind(this);
     window.addEventListener('resize', this._onViewportResize);
 
@@ -755,6 +767,24 @@
 
   // -- Open / Close / Toggle --
 
+  // Can this element actually take focus right now? `isConnected` is not
+  // enough: the openers live behind responsive breakpoints, so a control that
+  // was on screen when the panel opened can be display:none by the time it
+  // closes while remaining connected. Focusing it then silently drops focus to
+  // <body>.
+  FileBrowserPanel.prototype._isUsableFocusTarget = function (el) {
+    if (!el || el === document.body) return false;
+    if (!el.isConnected || typeof el.focus !== 'function') return false;
+    if (el.disabled) return false;
+    // Rendered check rather than offsetParent, which is null for the
+    // position:fixed chrome these openers live in.
+    try {
+      return !!el.getClientRects && el.getClientRects().length > 0;
+    } catch (_) {
+      return false;
+    }
+  };
+
   // Which element should regain focus when the panel closes.
   //
   // document.activeElement is not reliable on its own: WebKit (and Safari) do
@@ -766,15 +796,7 @@
   FileBrowserPanel.prototype._resolveOpener = function (preferred) {
     var candidates = [preferred, document.activeElement];
     for (var i = 0; i < candidates.length; i++) {
-      var el = candidates[i];
-      if (!el || el === document.body) continue;
-      if (!el.isConnected || typeof el.focus !== 'function') continue;
-      // Rendered check rather than offsetParent, which is null for the
-      // position:fixed chrome these openers live in.
-      try {
-        if (!el.getClientRects || el.getClientRects().length === 0) continue;
-      } catch (_) { continue; }
-      return el;
+      if (this._isUsableFocusTarget(candidates[i])) return candidates[i];
     }
     return null;
   };
@@ -847,11 +869,29 @@
     // space for a panel that is no longer on screen and never returns to full
     // width.
     this._adjustTerminal();
-    var shouldFocusTerminal = !this._opener || this._opener === document.body
-      || !this._opener.isConnected || typeof this._opener.focus !== 'function';
-    if (!shouldFocusTerminal) {
-      this._opener.focus();
-    } else if (this.app && this.app.terminal && typeof this.app.terminal.focus === 'function') {
+    // Restore focus to the control that opened the panel. Revalidate it first:
+    // the openers sit behind responsive breakpoints, so the one captured at
+    // open() may have been hidden by a viewport change while the panel was up.
+    // In that case prefer whichever equivalent opener is on screen now, and
+    // only fall back to the terminal when there is none. Focusing a hidden
+    // control would strand focus on <body>, which is worse than either.
+    var opener = this._isUsableFocusTarget(this._opener) ? this._opener : null;
+    if (!opener && this.app && typeof this.app._visibleFileBrowserOpener === 'function') {
+      try {
+        var live = this.app._visibleFileBrowserOpener();
+        if (this._isUsableFocusTarget(live)) opener = live;
+      } catch (_) { /* fall through to the terminal */ }
+    }
+    var restored = false;
+    if (opener) {
+      try {
+        opener.focus();
+        restored = document.activeElement === opener;
+      } catch (_) {
+        restored = false;
+      }
+    }
+    if (!restored && this.app && this.app.terminal && typeof this.app.terminal.focus === 'function') {
       this.app.terminal.focus();
     }
     this._opener = null;
