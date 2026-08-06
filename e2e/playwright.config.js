@@ -178,7 +178,7 @@ module.exports = defineConfig({
     },
     {
       name: 'client-redesign',
-      testMatch: /(?:^|[\\/])7[4-6]-.*\.spec\.js$/,
+      testMatch: /(?:^|[\\/])(?:7[4-6]-.*|8[123]-.*geometry.*)\.spec\.js$/,
       timeout: 90000,
     },
     {

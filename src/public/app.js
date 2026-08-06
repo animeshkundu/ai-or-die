@@ -823,6 +823,13 @@ class ClaudeCodeWebInterface {
             container: document.querySelector('.terminal-wrapper')
                 || document.getElementById('terminal'),
             terminal: this.terminal,
+            // Dynamic: this viewer is authoritative-mode only while it does NOT
+            // hold the lease. Without it, a capacity change resizes the grid to
+            // local capacity and fitTerminal's re-assert immediately resizes it
+            // back to the applied grid — two resizes per fit, destroying the
+            // presented buffer in between for no benefit. Advertising still
+            // happens either way; only the local resize is suppressed.
+            authoritativeMode: () => this._geometryIsOwner === false && !!this._geometryApplied,
             proposeDimensions: () => this.fitAddon.proposeDimensions(),
             reserve: () => this.isMobile ? { cols: 0, rows: 1 } : { cols: 6, rows: 2 },
             send: ({ cols, rows }) => {

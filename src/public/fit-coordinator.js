@@ -219,6 +219,11 @@
 
       target.deferred = false;
       const unchanged = target.last && target.last.cols === next.cols && target.last.rows === next.rows;
+      // May be a function, because ownership is dynamic: a viewer is only
+      // authoritative-mode while it does NOT hold the lease.
+      const authoritative = typeof target.authoritativeMode === 'function'
+        ? !!target.authoritativeMode()
+        : !!target.authoritativeMode;
       let sendSucceeded = !this._forceSend.has(id);
       try {
         if (!unchanged) {
@@ -227,7 +232,7 @@
           // only — resizing the grid here would fight applyAuthoritative and
           // repeatedly destroy the presented buffer. `target.last` still tracks
           // what we measured so the dedup and retry logic behave normally.
-          if (!target.authoritativeMode) {
+          if (!authoritative) {
             target.terminal.resize(next.cols, next.rows);
           }
           target.last = next;
