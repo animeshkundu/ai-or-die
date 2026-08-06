@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted (2026-08-04).
+Accepted (2026-08-04). **Partially superseded by
+[ADR-0052](0052-multi-viewer-terminal-geometry.md) (2026-08-05).**
+
+Everything below remains accurate for a single browser measuring its own container, and
+`FitCoordinator` is still the sole owner of client-side resize calls. What ADR-0052 supersedes is the
+implicit assumption that one viewer exists: it adds ownership arbitration, a monotonic revision, a
+session epoch, and transactional application for the case where several viewers share one PTY.
 
 ## Context
 
