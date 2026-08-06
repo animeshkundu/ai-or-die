@@ -8,6 +8,10 @@
 // this branch both restored five of them and moved token values in all seven.
 //
 // Usage: node scripts/capture-theme-gallery.js [outDir]
+//
+// Default output is docs/design/theme-gallery. Note it is NOT a directory named
+// `screenshots`: .gitignore ignores that name anywhere in the tree, so writing
+// there would silently produce untrackable evidence.
 
 const path = require('path');
 const fs = require('fs');
@@ -32,7 +36,7 @@ function shippedThemes() {
 async function main() {
   const outDir = process.argv[2]
     ? path.resolve(process.argv[2])
-    : path.join(__dirname, '..', '.docs', 'screenshots');
+    : path.join(__dirname, '..', 'docs', 'design', 'theme-gallery');
   fs.mkdirSync(outDir, { recursive: true });
 
   const themes = shippedThemes();
