@@ -142,10 +142,21 @@ describe('design system audit (AC-9)', function () {
   // nothing and is silently skipped — the audit would report success on pairs it
   // never actually checked.
   const aliases = tokenBlock(fs.readFileSync(path.join(PUBLIC, 'base.css'), 'utf8'), ':root');
-  const themes = {
-    dark: Object.assign({}, aliases, tokenBlock(tokensCss, '[data-theme="dark"]')),
-    light: Object.assign({}, aliases, tokenBlock(tokensCss, '[data-theme="light"]')),
-  };
+  // Enumerate EVERY theme the product ships, not a hand-picked two. The client
+  // offers seven (classic dark/light, monokai, nord, solarized dark/light, and
+  // the default), and auditing only two would leave five palettes unchecked —
+  // exactly the "can only confirm what someone already looked at" failure this
+  // suite exists to avoid.
+  const rootBlock = tokenBlock(tokensCss, ':root');
+  const themeNames = Array.from(
+    new Set((tokensCss.match(/\[data-theme="([a-z-]+)"\]/g) || [])
+      .map((s) => s.replace(/\[data-theme="|"\]/g, '')))
+  );
+  const themes = {};
+  for (const name of themeNames) {
+    themes[name] = Object.assign({}, aliases, rootBlock, tokenBlock(tokensCss, `[data-theme="${name}"]`));
+  }
+  themes.default = Object.assign({}, aliases, rootBlock);
 
   it('derives real foreground/background pairs from the authored CSS', function () {
     const pairs = derivedPairs();

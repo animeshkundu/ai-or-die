@@ -17,6 +17,12 @@
     --bg-hover: var(--surface-tertiary);
     --panel-header-bg: var(--surface-tertiary);
     --input-bg: var(--surface-primary);
+    /* Artifact review panel: referenced only as var() fallbacks, so with no
+       definition the fallback governed and the panel painted a fixed dark
+       palette in every theme, including the light ones. */
+    --panel-bg: var(--surface-secondary);
+    --panel-fg: var(--text-primary);
+    --panel-border: var(--border-default);
     --danger: var(--status-error);
     --danger-default: var(--status-error);
     --success: var(--status-success);

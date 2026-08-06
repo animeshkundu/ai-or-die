@@ -92,7 +92,7 @@
 
 .vst-btn.primary {
     background: var(--accent);
-    color: var(--bg-primary);
+    color: var(--text-inverse);
     border-color: var(--accent);
 }
 
@@ -107,7 +107,7 @@
 
 .vst-btn.danger:hover {
     background: var(--status-error, #ef4444);
-    color: var(--bg-primary);
+    color: var(--text-inverse);
 }
 
 .vst-close {

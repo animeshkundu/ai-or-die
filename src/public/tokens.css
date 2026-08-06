@@ -6,7 +6,6 @@
 
 /* === Primitive Tokens (raw values — never use directly in components) === */
 :root {
-  color-scheme: dark;
   /* --- Gray Scale (Zinc palette) --- */
   --color-gray-0: #09090b;
   --color-gray-50: #111113;
@@ -86,14 +85,14 @@
   --space-12: 3rem;      /* 48px */
 
   /* --- Persistent shell chrome --- */
-  --chrome-tab-height: 52px;
+  --chrome-tab-height: 44px;
   --chrome-bottom-nav-height: 52px;
 
   /* --- Touch --- */
-  /* WCAG 2.2 AA target size (2.5.8) is 24px; 44px is the Apple HIG / WCAG AAA
-     figure and the one this client targets, because the primary mobile surface
-     is an iPhone PWA driving a terminal one-handed. Defined once here so
-     components share a single definition instead of each hardcoding 44px. */
+  /* WCAG 2.2 AA target size (2.5.8) is 24px; 44px is the Apple HIG figure and
+     the one this client targets, because the primary mobile surface is an
+     iPhone PWA driving a terminal one-handed. Defined once so components share
+     a single definition instead of each hardcoding 44px. */
   --hit-target-min: 44px;
 
   /* --- Border Radius --- */
@@ -223,154 +222,225 @@
   --terminal-fg: #c9d1d9;
   --terminal-cursor: var(--color-blue-400);
   --terminal-selection: rgba(59, 130, 246, 0.3);
-  --terminal-black: #17202b;
-  --terminal-red: #ff7b72;
-  --terminal-green: #67d391;
-  --terminal-yellow: #f2c66d;
-  --terminal-blue: #75b7ff;
-  --terminal-magenta: #c9a7ff;
-  --terminal-cyan: #58d6e8;
-  --terminal-white: #c4ceda;
-  --terminal-bright-black: #647184;
-  --terminal-bright-red: #ff9a93;
-  --terminal-bright-green: #88e0a7;
-  --terminal-bright-yellow: #ffe09a;
-  --terminal-bright-blue: #9bcbff;
-  --terminal-bright-magenta: #ddc3ff;
-  --terminal-bright-cyan: #8ce7f2;
-  --terminal-bright-white: #f4f7fb;
-  --text-on-accent: #031117;
 }
 
 /* ============================================================
-   Quiet Command Deck — resolved binary palettes
-
-   Named legacy values are migration inputs only. The pre-paint resolver maps
-   them to dark or light and persists only the System/Light/Dark policy.
+   CLASSIC DARK — preserves the original GitHub Dark look
    ============================================================ */
-:root,
-[data-theme="dark"] {
-  color-scheme: dark;
-  --surface-primary: #080b10;
-  --surface-secondary: #0d1219;
-  --surface-tertiary: #131a23;
-  --surface-elevated: #1a2330;
-  --text-primary: #f4f7fb;
-  --text-secondary: #aab6c5;
-  --text-muted: #7f8da0;
-  --text-inverse: #071016;
-  --border-default: #253140;
-  --border-hover: #3a4a5f;
-  --border-focus: #3dd7ff;
-  --border-subtle: rgba(255, 255, 255, 0.07);
-  --border-strong: #43546a;
-  --accent-default: #3dd7ff;
-  --accent-hover: #78e5ff;
-  --accent-soft: rgba(61, 215, 255, 0.12);
-  --accent-glow: rgba(61, 215, 255, 0.24);
-  --status-success: #5dd69b;
-  --status-error: #ff6b7a;
-  --status-warning: #f2c66d;
-  --status-info: #75b7ff;
-  --terminal-bg: #080b10;
-  --terminal-fg: #dce5ef;
-  --terminal-cursor: #3dd7ff;
-  --terminal-selection: rgba(61, 215, 255, 0.25);
-  --terminal-black: #17202b;
-  --terminal-red: #ff7b72;
-  --terminal-green: #67d391;
-  --terminal-yellow: #f2c66d;
-  --terminal-blue: #75b7ff;
-  --terminal-magenta: #c9a7ff;
-  --terminal-cyan: #58d6e8;
-  --terminal-white: #c4ceda;
-  --terminal-bright-black: #647184;
-  --terminal-bright-red: #ff9a93;
-  --terminal-bright-green: #88e0a7;
-  --terminal-bright-yellow: #ffe09a;
-  --terminal-bright-blue: #9bcbff;
-  --terminal-bright-magenta: #ddc3ff;
-  --terminal-bright-cyan: #8ce7f2;
-  --terminal-bright-white: #f4f7fb;
-  --text-on-accent: #031117;
+[data-theme="classic-dark"] {
+  --surface-primary: #0d1117;
+  --surface-secondary: #161b22;
+  --surface-tertiary: #1c2028;
+  --surface-elevated: #21262d;
 
-  /* Artifact review panel. These were referenced only as var() fallbacks in
-     components/artifact-panel.css, so with no definition the fallback governed
-     and the panel rendered the same dark palette in light theme — outside the
-     design system entirely. Mapping them to semantic tokens makes the panel
-     follow the theme like every other surface. */
-  --panel-bg: var(--surface-secondary);
-  --panel-fg: var(--text-primary);
-  --panel-border: var(--border-default);
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #868e99;
+  --text-inverse: #0d1117;
+
+  --border-default: #30363d;
+  --border-hover: #484f58;
+  --border-focus: #ff6b00;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+
+  --accent-default: #ff6b00;
+  --accent-hover: #e65f00;
+  --accent-soft: rgba(255, 107, 0, 0.12);
+  --accent-glow: rgba(255, 107, 0, 0.25);
+
+  --status-success: #3fb950;
+  --status-error: #f85149;
+  --status-warning: #d29922;
+  --status-info: #58a6ff;
+
+  --terminal-bg: #0d1117;
+  --terminal-fg: #c9d1d9;
+  --terminal-cursor: #58a6ff;
+  --terminal-selection: rgba(88, 166, 255, 0.3);
 }
 
+/* ============================================================
+   CLASSIC LIGHT — preserves the original light theme
+   ============================================================ */
+[data-theme="classic-light"],
 [data-theme="light"] {
-  color-scheme: light;
-  --surface-primary: #f6f5f1;
+  --surface-primary: #fafafa;
   --surface-secondary: #ffffff;
-  --surface-tertiary: #eceff1;
-  --surface-elevated: #e2e7ea;
-  --text-primary: #17202b;
-  --text-secondary: #4d5c6d;
-  --text-muted: #58677a;
-  --text-inverse: #ffffff;
-  --border-default: #d2d9df;
-  --border-hover: #aebbc7;
-  --border-focus: #006d8c;
-  --border-subtle: rgba(23, 32, 43, 0.08);
-  --border-strong: #8e9dab;
-  --accent-default: #006d8c;
-  --accent-hover: #005f7b;
-  --accent-soft: rgba(0, 109, 140, 0.1);
-  --accent-glow: rgba(0, 109, 140, 0.18);
-  --status-success: #147a50;
-  --status-error: #c63246;
-  --status-warning: #8b5b00;
-  --status-info: #145fbd;
-  --terminal-bg: #fbfaf7;
-  --terminal-fg: #17202b;
-  --terminal-cursor: #007b9d;
-  --terminal-selection: rgba(0, 123, 157, 0.22);
-  --terminal-black: #17202b;
-  --terminal-red: #b4233b;
-  --terminal-green: #147a50;
-  --terminal-yellow: #8b5b00;
-  --terminal-blue: #145fbd;
-  --terminal-magenta: #7645a8;
-  --terminal-cyan: #007b9d;
-  --terminal-white: #d5dce2;
-  --terminal-bright-black: #667689;
-  --terminal-bright-red: #d64055;
-  --terminal-bright-green: #199865;
-  --terminal-bright-yellow: #a87300;
-  --terminal-bright-blue: #2878da;
-  --terminal-bright-magenta: #925fc3;
-  --terminal-bright-cyan: #0099bf;
-  --terminal-bright-white: #ffffff;
-  --text-on-accent: #ffffff;
-  --shadow-sm: 0 1px 2px rgba(23, 32, 43, 0.06);
-  --shadow-md: 0 8px 24px rgba(23, 32, 43, 0.1);
-  --shadow-lg: 0 16px 40px rgba(23, 32, 43, 0.14);
-  --shadow-xl: 0 28px 80px rgba(23, 32, 43, 0.18);
+  --surface-tertiary: #f3f4f6;
+  --surface-elevated: #e5e7eb;
 
-  /* Artifact review panel. These were referenced only as var() fallbacks in
-     components/artifact-panel.css, so with no definition the fallback governed
-     and the panel rendered the same dark palette in light theme — outside the
-     design system entirely. Mapping them to semantic tokens makes the panel
-     follow the theme like every other surface. */
-  --panel-bg: var(--surface-secondary);
-  --panel-fg: var(--text-primary);
-  --panel-border: var(--border-default);
+  --text-primary: #1a1a1a;
+  --text-secondary: #656c7a;
+  --text-muted: #606773;
+  --text-inverse: #fafafa;
+
+  --border-default: #e6e7eb;
+  --border-hover: #d4d6db;
+  --border-focus: #e05d00;
+  --border-subtle: rgba(0, 0, 0, 0.08);
+
+  --accent-default: #000000;
+  --accent-hover: #cc5200;
+  --accent-soft: rgba(224, 93, 0, 0.08);
+  --accent-glow: rgba(224, 93, 0, 0.15);
+
+  --status-success: #0f7b5c;
+  --status-error: #d62a1d;
+  --status-warning: #a16207;
+  --status-info: #2563eb;
+
+  --terminal-bg: #fafafa;
+  --terminal-fg: #1a1a1a;
+  --terminal-cursor: #e05d00;
+  --terminal-selection: rgba(224, 93, 0, 0.35);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.15);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  :root {
-    --duration-fast: var(--duration-reduced);
-    --duration-normal: var(--duration-reduced);
-    --duration-toast: var(--duration-reduced);
-    --duration-slow: var(--duration-reduced);
-    --duration-drawer: var(--duration-reduced);
-    --duration-pulse: var(--duration-reduced);
-    --duration-attention: var(--duration-reduced);
-  }
+/* ============================================================
+   MONOKAI — warm dark theme
+   ============================================================ */
+[data-theme="monokai"] {
+  --surface-primary: #272822;
+  --surface-secondary: #2d2e27;
+  --surface-tertiary: #383830;
+  --surface-elevated: #3e3d32;
+
+  --text-primary: #f8f8f2;
+  --text-secondary: #a9a58f;
+  --text-muted: #aca895;
+  --text-inverse: #272822;
+
+  --border-default: #49483e;
+  --border-hover: #5b5a50;
+  --border-focus: #a6e22e;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+
+  --accent-default: #a6e22e;
+  --accent-hover: #b6f23e;
+  --accent-soft: rgba(166, 226, 46, 0.12);
+  --accent-glow: rgba(166, 226, 46, 0.25);
+
+  --status-success: #a6e22e;
+  --status-error: #ffffff;
+  --status-warning: #e6db74;
+  --status-info: #66d9ef;
+
+  --terminal-bg: #272822;
+  --terminal-fg: #f8f8f2;
+  --terminal-cursor: #f8f8f0;
+  --terminal-selection: rgba(166, 226, 46, 0.2);
+}
+
+/* ============================================================
+   NORD — cool blue-gray palette
+   ============================================================ */
+[data-theme="nord"] {
+  --surface-primary: #2e3440;
+  --surface-secondary: #3b4252;
+  --surface-tertiary: #434c5e;
+  --surface-elevated: #4c566a;
+
+  --text-primary: #eceff4;
+  --text-secondary: #d8dee9;
+  --text-muted: #afcfef;
+  --text-inverse: #2e3440;
+
+  --border-default: #4c566a;
+  --border-hover: #5e6a82;
+  --border-focus: #88c0d0;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+
+  --accent-default: #8dc5d5;
+  --accent-hover: #8fbcbb;
+  --accent-soft: rgba(136, 192, 208, 0.12);
+  --accent-glow: rgba(136, 192, 208, 0.25);
+
+  --status-success: #a3be8c;
+  --status-error: #ffffff;
+  --status-warning: #ebcb8b;
+  --status-info: #81a1c1;
+
+  --terminal-bg: #2e3440;
+  --terminal-fg: #d8dee9;
+  --terminal-cursor: #88c0d0;
+  --terminal-selection: rgba(136, 192, 208, 0.2);
+}
+
+/* ============================================================
+   SOLARIZED DARK
+   ============================================================ */
+[data-theme="solarized-dark"] {
+  --surface-primary: #002b36;
+  --surface-secondary: #073642;
+  --surface-tertiary: #0a4050;
+  --surface-elevated: #0d4f5e;
+
+  --text-primary: #eee8d5;
+  --text-secondary: #97a8aa;
+  --text-muted: #a5bbc3;
+  --text-inverse: #002b36;
+
+  --border-default: #094959;
+  --border-hover: #0b5c6e;
+  --border-focus: #268bd2;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+
+  --accent-default: #4aaff6;
+  --accent-hover: #2e9fe6;
+  --accent-soft: rgba(38, 139, 210, 0.12);
+  --accent-glow: rgba(38, 139, 210, 0.25);
+
+  --status-success: #859900;
+  --status-error: #ffffff;
+  --status-warning: #b58900;
+  --status-info: #2aa198;
+
+  --terminal-bg: #002b36;
+  --terminal-fg: #839496;
+  --terminal-cursor: #268bd2;
+  --terminal-selection: rgba(38, 139, 210, 0.2);
+}
+
+/* ============================================================
+   SOLARIZED LIGHT
+   ============================================================ */
+[data-theme="solarized-light"] {
+  --surface-primary: #fdf6e3;
+  --surface-secondary: #eee8d5;
+  --surface-tertiary: #e8e1ce;
+  --surface-elevated: #ddd6c1;
+
+  --text-primary: #073642;
+  --text-secondary: #51676e;
+  --text-muted: #515f5f;
+  --text-inverse: #fdf6e3;
+
+  --border-default: #d3cbb7;
+  --border-hover: #c5bca8;
+  --border-focus: #268bd2;
+  --border-subtle: rgba(0, 0, 0, 0.08);
+
+  --accent-default: #000000;
+  --accent-hover: #2e9fe6;
+  --accent-soft: rgba(38, 139, 210, 0.08);
+  --accent-glow: rgba(38, 139, 210, 0.15);
+
+  --status-success: #859900;
+  --status-error: #c41a17;
+  --status-warning: #b58900;
+  --status-info: #2aa198;
+
+  --terminal-bg: #fdf6e3;
+  --terminal-fg: #586e75;
+  --terminal-cursor: #268bd2;
+  --terminal-selection: rgba(38, 139, 210, 0.15);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-xl: 0 20px 60px rgba(0, 0, 0, 0.15);
 }
