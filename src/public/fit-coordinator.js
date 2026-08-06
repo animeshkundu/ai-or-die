@@ -69,6 +69,45 @@
       this._pendingRetry.delete(id);
     }
 
+    /**
+     * Apply an AUTHORITATIVE grid from the server (ADR-0052, Layer 3).
+     *
+     * FitCoordinator remains the sole owner of `terminal.resize` — an inbound
+     * applied frame is still a resize, so it is routed here rather than being
+     * applied behind the coordinator's back. Two things matter:
+     *
+     *  - `target.last` is updated to the applied grid, so the coordinator's
+     *    dedup agrees with reality. Leaving it stale would make the very next
+     *    measurement differ and emit an advertisement that merely echoes what
+     *    the server just told us.
+     *  - No `send` is issued. Presenting an authoritative grid is not an
+     *    advertisement, and it must never be an ownership claim.
+     *
+     * @returns {boolean} whether the grid changed
+     */
+    applyAuthoritative(id, geometry) {
+      const target = this._targets.get(id);
+      if (!target || !geometry) return false;
+      const cols = geometry.cols;
+      const rows = geometry.rows;
+      if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) return false;
+      if (target.last && target.last.cols === cols && target.last.rows === rows) return false;
+
+      try {
+        target.terminal.resize(cols, rows);
+      } catch (error) {
+        this._logger.warn('[terminal-fit] authoritative apply failed', error);
+        return false;
+      }
+      target.last = { cols, rows };
+      target.deferred = false;
+      // A geometry we did not choose is not one we need to re-send.
+      this._forceSend.delete(id);
+      this._retries.delete(id);
+      this._pendingRetry.delete(id);
+      return true;
+    }
+
     request(id, options) {
       if (!this._targets.has(id)) return;
       // An external trigger (ResizeObserver, visibilitychange, app code) is new

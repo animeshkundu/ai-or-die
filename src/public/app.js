@@ -814,7 +814,14 @@ class ClaudeCodeWebInterface {
         this.terminal.open(document.getElementById('terminal'));
         this.fitCoordinator = new FitCoordinator();
         this.fitCoordinator.register('main', {
-            container: document.getElementById('terminal'),
+            // Measure the WRAPPER, render into #terminal. Layer 3 (ADR-0052)
+            // applies a transform to #terminal when this viewer is not the
+            // geometry owner; observing the same element we transform would
+            // feed presentation back into measurement, which is the
+            // oscillation the ownership model exists to prevent. The wrapper
+            // is never transformed, so its rect is always true capacity.
+            container: document.querySelector('.terminal-wrapper')
+                || document.getElementById('terminal'),
             terminal: this.terminal,
             proposeDimensions: () => this.fitAddon.proposeDimensions(),
             reserve: () => this.isMobile ? { cols: 0, rows: 1 } : { cols: 6, rows: 2 },
@@ -2866,8 +2873,126 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    /**
+     * Layer 3 of ADR-0052: present the session's AUTHORITATIVE grid.
+     *
+     * A PTY has one size; the viewers do not. When this viewer does not hold
+     * the geometry lease, its own capacity is irrelevant to what the program
+     * wrapped against — it must show the applied grid, or it renders text at a
+     * width the program never used. That was the original defect: a desktop
+     * kept drawing 163 columns while the program wrapped at 38.
+     *
+     * The transform goes on #terminal (the inner stage). FitCoordinator
+     * observes .terminal-wrapper (the outer capacity), so presentation can
+     * never perturb the measurement that produced it.
+     */
+    _applyGeometryFrame(message) {
+        if (!message || !this.terminal) return;
+        if (message.sessionId && this.currentClaudeSessionId
+            && message.sessionId !== this.currentClaudeSessionId) return;
+
+        // Ignore superseded frames. The server serializes application and
+        // stamps a monotonic revision per epoch, so an out-of-order delivery
+        // must not be allowed to reinstate an older grid.
+        const epoch = Number.isInteger(message.epoch) ? message.epoch : 0;
+        const revision = Number.isInteger(message.revision) ? message.revision : 0;
+        const seen = this._geometrySeen;
+        if (seen && (epoch < seen.epoch
+            || (epoch === seen.epoch && revision < seen.revision))) return;
+        this._geometrySeen = { epoch, revision };
+
+        const cols = message.cols;
+        const rows = message.rows;
+        if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) return;
+
+        const isOwner = !!(message.owner
+            && this.connectionId
+            && message.owner.connectionId === this.connectionId);
+        this._geometryIsOwner = isOwner;
+        this._geometryApplied = { cols, rows };
+
+        // Resize the grid to the authoritative size THROUGH the coordinator.
+        // ADR-0046 makes FitCoordinator the sole owner of terminal.resize, and
+        // an inbound applied frame is still a resize; routing it here also
+        // keeps the coordinator's dedup in step, so it does not immediately
+        // re-advertise a size the server just handed us.
+        try {
+            if (this.fitCoordinator) {
+                this.fitCoordinator.applyAuthoritative('main', { cols, rows });
+            }
+        } catch (_) {
+            // A failed resize must not stop us presenting what we can.
+        }
+
+        this._updateGeometryPresentation();
+    }
+
+    /** Recompute and apply the inner-stage transform. Safe to call repeatedly. */
+    _updateGeometryPresentation() {
+        const applied = this._geometryApplied;
+        const stage = document.getElementById('terminal');
+        const outerEl = document.querySelector('.terminal-wrapper');
+        const present = window.TerminalPresentation;
+        if (!applied || !stage || !outerEl || !present) return;
+
+        const rect = outerEl.getBoundingClientRect();
+        const cell = this._terminalCellMetric();
+        if (!cell) return;
+
+        const p = present.computePresentation(
+            { width: rect.width, height: rect.height },
+            applied,
+            cell,
+            this._terminalCursorCell()
+        );
+        if (!p) return;
+
+        this._geometryPresentation = p;
+        stage.dataset.regime = p.regime;
+
+        if (p.regime === 'exact') {
+            stage.style.transform = '';
+            stage.style.transformOrigin = '';
+        } else {
+            // translate before scale: offsets are already in presented pixels.
+            stage.style.transformOrigin = '0 0';
+            stage.style.transform =
+                `translate(${-p.offsetX}px, ${-p.offsetY}px) scale(${p.scale})`;
+        }
+    }
+
+    /** Un-scaled cell metric in CSS px, or null if not measurable yet. */
+    _terminalCellMetric() {
+        try {
+            const dims = this.terminal
+                && this.terminal._core
+                && this.terminal._core._renderService
+                && this.terminal._core._renderService.dimensions;
+            const w = dims && dims.css && dims.css.cell && dims.css.cell.width;
+            const h = dims && dims.css && dims.css.cell && dims.css.cell.height;
+            if (typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0) {
+                return { width: w, height: h };
+            }
+        } catch (_) { /* fall through */ }
+        return null;
+    }
+
+    /** Cursor cell, so panning keeps the caret on screen. */
+    _terminalCursorCell() {
+        try {
+            const buf = this.terminal && this.terminal.buffer && this.terminal.buffer.active;
+            if (!buf) return null;
+            return { col: buf.cursorX, row: buf.cursorY };
+        } catch (_) {
+            return null;
+        }
+    }
+
     handleMessage(message) {
         switch (message.type) {
+            case 'geometry_applied':
+                this._applyGeometryFrame(message);
+                break;
             case 'connected':
                 this.connectionId = message.connectionId;
                 this.send({
@@ -2902,6 +3027,15 @@ class ClaudeCodeWebInterface {
                 
             case 'session_joined':
                 console.log('[session_joined] Message received, active:', message.active, 'tabs:', this.sessionTabManager?.tabs.size);
+                // Adopt the session's authoritative grid immediately (ADR-0052).
+                // geometry_applied is only broadcast when the applied grid
+                // CHANGES, and a viewer joining a session someone else already
+                // owns changes nothing — so without replaying it here a joiner
+                // would render at its own capacity against a grid the program
+                // is actually wrapping at, which is the original defect.
+                if (message.geometry) {
+                    try { this._applyGeometryFrame(message.geometry); } catch (_) { /* non-fatal */ }
+                }
                 // Discard bytes queued under the OUTGOING session before
                 // switching the id. _flushWrites attributes whatever it drains
                 // to this.currentClaudeSessionId at flush time, not at receive
