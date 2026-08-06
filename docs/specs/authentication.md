@@ -83,13 +83,14 @@ The server implements authentication directly rather than using the `AuthManager
    - `?token=<token>` query parameter (raw token, no Bearer prefix)
    - `Authorization: <token>` header (raw token, matched directly)
 
-3. **WebSocket auth** -- The `verifyClient` callback on the `ws.Server`:
+3. **WebSocket auth** -- The `verifyClient` callback on the `ws.Server` accepts the bearer token via **either** the `?token=` query parameter **or** an `Authorization: Bearer <token>` header (parity with the HTTP middleware, so a reverse proxy / mesh sidecar that injects the header authenticates the upgrade):
    ```js
    verifyClient: (info) => {
      if (!this.noAuth && this.auth) {
        const url = new URL(info.req.url, 'ws://localhost');
        const token = url.searchParams.get('token');
-       return token === this.auth;
+       const header = info.req.headers && info.req.headers['authorization'];
+       return token === this.auth || header === `Bearer ${this.auth}`;
      }
      return true;
    }
