@@ -292,6 +292,15 @@
   --terminal-bright-cyan: #8ce7f2;
   --terminal-bright-white: #f4f7fb;
   --text-on-accent: #031117;
+
+  /* Artifact review panel. These were referenced only as var() fallbacks in
+     components/artifact-panel.css, so with no definition the fallback governed
+     and the panel rendered the same dark palette in light theme — outside the
+     design system entirely. Mapping them to semantic tokens makes the panel
+     follow the theme like every other surface. */
+  --panel-bg: var(--surface-secondary);
+  --panel-fg: var(--text-primary);
+  --panel-border: var(--border-default);
 }
 
 [data-theme="light"] {
@@ -342,6 +351,15 @@
   --shadow-md: 0 8px 24px rgba(23, 32, 43, 0.1);
   --shadow-lg: 0 16px 40px rgba(23, 32, 43, 0.14);
   --shadow-xl: 0 28px 80px rgba(23, 32, 43, 0.18);
+
+  /* Artifact review panel. These were referenced only as var() fallbacks in
+     components/artifact-panel.css, so with no definition the fallback governed
+     and the panel rendered the same dark palette in light theme — outside the
+     design system entirely. Mapping them to semantic tokens makes the panel
+     follow the theme like every other surface. */
+  --panel-bg: var(--surface-secondary);
+  --panel-fg: var(--text-primary);
+  --panel-border: var(--border-default);
 }
 
 @media (prefers-reduced-motion: reduce) {

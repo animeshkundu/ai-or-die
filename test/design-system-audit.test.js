@@ -216,4 +216,54 @@ describe('design system audit (AC-9)', function () {
         `hit-target token is ${sizes[1]}px, below the 44px minimum`);
     }
   });
+
+  it('has no var() referencing a token that is never defined (AC-12)', function () {
+    // A `var(--x, #fallback)` whose token is never defined means the FALLBACK
+    // silently governs. The surface then renders outside the design system —
+    // it will not follow the theme, and no amount of token work will change it.
+    // This is how the artifact panel came to paint a dark palette in light mode.
+    const defined = new Set();
+    for (const file of ['tokens.css', 'base.css']) {
+      const css = fs.readFileSync(path.join(PUBLIC, file), 'utf8');
+      let m;
+      const declRe = /--([\w-]+)\s*:/g;
+      while ((m = declRe.exec(css)) !== null) defined.add(m[1]);
+    }
+
+    // Supplied at runtime rather than declared in CSS, each with a documented
+    // source. Listed explicitly so the guard stays meaningful: anything not
+    // here and not declared is a surface silently governed by its fallback.
+    const RUNTIME_PROVIDED = new Set([
+      'visual-viewport-height',   // set by app.js from visualViewport
+      'safe-area-inset-top',      // JS polyfill + env() fallback (tokens.css:174)
+      'safe-area-inset-bottom',
+      'safe-area-inset-left',
+      'safe-area-inset-right',
+      'fb-dock-width',           // set by FileBrowserPanel._adjustTerminal while docked
+    ]);
+
+    const missing = new Map();
+    for (const file of authoredCss()) {
+      const css = fs.readFileSync(file, 'utf8');
+      // A file may declare its own locals; those are defined too.
+      const local = new Set();
+      let d;
+      const declRe = /--([\w-]+)\s*:/g;
+      while ((d = declRe.exec(css)) !== null) local.add(d[1]);
+
+      let m;
+      const useRe = /var\(\s*--([\w-]+)/g;
+      while ((m = useRe.exec(css)) !== null) {
+        const name = m[1];
+        if (defined.has(name) || local.has(name) || RUNTIME_PROVIDED.has(name)) continue;
+        // Interpolated names (var(--tool-${x})) cannot be resolved statically.
+        if (/-$/.test(name)) continue;
+        if (!missing.has(name)) missing.set(name, path.basename(file));
+      }
+    }
+
+    const report = Array.from(missing.entries()).map(([n, f]) => `--${n} (${f})`);
+    assert.deepStrictEqual(report, [],
+      `var() references to undefined tokens — the fallback governs and the surface ignores the theme:\n${report.join('\n')}`);
+  });
 });

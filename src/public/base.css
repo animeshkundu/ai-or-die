@@ -8,6 +8,17 @@
     --bg-secondary: var(--surface-secondary);
     --bg-tertiary: var(--surface-tertiary);
     --accent: var(--accent-default);
+
+    /* Referenced by components only as var() fallbacks, so with no definition
+       the fallback governed and those surfaces ignored the theme entirely.
+       Mapped to semantic tokens so they follow light/dark like everything else. */
+    --text-tertiary: var(--text-muted);
+    --border-muted: var(--border-subtle);
+    --bg-hover: var(--surface-tertiary);
+    --panel-header-bg: var(--surface-tertiary);
+    --input-bg: var(--surface-primary);
+    --danger: var(--status-error);
+    --danger-default: var(--status-error);
     --success: var(--status-success);
     --error: var(--status-error);
     --warning: var(--status-warning);
