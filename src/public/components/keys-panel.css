@@ -88,8 +88,8 @@ body.keyboard-open .keys-panel-fab { display: none; }
   letter-spacing: 0.02em;
 }
 .keys-panel__close {
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--hit-target-min);
+  min-height: var(--hit-target-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -113,7 +113,7 @@ body.keyboard-open .keys-panel-fab { display: none; }
 .keys-panel__util { margin-bottom: 10px; }
 .keys-panel__util-btn {
   width: 100%;
-  min-height: 44px;
+  min-height: var(--hit-target-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -147,8 +147,8 @@ body.keyboard-open .keys-panel-fab { display: none; }
   gap: 6px;
 }
 .keys-panel__key {
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--hit-target-min);
+  min-height: var(--hit-target-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;

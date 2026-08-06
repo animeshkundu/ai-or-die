@@ -209,14 +209,14 @@
 }
 
 @media (pointer: coarse) {
-    .session-tabs-bar { min-height: 44px; }
+    .session-tabs-bar { min-height: var(--hit-target-min); }
     .tabs-container { padding-block: 0; }
     .session-tab { height: 44px; }
-    .tab-close { min-width: 44px; min-height: 44px; opacity: 0.7; }
+    .tab-close { min-width: var(--hit-target-min); min-height: var(--hit-target-min); opacity: 0.7; }
     .tab-new-main,
-    .tab-new-dropdown { min-width: 44px; min-height: 44px; }
-    .tab-new-split { min-height: 44px; }
-    .overflow-menu-btn { min-width: 44px; min-height: 44px; }
+    .tab-new-dropdown { min-width: var(--hit-target-min); min-height: var(--hit-target-min); }
+    .tab-new-split { min-height: var(--hit-target-min); }
+    .overflow-menu-btn { min-width: var(--hit-target-min); min-height: var(--hit-target-min); }
     .tab-settings { width: 44px; height: 44px; }
 }
 
@@ -263,7 +263,14 @@
 }
 
 .tab-new-dropdown {
-    width: 16px;
+    /* WCAG 2.2 AA (2.5.8) requires a 24px minimum target on every pointer,
+       not just touch; this was 16px wide. The visual chevron stays narrow —
+       widening the hit area does not widen the glyph — so this costs 8px of
+       tab-strip width and makes the control actually clickable.
+       Deliberately NOT min-width: the touch media query above raises this to
+       --hit-target-min, and a min-width here would sit later in the cascade
+       and defeat it. */
+    width: 24px;
     height: 100%;
     display: flex;
     align-items: center;
@@ -589,8 +596,8 @@
 .overflow-tab-close {
     width: 20px;
     height: 20px;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -708,13 +715,13 @@
         background: var(--surface-tertiary);
         border: 1px solid var(--border-default);
         border-radius: var(--radius-full);
-        min-width: 44px;
-        min-height: 44px;
+        min-width: var(--hit-target-min);
+        min-height: var(--hit-target-min);
     }
 }
 
 @media (max-width: 820px) and (pointer: coarse) {
-    .session-tabs-bar { min-height: 44px; }
+    .session-tabs-bar { min-height: var(--hit-target-min); }
     .tabs-container { padding-block: 0; }
     .session-tab { height: 44px; }
     .tab-new-split { height: 44px; }

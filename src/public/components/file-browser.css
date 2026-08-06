@@ -712,12 +712,12 @@
   .file-item-edit,
   .fb-pdf-btn,
   .fb-tab-close {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
   }
 
   .file-browser-item {
-    min-height: 44px;
+    min-height: var(--hit-target-min);
   }
 
   .file-browser-resize-handle {
@@ -877,12 +877,12 @@
   }
 
   .file-browser-item {
-    min-height: 44px;
+    min-height: var(--hit-target-min);
     padding: var(--space-3) var(--space-4);
   }
   .file-item-edit {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
     opacity: 0.6;
   }
 

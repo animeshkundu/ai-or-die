@@ -50,8 +50,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
     padding: 0 10px;
     background: var(--surface-tertiary);
     border: 1px solid var(--border-default);
@@ -96,7 +96,7 @@
 .extra-key-clipboard:active {
     background: var(--accent-soft);
     border-color: var(--accent-default);
-    color: var(--text-inverse, var(--text-primary));
+    color: var(--text-primary);
 }
 
 .extra-key-dismiss:active {
@@ -107,8 +107,8 @@
 
 @media (orientation: landscape) {
     .extra-key {
-        min-height: 44px;
-        min-width: 44px;
+        min-height: var(--hit-target-min);
+        min-width: var(--hit-target-min);
         font-size: var(--text-sm);
     }
 }

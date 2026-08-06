@@ -315,12 +315,12 @@
     .artifact-panel__send,
     .artifact-panel__pill-x,
     .artifact-panel__reopen {
-      min-width: 44px;
-      min-height: 44px;
+      min-width: var(--hit-target-min);
+      min-height: var(--hit-target-min);
     }
 
     .artifact-panel__input {
-      min-height: 44px;
+      min-height: var(--hit-target-min);
     }
   }
 
@@ -329,19 +329,19 @@
   }
 
   .artifact-panel__header {
-    min-height: 44px;
+    min-height: var(--hit-target-min);
   }
 
   .artifact-panel__btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
   }
 
   .artifact-panel__reopen {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
   }
 }

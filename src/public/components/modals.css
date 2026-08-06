@@ -268,8 +268,8 @@
     color: var(--text-secondary);
     cursor: pointer;
     padding: 0;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
     width: 44px;
     height: 44px;
     display: flex;
@@ -752,7 +752,7 @@
     cursor: pointer;
     transition: all var(--duration-normal) var(--ease-default);
     font-size: 14px;
-    min-height: 44px;
+    min-height: var(--hit-target-min);
 }
 
 .folder-item:hover {

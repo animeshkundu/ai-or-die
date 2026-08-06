@@ -128,6 +128,12 @@ button,
     transform: translateX(-50%);
     z-index: var(--z-max);
     padding: 8px 16px;
+    /* The skip link is the first thing a keyboard or switch user reaches, so
+       it is the last control that should be awkward to hit. 8px of padding
+       left it 33px tall, under the 44px touch target. */
+    min-height: var(--hit-target-min);
+    display: inline-flex;
+    align-items: center;
     background-color: var(--accent-default);
     color: var(--text-inverse, #fff);
     border-radius: var(--radius-md);

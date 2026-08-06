@@ -89,6 +89,13 @@
   --chrome-tab-height: 52px;
   --chrome-bottom-nav-height: 52px;
 
+  /* --- Touch --- */
+  /* WCAG 2.2 AA target size (2.5.8) is 24px; 44px is the Apple HIG / WCAG AAA
+     figure and the one this client targets, because the primary mobile surface
+     is an iPhone PWA driving a terminal one-handed. Defined once here so
+     components share a single definition instead of each hardcoding 44px. */
+  --hit-target-min: 44px;
+
   /* --- Border Radius --- */
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -295,17 +302,17 @@
   --surface-elevated: #e2e7ea;
   --text-primary: #17202b;
   --text-secondary: #4d5c6d;
-  --text-muted: #5f6f81;
+  --text-muted: #58677a;
   --text-inverse: #ffffff;
   --border-default: #d2d9df;
   --border-hover: #aebbc7;
-  --border-focus: #007b9d;
+  --border-focus: #006d8c;
   --border-subtle: rgba(23, 32, 43, 0.08);
   --border-strong: #8e9dab;
-  --accent-default: #007b9d;
+  --accent-default: #006d8c;
   --accent-hover: #005f7b;
-  --accent-soft: rgba(0, 123, 157, 0.1);
-  --accent-glow: rgba(0, 123, 157, 0.18);
+  --accent-soft: rgba(0, 109, 140, 0.1);
+  --accent-glow: rgba(0, 109, 140, 0.18);
   --status-success: #147a50;
   --status-error: #c63246;
   --status-warning: #8b5b00;

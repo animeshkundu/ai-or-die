@@ -308,7 +308,7 @@
 
 .settings-modal .range-value {
   flex: 0 0 auto;
-  min-width: 44px;
+  min-width: var(--hit-target-min);
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-size: var(--text-sm);

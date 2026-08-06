@@ -167,16 +167,16 @@
 /* Mobile: larger touch targets */
 @media (pointer: coarse) {
     #navVoice {
-        min-width: 44px;
-        min-height: 44px;
+        min-width: var(--hit-target-min);
+        min-height: var(--hit-target-min);
     }
 
     /* The banner dismiss is the only way to get rid of a multi-hundred-MB
        download notice, so it has to be reachable with a thumb. The glyph stays
        16px; the hit area grows to the 44pt minimum. */
     .voice-download-dismiss {
-        min-width: 44px;
-        min-height: 44px;
+        min-width: var(--hit-target-min);
+        min-height: var(--hit-target-min);
         padding: 0;
     }
 }
