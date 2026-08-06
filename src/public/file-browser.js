@@ -624,7 +624,13 @@
     document.body.appendChild(panel);
     this._panelEl = panel;
     this._onViewportResize = function () {
-      if (this._open) this._updateOverlayMode();
+      if (!this._open) return;
+      this._updateOverlayMode();
+      // Crossing the dock/overlay breakpoint changes whether the terminal owes
+      // the panel any width at all, so the dock width has to be republished (or
+      // cleared) with it. Updating overlay mode alone leaves a docked width
+      // reserved after the layout has switched to overlay.
+      this._adjustTerminal();
     }.bind(this);
     window.addEventListener('resize', this._onViewportResize);
 
@@ -749,10 +755,34 @@
 
   // -- Open / Close / Toggle --
 
-  FileBrowserPanel.prototype.open = function (startPath) {
+  // Which element should regain focus when the panel closes.
+  //
+  // document.activeElement is not reliable on its own: WebKit (and Safari) do
+  // not focus a <button> on click, so by the time open() runs the active
+  // element is <body> and focus would fall through to the terminal instead of
+  // returning to the control the user actually pressed. A caller that knows the
+  // trigger passes it in; activeElement stays as the fallback for keyboard
+  // opens (Ctrl+B), where it is correct and the caller has nothing to offer.
+  FileBrowserPanel.prototype._resolveOpener = function (preferred) {
+    var candidates = [preferred, document.activeElement];
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      if (!el || el === document.body) continue;
+      if (!el.isConnected || typeof el.focus !== 'function') continue;
+      // Rendered check rather than offsetParent, which is null for the
+      // position:fixed chrome these openers live in.
+      try {
+        if (!el.getClientRects || el.getClientRects().length === 0) continue;
+      } catch (_) { continue; }
+      return el;
+    }
+    return null;
+  };
+
+  FileBrowserPanel.prototype.open = function (startPath, openerEl) {
     if (this._open) return;
     this._open = true;
-    this._opener = document.activeElement;
+    this._opener = this._resolveOpener(openerEl);
     // Resolution order:
     //   1. Explicit startPath argument from the caller (e.g. openToFile)
     //   2. Live cwd from the active session (getCwd is invoked HERE, every
@@ -811,6 +841,12 @@
       try { this._fileWatcher.disconnect(); } catch (_) { /* ignore */ }
     }
     this._announceToScreenReader('File browser closed');
+    // Hand the columns back. Dock width was only ever published as a side
+    // effect of a view transition (_showBrowseView and friends), and closing is
+    // not a view transition — so without this the terminal keeps reserving
+    // space for a panel that is no longer on screen and never returns to full
+    // width.
+    this._adjustTerminal();
     var shouldFocusTerminal = !this._opener || this._opener === document.body
       || !this._opener.isConnected || typeof this._opener.focus !== 'function';
     if (!shouldFocusTerminal) {
@@ -821,8 +857,8 @@
     this._opener = null;
   };
 
-  FileBrowserPanel.prototype.toggle = function () {
-    if (this._open) this.close(); else this.open();
+  FileBrowserPanel.prototype.toggle = function (startPath, openerEl) {
+    if (this._open) this.close(); else this.open(startPath, openerEl);
   };
 
   FileBrowserPanel.prototype.isOpen = function () {

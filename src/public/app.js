@@ -5344,9 +5344,24 @@ class ClaudeCodeWebInterface {
         return this._fileBrowserPanel;
     }
 
+    /**
+     * The control that returns focus when the panel closes. The mobile nav
+     * delegates by synthesising a click on the (hidden) desktop button, so the
+     * dispatching element is not the one the user pressed — resolve by what is
+     * actually rendered instead.
+     */
+    _visibleFileBrowserOpener() {
+        const candidates = ['navFiles', 'browseFilesBtn'];
+        for (const id of candidates) {
+            const el = document.getElementById(id);
+            if (el && el.getClientRects && el.getClientRects().length > 0) return el;
+        }
+        return null;
+    }
+
     toggleFileBrowser() {
         const panel = this._ensureFileBrowser();
-        if (panel) panel.toggle();
+        if (panel) panel.toggle(undefined, this._visibleFileBrowserOpener());
     }
 
     /**

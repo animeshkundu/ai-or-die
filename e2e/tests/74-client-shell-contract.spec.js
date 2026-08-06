@@ -32,8 +32,14 @@ test.describe('Terminal-first client shell contract', () => {
     await page.waitForFunction(() => window.app && window.app.currentClaudeSessionId);
   }
 
-  test('file browser overlays without resizing and restores focus', async ({ page }) => {
-    await setupPage(page);
+  // The file browser is the one surface that legitimately changes terminal
+  // geometry, and only when it DOCKS. Above 1024px it takes its own column and
+  // the screen is genuinely split, so the terminal must give up the width or the
+  // panel simply covers it. At or below 1024px it overlays, and the terminal
+  // must be left alone. Both halves are asserted, because a single
+  // modality-blind expectation passes on one viewport while hiding a real
+  // defect on the other.
+  async function installResizeProbe(page) {
     await page.evaluate(() => {
       window.__shellProbe = { resizeCalls: 0 };
       const original = window.app.terminal.resize.bind(window.app.terminal);
@@ -42,6 +48,60 @@ test.describe('Terminal-first client shell contract', () => {
         return original(...args);
       };
     });
+  }
+
+  test('file browser reflows the terminal when docked, and restores it on close', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await setupPage(page);
+    await installResizeProbe(page);
+
+    const opener = page.locator('#browseFilesBtn:visible, #navFiles:visible').first();
+    await opener.focus();
+    const before = await page.evaluate(() => ({
+      cols: window.app.terminal.cols,
+      rows: window.app.terminal.rows,
+    }));
+    await opener.click();
+    const panel = page.locator('#fileBrowserPanel');
+    await expect(panel).toBeVisible();
+    await expect(panel).toBeFocused();
+    await page.waitForTimeout(350);
+
+    await page.locator('.file-browser-item', { hasText: 'AGENTS.md' }).click();
+    await expect(page.locator('.fb-preview-container')).toBeVisible();
+    await expect(page.locator('.fb-preview-header')).toContainText('AGENTS.md');
+    await expect(page.locator('.fb-preview-content')).toBeVisible();
+
+    // Docked: the terminal yields columns to the panel but keeps every row,
+    // because the panel takes width and not height.
+    await expect
+      .poll(async () => page.evaluate(() => window.app.terminal.cols))
+      .toBeLessThan(before.cols);
+    const during = await page.evaluate(() => ({
+      rows: window.app.terminal.rows,
+    }));
+    expect(during.rows).toBe(before.rows);
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.fb-file-list')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(panel).toBeHidden();
+    await expect(opener).toBeFocused();
+
+    // Closing must hand the columns back. A dock that reflows on open but not
+    // on close leaves the terminal permanently narrow.
+    await expect
+      .poll(async () => page.evaluate(() => window.app.terminal.cols))
+      .toBe(before.cols);
+  });
+
+  test('file browser overlays without resizing and restores focus', async ({ page }) => {
+    // 800px is below both the 1024px dock breakpoint (so the panel overlays)
+    // and the 820px chrome breakpoint (so the bottom-nav opener is the visible
+    // one). Widths between 820 and 1024 overlay too, but expose neither opener.
+    await page.setViewportSize({ width: 800, height: 800 });
+    await setupPage(page);
+    await installResizeProbe(page);
 
     const opener = page.locator('#browseFilesBtn:visible, #navFiles:visible').first();
     await opener.focus();
