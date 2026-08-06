@@ -4194,6 +4194,28 @@ class ClaudeCodeWebInterface {
 
     fitTerminal(options) {
         this.fitCoordinator?.request('main', options);
+
+        // A change in OUR capacity (rotation, soft keyboard, a docked panel)
+        // must not move a non-owner off the authoritative grid. The coordinator
+        // has just refit to local capacity, which is the right advertisement but
+        // the wrong thing to render: the program is still wrapping at the
+        // applied size. Re-assert it and recompute the presentation once the
+        // coordinator's rAF flush has run.
+        //
+        // Measured before this existed (AC-7 soft-keyboard, WebKit): a
+        // non-owner collapsed to 44x22 while applied stayed 44x40.
+        if (!this._geometryApplied) return;
+        const settle = typeof requestAnimationFrame === 'function'
+            ? requestAnimationFrame.bind(window)
+            : ((fn) => setTimeout(fn, 0));
+        settle(() => {
+            try {
+                if (this._geometryIsOwner === false) {
+                    this.fitCoordinator?.applyAuthoritative('main', this._geometryApplied);
+                }
+                this._updateGeometryPresentation();
+            } catch (_) { /* presentation is best-effort */ }
+        });
     }
 
     setupTerminalSearch() {
