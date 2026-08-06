@@ -52,6 +52,8 @@ describe('startToolSession injects artifact trio for terminal + claude tabs', fu
       sessionStore: { markDirty() {} },
       sendToWebSocket() {}, broadcastToSession() {}, broadcastSessionActivity() {},
       _pushEvictionEntry() {}, _maybeStartStickyNotes() {}, validatePath: () => true, dev: false,
+      _beginGeometryOutputHold: proto._beginGeometryOutputHold,
+      _releaseGeometryOutput: proto._releaseGeometryOutput,
     };
     await proto.startToolSession.call(fakeThis, 'ws1', toolName, bridge, {}, 80, 24);
     return captured.extraEnv;

@@ -58,7 +58,7 @@
 .sticky-note-dot {
   width: 7px;
   height: 7px;
-  border-radius: 50%;
+  border-radius: 50%;;
   background: var(--accent);
   flex: 0 0 auto;
 }
@@ -99,7 +99,7 @@
   color: inherit;
   background: transparent;
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   opacity: 0.7;
 }
@@ -168,8 +168,8 @@
   }
 
   .sticky-note-collapse {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
     display: inline-flex;
     align-items: center;
     justify-content: center;

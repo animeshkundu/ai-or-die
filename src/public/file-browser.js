@@ -372,6 +372,10 @@
     this._homePath = null;
 
     this._open = false;
+    // Last value written to --fb-dock-width, so a repeated resize that measures
+    // the same width does not re-trigger the terminal refit. null means the
+    // property is not currently set.
+    this._publishedDockWidth = null;
     this._currentPath = null;
     this._basePath = null;
     this._items = [];
@@ -624,7 +628,25 @@
     document.body.appendChild(panel);
     this._panelEl = panel;
     this._onViewportResize = function () {
-      if (this._open) this._updateOverlayMode();
+      if (!this._open) return;
+      // Coalesce to one frame. A drag-resize or orientation change fires
+      // `resize` continuously, and _adjustTerminal reads layout and then writes
+      // --fb-dock-width, which the terminal wrapper's ResizeObserver turns into
+      // a refit — so an uncoalesced handler produces a refit storm.
+      if (this._viewportFrame) return;
+      var schedule = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame
+        : function (fn) { return setTimeout(fn, 16); };
+      this._viewportFrame = schedule(function () {
+        this._viewportFrame = null;
+        if (!this._open) return;
+        this._updateOverlayMode();
+        // Crossing the dock/overlay breakpoint changes whether the terminal
+        // owes the panel any width at all, so the dock width has to be
+        // republished (or cleared) with it. Updating overlay mode alone leaves
+        // a docked width reserved after the layout has switched to overlay.
+        this._adjustTerminal();
+      }.bind(this));
     }.bind(this);
     window.addEventListener('resize', this._onViewportResize);
 
@@ -749,10 +771,44 @@
 
   // -- Open / Close / Toggle --
 
-  FileBrowserPanel.prototype.open = function (startPath) {
+  // Can this element actually take focus right now? `isConnected` is not
+  // enough: the openers live behind responsive breakpoints, so a control that
+  // was on screen when the panel opened can be display:none by the time it
+  // closes while remaining connected. Focusing it then silently drops focus to
+  // <body>.
+  FileBrowserPanel.prototype._isUsableFocusTarget = function (el) {
+    if (!el || el === document.body) return false;
+    if (!el.isConnected || typeof el.focus !== 'function') return false;
+    if (el.disabled) return false;
+    // Rendered check rather than offsetParent, which is null for the
+    // position:fixed chrome these openers live in.
+    try {
+      return !!el.getClientRects && el.getClientRects().length > 0;
+    } catch (_) {
+      return false;
+    }
+  };
+
+  // Which element should regain focus when the panel closes.
+  //
+  // document.activeElement is not reliable on its own: WebKit (and Safari) do
+  // not focus a <button> on click, so by the time open() runs the active
+  // element is <body> and focus would fall through to the terminal instead of
+  // returning to the control the user actually pressed. A caller that knows the
+  // trigger passes it in; activeElement stays as the fallback for keyboard
+  // opens (Ctrl+B), where it is correct and the caller has nothing to offer.
+  FileBrowserPanel.prototype._resolveOpener = function (preferred) {
+    var candidates = [preferred, document.activeElement];
+    for (var i = 0; i < candidates.length; i++) {
+      if (this._isUsableFocusTarget(candidates[i])) return candidates[i];
+    }
+    return null;
+  };
+
+  FileBrowserPanel.prototype.open = function (startPath, openerEl) {
     if (this._open) return;
     this._open = true;
-    this._opener = document.activeElement;
+    this._opener = this._resolveOpener(openerEl);
     // Resolution order:
     //   1. Explicit startPath argument from the caller (e.g. openToFile)
     //   2. Live cwd from the active session (getCwd is invoked HERE, every
@@ -811,18 +867,42 @@
       try { this._fileWatcher.disconnect(); } catch (_) { /* ignore */ }
     }
     this._announceToScreenReader('File browser closed');
-    var shouldFocusTerminal = !this._opener || this._opener === document.body
-      || !this._opener.isConnected || typeof this._opener.focus !== 'function';
-    if (!shouldFocusTerminal) {
-      this._opener.focus();
-    } else if (this.app && this.app.terminal && typeof this.app.terminal.focus === 'function') {
+    // Hand the columns back. Dock width was only ever published as a side
+    // effect of a view transition (_showBrowseView and friends), and closing is
+    // not a view transition — so without this the terminal keeps reserving
+    // space for a panel that is no longer on screen and never returns to full
+    // width.
+    this._adjustTerminal();
+    // Restore focus to the control that opened the panel. Revalidate it first:
+    // the openers sit behind responsive breakpoints, so the one captured at
+    // open() may have been hidden by a viewport change while the panel was up.
+    // In that case prefer whichever equivalent opener is on screen now, and
+    // only fall back to the terminal when there is none. Focusing a hidden
+    // control would strand focus on <body>, which is worse than either.
+    var opener = this._isUsableFocusTarget(this._opener) ? this._opener : null;
+    if (!opener && this.app && typeof this.app._visibleFileBrowserOpener === 'function') {
+      try {
+        var live = this.app._visibleFileBrowserOpener();
+        if (this._isUsableFocusTarget(live)) opener = live;
+      } catch (_) { /* fall through to the terminal */ }
+    }
+    var restored = false;
+    if (opener) {
+      try {
+        opener.focus();
+        restored = document.activeElement === opener;
+      } catch (_) {
+        restored = false;
+      }
+    }
+    if (!restored && this.app && this.app.terminal && typeof this.app.terminal.focus === 'function') {
       this.app.terminal.focus();
     }
     this._opener = null;
   };
 
-  FileBrowserPanel.prototype.toggle = function () {
-    if (this._open) this.close(); else this.open();
+  FileBrowserPanel.prototype.toggle = function (startPath, openerEl) {
+    if (this._open) this.close(); else this.open(startPath, openerEl);
   };
 
   FileBrowserPanel.prototype.isOpen = function () {
@@ -852,7 +932,50 @@
   };
 
   FileBrowserPanel.prototype._adjustTerminal = function () {
-    // Non-terminal surfaces overlay the terminal and never change its geometry.
+    // AC-4 (ADR-0052): docked chrome must occlude ZERO terminal columns.
+    //
+    // The panel is position:fixed, so it is outside layout flow and the
+    // terminal happily renders underneath it — 40 of 163 columns were drawn
+    // where the user cannot see them, while the PTY kept its full width. The
+    // old comment here ("non-terminal surfaces overlay the terminal") is true
+    // on mobile, where the panel IS a modal overlay, and false above 1024px,
+    // where it docks beside a still-interactive terminal.
+    //
+    // The fix is a real layout region rather than pixel arithmetic on the
+    // terminal's own measurement: publish the dock width as a custom property
+    // and let CSS shrink the terminal's usable area. FitCoordinator observes
+    // .terminal-wrapper, so ResizeObserver reports the change and the refit
+    // (and the resulting advertisement) happen through the normal path.
+    //
+    // --fb-dock-width is the SINGLE owner of dock width, so a drag and an
+    // editor-active state compose instead of fighting.
+    var root = document.documentElement;
+    if (!root) return;
+    var docked = this._open && !this._isOverlayMode();
+    if (!docked) {
+      // Clear unconditionally the first time, then track it, so the cache below
+      // can never claim a width is published after this branch removed it.
+      if (this._publishedDockWidth !== null) {
+        this._publishedDockWidth = null;
+        root.style.removeProperty('--fb-dock-width');
+      }
+      return;
+    }
+    var width = 0;
+    try {
+      width = this._panelEl ? this._panelEl.getBoundingClientRect().width : 0;
+    } catch (_) {
+      width = 0;
+    }
+    // Skip a write that would not change anything. Setting the property is not
+    // free: .terminal-container reserves it as padding, so every write the
+    // terminal wrapper's ResizeObserver sees turns into a refit. A drag-resize
+    // of a docked panel reports the same width for most frames.
+    var next = width > 0 ? width + 'px' : null;
+    if (next === this._publishedDockWidth) return;
+    this._publishedDockWidth = next;
+    if (next) root.style.setProperty('--fb-dock-width', next);
+    else root.style.removeProperty('--fb-dock-width');
   };
 
   FileBrowserPanel.prototype._refitAllTerminals = function () {

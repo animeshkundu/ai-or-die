@@ -5,7 +5,7 @@
     color: var(--text-secondary);
     cursor: pointer;
     padding: 6px;
-    border-radius: 6px;
+    border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -61,7 +61,7 @@
     height: 14px;
     border: 2px solid var(--border);
     border-top-color: var(--accent);
-    border-radius: 50%;
+    border-radius: 50%;;
     animation: voice-spin var(--duration-spin) var(--ease-linear) infinite;
 }
 
@@ -123,7 +123,7 @@
     width: 120px;
     height: 4px;
     background: var(--bg-tertiary);
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     overflow: hidden;
     flex-shrink: 0;
 }
@@ -131,7 +131,7 @@
 .voice-download-fill {
     height: 100%;
     background: var(--accent);
-    border-radius: 2px;
+    border-radius: var(--radius-xs);
     width: 0;
     transition: width var(--duration-slow) var(--ease-default);
 }
@@ -151,7 +151,7 @@
     color: var(--text-secondary);
     cursor: pointer;
     padding: 4px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -167,16 +167,16 @@
 /* Mobile: larger touch targets */
 @media (pointer: coarse) {
     #navVoice {
-        min-width: 44px;
-        min-height: 44px;
+        min-width: var(--hit-target-min);
+        min-height: var(--hit-target-min);
     }
 
     /* The banner dismiss is the only way to get rid of a multi-hundred-MB
        download notice, so it has to be reachable with a thumb. The glyph stays
        16px; the hit area grows to the 44pt minimum. */
     .voice-download-dismiss {
-        min-width: 44px;
-        min-height: 44px;
+        min-width: var(--hit-target-min);
+        min-height: var(--hit-target-min);
         padding: 0;
     }
 }

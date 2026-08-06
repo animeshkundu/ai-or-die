@@ -147,8 +147,8 @@
 
 @media (pointer: coarse) {
   .tab-action-btn-overlay {
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
   }
 }
 

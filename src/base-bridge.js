@@ -606,10 +606,19 @@ class BaseBridge {
       throw new Error(`Session ${sessionId} not found or not active`);
     }
 
+    // Propagate, never swallow. The geometry coordinator commits the
+    // authoritative applied size only after this resolves (and releases its
+    // output hold on a throw), and the server sets session.cols/rows on the
+    // same contract. Warning-and-continuing here would publish a geometry the
+    // PTY never took, leaving every viewer rendering against dimensions that
+    // do not exist — with a server-side console warning as the only signal.
     try {
       session.process.resize(cols, rows);
     } catch (error) {
-      console.warn(`Failed to resize session ${sessionId}:`, error.message);
+      const reason = error && error.message ? error.message : String(error);
+      const wrapped = new Error(`Failed to resize session ${sessionId}: ${reason}`);
+      wrapped.cause = error;
+      throw wrapped;
     }
   }
 

@@ -31,3 +31,5 @@ e2e/.claude-attachments/
 test/longevity/results/
 playwright-report/
 screenshots/
+.claude-attachments/
+.recovered-logs/

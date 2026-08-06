@@ -69,6 +69,45 @@
       this._pendingRetry.delete(id);
     }
 
+    /**
+     * Apply an AUTHORITATIVE grid from the server (ADR-0052, Layer 3).
+     *
+     * FitCoordinator remains the sole owner of `terminal.resize` — an inbound
+     * applied frame is still a resize, so it is routed here rather than being
+     * applied behind the coordinator's back. Two things matter:
+     *
+     *  - `target.last` is updated to the applied grid, so the coordinator's
+     *    dedup agrees with reality. Leaving it stale would make the very next
+     *    measurement differ and emit an advertisement that merely echoes what
+     *    the server just told us.
+     *  - No `send` is issued. Presenting an authoritative grid is not an
+     *    advertisement, and it must never be an ownership claim.
+     *
+     * @returns {boolean} whether the grid changed
+     */
+    applyAuthoritative(id, geometry) {
+      const target = this._targets.get(id);
+      if (!target || !geometry) return false;
+      const cols = geometry.cols;
+      const rows = geometry.rows;
+      if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols <= 0 || rows <= 0) return false;
+      if (target.last && target.last.cols === cols && target.last.rows === rows) return false;
+
+      try {
+        target.terminal.resize(cols, rows);
+      } catch (error) {
+        this._logger.warn('[terminal-fit] authoritative apply failed', error);
+        return false;
+      }
+      target.last = { cols, rows };
+      target.deferred = false;
+      // A geometry we did not choose is not one we need to re-send.
+      this._forceSend.delete(id);
+      this._retries.delete(id);
+      this._pendingRetry.delete(id);
+      return true;
+    }
+
     request(id, options) {
       if (!this._targets.has(id)) return;
       // An external trigger (ResizeObserver, visibilitychange, app code) is new
@@ -151,7 +190,14 @@
       if (!target) return;
       let proposed = null;
       try {
-        proposed = target.proposeDimensions();
+        // `measureCapacity` measures the OUTER element directly and is preferred
+        // when a target supplies it: a target rendering through a Layer 3
+        // transform (ADR-0052) must not derive capacity from the transformed
+        // stage, because that folds presentation back into measurement.
+        // `proposeDimensions` remains the path for targets without a stage.
+        proposed = typeof target.measureCapacity === 'function'
+          ? target.measureCapacity()
+          : target.proposeDimensions();
       } catch (error) {
         this._logger.warn('[terminal-fit] measurement failed', error);
         target.deferred = true;
@@ -173,10 +219,22 @@
 
       target.deferred = false;
       const unchanged = target.last && target.last.cols === next.cols && target.last.rows === next.rows;
+      // May be a function, because ownership is dynamic: a viewer is only
+      // authoritative-mode while it does NOT hold the lease.
+      const authoritative = typeof target.authoritativeMode === 'function'
+        ? !!target.authoritativeMode()
+        : !!target.authoritativeMode;
       let sendSucceeded = !this._forceSend.has(id);
       try {
         if (!unchanged) {
-          target.terminal.resize(next.cols, next.rows);
+          // In authoritative mode the local grid is owned by the server's
+          // applied frame (ADR-0052), so a capacity change is an ADVERTISEMENT
+          // only — resizing the grid here would fight applyAuthoritative and
+          // repeatedly destroy the presented buffer. `target.last` still tracks
+          // what we measured so the dedup and retry logic behave normally.
+          if (!authoritative) {
+            target.terminal.resize(next.cols, next.rows);
+          }
           target.last = next;
         }
         if ((!unchanged || this._forceSend.has(id)) && typeof target.send === 'function') {

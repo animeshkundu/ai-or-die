@@ -21,11 +21,41 @@ A web-based file manager that provides browsing, previewing, editing, uploading,
 
 ### Presentation contract
 
-- The panel is always an overlay and never changes the terminal margin, columns, rows, or scroll position.
-- Desktop uses a right drawer without a modal backdrop. Narrow and touch layouts use a modal drawer with a backdrop, focus containment, `aria-modal="true"`, and an inert background application tree.
+- Above 1024px the panel is a real right-hand flex track and reduces the
+  terminal's measured capacity. The terminal and panel are siblings, so their
+  rectangles cannot intersect during open, close, or drag.
+- At 1024px and below the same permanent panel node is a fixed overlay with a
+  backdrop, focus containment, `aria-modal="true"`, and an inert background
+  application tree. Breakpoint changes never reparent Monaco or preview DOM.
+- Dock width is published as `--fb-dock-width` on the document element, which
+  `.terminal-container` reserves as padding; ADR-0052 makes that property the
+  single owner of dock width. It is set on open, cleared on close, and
+  republished when the viewport crosses the 1024px breakpoint while the panel
+  is open. Publication is part of the open/close lifecycle, not a side effect
+  of a view transition — a panel that reflows on open but not on close leaves
+  the terminal permanently narrow.
+- Resize-driven republication is coalesced to one animation frame and skipped
+  when the measured width has not changed, because each write drives a terminal
+  refit through the terminal wrapper's `ResizeObserver`.
 - Focus moves into the panel on open and returns to the opener on close.
+  - The opener is supplied by the caller and resolved by what is **rendered**,
+    not by what dispatched the event: the mobile bottom nav opens the panel by
+    synthesising a click on the hidden desktop button, and WebKit does not
+    focus a `<button>` on click at all, so `document.activeElement` is
+    unreliable at open time. It remains the fallback for keyboard opens
+    (`Ctrl+B`), where it is correct.
+  - The opener is revalidated on close. Both openers sit behind responsive
+    breakpoints, so a viewport change can leave the captured control connected
+    but `display: none`; focusing a hidden control strands focus on `<body>`.
+    When it is no longer visible, the currently-rendered equivalent opener is
+    used, and only then the terminal.
+  - The focus call is verified against `document.activeElement` afterwards,
+    since `focus()` silently no-ops on a hidden, disabled or inert target. The
+    terminal is the fallback when it did not take.
 - Closing removes the panel from layout with the `hidden` attribute.
 - Clicking a file continues to render the preview inside the same drawer.
+- The desktop resize separator is fully contained by the file-workspace track,
+  so its hit area never steals pointer or touch input from terminal columns.
 
 ### Data Flow
 
@@ -1067,15 +1097,10 @@ Monaco token-rule data per accent theme (~200 LOC of vendored data via
 [ADR-0016](../adrs/0016-monaco-based-file-browser-editor.md)
 Consequences→Negative for the rationale.
 
-| App Theme | Monaco Theme |
-|-----------|--------------|
-| Midnight (default) | `vs-dark` |
-| Classic Dark | `vs-dark` |
-| Classic Light | `vs` |
-| Monokai | `vs-dark` |
-| Nord | `vs-dark` |
-| Solarized Dark | `vs-dark` |
-| Solarized Light | `vs` |
+| Resolved palette | Monaco Theme |
+|---|---|
+| Dark | `vs-dark` |
+| Light | `vs` |
 
 When the user switches themes via the settings UI, the
 `MutationObserver` on `<html>[data-theme]` calls
@@ -1273,7 +1298,7 @@ Escape follows a cascade: Monaco find/replace widget -> editor -> preview -> fil
 - Touch targets meet 44x44px minimum.
 - Upload zone has a sticky bottom hint: "Drag files here or click Upload".
 - Editor toolbar and status bar adapt to narrower layout.
-- `ensureMinTerminalWidth()` auto-switches to overlay if the terminal would be squeezed below 80 columns.
+- The 1024px breakpoint is CSS-only; no runtime DOM move occurs.
 
 ---
 
@@ -1282,10 +1307,23 @@ Escape follows a cascade: Monaco find/replace widget -> editor -> preview -> fil
 ### Desktop (docked)
 
 - Position: right-docked, `z-index: var(--z-sticky)` (1100).
-- Default width: 350px (browse/preview), auto-expands to `min(500px, 50vw)` for editor.
-- Resize range: 280px to 60vw.
+- Default width: 380px (browse/preview), auto-expands to at least
+  `min(500px, 50vw)` for editor.
+- Resize range: 360px to 60vw. The 360px floor keeps every 44px header action
+  reachable without clipping.
 - Border: `1px solid var(--border-default)` with `box-shadow: -4px 0 12px rgba(0,0,0,0.15)`.
-- Terminal reflows via `margin-right` change and `fitAddon.fit()` on `transitionend`.
+- `#fileBrowserDock` and `#terminalContainer` share one flex width budget.
+- `ResizeObserver` continuously advertises the changed outer terminal
+  capacity. There is no panel-to-column pixel conversion and no transition-end
+  refit.
+- `--fb-dock-width` is the single width source for the track, drag handle, and
+  editor expansion.
+- The resize handle is an ARIA vertical separator. Pointer drag and
+  Left/Right/Home/End keyboard controls update the same width source, including
+  on touch-capable Windows hardware.
+- The open/close easing is suspended during pointer drag so the dock track
+  follows the separator exactly; releasing the pointer restores tokenized
+  transitions.
 
 ### File Item Styles
 

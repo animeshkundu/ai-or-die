@@ -27,4 +27,30 @@ describe('session join replay buffer', function () {
     );
     assert.deepStrictEqual(replay, ['newest-is-large']);
   });
+
+  it('excludes geometry-held output that will be released after the join frame', function () {
+    const outputBuffer = new CircularBuffer(1000);
+    outputBuffer.push('before-resize');
+    outputBuffer.push('held-redraw-a');
+    outputBuffer.push('held-redraw-b');
+    const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+      outputBuffer,
+      _geometryOutputHold: ['held-redraw-a', 'held-redraw-b'],
+      _geometryReplayBuffer: ['before-resize'],
+    });
+    assert.deepStrictEqual(replay, ['before-resize']);
+  });
+
+  it('keeps the pre-transaction replay stable when held output exceeds the ring', function () {
+    const outputBuffer = new CircularBuffer(3);
+    outputBuffer.push('held-c');
+    outputBuffer.push('held-d');
+    outputBuffer.push('held-e');
+    const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+      outputBuffer,
+      _geometryOutputHold: ['held-a', 'held-b', 'held-c', 'held-d', 'held-e'],
+      _geometryReplayBuffer: ['before-resize'],
+    });
+    assert.deepStrictEqual(replay, ['before-resize']);
+  });
 });

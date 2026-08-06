@@ -6,7 +6,7 @@
     z-index: var(--z-dropdown);
     background: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: 8px;
+    border-radius: var(--radius-lg);
     padding: 4px 0;
     min-width: 200px;
     box-shadow: var(--shadow-lg);
@@ -74,7 +74,7 @@
         left: 0;
         right: 0;
         top: auto;
-        border-radius: 12px 12px 0 0;
+        border-radius: var(--radius-xl) var(--radius-xl) 0 0;
         padding-bottom: var(--sa-bottom);
         min-width: 100%;
         max-width: 100%;
@@ -165,7 +165,7 @@ ninja-keys {
     color: var(--text-primary);
     background: var(--surface-tertiary);
     border: 1px solid var(--border-default, var(--border));
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     box-shadow: 0 1px 0 var(--border-default, var(--border));
     line-height: 1.4;
 }

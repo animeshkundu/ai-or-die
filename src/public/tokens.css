@@ -14,7 +14,7 @@
   --color-gray-200: #27272a;
   --color-gray-300: #3f3f46;
   --color-gray-400: #52525b;
-  --color-gray-500: #71717a;
+  --color-gray-500: #85858e;
   --color-gray-600: #a1a1aa;
   --color-gray-700: #d4d4d8;
   --color-gray-800: #e4e4e7;
@@ -88,7 +88,15 @@
   --chrome-tab-height: 44px;
   --chrome-bottom-nav-height: 52px;
 
+  /* --- Touch --- */
+  /* WCAG 2.2 AA target size (2.5.8) is 24px; 44px is the Apple HIG figure and
+     the one this client targets, because the primary mobile surface is an
+     iPhone PWA driving a terminal one-handed. Defined once so components share
+     a single definition instead of each hardcoding 44px. */
+  --hit-target-min: 44px;
+
   /* --- Border Radius --- */
+  --radius-xs: 2px;
   --radius-sm: 4px;
   --radius-md: 6px;
   --radius-lg: 8px;
@@ -227,7 +235,7 @@
 
   --text-primary: #e6edf3;
   --text-secondary: #8b949e;
-  --text-muted: #6e7681;
+  --text-muted: #868e99;
   --text-inverse: #0d1117;
 
   --border-default: #30363d;
@@ -262,8 +270,8 @@
   --surface-elevated: #e5e7eb;
 
   --text-primary: #1a1a1a;
-  --text-secondary: #6b7280;
-  --text-muted: #9ca3af;
+  --text-secondary: #616876;
+  --text-muted: #606773;
   --text-inverse: #fafafa;
 
   --border-default: #e6e7eb;
@@ -271,13 +279,13 @@
   --border-focus: #e05d00;
   --border-subtle: rgba(0, 0, 0, 0.08);
 
-  --accent-default: #e05d00;
+  --accent-default: #000000;
   --accent-hover: #cc5200;
   --accent-soft: rgba(224, 93, 0, 0.08);
   --accent-glow: rgba(224, 93, 0, 0.15);
 
   --status-success: #0f7b5c;
-  --status-error: #d92d20;
+  --status-error: #d62a1d;
   --status-warning: #a16207;
   --status-info: #2563eb;
 
@@ -302,8 +310,8 @@
   --surface-elevated: #3e3d32;
 
   --text-primary: #f8f8f2;
-  --text-secondary: #a6a28c;
-  --text-muted: #75715e;
+  --text-secondary: #aba791;
+  --text-muted: #aca895;
   --text-inverse: #272822;
 
   --border-default: #49483e;
@@ -317,7 +325,7 @@
   --accent-glow: rgba(166, 226, 46, 0.25);
 
   --status-success: #a6e22e;
-  --status-error: #f92672;
+  --status-error: #ffffff;
   --status-warning: #e6db74;
   --status-info: #66d9ef;
 
@@ -338,7 +346,7 @@
 
   --text-primary: #eceff4;
   --text-secondary: #d8dee9;
-  --text-muted: #81a1c1;
+  --text-muted: #afcfef;
   --text-inverse: #2e3440;
 
   --border-default: #4c566a;
@@ -346,13 +354,13 @@
   --border-focus: #88c0d0;
   --border-subtle: rgba(255, 255, 255, 0.08);
 
-  --accent-default: #88c0d0;
+  --accent-default: #8dc5d5;
   --accent-hover: #8fbcbb;
   --accent-soft: rgba(136, 192, 208, 0.12);
   --accent-glow: rgba(136, 192, 208, 0.25);
 
   --status-success: #a3be8c;
-  --status-error: #bf616a;
+  --status-error: #ffffff;
   --status-warning: #ebcb8b;
   --status-info: #81a1c1;
 
@@ -372,8 +380,8 @@
   --surface-elevated: #0d4f5e;
 
   --text-primary: #eee8d5;
-  --text-secondary: #839496;
-  --text-muted: #657b83;
+  --text-secondary: #a9babc;
+  --text-muted: #a5bbc3;
   --text-inverse: #002b36;
 
   --border-default: #094959;
@@ -381,13 +389,13 @@
   --border-focus: #268bd2;
   --border-subtle: rgba(255, 255, 255, 0.08);
 
-  --accent-default: #268bd2;
+  --accent-default: #4aaff6;
   --accent-hover: #2e9fe6;
   --accent-soft: rgba(38, 139, 210, 0.12);
   --accent-glow: rgba(38, 139, 210, 0.25);
 
   --status-success: #859900;
-  --status-error: #dc322f;
+  --status-error: #ffffff;
   --status-warning: #b58900;
   --status-info: #2aa198;
 
@@ -407,8 +415,8 @@
   --surface-elevated: #ddd6c1;
 
   --text-primary: #073642;
-  --text-secondary: #586e75;
-  --text-muted: #93a1a1;
+  --text-secondary: #4b6168;
+  --text-muted: #515f5f;
   --text-inverse: #fdf6e3;
 
   --border-default: #d3cbb7;
@@ -416,13 +424,13 @@
   --border-focus: #268bd2;
   --border-subtle: rgba(0, 0, 0, 0.08);
 
-  --accent-default: #268bd2;
+  --accent-default: #000000;
   --accent-hover: #2e9fe6;
   --accent-soft: rgba(38, 139, 210, 0.08);
   --accent-glow: rgba(38, 139, 210, 0.15);
 
   --status-success: #859900;
-  --status-error: #dc322f;
+  --status-error: #c41a17;
   --status-warning: #b58900;
   --status-info: #2aa198;
 

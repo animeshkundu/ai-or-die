@@ -37,7 +37,7 @@
     height: 14px;
     border: 2px solid var(--border-default);
     border-top-color: var(--accent-default);
-    border-radius: 50%;
+    border-radius: 50%;;
     animation: spin var(--duration-spin) var(--ease-linear) infinite;
     vertical-align: middle;
 }
@@ -60,7 +60,7 @@
     height: 24px;
     border: 3px solid var(--border-default);
     border-top-color: var(--accent-default);
-    border-radius: 50%;
+    border-radius: 50%;;
     animation: spin var(--duration-spin) var(--ease-linear) infinite;
 }
 

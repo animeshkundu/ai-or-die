@@ -54,8 +54,8 @@
     justify-content: center;
     align-items: center;
     gap: 4px;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
     width: 44px;
     height: 44px;
     background: transparent;
@@ -136,8 +136,8 @@
     padding: 0;
     width: 44px;
     height: 44px;
-    min-width: 44px;
-    min-height: 44px;
+    min-width: var(--hit-target-min);
+    min-height: var(--hit-target-min);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -264,7 +264,7 @@
     }
 
     .modal-footer .btn {
-        min-height: 44px;
+        min-height: var(--hit-target-min);
         padding: 12px 20px;
     }
 
@@ -275,7 +275,7 @@
     }
 
     .folder-item {
-        min-height: 44px;
+        min-height: var(--hit-target-min);
         padding: 12px;
     }
 
@@ -286,7 +286,7 @@
     }
 
     .session-item {
-        min-height: 44px;
+        min-height: var(--hit-target-min);
         padding: 10px;
     }
 

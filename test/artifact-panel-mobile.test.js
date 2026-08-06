@@ -101,7 +101,15 @@ const STORE_KEY = 'ai-or-die:artifact-panel:layout';
       assert.ok(minHeight >= 44, 'reopen min-height should be at least 44px');
     } else {
       const css = fs.readFileSync(PANEL_CSS, 'utf8');
-      assert.ok(/\.artifact-panel__reopen\s*\{[^}]*min-width:\s*44px;[^}]*min-height:\s*44px;/s.test(css),
+      // Accepts the literal or the shared token. --hit-target-min is defined as
+      // 44px in tokens.css and design-system-audit.test.js asserts that value,
+      // so the token satisfies this contract while letting components share one
+      // definition instead of each hardcoding the number.
+      const size = '(?:44px|var\\(--hit-target-min\\))';
+      const pattern = new RegExp(
+        `\\.artifact-panel__reopen\\s*\\{[^}]*min-width:\\s*${size};[^}]*min-height:\\s*${size};`, 's'
+      );
+      assert.ok(pattern.test(css),
         'reopen CSS should configure at least a 44px touch target');
     }
   });

@@ -23,7 +23,7 @@
   font-size: var(--text-xl);
   line-height: 1;
   border: 1px solid var(--border-default, #33363f);
-  border-radius: 50%;
+  border-radius: 50%;;
   background: var(--surface-elevated, #1c2028);
   color: var(--text-primary, #e6edf3);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
@@ -67,7 +67,7 @@ body.keyboard-open .keys-panel-fab { display: none; }
   padding-bottom: var(--sa-bottom, 0px);
   background: var(--surface-secondary, #161b22);
   border-top: 1px solid var(--border-default, #33363f);
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
   box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.45);
   transform: translateY(100%);
   transition: transform var(--duration-normal) var(--ease-out);
@@ -88,14 +88,14 @@ body.keyboard-open .keys-panel-fab { display: none; }
   letter-spacing: 0.02em;
 }
 .keys-panel__close {
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--hit-target-min);
+  min-height: var(--hit-target-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
   border: none;
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: transparent;
   color: var(--text-secondary, #9aa4b2);
   font-size: var(--text-md, 14px);
@@ -113,7 +113,7 @@ body.keyboard-open .keys-panel-fab { display: none; }
 .keys-panel__util { margin-bottom: 10px; }
 .keys-panel__util-btn {
   width: 100%;
-  min-height: 44px;
+  min-height: var(--hit-target-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -122,7 +122,7 @@ body.keyboard-open .keys-panel-fab { display: none; }
   font-size: var(--text-sm, 12px);
   font-weight: 500;
   border: 1px solid var(--border-default, #33363f);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--surface-tertiary, #1c2028);
   color: var(--text-primary, #e6edf3);
   -webkit-tap-highlight-color: transparent;
@@ -147,8 +147,8 @@ body.keyboard-open .keys-panel-fab { display: none; }
   gap: 6px;
 }
 .keys-panel__key {
-  min-width: 44px;
-  min-height: 44px;
+  min-width: var(--hit-target-min);
+  min-height: var(--hit-target-min);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -156,7 +156,7 @@ body.keyboard-open .keys-panel-fab { display: none; }
   font-size: var(--text-sm, 12px);
   font-weight: 500;
   border: 1px solid var(--border-default, #33363f);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--surface-tertiary, #1c2028);
   color: var(--text-primary, #e6edf3);
   -webkit-tap-highlight-color: transparent;
