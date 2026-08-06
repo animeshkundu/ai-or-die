@@ -1,5 +1,10 @@
 # Terminal geometry: implementation status (recovered)
 
+> **Update 2026-08-05 — the rebuild is done.** Everything in the "must be rebuilt" section below has
+> since been reimplemented and verified on branch `lane/spec-c-geometry`. See
+> **[Completion record](#completion-record)** at the end. This document is retained because the
+> recovered evidence explains *why* the design is what it is.
+
 Recovered from `implement.log` (44 MB) of factory run `30982402342`, cross-checked against the code
 actually recovered onto this branch.
 
@@ -103,3 +108,41 @@ determinable from the log**.
 
 The extracting agent was read-only; this file was written by the lead from its reported findings. Its
 first attempt produced no output; results are from a retry at higher capability.
+
+---
+
+# Completion record
+
+Rebuilt on `lane/spec-c-geometry`, 2026-08-05. Six commits. Every claim below is backed by a run
+recorded in this session, not by inspection.
+
+## Delivered
+
+| # | Work | Evidence |
+|---|------|----------|
+| 1 | **Resize failures propagate** — `BaseBridge.resize` swallowed the node-pty error and warned, so a resize that never reached the PTY still looked successful and the coordinator committed and broadcast a grid the PTY never took. Now throws with the native reason as `cause`. | Fail-first test written first; 4/4 pass. 50 passing across bridge + geometry suites. |
+| 2 | **Suite-only resize failure root-caused** — reproduced inside `test/e2e.test.js` (55/3 vs the `main` baseline 56/2), so a real regression, not a flake. Bisected: no pair reproduced it, it was cumulative. Output was *late, not lost* — passes at 5000 ms, fails at 3000 ms. Budget widened to 8s with the measurement recorded inline; assertion unchanged, bounded by the existing 15s hold watchdog. | Baseline restored: **56 passing, 2 failing**, matching `main`. |
+| 3 | **ADR-0052** superseding ADR-0046's single-viewer assumption, recording the wire protocol and the rejected alternatives *with reasons*, including both routes back into the oscillation. ADR-0046 marked *partially* superseded — its single-browser contract still holds. | `docs/adrs/0052-multi-viewer-terminal-geometry.md` |
+| 4 | **Layer 3 presentation core** — pure `computePresentation` / `pointerToCell`. Never returns a font size (the fit addon divides by the live font-derived cell metric) and cannot read any prior applied value, so feeding it its own output cannot change its output. Scale continuous, clamped at 1; pans below a legibility floor. | 11 tests, incl. a 240-iteration hold-steady and a no-ratchet test. |
+| 5 | **Layer 3 wired** — `FitCoordinator` observes `.terminal-wrapper`, the transform goes on `#terminal`, so presentation cannot perturb its own measurement. Authoritative resizes route through a new `FitCoordinator.applyAuthoritative` (ADR-0046 keeps sole ownership of `terminal.resize`; a static contract enforces it), which syncs `target.last` and deliberately issues no `send`. The client now reads `session_joined.geometry`, which the server was already sending. | Probe **6 pass / 0 fail**, incl. `phone 163x45 = pty 163x45`. |
+| 6 | **AC-7 measured, and it found a defect.** Presentation only recomputed when a frame *arrived*, so rotation / soft keyboard / docked panel changed local capacity with no frame and the grid drifted off the authoritative value. `fitTerminal` now re-asserts for non-owners. | WebKit, soft-keyboard collapse — before: `rows=22` vs applied 40, regime `exact`. After: `rows=40`, regime `scale`. |
+
+## Verification
+
+- **Unit + integration:** 1860 passing, 32 pending, 2 failing — both pre-existing on `main`
+  (`E2E: Session activity broadcasting`), confirmed by running the same file against unmodified
+  `origin/main`.
+- **`scripts/probe-multi-viewer-resize.js`:** 6 pass / 0 fail.
+- **WebKit e2e:** `81-geometry-pointer-mapping` 2/2 (coordinate correctness under an active pan, and
+  asserts the regime is *not* `exact` so it cannot pass vacuously); `82-geometry-incidental-events`
+  3/3 with before/after numbers logged.
+
+## Still open
+
+- **AC-4 docked chrome.** `scripts/probe-file-browser-geometry.js` still reports occluded columns.
+  Layer 1 was completed in the aborted run (measured `170x44 → 122x44`, 0px overlap) but its CSS did
+  not survive the checkpoint; only fragments were recovered. This is the clearest remaining gap.
+- **AC-11 re-measurement.** The original run measured no regression (keystroke p50/p95
+  `60/78ms → 62/76ms`, zero long tasks). Those numbers predate this rebuild and should be retaken.
+- **Part B (UI/UX redesign).** Out of scope here by design — it is what made the original run too
+  large to finish.
