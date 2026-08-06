@@ -137,12 +137,40 @@ recorded in this session, not by inspection.
   asserts the regime is *not* `exact` so it cannot pass vacuously); `82-geometry-incidental-events`
   3/3 with before/after numbers logged.
 
+## Closed since
+
+**AC-4 docked chrome — fixed.** `_adjustTerminal` was a deliberate no-op; it now publishes
+`--fb-dock-width` while docked and `.terminal-container` reserves it, making the terminal a real
+layout region rather than something corrected by pixel arithmetic. Opening the panel takes the
+terminal `163 -> 121` columns and the probe reports *"the terminal refit to the reduced area"*.
+
+**AC-7 split panes — measured, and it found a break.** Writing the fourth case revealed split view
+could not open at all: the recovered `splits.js` (+183/-30 vs main) referenced a Layer 3 fit API that
+did not survive the checkpoint, and its rewritten per-pane join timed out. Reverted to main's
+version; both panes now reach `91x24` with distinct sessions, stable across a divider move.
+**Cost, stated plainly:** split panes use the pre-existing fit path and do NOT get Layer 3
+presentation.
+
+**AC-11 re-measured** on one machine, `main` vs this branch:
+
+| metric | before | after |
+|---|---|---|
+| idle p50 | 626 ms | 330 ms |
+| idle p95 | 3119 ms | 429 ms |
+| flood p50 | 352 ms | 323 ms |
+| flood p95 | 6727 ms | 6465 ms |
+| stalls | 0/8 idle, 1/15 flood | identical |
+
+No regression — better on every metric. Caveat: one run each on a loaded Windows box, and the idle
+figures swing considerably run to run, so treat the direction as sound and the magnitudes as noisy.
+
+**Two recovered files were reverted to main** after proving to be partial artifacts of the aborted
+run's wider client rework, both breaking working features: `splits.js` (split view could not open)
+and `file-browser.js` / `file-browser.css` (the panel became a full-viewport element that pushed the
+terminal to `y=-855`, off screen).
+
 ## Still open
 
-- **AC-4 docked chrome.** `scripts/probe-file-browser-geometry.js` still reports occluded columns.
-  Layer 1 was completed in the aborted run (measured `170x44 → 122x44`, 0px overlap) but its CSS did
-  not survive the checkpoint; only fragments were recovered. This is the clearest remaining gap.
-- **AC-11 re-measurement.** The original run measured no regression (keystroke p50/p95
-  `60/78ms → 62/76ms`, zero long tasks). Those numbers predate this rebuild and should be retaken.
 - **Part B (UI/UX redesign).** Out of scope here by design — it is what made the original run too
-  large to finish.
+  large to finish. AC-9 (accessibility by measurement), AC-10 (screenshot deliverables) and AC-12
+  (visual coherence) belong to it and remain unmet. It wants its own run.
