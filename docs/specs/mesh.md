@@ -108,9 +108,11 @@ invisible to the browser, and the terminal client derives `ws`/`wss` from
 ## Auth
 
 `--mesh` keeps the Bearer token ON (mesh ACL + token, layered), overriding the
-anonymous default of `--tunnel`. With both flags the tunnel URL carries
-`?token=` so it still works. Ship the default-deny `tag:aiordie` ACL from
-`docs/mesh-acl.example.hujson`.
+anonymous default of `--tunnel`. WebSocket upgrades accept the same credential
+forms as HTTP routes: either `?token=<token>` or `Authorization: Bearer <token>`,
+so the sidecar-injected header authenticates sockets on the tailnet-to-loopback
+hop. With both flags the tunnel URL carries `?token=` so it still works. Ship
+the default-deny `tag:aiordie` ACL from `docs/mesh-acl.example.hujson`.
 
 ## Egress (conductor → peers) — ADR-0036
 
