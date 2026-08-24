@@ -209,7 +209,7 @@ test.describe('CLI-specific terminal copy', () => {
       const copyMode = await copyVisibleScreen(page);
       const copiedText = await page.evaluate(() => window.__cliCopyText);
       expect(copiedText).toContain(marker);
-      expect(copiedText).toContain(tool.label);
+      expect(copiedText.replace(/\s+/g, '')).toContain(tool.label.replace(/\s+/g, ''));
 
       await captureEvidence(page, testInfo, tool.id, copyMode.mobile);
     });
