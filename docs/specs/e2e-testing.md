@@ -24,6 +24,22 @@ The split-geometry case asserts the documented behaviour for the device class it
 
 The accepted ADR-0037 WebKit specs 77 through 79 are hard gates: inability to initialize `window.app`, the terminal, or required mobile controls fails the job rather than being converted to a skipped test.
 
+## CLI copy gate
+
+`e2e/tests/86-cli-copy.spec.js` runs the real `start_claude` and `start_copilot`
+WebSocket routes against `e2e/fixtures/fake-cli-copy.js`. The fixture is a
+cross-platform Node process that prints stable, tool-labelled output and stays
+alive, so the test exercises each production bridge, node-pty, WebSocket
+coalescing, xterm's visible buffer, and the clipboard UI without external CLI
+installations, authentication, or network access.
+
+Desktop Chromium copies through the context menu. The iPhone16 WebKit project
+copies through the Control-mode keys panel, then verifies that opening and using
+the panel leaves the keyboard closed, terminal height unchanged, and the
+keyboard transition settled. Each test attaches a screenshot; setting
+`AIORDIE_CLI_COPY_SCREENSHOT_DIR` writes an explicit evidence PNG for the
+requested run without changing normal CI output.
+
 ## 1. Research Findings
 
 ### 1.1 Testing WebSocket-Based Node.js Apps
@@ -306,6 +322,7 @@ Browser-level tests run Chromium via Playwright, validating the full stack from 
 | `04-context-menu` | Right-click shows menu, copy works with or without selection, items work, keyboard navigation, Escape closes |
 | `05-tab-switching` | Two sessions isolated, no garbled text after switching |
 | `06-large-paste` | 3KB+ paste arrives intact through chunked write pipeline |
+| `86-cli-copy` | Claude and Copilot bridge output copies on desktop and flicker-free mobile Control mode |
 
 **Key design decisions:**
 - `serviceWorkers: 'block'` prevents stale cache interference
@@ -347,6 +364,10 @@ while IFS= read -r line; do
     echo "Assistant: I received '$line'"
 done
 ```
+
+`e2e/fixtures/fake-cli-copy.js` is the browser-E2E fixture for tool-specific
+copy coverage. It intentionally uses Node rather than shell syntax so the same
+fixture runs under Linux and Windows PTY implementations.
 
 ### 5.3 Performance/Load Testing
 
