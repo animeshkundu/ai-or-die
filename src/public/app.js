@@ -4535,7 +4535,8 @@ class ClaudeCodeWebInterface {
                 } else if (window.feedback) {
                     window.feedback.warning('Nothing to copy');
                 }
-            } catch {
+            } catch (err) {
+                console.error('Terminal copy failed:', err);
                 showClipboardError();
             }
         };
