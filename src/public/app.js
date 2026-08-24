@@ -4526,18 +4526,12 @@ class ClaudeCodeWebInterface {
                 return;
             }
 
-            let picked = null;
             try {
-                if (typeof TC.getSelectionOrVisible === 'function') {
-                    picked = TC.getSelectionOrVisible(terminal);
-                }
                 const result = await TC.copyVisible(terminal);
                 if (result && result.ok) {
                     if (window.attachClipboardHandler?.showCopiedToast) {
                         window.attachClipboardHandler.showCopiedToast();
                     }
-                } else if (picked && picked.text) {
-                    showClipboardError();
                 } else if (window.feedback) {
                     window.feedback.warning('Nothing to copy');
                 }
