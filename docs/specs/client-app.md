@@ -73,6 +73,7 @@ The frontend is a single-page application served from `src/public/`. It runs ent
 | MesloLGS Nerd Font | v3.3.0 | Self-hosted WOFF2 + jsDelivr CDN fallback | Primary terminal font with Nerd Font glyphs |
 | Inter | -- | Google Fonts | UI font for headers, tabs, controls |
 | clipboard-handler.js | -- | Local | Keyboard shortcuts (Ctrl+C/V) and clipboard utility functions |
+| terminal-copy.js | -- | Local | Selection-or-visible-terminal text extraction and clipboard writes |
 | feedback-manager.js | -- | Local | Toast notification system (FeedbackManager singleton) |
 | app-identity.js | -- | Local | Shared per-machine app identity formatter (`window.AppIdentity`) |
 | input-overlay.js | -- | Local | Type-ahead input overlay with voice integration |
@@ -642,6 +643,14 @@ A shared `#termContextMenu` element lives in `<main>` (not inside the terminal w
 | pastePlain | Paste as Plain Text | -- |
 | selectAll | Select All | -- |
 | clear | Clear | -- |
+
+`Copy` is always available when a terminal is open. It copies the active terminal
+selection when present and otherwise copies the visible xterm buffer. This
+selection-first fallback is shared by the mobile copy controls and does not
+depend on which CLI/agent produced the output, so full-screen TUI output from
+Claude and Copilot remains copyable without first dragging a selection. The
+`Ctrl+C` shortcut keeps its terminal behavior: it copies a selection and sends
+SIGINT when there is no selection.
 
 **Accessibility:** ARIA `role="menu"` / `role="menuitem"` / `role="separator"`, `aria-disabled`, `tabindex="-1"`, arrow key navigation, Enter to activate, Escape to close.
 

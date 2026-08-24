@@ -4515,6 +4515,37 @@ class ClaudeCodeWebInterface {
             }
         };
 
+        // Copy the active selection when one exists; otherwise copy the visible
+        // terminal screen. The same terminal-copy utility powers the mobile
+        // copy affordances and keeps this path independent of the CLI renderer.
+        const copyTerminalText = async (terminal) => {
+            const TC = (typeof window !== 'undefined' && window.TerminalCopy)
+                || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
+            if (!terminal || !TC || typeof TC.copyVisible !== 'function') {
+                showClipboardError();
+                return;
+            }
+
+            let picked = null;
+            try {
+                if (typeof TC.getSelectionOrVisible === 'function') {
+                    picked = TC.getSelectionOrVisible(terminal);
+                }
+                const result = await TC.copyVisible(terminal);
+                if (result && result.ok) {
+                    if (window.attachClipboardHandler?.showCopiedToast) {
+                        window.attachClipboardHandler.showCopiedToast();
+                    }
+                } else if (picked && picked.text) {
+                    showClipboardError();
+                } else if (window.feedback) {
+                    window.feedback.warning('Nothing to copy');
+                }
+            } catch {
+                showClipboardError();
+            }
+        };
+
         // Right-click handler — listen on <main> for event delegation (covers splits)
         const mainEl = document.querySelector('.main');
         mainEl.addEventListener('contextmenu', (e) => {
@@ -4542,12 +4573,13 @@ class ClaudeCodeWebInterface {
                 menu.style.display = 'block';
             }
 
-            // Disable copy if no selection
+            // Copy falls back to the visible screen when there is no selection.
+            // It must remain available for TUIs whose output is not conveniently
+            // selectable, including Claude and Copilot.
             const copyItem = menu.querySelector('[data-action="copy"]');
             if (copyItem) {
-                const hasSelection = activeTerminal.hasSelection();
-                copyItem.classList.toggle('disabled', !hasSelection);
-                copyItem.setAttribute('aria-disabled', !hasSelection);
+                copyItem.classList.remove('disabled');
+                copyItem.removeAttribute('aria-disabled');
             }
 
             // Disable "Paste Image" if clipboard.read() is not available
@@ -4575,15 +4607,7 @@ class ClaudeCodeWebInterface {
 
             switch (action) {
                 case 'copy': {
-                    const sel = activeTerminal.getSelection();
-                    if (sel) {
-                        try {
-                            await navigator.clipboard.writeText(sel);
-                            if (window.attachClipboardHandler?.showCopiedToast) {
-                                window.attachClipboardHandler.showCopiedToast();
-                            }
-                        } catch { showClipboardError(); }
-                    }
+                    await copyTerminalText(activeTerminal);
                     break;
                 }
                 case 'paste': {

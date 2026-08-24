@@ -3,6 +3,9 @@ const { createServer, createSessionViaApi } = require('../helpers/server-factory
 const {
   waitForAppReady,
   waitForTerminalCanvas,
+  waitForTerminalText,
+  typeInTerminal,
+  pressKey,
   setupPageCapture,
   attachFailureArtifacts,
   joinSessionAndStartTerminal,
@@ -52,6 +55,29 @@ test.describe('Context menu: right-click terminal shows menu', () => {
     await expect(menu.locator('[data-action="attachImage"]')).toBeVisible();
     await expect(menu.locator('[data-action="selectAll"]')).toBeVisible();
     await expect(menu.locator('[data-action="clear"]')).toBeVisible();
+  });
+
+  test('Copy stays enabled without a selection and copies visible terminal output', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+    await setupTerminalPage(page);
+
+    const marker = `CTX_COPY_${Date.now()}`;
+    await typeInTerminal(page, `echo ${marker}`);
+    await pressKey(page, 'Enter');
+    await waitForTerminalText(page, marker, 15000);
+    await page.evaluate(() => window.app.terminal.clearSelection());
+
+    const terminalArea = page.locator('[data-tid="terminal"] .xterm-screen, #terminal .xterm-screen').first();
+    await terminalArea.click({ button: 'right', position: { x: 100, y: 50 } });
+
+    const copyItem = page.locator('#termContextMenu [data-action="copy"]');
+    await expect(copyItem).toBeVisible();
+    await expect(copyItem).not.toHaveClass(/disabled/);
+    await expect(copyItem).not.toHaveAttribute('aria-disabled', 'true');
+
+    await copyItem.click();
+    const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+    expect(clipboardText).toContain(marker);
   });
 
   test('Select All menu item selects terminal content', async ({ page }) => {

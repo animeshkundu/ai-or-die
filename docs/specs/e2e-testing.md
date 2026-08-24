@@ -303,7 +303,7 @@ Browser-level tests run Chromium via Playwright, validating the full stack from 
 | `01-golden-path` | Real user flow: spawn CLI → browser → click Terminal → type → see output |
 | `02-terminal-io` | Echo round-trip, multi-line output, terminal dimensions |
 | `03-clipboard` | Ctrl+C copies selection (not SIGINT), Ctrl+V pastes from clipboard |
-| `04-context-menu` | Right-click shows menu, items work, keyboard navigation, Escape closes |
+| `04-context-menu` | Right-click shows menu, copy works with or without selection, items work, keyboard navigation, Escape closes |
 | `05-tab-switching` | Two sessions isolated, no garbled text after switching |
 | `06-large-paste` | 3KB+ paste arrives intact through chunked write pipeline |
 
