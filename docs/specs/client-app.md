@@ -80,6 +80,102 @@ The frontend is a single-page application served from `src/public/`. It runs ent
 
 ---
 
+## Clipboard & Keyboard Shortcuts
+
+Implemented in `src/public/clipboard-handler.js`, `src/public/terminal-copy.js`,
+`src/public/app.js`, `src/public/command-palette.js`, and
+`src/public/keys-panel.js`.
+
+### Copy status and semantics
+
+`TerminalCopy.copyVisible(terminal)` is the shared selection-first copy
+operation. It writes the current xterm selection when one exists; otherwise it
+reads the active viewport with `buffer.active.getLine(...)`. Wrapped xterm rows
+are joined into their logical line; normal rows delimit logical lines. Trailing
+blank logical rows are omitted while internal blank rows are preserved. It then
+writes the visible-screen text to `navigator.clipboard.writeText`. Results are
+`{ ok: true, source: 'selection' | 'screen' }` or
+`{ ok: false, reason: 'empty' | 'unavailable' | 'denied' | 'error' }`.
+`copySelection(terminal)` is selection-only for keyboard shortcuts, and
+`copyBuffer(terminal)` reads the complete active buffer for the command palette.
+Copy operations do not clear selection or change focus or viewport.
+
+The terminal context-menu `Copy` item is enabled whenever a terminal is open,
+regardless of `hasSelection()`. Its active terminal is resolved from the main
+xterm or the split pane that received the context-menu event, so copy follows
+focus/target rather than whichever pane was last rendered. The menu uses the
+same helper for every provider and CLI route. Claude, Copilot, Codex, Gemini,
+and the native terminal are rendered through the same xterm surface; the
+provider is therefore not a copy-path distinction.
+
+`Ctrl+C` / `Cmd+C` intentionally keeps different semantics: with a selection it
+copies and clears that selection; without one it remains available to the
+terminal as SIGINT. The mobile Control-mode `Copy screen` button always uses
+`TerminalCopy.copyVisible` and reports `Copied screen` or `Copied` for success.
+It reports `Nothing to copy` only for an empty source; unavailable or denied
+clipboard access reports `Clipboard access denied`, and extraction failures
+report `Unable to read terminal output`. It never focuses xterm or raises the
+soft keyboard.
+
+The command-palette `Copy Terminal Output` action is intentionally distinct. It
+uses `TerminalCopy.copyBuffer()` to copy the complete active xterm buffer without
+creating or clearing a selection. It is a full-buffer operation, not the
+context-menu/mobile visible-viewport fallback, and reports `source: 'buffer'` on
+success.
+
+### Keyboard shortcuts and paste utilities
+
+`attachClipboardHandler(terminal, sendFn)` attaches an
+`attachCustomKeyEventHandler` to the xterm.js terminal:
+
+| Shortcut | Behavior |
+|----------|----------|
+| Ctrl+C / Cmd+C | Copy selection to clipboard (or send SIGINT if no selection) |
+| Ctrl+V / Cmd+V | Browser native paste, then xterm handles bracketed paste and `onData` |
+| Ctrl+Shift+C | Copy selection (Linux convention) |
+| Ctrl+Shift+V | Paste (Linux convention) |
+
+The handler uses `(e.ctrlKey || e.metaKey)` for cross-platform Mac, Windows,
+and Linux support. `normalizeLineEndings(text)` converts `\r\n` and `\n` to
+terminal-standard `\r`; `wrapBracketedPaste(text)` wraps text in
+`ESC[200~` ... `ESC[201~`.
+
+The shared `#termContextMenu` lives in `<main>` so event delegation can serve
+the main terminal and split panes. It exposes `Copy`, `Paste`, `Paste as Plain
+Text`, `Select All`, and `Clear` with the ARIA menu pattern, keyboard navigation,
+Enter activation, and Escape dismissal. Clipboard failures show the existing
+clipboard error feedback; empty copy shows `Nothing to copy`.
+
+The copy helper is loaded before `app.js` and `keys-panel.js` in
+`src/public/index.html`; a browser page uses `window.TerminalCopy`, while Node
+unit tests use its CommonJS export. It has no provider-specific branch.
+
+### Mobile focus and split behavior
+
+The mobile two-mode model keeps the soft keyboard in Compose mode and dismisses
+it for Control mode. Opening or using the keys panel sends input directly with
+`app.send({ type: 'input', data })`; it does not call `terminal.focus()`, so the
+panel and its copy action do not cause keyboard-dismiss flicker or a geometry
+change. Desktop context-menu copy returns focus to the terminal after the menu
+action. Split context menus resolve the clicked pane and use that pane's
+selection, visible buffer, socket, and paste target.
+
+### Renderer and cache boundaries
+
+The shipped client uses xterm 6.0.0. xterm 6 removed the Canvas renderer, so
+mobile's reliable default is the DOM renderer; desktop may load WebGL only when
+appropriate and falls back to DOM. Copy reads xterm's buffer API and is
+renderer-independent.
+
+The Playwright base context sets `serviceWorkers: 'block'` to isolate browser
+E2E copy and UI assertions from stale PWA responses. The mobile/iOS projects
+explicitly allow the service worker when exercising PWA behavior. The production
+worker currently names its cache `ai-or-die-v13`; that version fact is separate
+from test isolation and is not evidence that a cached client was used in the
+copy test.
+
+---
+
 ## Design Token System
 
 Source: `src/public/tokens.css`
@@ -548,7 +644,7 @@ After authenticated `loadConfig()` populates `this.hostname`, `init()` calls `fo
 
 Source: `src/public/service-worker.js`
 
-- **Cache name:** `ai-or-die-v10` (bump on every cache-shape change).
+- **Cache name:** `ai-or-die-v13` (bump on every cache-shape change).
 - **Precached resources:** root paths (`/`, `/index.html`), core stylesheets (tokens, base, component CSS including `components/controls.css`, mobile, main), JS modules (including `app-identity.js`, app, command-palette, clipboard-handler, session-manager, plan-detector, splits, icons, voice-handler, image-handler, input-overlay, feedback-manager, file-browser, file-editor, extra-keys), and the MesloLGS Nerd Font WOFF2 variants (other Nerd Font families are cached on demand).
 - **Strategy for API/WebSocket/manifest routes:** Network only, with a 503 offline fallback for `/api/*`. `/manifest.json` is network-only because it is built per-machine and must not be served stale from the service-worker cache.
 - **Strategy for versioned CDN assets** (unpkg, cdnjs, jsdelivr, Google Fonts): Cache-first.
@@ -605,58 +701,6 @@ Single `_installState` property drives both the floating Install button and the 
 | `dismissed` | User rejected the install prompt | "Install was cancelled. Reload the page to try again." |
 
 The 3-second fallback timer is a heuristic — `beforeinstallprompt` typically fires within a few hundred ms of page load on real hardware once criteria are met. The listener overrides the late-arriving event if the timer fires first.
-
----
-
-## Clipboard & Keyboard Shortcuts
-
-Implemented in `src/public/clipboard-handler.js` and `src/public/app.js`.
-
-### Keyboard Shortcuts
-
-`attachClipboardHandler(terminal, sendFn)` attaches an `attachCustomKeyEventHandler` to the xterm.js terminal:
-
-| Shortcut | Behavior |
-|----------|----------|
-| Ctrl+C / Cmd+C | Copy selection to clipboard (or send SIGINT if no selection) |
-| Ctrl+V / Cmd+V | Browser native paste → xterm handles bracketed paste → `onData` |
-| Ctrl+Shift+C | Copy selection (Linux convention) |
-| Ctrl+Shift+V | Paste (Linux convention) |
-
-Uses `(e.ctrlKey \|\| e.metaKey)` directly for cross-platform Mac/Windows/Linux support.
-
-### Utility Functions
-
-- `attachClipboardHandler.normalizeLineEndings(text)` — converts `\r\n` → `\r` and `\n` → `\r`
-- `attachClipboardHandler.wrapBracketedPaste(text)` — wraps in `ESC[200~` ... `ESC[201~`
-
-### Context Menu
-
-A shared `#termContextMenu` element lives in `<main>` (not inside the terminal wrapper) so it can serve both the main terminal and split panes via event delegation.
-
-**Menu items:**
-
-| Action | Label | Shortcut Hint |
-|--------|-------|---------------|
-| copy | Copy | Ctrl+C |
-| paste | Paste | Ctrl+V |
-| pastePlain | Paste as Plain Text | -- |
-| selectAll | Select All | -- |
-| clear | Clear | -- |
-
-`Copy` is always available when a terminal is open. It copies the active terminal
-selection when present and otherwise copies the visible xterm buffer. This
-selection-first fallback is shared by the mobile copy controls and does not
-depend on which CLI/agent produced the output, so full-screen TUI output from
-Claude and Copilot remains copyable without first dragging a selection. The
-`Ctrl+C` shortcut keeps its terminal behavior: it copies a selection and sends
-SIGINT when there is no selection.
-
-**Accessibility:** ARIA `role="menu"` / `role="menuitem"` / `role="separator"`, `aria-disabled`, `tabindex="-1"`, arrow key navigation, Enter to activate, Escape to close.
-
-**Split pane support:** The context menu uses `resolveTerminal(target)` to determine which terminal (main or split pane) triggered the right-click, and operates on that terminal instance.
-
-**Error handling:** Clipboard API failures show a toast notification ("Clipboard access denied. Use Ctrl+V to paste.") that auto-dismisses after 3 seconds.
 
 ---
 

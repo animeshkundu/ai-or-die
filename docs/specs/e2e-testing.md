@@ -24,21 +24,64 @@ The split-geometry case asserts the documented behaviour for the device class it
 
 The accepted ADR-0037 WebKit specs 77 through 79 are hard gates: inability to initialize `window.app`, the terminal, or required mobile controls fails the job rather than being converted to a skipped test.
 
+## Copy evidence and test boundaries
+
+The copy gate is provider-agnostic at the product boundary. Claude and Copilot
+are separate production bridge routes, but both write through node-pty and the
+same xterm buffer and clipboard helper. The deterministic fixture proves the
+route and UI contract without claiming that the latest real Claude or Copilot
+CLI was installed, authenticated, or exercised. It emits a stable tool label
+and marker, stays alive long enough for the copy action, and is deliberately a
+fake tool boundary. Real-latest-CLI validation remains a separate manual or
+environment-specific gate and must be recorded as such.
+
+The copy assertions have exact scope:
+
+- Context-menu and keys-panel copy are selection-first visible-viewport
+  operations. They read xterm's active viewport rows, rejoin `isWrapped`
+  continuations, trim trailing blank logical rows, preserve internal blank rows,
+  and do not promise complete scrollback export.
+- `Copy Terminal Output` in the command palette is the separate full-buffer
+  action. It selects all xterm content, invokes browser copy, and clears the
+  selection; do not use it as evidence for the visible-screen controls.
+- Split context-menu actions operate on the pane that received the event. The
+  mobile keys panel is Control mode: it does not focus xterm, raise the soft
+  keyboard, or change terminal geometry. Compose-mode keyboard behavior is a
+  different contract.
+
+The default Playwright context uses `serviceWorkers: 'block'` so stale PWA
+responses cannot masquerade as current client behavior. Projects that test the
+PWA explicitly opt into service workers. Production `src/public/service-worker.js`
+currently uses cache name `ai-or-die-v13`; that version is a cache fact, not a
+copy-test result. The client ships xterm 6.0.0, where the Canvas renderer was
+removed; mobile uses the default DOM renderer, while buffer-based copy remains
+renderer-independent.
+
+Manual evidence must identify the device and OS/browser versions, project or
+command, provider/route, fixture-versus-real-CLI boundary, viewport/orientation,
+copy surface used, selection state, copied marker/text result, keyboard and
+geometry observations, service-worker mode, screenshot/video artifact path,
+and pass/fail plus observer/date. Never link an artifact that is not present.
+
 ## CLI copy gate
 
-`e2e/tests/86-cli-copy.spec.js` runs the real `start_claude` and `start_copilot`
-WebSocket routes against `e2e/fixtures/fake-cli-copy.js`. The fixture is a
-cross-platform Node process that prints stable, tool-labelled output and stays
-alive, so the test exercises each production bridge, node-pty, WebSocket
-coalescing, xterm's visible buffer, and the clipboard UI without external CLI
-installations, authentication, or network access.
+`e2e/tests/86-cli-copy.spec.js` exercises the production `start_claude` and
+`start_copilot` WebSocket routes against `e2e/fixtures/fake-cli-copy.js`. The
+fixture is a cross-platform Node process that prints stable, tool-labelled
+output and stays alive, so the test exercises each production bridge, node-pty,
+WebSocket coalescing, xterm's visible buffer, and the clipboard UI without
+external CLI installations, authentication, or network access. It is a fake
+fixture boundary, not proof that the latest real provider CLI was installed or
+run.
 
 Desktop Chromium copies through the context menu. The iPhone16 WebKit project
 copies through the Control-mode keys panel, then verifies that opening and using
 the panel leaves the keyboard closed, terminal height unchanged, and the
 keyboard transition settled. Each test attaches a screenshot; setting
 `AIORDIE_CLI_COPY_SCREENSHOT_DIR` writes an explicit evidence PNG for the
-requested run without changing normal CI output.
+requested passing, non-retry run without changing normal CI output. A screenshot
+may be linked from history only when that file exists; missing provider imagery
+is not evidence.
 
 ## 1. Research Findings
 
@@ -66,7 +109,13 @@ Alternative approaches considered and rejected:
 
 ### 1.2 Testing xterm.js Terminal Emulation E2E
 
-xterm.js itself uses Playwright for its integration test suite, running tests against the browser-rendered terminal canvas. For our use case, however, the critical path is **server-side**: data flows from the spawned CLI process through node-pty, over WebSocket, to the client. The xterm.js rendering layer is a display concern.
+xterm 6.0.0 removed the Canvas renderer. The shipped client uses the default DOM
+renderer on mobile and may use WebGL on suitable desktop hardware, with a DOM
+fallback. Regardless of renderer, xterm's buffer API is the test seam for
+terminal text; DOM selectors and browser selection are not the copy contract.
+The critical path is **server-side**: data flows from the spawned CLI process
+through node-pty, over WebSocket, to the client. The rendering layer is a
+display concern.
 
 **Our strategy splits into two tiers:**
 

@@ -147,16 +147,25 @@ class ExtraKeys {
     const term = this.app && this.app.terminal;
     const TC = (typeof window !== 'undefined' && window.TerminalCopy)
       || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
-    if (!term || !TC) {
-      if (window.feedback) window.feedback.warning('Nothing to copy');
-      return;
+    let result;
+    if (!term || !TC || typeof TC.copyVisible !== 'function') {
+      result = { ok: false, reason: 'unavailable' };
+    } else {
+      try {
+        result = await TC.copyVisible(term);
+      } catch (_) {
+        result = { ok: false, reason: 'error' };
+      }
     }
-    // Copy the live selection, or (on the mobile Canvas renderer, where there is
-    // no long-press selection) fall back to the visible screen text.
-    const res = await TC.copyVisible(term);
-    if (window.feedback) {
-      if (res.ok) window.feedback.success(res.source === 'selection' ? 'Copied' : 'Copied screen');
-      else window.feedback.warning('Nothing to copy');
+    if (typeof window.presentCopyResult === 'function') {
+      window.presentCopyResult(result, window.feedback);
+    } else if (window.feedback) {
+      if (result && result.ok) window.feedback.success(
+        result.source === 'screen' ? 'Copied screen' : 'Copied'
+      );
+      else if (result && result.reason === 'empty') window.feedback.warning('Nothing to copy');
+      else if (result && result.reason === 'error') window.feedback.warning('Unable to read terminal output');
+      else window.feedback.warning('Clipboard access denied');
     }
   }
 

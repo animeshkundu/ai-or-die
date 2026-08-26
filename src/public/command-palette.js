@@ -4,9 +4,10 @@
  * open settings, toggle split view, clear terminal.
  */
 class CommandPaletteManager {
-  constructor() {
+  constructor(options = {}) {
     this.ninja = null;
-    this.app = null;
+    this.app = options.app || null;
+    this._copyBuffer = options.copyBuffer || null; // injectable test seam
     // Wait for both DOM and ninja-keys custom element to be defined
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => this._init());
@@ -316,11 +317,11 @@ class CommandPaletteManager {
       description: 'Select and copy all terminal content to clipboard',
       section: 'Actions',
       handler: () => {
-        if (app.terminal) {
-          app.terminal.selectAll();
-          document.execCommand('copy');
-          app.terminal.clearSelection();
-        }
+        this._copyActiveBuffer(app).then((result) => {
+          this._presentCopyResult(result);
+        }).catch(() => {
+          this._presentCopyResult({ ok: false, reason: 'error' });
+        });
       }
     });
 
@@ -389,6 +390,37 @@ class CommandPaletteManager {
     });
 
     this.ninja.data = actions;
+  }
+
+  _copyActiveBuffer(app) {
+    const terminal = app && app.terminal;
+    if (!terminal) return Promise.resolve({ ok: false, reason: 'empty' });
+    const copy = this._copyBuffer || ((term, nav) => {
+      const TC = (typeof window !== 'undefined' && window.TerminalCopy)
+        || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
+      return TC && typeof TC.copyBuffer === 'function'
+        ? TC.copyBuffer(term, nav)
+        : Promise.resolve({ ok: false, reason: 'unavailable' });
+    });
+    try {
+      return Promise.resolve(copy(terminal));
+    } catch (_) {
+      return Promise.resolve({ ok: false, reason: 'error' });
+    }
+  }
+
+  _presentCopyResult(result) {
+    const presenter = typeof window !== 'undefined' && window.presentCopyResult;
+    if (typeof presenter === 'function') {
+      presenter(result, window.feedback);
+      return;
+    }
+    if (window.feedback) {
+      if (result && result.ok) window.feedback.success('Copied');
+      else if (result && result.reason === 'empty') window.feedback.warning('Nothing to copy');
+      else if (result && result.reason === 'error') window.feedback.warning('Unable to read terminal output');
+      else window.feedback.warning('Clipboard access denied');
+    }
   }
 
   _syncThemeClass(themeValue) {

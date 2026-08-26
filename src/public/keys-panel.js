@@ -215,11 +215,36 @@ class KeysPanel {
     const TC = (typeof window !== 'undefined' && window.TerminalCopy)
       || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
     const term = this.app && this.app.terminal;
-    if (!TC || !term) return;
-    Promise.resolve(TC.copyVisible(term)).then((res) => {
-      if (window.feedback) {
-        if (res && res.ok) window.feedback.success('Copied screen');
-        else window.feedback.warning('Nothing to copy');
+    let pending;
+    if (!TC || !term || typeof TC.copyVisible !== 'function') {
+      pending = Promise.resolve({ ok: false, reason: 'unavailable' });
+    } else {
+      try {
+        // Invoke copyVisible directly from the activation handler so the browser
+        // still considers the clipboard write part of the user's gesture.
+        pending = TC.copyVisible(term);
+      } catch (_) {
+        pending = Promise.resolve({ ok: false, reason: 'error' });
+      }
+    }
+    Promise.resolve(pending).then((res) => {
+      const present = typeof window !== 'undefined' && window.presentCopyResult;
+      if (typeof present === 'function') {
+        present(res, window.feedback);
+      } else if (window.feedback) {
+        if (res && res.ok) window.feedback.success(
+          res.source === 'screen' ? 'Copied screen' : 'Copied'
+        );
+        else if (res && res.reason === 'empty') window.feedback.warning('Nothing to copy');
+        else if (res && res.reason === 'error') window.feedback.warning('Unable to read terminal output');
+        else window.feedback.warning('Clipboard access denied');
+      }
+    }).catch(() => {
+      const error = { ok: false, reason: 'error' };
+      if (typeof window !== 'undefined' && typeof window.presentCopyResult === 'function') {
+        window.presentCopyResult(error, window.feedback);
+      } else if (window.feedback) {
+        window.feedback.warning('Unable to read terminal output');
       }
     });
   }

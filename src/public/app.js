@@ -4508,36 +4508,34 @@ class ClaudeCodeWebInterface {
             sendFn(normalized);
         };
 
-        // Helper: show clipboard error via inline badge
+        // Helper: show clipboard error via inline badge for paste actions.
         const showClipboardError = () => {
             if (window.showClipboardError) {
-                window.showClipboardError('Clipboard denied');
+                window.showClipboardError('Clipboard access denied');
             }
         };
 
-        // Copy the active selection when one exists; otherwise copy the visible
-        // terminal screen. The same terminal-copy utility powers the mobile
-        // copy affordances and keeps this path independent of the CLI renderer.
-        const copyTerminalText = async (terminal) => {
-            const TC = (typeof window !== 'undefined' && window.TerminalCopy)
-                || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
-            if (!terminal || !TC || typeof TC.copyVisible !== 'function') {
-                showClipboardError();
+        // Right-click copy uses the shared result presenter exposed by the
+        // clipboard handler. Keeping this callback local avoids coupling the
+        // extraction utility to any UI implementation.
+        const presentCopyResult = (result) => {
+            const presenter = window.presentCopyResult;
+            if (typeof presenter === 'function') {
+                presenter(result, window.feedback);
                 return;
             }
-
-            try {
-                const result = await TC.copyVisible(terminal);
-                if (result && result.ok) {
-                    if (window.attachClipboardHandler?.showCopiedToast) {
-                        window.attachClipboardHandler.showCopiedToast();
-                    }
-                } else if (window.feedback) {
-                    window.feedback.warning('Nothing to copy');
+            if (result && result.ok) {
+                if (window.attachClipboardHandler?.showCopiedToast) {
+                    window.attachClipboardHandler.showCopiedToast();
                 }
-            } catch (err) {
-                console.error('Terminal copy failed:', err);
-                showClipboardError();
+            } else if (window.feedback) {
+                if (result && result.reason === 'empty') {
+                    window.feedback.warning('Nothing to copy');
+                } else if (result && result.reason === 'error') {
+                    window.feedback.warning('Unable to read terminal output');
+                } else {
+                    window.feedback.warning('Clipboard access denied');
+                }
             }
         };
 
@@ -4568,9 +4566,8 @@ class ClaudeCodeWebInterface {
                 menu.style.display = 'block';
             }
 
-            // Copy falls back to the visible screen when there is no selection.
-            // It must remain available for TUIs whose output is not conveniently
-            // selectable, including Claude and Copilot.
+            // Copy always remains enabled: the canonical operation uses the
+            // selection when present and otherwise copies the visible screen.
             const copyItem = menu.querySelector('[data-action="copy"]');
             if (copyItem) {
                 copyItem.classList.remove('disabled');
@@ -4600,22 +4597,40 @@ class ClaudeCodeWebInterface {
             if (!action) return;
             menu.style.display = 'none';
 
+            // Snapshot the target before any clipboard await. A second
+            // right-click can update the menu's active target while the first
+            // read is pending; each action must remain routed to its original
+            // terminal and split socket.
+            const actionTerminal = activeTerminal;
+            const actionSendFn = activeSendFn;
+
             switch (action) {
                 case 'copy': {
-                    await copyTerminalText(activeTerminal);
+                    const TC = (typeof window !== 'undefined' && window.TerminalCopy)
+                        || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
+                    let result;
+                    try {
+                        result = TC && typeof TC.copyVisible === 'function'
+                            ? await TC.copyVisible(actionTerminal)
+                            : { ok: false, reason: 'unavailable' };
+                    } catch (err) {
+                        console.error('Terminal copy failed:', err);
+                        result = { ok: false, reason: 'error' };
+                    }
+                    presentCopyResult(result);
                     break;
                 }
                 case 'paste': {
                     try {
                         const text = await navigator.clipboard.readText();
-                        if (text) sendPasteData(text, activeSendFn, activeTerminal);
+                        if (text) sendPasteData(text, actionSendFn, actionTerminal);
                     } catch { showClipboardError(); }
                     break;
                 }
                 case 'pastePlain': {
                     try {
                         const text = await navigator.clipboard.readText();
-                        if (text) sendPasteData(text, activeSendFn, activeTerminal);
+                        if (text) sendPasteData(text, actionSendFn, actionTerminal);
                     } catch { showClipboardError(); }
                     break;
                 }
@@ -4636,12 +4651,12 @@ class ClaudeCodeWebInterface {
                                 }
                             }
                             // No image found
-                            if (activeTerminal) {
-                                activeTerminal.write('\r\n\x1b[33mNo image found in clipboard.\x1b[0m\r\n');
+                            if (actionTerminal) {
+                                actionTerminal.write('\r\n\x1b[33mNo image found in clipboard.\x1b[0m\r\n');
                             }
                         } else {
-                            if (activeTerminal) {
-                                activeTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach File instead.\x1b[0m\r\n');
+                            if (actionTerminal) {
+                                actionTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach File instead.\x1b[0m\r\n');
                             }
                         }
                     } catch (err) {
@@ -4665,13 +4680,16 @@ class ClaudeCodeWebInterface {
                     break;
                 }
                 case 'selectAll':
-                    activeTerminal.selectAll();
+                    actionTerminal.selectAll();
                     break;
                 case 'clear':
-                    activeTerminal.clear();
+                    actionTerminal.clear();
                     break;
             }
-            if (activeTerminal) activeTerminal.focus();
+            // Restoring focus after a desktop menu action keeps keyboard
+            // navigation convenient. On mobile, refocusing the xterm textarea
+            // would reopen the soft keyboard and undo the user's menu action.
+            if (actionTerminal && !this.isMobile) actionTerminal.focus();
         });
 
         // Keyboard navigation within menu
@@ -4707,7 +4725,7 @@ class ClaudeCodeWebInterface {
                 case 'Tab':
                     e.preventDefault();
                     menu.style.display = 'none';
-                    if (activeTerminal) activeTerminal.focus();
+                    if (activeTerminal && !this.isMobile) activeTerminal.focus();
                     break;
             }
         });

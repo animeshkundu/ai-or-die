@@ -9,7 +9,12 @@ const {
   setupPageCapture,
   attachFailureArtifacts,
   joinSessionAndStartTerminal,
+  waitForWsMessage,
 } = require('../helpers/terminal-helpers');
+
+// Keep copy assertions deterministic when a previously registered service
+// worker could otherwise serve stale page state.
+test.use({ serviceWorkers: 'block' });
 
 test.describe('Context menu: right-click terminal shows menu', () => {
   let server, port, url;
@@ -34,6 +39,70 @@ test.describe('Context menu: right-click terminal shows menu', () => {
     await waitForTerminalCanvas(page);
 
     await joinSessionAndStartTerminal(page, sessionId);
+    const started = await waitForWsMessage(page, 'recv', 'terminal_started', 10000);
+    expect(started, 'terminal_started frame should be received').toBeTruthy();
+    expect(started).toMatchObject({ type: 'terminal_started', sessionId });
+  }
+
+  async function stubClipboard(page) {
+    await page.evaluate(() => {
+      const state = { attempts: 0, completed: 0, text: null, error: null };
+      const writeText = (text) => new Promise((resolve, reject) => {
+        state.attempts += 1;
+        if (typeof text !== 'string') {
+          state.error = `clipboard.writeText expects a string, got ${typeof text}`;
+          reject(new TypeError(state.error));
+          return;
+        }
+        // Complete asynchronously so the assertion proves the copy path waits
+        // for the clipboard promise.
+        setTimeout(() => {
+          state.text = text;
+          state.completed += 1;
+          resolve();
+        }, 0);
+      });
+      const readText = () => Promise.resolve(state.text || '');
+
+      let installed = false;
+      let installError = null;
+      try {
+        Object.defineProperty(navigator, 'clipboard', {
+          value: { writeText, readText },
+          configurable: true,
+        });
+        installed = !!(navigator.clipboard && navigator.clipboard.writeText === writeText
+          && navigator.clipboard.readText === readText);
+      } catch (error) {
+        installError = error;
+      }
+      if (!installed && navigator.clipboard) {
+        try {
+          Object.defineProperty(navigator.clipboard, 'writeText', {
+            value: writeText,
+            configurable: true,
+          });
+          Object.defineProperty(navigator.clipboard, 'readText', {
+            value: readText,
+            configurable: true,
+          });
+          installed = navigator.clipboard.writeText === writeText
+            && navigator.clipboard.readText === readText;
+        } catch (error) {
+          installError = error;
+        }
+      }
+      if (!installed) {
+        throw new Error(`Unable to install clipboard stub: ${installError ? installError.message : 'unknown error'}`);
+      }
+      window.__contextClipboard = state;
+    });
+  }
+
+  async function waitForClipboardWrite(page) {
+    await expect.poll(() => page.evaluate(() => window.__contextClipboard), {
+      timeout: 5000,
+    }).toMatchObject({ attempts: 1, completed: 1, error: null });
   }
 
   test('right-click on terminal shows context menu with all items', async ({ page }) => {
@@ -57,9 +126,9 @@ test.describe('Context menu: right-click terminal shows menu', () => {
     await expect(menu.locator('[data-action="clear"]')).toBeVisible();
   });
 
-  test('Copy stays enabled without a selection and copies visible terminal output', async ({ page, context }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  test('Copy stays enabled without a selection and copies visible terminal output', async ({ page }) => {
     await setupTerminalPage(page);
+    await stubClipboard(page);
 
     const marker = `CTX_COPY_${Date.now()}`;
     await typeInTerminal(page, `echo ${marker}`);
@@ -76,8 +145,12 @@ test.describe('Context menu: right-click terminal shows menu', () => {
     await expect(copyItem).not.toHaveAttribute('aria-disabled', 'true');
 
     await copyItem.click();
-    const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+    await waitForClipboardWrite(page);
+    const clipboardText = await page.evaluate(() => window.__contextClipboard.text);
     expect(clipboardText).toContain(marker);
+    expect(await page.evaluate(() => window.__contextClipboard.error)).toBeNull();
+    expect(await page.evaluate(() => window.__contextClipboard.attempts)).toBe(1);
+    expect(await page.evaluate(() => window.__contextClipboard.completed)).toBe(1);
   });
 
   test('Select All menu item selects terminal content', async ({ page }) => {

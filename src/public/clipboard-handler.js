@@ -34,6 +34,64 @@ function showCopiedToast() {
 }
 
 /**
+ * Present a canonical terminal-copy result without making the copy utility
+ * depend on the application's feedback/UI implementation.
+ * @param {{ok: boolean, source?: string, reason?: string}} result
+ * @param {{success?: function(string): void, warning?: function(string): void, error?: function(string): void}} feedback
+ * @param {{success?: function(): void, denied?: function(string): void, empty?: function(): void}} [hooks]
+ */
+function presentCopyResult(result, feedback, hooks) {
+  hooks = hooks || {};
+  if (result && result.ok) {
+    if (typeof hooks.success === 'function') {
+      hooks.success(result.source);
+    } else if (feedback && typeof feedback.success === 'function') {
+      feedback.success(result.source === 'screen' ? 'Copied screen' : 'Copied');
+    } else {
+      showCopiedToast();
+    }
+    return;
+  }
+  var reason = result && result.reason;
+  if (reason === 'empty') {
+    if (typeof hooks.empty === 'function') hooks.empty();
+    else if (feedback && typeof feedback.warning === 'function') feedback.warning('Nothing to copy');
+    return;
+  }
+  var message = reason === 'error'
+    ? 'Unable to read terminal output'
+    : 'Clipboard access denied';
+  if (typeof hooks.denied === 'function') hooks.denied(reason);
+  else if (feedback && typeof feedback.warning === 'function') feedback.warning(message);
+  else if (typeof window !== 'undefined' && typeof window.showClipboardError === 'function') {
+    window.showClipboardError(message);
+  }
+}
+
+function copyResultPresenter(result, feedback, hooks) {
+  return presentCopyResult(result, feedback, hooks);
+}
+
+// Small fallback for pages where terminal-copy.js is unavailable. The normal
+// path uses TerminalCopy.copySelection, but keyboard copy must remain safe when
+// scripts load out of order or a browser has a partial Clipboard API.
+function writeSelectedText(text, nav) {
+  if (!text) return Promise.resolve({ ok: false, reason: 'empty' });
+  if (!nav || !nav.clipboard || typeof nav.clipboard.writeText !== 'function') {
+    return Promise.resolve({ ok: false, reason: 'unavailable' });
+  }
+  try {
+    var pending = nav.clipboard.writeText(text);
+    return pending && typeof pending.then === 'function'
+      ? pending.then(function () { return { ok: true, source: 'selection' }; })
+        .catch(function () { return { ok: false, reason: 'denied' }; })
+      : Promise.resolve({ ok: true, source: 'selection' });
+  } catch (_) {
+    return Promise.resolve({ ok: false, reason: 'denied' });
+  }
+}
+
+/**
  * Attach keyboard copy/paste shortcuts to an xterm.js terminal.
  *
  * Shortcuts:
@@ -57,11 +115,30 @@ function attachClipboardHandler(terminal, sendFn) {
 
     const mod = e.ctrlKey || e.metaKey;
 
-    // Ctrl+C / Cmd+C: copy if selection exists, else let xterm send SIGINT
+    // Ctrl+C / Cmd+C: copy if selection exists, else let xterm send SIGINT.
+    // Keep the copy promise in this user-gesture handler, but clear selection
+    // only after a successful write so failed clipboard access is recoverable.
     if (mod && e.key === 'c' && !e.shiftKey) {
       if (terminal.hasSelection()) {
-        navigator.clipboard.writeText(terminal.getSelection()).then(showCopiedToast).catch(() => {});
-        terminal.clearSelection();
+        const TC = (typeof window !== 'undefined' && window.TerminalCopy)
+          || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
+        const nav = typeof navigator !== 'undefined' ? navigator : null;
+        const copyPromise = TC && typeof TC.copySelection === 'function'
+          ? TC.copySelection(terminal, nav)
+          : writeSelectedText(terminal.getSelection(), nav);
+        Promise.resolve(copyPromise)
+          .then((result) => {
+            if (result && result.ok) {
+              terminal.clearSelection();
+              showCopiedToast();
+            } else {
+              presentCopyResult(result, typeof window !== 'undefined' ? window.feedback : null);
+            }
+          })
+          .catch(() => {
+            presentCopyResult({ ok: false, reason: 'denied' },
+              typeof window !== 'undefined' ? window.feedback : null);
+          });
         return false; // prevent xterm from sending \x03
       }
       return true; // no selection — let xterm send SIGINT
@@ -75,11 +152,28 @@ function attachClipboardHandler(terminal, sendFn) {
       return false;
     }
 
-    // Ctrl+Shift+C: copy (Linux terminal convention)
+    // Ctrl+Shift+C: copy (Linux terminal convention). Unlike Ctrl+C, this
+    // shortcut always belongs to copy and therefore is consumed with or without
+    // a selection, but selection clearing still waits for write success.
     if (e.ctrlKey && e.shiftKey && e.key === 'C') {
       if (terminal.hasSelection()) {
-        navigator.clipboard.writeText(terminal.getSelection()).then(showCopiedToast).catch(() => {});
-        terminal.clearSelection();
+        const TC = (typeof window !== 'undefined' && window.TerminalCopy)
+          || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
+        const nav = typeof navigator !== 'undefined' ? navigator : null;
+        const copyPromise = TC && typeof TC.copySelection === 'function'
+          ? TC.copySelection(terminal, nav)
+          : writeSelectedText(terminal.getSelection(), nav);
+        Promise.resolve(copyPromise).then((result) => {
+          if (result && result.ok) {
+            terminal.clearSelection();
+            showCopiedToast();
+          } else {
+            presentCopyResult(result, typeof window !== 'undefined' ? window.feedback : null);
+          }
+        }).catch(() => {
+          presentCopyResult({ ok: false, reason: 'denied' },
+            typeof window !== 'undefined' ? window.feedback : null);
+        });
       }
       return false;
     }
@@ -97,13 +191,26 @@ function attachClipboardHandler(terminal, sendFn) {
 attachClipboardHandler.normalizeLineEndings = normalizeLineEndings;
 attachClipboardHandler.wrapBracketedPaste = wrapBracketedPaste;
 attachClipboardHandler.showCopiedToast = showCopiedToast;
+attachClipboardHandler.presentCopyResult = presentCopyResult;
+attachClipboardHandler.copyResultPresenter = copyResultPresenter;
+attachClipboardHandler.writeSelectedText = writeSelectedText;
 
-// Browser: expose on window
+// Browser: expose the shared presenter as well as the keyboard handler so
+// every explicit copy affordance can use the same result-to-feedback mapping.
 if (typeof window !== 'undefined') {
   window.attachClipboardHandler = attachClipboardHandler;
+  window.presentCopyResult = presentCopyResult;
 }
 
 // Node.js: CommonJS export for unit testing
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { attachClipboardHandler, normalizeLineEndings, wrapBracketedPaste, showCopiedToast };
+  module.exports = {
+    attachClipboardHandler,
+    normalizeLineEndings,
+    wrapBracketedPaste,
+    showCopiedToast,
+    presentCopyResult,
+    copyResultPresenter,
+    writeSelectedText,
+  };
 }
