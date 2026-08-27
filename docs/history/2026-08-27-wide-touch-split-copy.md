@@ -43,6 +43,18 @@ under xterm's link-layer canvas. The canvas intercepted real `Cp` taps despite
 the button being visible and enabled. The bar now uses the overlay stacking layer;
 the E2E continues to use a real locator tap with no force or synthetic fallback.
 
+The Ubuntu matrix later exposed a separate timing race in the same E2E. A
+layout-viewport resize made the bar visible before the delayed visualViewport
+callback ran. The test's one-shot `!_inKeyboardTransition` wait could therefore
+finish on the pre-callback false value; the callback then set the flag while the
+real `Cp` tap was in progress. Clipboard text and focus stayed correct, proving
+copy did not cause the transition.
+
+The E2E now waits for the keyboard-open/bar-visible state and a 400ms unchanged
+viewport/layout sample with the transition flag clear before tapping. It keeps
+the post-copy transition assertion strict, so a production transition or a new
+late resize still fails rather than being hidden.
+
 ## Verification
 
 Focused unit tests passed: 78 tests across the split drag contract, resolver,

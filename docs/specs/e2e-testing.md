@@ -91,7 +91,10 @@ touch-capable Chromium configuration. Its keys-panel and extra-keys cases use
 real tab-drag, pane-tap, keyboard, and copy-control interactions and inspect the
 active right split marker, clipboard result, focus, keyboard state, and terminal
 geometry; they never invoke copy helpers, force taps, synthetic clicks, or mutate
-styles/display. Each test owns a fresh server so mobile tab overflow cannot leak
+styles/display. The extra-keys case waits for the keyboard-open state and a
+settled viewport/layout sample after resizing, because a delayed visualViewport
+callback can otherwise begin the production transition after the bar is already
+visible. Each test owns a fresh server so mobile tab overflow cannot leak
 sessions between cases. Each test attaches a screenshot; setting
 `AIORDIE_CLI_COPY_SCREENSHOT_DIR` writes an explicit evidence PNG for the
 requested passing, non-retry run without changing normal CI output. A screenshot

@@ -304,6 +304,39 @@ test.describe('wide touch active-pane copy', () => {
     return { mainMarker, rightMarker };
   }
 
+  // A layout viewport resize can expose the extra-key bar before the delayed
+  // visualViewport resize has reached ViewportRegime. Wait for the intended
+  // keyboard-open state, the production bar class, and an unchanged viewport /
+  // layout sample for 400ms while the transition flag is clear. A one-shot
+  // `!_inKeyboardTransition` check can observe the pre-resize false value and
+  // race the later production callback on a busy CI runner.
+  async function waitForKeyboardSettled(page) {
+    await page.waitForFunction(() => {
+      const app = window.app;
+      const bar = document.querySelector('.extra-keys-bar');
+      const viewport = window.visualViewport;
+      const terminal = document.getElementById('terminal');
+      const state = {
+        keyboardOpen: document.body.classList.contains('keyboard-open'),
+        barVisible: !!(bar && bar.classList.contains('visible')),
+        inKeyboardTransition: !!(app && app._inKeyboardTransition),
+        viewportHeight: viewport ? viewport.height : null,
+        viewportWidth: viewport ? viewport.width : null,
+        terminalHeight: terminal ? terminal.style.height : '',
+      };
+      const sample = JSON.stringify(state);
+      const previous = window.__wideTouchKeyboardSettle;
+      if (!previous || previous.sample !== sample || state.inKeyboardTransition
+          || !state.keyboardOpen || !state.barVisible) {
+        window.__wideTouchKeyboardSettle = { sample, settledAt: 0 };
+        return false;
+      }
+      const settledAt = previous.settledAt || performance.now();
+      window.__wideTouchKeyboardSettle = { sample, settledAt };
+      return performance.now() - settledAt >= 400;
+    }, { timeout: 10000 });
+  }
+
   test('keys-panel Copy screen follows the active right split', async ({ page }) => {
     const mainSessionId = await createSessionViaApi(port, 'wide-touch-keys-main');
     const rightSessionId = await createSessionViaApi(port, 'wide-touch-keys-right');
@@ -351,9 +384,7 @@ test.describe('wide touch active-pane copy', () => {
     await page.setViewportSize({ width: 800, height: 400 });
     const bar = page.locator('.extra-keys-bar');
     await expect(bar).toBeVisible({ timeout: 10000 });
-    await page.waitForFunction(() => !(window.app && window.app._inKeyboardTransition), {
-      timeout: 10000,
-    });
+    await waitForKeyboardSettled(page);
     const beforeGeometry = await paneGeometry(page);
     const before = await copyState(page);
     const copyButton = bar.locator('button.extra-key-clipboard').filter({ hasText: 'Cp' }).first();
