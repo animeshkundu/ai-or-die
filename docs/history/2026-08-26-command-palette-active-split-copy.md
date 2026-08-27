@@ -37,8 +37,10 @@ normal empty-source result instead.
 
 ## Evidence
 
-Focused unit tests run with `npm exec mocha --require test/hooks/session-sandbox.js
---exit --timeout 5000 test/command-palette.test.js`. The targeted browser command
-is the `client-redesign` Chromium project filtered to the active-split test in
-`e2e/tests/86-cli-copy.spec.js`; availability of the local Playwright browser and
-native PTY dependencies determines whether that E2E can run.
+Focused unit tests run with `node_modules/.bin/mocha --require
+test/hooks/session-sandbox.js --exit --timeout 5000 test/command-palette.test.js`.
+The targeted browser command is the `client-redesign` Chromium project filtered to
+the active-split test in `e2e/tests/86-cli-copy.spec.js`; availability of the local
+Playwright browser and native PTY dependencies determines whether that E2E can run.
+The direct Mocha binary is intentional: npm 11 can parse `npm exec mocha` flags as
+npm options instead of passing them through to Mocha.

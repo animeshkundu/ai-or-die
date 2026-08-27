@@ -80,7 +80,7 @@ run.
 Desktop Chromium copies through the context menu. The iPhone16 WebKit project
 copies through the Control-mode keys panel, then verifies that opening and using
 the panel leaves the keyboard closed, terminal height unchanged, and the
-keyboard transition settled. The desktop-only active-split case creates real
+keyboard transition settled. The desktop-width active-split case creates real
 fixture-backed main and right sessions, waits until both unique sentinels are in
 their source buffers, verifies `activeSplitIndex === 1`, and invokes `Copy Terminal
 Output` through the visible palette input. It asserts that the right sentinel is
