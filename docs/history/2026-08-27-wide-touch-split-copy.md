@@ -29,17 +29,42 @@ focus, keyboard state, and geometry. Service workers are blocked. A touch may
 leave a keys-panel launcher or copy button focused; copy must not focus xterm,
 reopen the keyboard, or change terminal geometry.
 
+## Follow-up lifecycle fixes
+
+The first hard-gate run reproduced two independent browser issues. During
+`dragover`, Chromium exposed `application/x-session-id` in `DataTransfer.types`
+while protecting the value returned by `getData()`. The split drop-zone listener
+therefore returned before calling `preventDefault()`, so no final `drop` arrived.
+The production listener now accepts the advertised session type during dragover
+and still reads and validates the id at drop time.
+
+After split creation, a short-height touch viewport exposed the extra-keys bar
+under xterm's link-layer canvas. The canvas intercepted real `Cp` taps despite
+the button being visible and enabled. The bar now uses the overlay stacking layer;
+the E2E continues to use a real locator tap with no force or synthetic fallback.
+
 ## Verification
 
-Focused unit tests passed: 73 tests across the resolver, command palette, keys
-panel, extra keys, tooltips, and terminal-copy suites. JavaScript syntax checks
-passed for all changed source, test, and Playwright files. The targeted keys-panel
-Playwright test passed in 6.2 seconds; local extra-keys runs were interrupted
-with exit 144 after split setup lost its pane socket and teardown hung. Recheck
-that lifecycle case on the CI matrix.
+Focused unit tests passed: 78 tests across the split drag contract, resolver,
+command palette, keys panel, extra keys, tooltips, and terminal-copy suites.
+JavaScript syntax checks passed for all changed source, test, and Playwright files.
+The dedicated `wide-touch-split-copy` project passes both keys-panel and extra-keys
+cases in 16.5 seconds with service workers blocked, touch enabled, and no force
+taps or synthetic fallbacks. Each E2E test owns a fresh server so mobile tab
+overflow cannot leak sessions between cases.
 
 ## Watch For
 
 Do not use `app.terminal` as a copy source when split view is enabled. An invalid
 active pane is unavailable, not permission to copy hidden main output. Keep
-non-copy input and paste targets separate from this resolver.
+non-copy input and paste targets separate from this resolver. Do not weaken touch
+E2E assertions with force taps or direct helper calls.
+
+## Evidence
+
+The local run uses fixture-backed terminal sessions and Chromium touch capability;
+it does not claim a real provider CLI or physical-device result.
+
+## Status
+
+Follow-up implementation is ready to commit after repository review.

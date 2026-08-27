@@ -178,6 +178,13 @@ change. Desktop context-menu copy returns focus to the terminal after the menu
 action. Split context menus resolve the clicked pane and use that pane's
 selection, visible buffer, socket, and paste target.
 
+The split tab drop zone accepts a drag when `DataTransfer.types` advertises the
+session payload even if the browser protects `getData()` during `dragover`; the
+session id is still read and validated on `drop`. This preserves real browser
+drag behavior across touch-capable Chromium and desktop engines. The Compose-mode
+extra-keys bar is stacked at the overlay layer so xterm link canvases cannot
+intercept its controls.
+
 ### Renderer and cache boundaries
 
 The shipped client uses xterm 6.0.0. xterm 6 removed the Canvas renderer, so

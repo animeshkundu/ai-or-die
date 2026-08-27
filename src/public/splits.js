@@ -935,14 +935,27 @@ class SplitContainer {
             // Only show drop zone if we're not already in split mode
             if (this.enabled) return;
             
-            const sessionId = e.dataTransfer?.getData('application/x-session-id');
-            if (!sessionId) return;
-            
-            // Don't allow splitting with the current session
-            if (sessionId === this.app.currentClaudeSessionId) return;
+            const dataTransfer = e.dataTransfer;
+            const sessionId = dataTransfer?.getData('application/x-session-id');
+            // Dragover uses the protected data store in browsers, so getData()
+            // may be empty even though the custom session payload is present.
+            // The drop handler reads the session id once the data store is
+            // accessible; here the advertised type is enough to accept the drag.
+            let hasSessionPayload = !!sessionId;
+            if (!hasSessionPayload && dataTransfer && dataTransfer.types) {
+                try {
+                    hasSessionPayload = Array.from(dataTransfer.types)
+                        .includes('application/x-session-id');
+                } catch (_) { /* malformed drag payload */ }
+            }
+            if (!hasSessionPayload) return;
+
+            // Don't allow splitting with the current session when dragover
+            // exposes the payload. The drop handler repeats this guard.
+            if (sessionId && sessionId === this.app.currentClaudeSessionId) return;
 
             e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
+            if (dataTransfer) dataTransfer.dropEffect = 'move';
 
             // Show drop zone if near right edge
             const rect = terminalContainer.getBoundingClientRect();

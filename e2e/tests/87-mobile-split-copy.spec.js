@@ -27,7 +27,9 @@ test.describe('wide touch active-pane copy', () => {
   const secondaryPages = new Set();
   const activeSessionIds = new Set();
 
-  test.beforeAll(async () => {
+  // Each test owns a fresh server so mobile tab overflow from a prior test
+  // cannot hide the next test's newly created sessions.
+  test.beforeEach(async () => {
     ({ server, port, url } = await createServer());
   });
 
@@ -41,6 +43,10 @@ test.describe('wide touch active-pane copy', () => {
       await server.stopToolSession(sessionId).catch(() => {});
     }
     activeSessionIds.clear();
+    if (server) {
+      await server.close();
+      server = null;
+    }
   });
 
   test.afterAll(async () => {
@@ -305,7 +311,6 @@ test.describe('wide touch active-pane copy', () => {
     await installClipboard(page);
 
     const beforeGeometry = await paneGeometry(page);
-    const before = await copyState(page);
     const launcher = page.locator('#keysPanelBtn');
     await expect(launcher).toBeVisible({ timeout: 10000 });
     await launcher.tap();
@@ -313,6 +318,7 @@ test.describe('wide touch active-pane copy', () => {
 
     const copyButton = page.locator('.keys-panel__util-btn');
     await expect(copyButton).toBeVisible();
+    const beforeCopy = await copyState(page);
     await copyButton.tap();
     await expect.poll(() => page.evaluate(() => window.__wideTouchClipboard), {
       timeout: 5000,
@@ -323,10 +329,10 @@ test.describe('wide touch active-pane copy', () => {
     expect(after.clipboard.text).not.toContain(mainMarker);
     expect(after.clipboard.text).not.toContain('\x1b');
     expect(after.activeSplitIndex).toBe(1);
-    expect(after.focusedXterm).toBe(false);
-    expect(after.keyboardOpen).toBe(before.keyboardOpen);
+    expect(after.focusedXterm).toBe(beforeCopy.focusedXterm);
+    expect(after.keyboardOpen).toBe(beforeCopy.keyboardOpen);
     expect(after.inKeyboardTransition).toBe(false);
-    expect(after.terminalHeight).toBe(before.terminalHeight);
+    expect(after.terminalHeight).toBe(beforeCopy.terminalHeight);
     expect(await paneGeometry(page)).toEqual(beforeGeometry);
   });
 
@@ -339,7 +345,10 @@ test.describe('wide touch active-pane copy', () => {
     // A real viewport resize drives the production visualViewport keyboard
     // controller in headless Chromium. It shows the extra-key bar without
     // calling its helper or mutating style/display from the test.
-    await page.setViewportSize({ width: 1600, height: 400 });
+    // Keep the split-capable width unchanged while shrinking height. Changing
+    // width here would look like rotation to ViewportRegime and reset its
+    // keyboard baseline instead of entering Compose mode.
+    await page.setViewportSize({ width: 800, height: 400 });
     const bar = page.locator('.extra-keys-bar');
     await expect(bar).toBeVisible({ timeout: 10000 });
     await page.waitForFunction(() => !(window.app && window.app._inKeyboardTransition), {
@@ -351,6 +360,7 @@ test.describe('wide touch active-pane copy', () => {
     await expect(copyButton).toBeVisible();
     await expect(copyButton).toBeEnabled();
     await expect(copyButton).toHaveAttribute('aria-label', 'Cp');
+    const beforeCopy = await copyState(page);
     await copyButton.tap();
     await expect.poll(() => page.evaluate(() => window.__wideTouchClipboard), {
       timeout: 5000,
@@ -361,10 +371,10 @@ test.describe('wide touch active-pane copy', () => {
     expect(after.clipboard.text).not.toContain(mainMarker);
     expect(after.clipboard.text).not.toContain('\x1b');
     expect(after.activeSplitIndex).toBe(1);
-    expect(after.focusedXterm).toBe(false);
-    expect(after.keyboardOpen).toBe(before.keyboardOpen);
+    expect(after.focusedXterm).toBe(beforeCopy.focusedXterm);
+    expect(after.keyboardOpen).toBe(beforeCopy.keyboardOpen);
     expect(after.inKeyboardTransition).toBe(false);
-    expect(after.terminalHeight).toBe(before.terminalHeight);
+    expect(after.terminalHeight).toBe(beforeCopy.terminalHeight);
     expect(await paneGeometry(page)).toEqual(beforeGeometry);
   });
 });

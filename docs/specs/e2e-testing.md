@@ -86,11 +86,13 @@ their source buffers, verifies `activeSplitIndex === 1`, and invokes `Copy Termi
 Output` through the visible palette input. It asserts that the right sentinel is
 copied and the main sentinel is excluded. Missing or invalid active split panes
 are an empty-copy failure; command-palette resolution never uses hidden main
-output as a fallback. The dedicated `87-mobile-split-copy` project is a
-wide, touch-capable Chromium configuration. Its keys-panel and extra-keys cases
-use real locator taps and inspect the active right split marker, clipboard result,
-focus, keyboard state, and terminal geometry; they never invoke copy helpers or
-mutate styles/display. Each test attaches a screenshot; setting
+output as a fallback. The dedicated `87-mobile-split-copy` project is an 800px-wide,
+touch-capable Chromium configuration. Its keys-panel and extra-keys cases use
+real tab-drag, pane-tap, keyboard, and copy-control interactions and inspect the
+active right split marker, clipboard result, focus, keyboard state, and terminal
+geometry; they never invoke copy helpers, force taps, synthetic clicks, or mutate
+styles/display. Each test owns a fresh server so mobile tab overflow cannot leak
+sessions between cases. Each test attaches a screenshot; setting
 `AIORDIE_CLI_COPY_SCREENSHOT_DIR` writes an explicit evidence PNG for the
 requested passing, non-retry run without changing normal CI output. A screenshot
 may be linked from history only when that file exists; missing provider imagery

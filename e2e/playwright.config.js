@@ -241,18 +241,18 @@ module.exports = defineConfig({
       testMatch: '20-server-restart.spec.js',
       timeout: 120000,
     },
-    // Wide touch split-copy regression. Chromium retains touch input while the
-    // viewport stays wide enough for split view. The spec uses
-    // serviceWorkers:'block' so it exercises the current client assets.
+    // Wide touch split-copy regression. Chromium retains touch capability at
+    // the 800px split-capable boundary. The width gate makes app.isMobile true
+    // without a mobile UA, preserving HTML5 tab-drag semantics for split setup.
+    // serviceWorkers:'block' exercises the current client assets.
     {
       name: 'wide-touch-split-copy',
       testMatch: '87-mobile-split-copy.spec.js',
       timeout: 120000,
       use: {
-        viewport: { width: 1600, height: 900 },
+        viewport: { width: 800, height: 900 },
         browserName: 'chromium',
         hasTouch: true,
-        userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36',
         serviceWorkers: 'block',
         permissions: [],
       },
