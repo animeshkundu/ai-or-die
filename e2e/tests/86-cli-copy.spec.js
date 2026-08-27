@@ -361,7 +361,7 @@ test.describe('CLI-specific terminal copy', () => {
     });
   }
 
-  test('command palette copy follows the active split terminal', async ({ page, context }) => {
+  test('command palette copy follows the active split terminal', async ({ page, context }, testInfo) => {
     test.setTimeout(120000);
     const mainSession = await createSessionViaApi(port, 'cli-copy-palette-main');
     const splitSession = await createSessionViaApi(port, 'cli-copy-palette-right');
@@ -438,6 +438,7 @@ test.describe('CLI-specific terminal copy', () => {
     const copied = await page.evaluate(() => window.__cliClipboard.text);
     expect(copied).toContain(markers.right);
     expect(copied).not.toContain(markers.main);
+    await captureEvidence(page, testInfo, 'palette-active-split', false);
   });
 
   test('split-pane context copy attributes to the pane terminal', async ({ page, context }) => {

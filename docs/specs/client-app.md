@@ -63,7 +63,7 @@ The frontend is a single-page application served from `src/public/`. It runs ent
 
 | Library | Version | Source | Purpose |
 |---------|---------|--------|---------|
-| xterm.js | 5.3.0 | unpkg CDN | Terminal emulator component |
+| xterm.js | 6.0.0 | Self-hosted (`src/public/vendor/xterm/`) | Terminal emulator component |
 | xterm-addon-fit | 0.8.0 | unpkg CDN | Auto-fit terminal to container |
 | xterm-addon-web-links | 0.9.0 | unpkg CDN | Clickable URLs in terminal output |
 | xterm-addon-unicode11 | 0.6.0 | unpkg CDN | Unicode 11 character width support for Nerd Font / powerline glyphs |

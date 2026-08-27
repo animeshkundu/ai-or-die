@@ -42,8 +42,11 @@ The copy assertions have exact scope:
   continuations, trim trailing blank logical rows, preserve internal blank rows,
   and do not promise complete scrollback export.
 - `Copy Terminal Output` in the command palette is the separate full-buffer
-  action. It selects all xterm content, invokes browser copy, and clears the
-  selection; do not use it as evidence for the visible-screen controls.
+  action. It reads the complete active xterm buffer through
+  `TerminalCopy.copyBuffer()` without creating or clearing a selection. In split
+  mode it resolves `splitContainer.activeSplitIndex`; a missing or invalid pane
+  is an empty-copy failure and never falls back to hidden main output. Do not
+  use it as evidence for the visible-screen controls.
 - Split context-menu actions operate on the pane that received the event. The
   mobile keys panel is Control mode: it does not focus xterm, raise the soft
   keyboard, or change terminal geometry. Compose-mode keyboard behavior is a
