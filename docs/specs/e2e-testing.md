@@ -77,7 +77,13 @@ run.
 Desktop Chromium copies through the context menu. The iPhone16 WebKit project
 copies through the Control-mode keys panel, then verifies that opening and using
 the panel leaves the keyboard closed, terminal height unchanged, and the
-keyboard transition settled. Each test attaches a screenshot; setting
+keyboard transition settled. The desktop-only active-split case creates real
+fixture-backed main and right sessions, waits until both unique sentinels are in
+their source buffers, verifies `activeSplitIndex === 1`, and invokes `Copy Terminal
+Output` through the visible palette input. It asserts that the right sentinel is
+copied and the main sentinel is excluded. Missing or invalid active split panes
+are an empty-copy failure; command-palette resolution never uses hidden main
+output as a fallback. Each test attaches a screenshot; setting
 `AIORDIE_CLI_COPY_SCREENSHOT_DIR` writes an explicit evidence PNG for the
 requested passing, non-retry run without changing normal CI output. A screenshot
 may be linked from history only when that file exists; missing provider imagery

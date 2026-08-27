@@ -317,7 +317,8 @@ class CommandPaletteManager {
       description: 'Select and copy all terminal content to clipboard',
       section: 'Actions',
       handler: () => {
-        this._copyActiveBuffer(app).then((result) => {
+        const activeApp = (typeof window !== 'undefined' && window.app) || app;
+        this._copyActiveBuffer(activeApp).then((result) => {
           this._presentCopyResult(result);
         }).catch(() => {
           this._presentCopyResult({ ok: false, reason: 'error' });
@@ -392,8 +393,19 @@ class CommandPaletteManager {
     this.ninja.data = actions;
   }
 
+  _getActiveTerminal(app) {
+    if (!app) return null;
+    if (app.splitContainer?.enabled) {
+      const splits = app.splitContainer.splits;
+      const index = app.splitContainer.activeSplitIndex;
+      if (!Array.isArray(splits) || !Number.isInteger(index) || index < 0) return null;
+      return splits[index]?.terminal || null;
+    }
+    return app.terminal || null;
+  }
+
   _copyActiveBuffer(app) {
-    const terminal = app && app.terminal;
+    const terminal = this._getActiveTerminal(app);
     if (!terminal) return Promise.resolve({ ok: false, reason: 'empty' });
     const copy = this._copyBuffer || ((term, nav) => {
       const TC = (typeof window !== 'undefined' && window.TerminalCopy)

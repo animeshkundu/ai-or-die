@@ -361,6 +361,85 @@ test.describe('CLI-specific terminal copy', () => {
     });
   }
 
+  test('command palette copy follows the active split terminal', async ({ page, context }) => {
+    test.setTimeout(120000);
+    const mainSession = await createSessionViaApi(port, 'cli-copy-palette-main');
+    const splitSession = await createSessionViaApi(port, 'cli-copy-palette-right');
+    await openPage(page, mainSession);
+    test.skip(await page.evaluate(() => !!(window.app && window.app.isMobile)), 'split view is desktop-only');
+    await stubClipboard(page);
+    await startTool(page, mainSession, 'claude');
+    await waitForFixtureScreen(page, 'claude');
+
+    const secondPage = await context.newPage();
+    secondaryPages.add(secondPage);
+    await openPage(secondPage, splitSession);
+    await startTool(secondPage, splitSession, 'copilot');
+    await waitForFixtureScreen(secondPage, 'copilot');
+
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.waitForFunction(() => window.app && window.app.splitContainer, null, { timeout: 10000 });
+    await page.evaluate(async (sid) => window.app.splitContainer.createSplit(sid), splitSession);
+    await page.waitForFunction((sid) => {
+      const sc = window.app && window.app.splitContainer;
+      return !!(sc && sc.enabled && sc.splits && sc.splits[1]
+        && sc.splits[1].sessionId === sid && sc.splits[1].socket
+        && sc.splits[1].terminal);
+    }, splitSession, { timeout: 15000 });
+    // Wait for the split's replay before checking the source buffers, so a late
+    // session_joined reset cannot erase the fixture output under test.
+    await waitForFixtureScreen(page, 'copilot', 1);
+
+    const nonce = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const markers = {
+      main: `PALETTE_MAIN_${nonce}`,
+      right: `PALETTE_RIGHT_${nonce}`,
+    };
+    // Seed unique sentinels in the hidden single-pane terminal, the visible
+    // left split, and the visible right split after replay. The palette must
+    // choose the right pane, not pass because a static fixture marker happens
+    // to exist in an unrelated buffer.
+    await page.evaluate(({ main, right }) => {
+      const app = window.app;
+      app.terminal.write(`\x1b[2J\x1b[H${main}\r\n`);
+      app.splitContainer.splits[0].terminal.write(`\x1b[2J\x1b[H${main}\r\n`);
+      app.splitContainer.splits[1].terminal.write(`\x1b[2J\x1b[H${right}\r\n`);
+    }, markers);
+    await expect.poll(() => page.evaluate(() => ({
+      main: window.TerminalCopy.getBufferText(window.app.terminal),
+      left: window.TerminalCopy.getBufferText(window.app.splitContainer.splits[0].terminal),
+      right: window.TerminalCopy.getBufferText(window.app.splitContainer.splits[1].terminal),
+    })), { timeout: 15000 }).toMatchObject({
+      main: expect.stringContaining(markers.main),
+      left: expect.stringContaining(markers.main),
+      right: expect.stringContaining(markers.right),
+    });
+    const sourceBuffers = await page.evaluate(() => ({
+      main: window.TerminalCopy.getBufferText(window.app.terminal),
+      left: window.TerminalCopy.getBufferText(window.app.splitContainer.splits[0].terminal),
+      right: window.TerminalCopy.getBufferText(window.app.splitContainer.splits[1].terminal),
+    }));
+    expect(sourceBuffers.main).not.toContain(markers.right);
+    expect(sourceBuffers.left).not.toContain(markers.right);
+    expect(sourceBuffers.right).not.toContain(markers.main);
+
+    await page.waitForFunction(() => window.app.splitContainer.activeSplitIndex === 1, null, {
+      timeout: 10000,
+    });
+    await page.keyboard.press('Control+k');
+    const paletteInput = page.locator('ninja-keys input[type="text"]').first();
+    await expect(paletteInput).toBeVisible({ timeout: 10000 });
+    await paletteInput.fill('Copy Terminal Output');
+    await expect(paletteInput).toHaveValue('Copy Terminal Output');
+    const paletteAction = page.getByText('Copy Terminal Output', { exact: true });
+    await expect(paletteAction).toBeVisible({ timeout: 10000 });
+    await paletteInput.press('Enter');
+    await waitForClipboardWrite(page);
+    const copied = await page.evaluate(() => window.__cliClipboard.text);
+    expect(copied).toContain(markers.right);
+    expect(copied).not.toContain(markers.main);
+  });
+
   test('split-pane context copy attributes to the pane terminal', async ({ page, context }) => {
     test.setTimeout(120000);
     const mainSession = await createSessionViaApi(port, 'cli-copy-split-main');

@@ -39,6 +39,84 @@ function loadManager(options) {
 }
 
 describe('command palette terminal copy seam', function () {
+  it('resolves the main terminal in single-pane mode', function () {
+    const app = { terminal: { marker: 'main' } };
+    const { manager } = loadManager({ app });
+
+    assert.strictEqual(manager._getActiveTerminal(app), app.terminal);
+  });
+
+  it('resolves the active split terminal when split view is enabled', async function () {
+    const calls = [];
+    const left = { marker: 'left' };
+    const right = { marker: 'right' };
+    const app = {
+      terminal: { marker: 'hidden-main' },
+      splitContainer: {
+        enabled: true,
+        activeSplitIndex: 1,
+        splits: [{ terminal: left }, { terminal: right }],
+      },
+    };
+    const loaded = loadManager({
+      app,
+      copyBuffer: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'buffer' };
+      },
+    });
+
+    assert.strictEqual(loaded.manager._getActiveTerminal(app), right);
+    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+      ok: true,
+      source: 'buffer',
+    });
+    assert.deepStrictEqual(calls, [right]);
+  });
+
+  it('returns empty without copying when the enabled active pane is missing or invalid', async function () {
+    const calls = [];
+    const hiddenMain = { marker: 'hidden-main' };
+    const app = {
+      terminal: hiddenMain,
+      splitContainer: {
+        enabled: true,
+        activeSplitIndex: 1,
+        splits: [{ terminal: { marker: 'left' } }],
+      },
+    };
+    const loaded = loadManager({
+      app,
+      copyBuffer: (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'buffer' };
+      },
+    });
+
+    assert.strictEqual(loaded.manager._getActiveTerminal(app), null);
+    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+      ok: false,
+      reason: 'empty',
+    });
+    assert.deepStrictEqual(calls, []);
+
+    app.splitContainer.activeSplitIndex = 2;
+    assert.strictEqual(loaded.manager._getActiveTerminal(app), null);
+    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+      ok: false,
+      reason: 'empty',
+    });
+    assert.deepStrictEqual(calls, []);
+
+    app.splitContainer.activeSplitIndex = '1';
+    assert.strictEqual(loaded.manager._getActiveTerminal(app), null);
+    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+      ok: false,
+      reason: 'empty',
+    });
+    assert.deepStrictEqual(calls, []);
+  });
+
   it('copies the complete active buffer through the injected seam', async function () {
     const calls = [];
     const app = { terminal: { marker: 'active' } };

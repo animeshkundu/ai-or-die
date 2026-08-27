@@ -121,7 +121,12 @@ The command-palette `Copy Terminal Output` action is intentionally distinct. It
 uses `TerminalCopy.copyBuffer()` to copy the complete active xterm buffer without
 creating or clearing a selection. It is a full-buffer operation, not the
 context-menu/mobile visible-viewport fallback, and reports `source: 'buffer'` on
-success.
+success. Its active terminal is resolved by `_getActiveTerminal(app)`: when split
+view is enabled, only `splits[activeSplitIndex]?.terminal` is eligible; a missing
+or invalid active pane returns no terminal and therefore an `{ ok: false, reason:
+'empty' }` result. It never falls back to the hidden main `app.terminal` while
+split view is enabled. When split view is disabled, it uses `app.terminal` as
+usual. The existing copy-result presenter remains responsible for user feedback.
 
 ### Keyboard shortcuts and paste utilities
 
