@@ -109,6 +109,10 @@ describe('session-scoped shell integration', function () {
   });
 
   (has('pwsh') ? it : it.skip)('PowerShell URI builder encodes drive, UNC, spaces, unicode, hash, and question mark paths', function () {
+    // A cold pwsh process on a hosted Ubuntu runner can exceed the 5s core
+    // default even though its own child-process bound is 10s. Keep this
+    // external-process test bounded without widening the whole unit suite.
+    this.timeout(15000);
     const integration = manager.prepare('uri-session', 'pwsh');
     const script = integration.script.replace(/'/g, "''");
     const home = path.join(root, 'empty-home');
