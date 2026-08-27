@@ -100,6 +100,19 @@ writes the visible-screen text to `navigator.clipboard.writeText`. Results are
 `copyBuffer(terminal)` reads the complete active buffer for the command palette.
 Copy operations do not clear selection or change focus or viewport.
 
+`ClaudeCodeWebInterface.getActiveTerminal()` is the app-level resolver shared by
+explicit copy controls. With split view disabled it returns `this.terminal`. With
+split view enabled it returns only the terminal at a valid integer
+`splitContainer.activeSplitIndex`; missing, malformed, out-of-range, non-array, or
+terminal-less split state returns `null` and never falls back to the hidden main
+terminal.
+
+Command-palette, keys-panel, and extra-keys copy controls call this resolver when
+available. Their isolated-fixture fallbacks apply the same strict split contract.
+The keys-panel copy action returns its handled promise so callers can await the
+clipboard result. These changes are copy-only; input and paste routing retain
+their existing targets.
+
 The terminal context-menu `Copy` item is enabled whenever a terminal is open,
 regardless of `hasSelection()`. Its active terminal is resolved from the main
 xterm or the split pane that received the context-menu event, so copy follows

@@ -488,6 +488,24 @@ class ClaudeCodeWebInterface {
         } catch (_) { /* best-effort */ }
     }
 
+    // Resolve the terminal owned by the current copy target. Split mode is
+    // intentionally strict: a malformed or unavailable active pane must not
+    // expose the hidden single-pane terminal as a fallback.
+    getActiveTerminal() {
+        const splitContainer = this.splitContainer;
+        if (!splitContainer || !splitContainer.enabled) return this.terminal;
+
+        const splits = splitContainer.splits;
+        const index = splitContainer.activeSplitIndex;
+        if (!Array.isArray(splits) || !Number.isInteger(index) ||
+            index < 0 || index >= splits.length) {
+            return null;
+        }
+
+        const split = splits[index];
+        return split && split.terminal ? split.terminal : null;
+    }
+
     getAlias(kind) {
         if (this.aliases && this.aliases[kind]) {
             return this.aliases[kind];

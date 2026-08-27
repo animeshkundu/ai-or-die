@@ -42,6 +42,7 @@ const KEYS_PANEL_SRC = path.join(__dirname, '..', 'src', 'public', 'keys-panel.j
         focus() { focusCalls += 1; },
         modes: { applicationCursorKeysMode: false, bracketedPasteMode: false },
       },
+      getActiveTerminal() { return this.terminal; },
     };
   });
 
@@ -105,6 +106,87 @@ const KEYS_PANEL_SRC = path.join(__dirname, '..', 'src', 'public', 'keys-panel.j
     assert.strictEqual(lastData(), '\x1b\x7f');
     click(keyByLabel(kp, '⌥B'));
     assert.strictEqual(lastData(), '\x1bb');
+  });
+
+  it('copies from the app-selected split terminal, not hidden main output', async function () {
+    const kp = make();
+    const hiddenMain = app.terminal;
+    const right = { marker: 'right' };
+    app.getActiveTerminal = () => right;
+    const calls = [];
+    window.TerminalCopy = {
+      copyVisible: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'screen' };
+      },
+    };
+
+    const result = await kp._copyScreen();
+
+    assert.deepStrictEqual(result, { ok: true, source: 'screen' });
+    assert.deepStrictEqual(calls, [right]);
+    assert.notStrictEqual(calls[0], hiddenMain);
+    assert.strictEqual(focusCalls, 0, 'copy must not focus xterm');
+  });
+
+  it('returns unavailable when the app resolver throws', async function () {
+    const kp = make();
+    const calls = [];
+    app.getActiveTerminal = () => { throw new Error('resolver failure'); };
+    window.TerminalCopy = {
+      copyVisible: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'screen' };
+      },
+    };
+
+    const result = await kp._copyScreen();
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, 'unavailable');
+    assert.deepStrictEqual(calls, []);
+  });
+
+  it('returns unavailable without falling back when the active split is invalid', async function () {
+    const kp = make();
+    const calls = [];
+    app.getActiveTerminal = () => null;
+    window.TerminalCopy = {
+      copyVisible: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'screen' };
+      },
+    };
+
+    const result = await kp._copyScreen();
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, 'unavailable');
+    assert.deepStrictEqual(calls, []);
+    assert.strictEqual(focusCalls, 0, 'copy must not focus xterm');
+  });
+
+  it('keeps the split-aware fallback for isolated fixtures', async function () {
+    const kp = make();
+    delete app.getActiveTerminal;
+    const right = { marker: 'right-fallback' };
+    app.terminal = { marker: 'hidden-main' };
+    app.splitContainer = {
+      enabled: true,
+      activeSplitIndex: 1,
+      splits: [{ terminal: { marker: 'left' } }, { terminal: right }],
+    };
+    const calls = [];
+    window.TerminalCopy = {
+      copyVisible: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'screen' };
+      },
+    };
+
+    await kp._copyScreen();
+
+    assert.deepStrictEqual(calls, [right]);
   });
 
   it('does not rely on window.focusTrap', function () {

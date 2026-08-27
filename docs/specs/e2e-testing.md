@@ -16,7 +16,7 @@ The flood gate reads the median frame gap rather than the maximum. On an unchang
 
 Budgets are also scoped to the phase each one is named for. The flood budget is sampled from the start of the flood until one animation frame after the client write queue drains, entirely in-page so the cross-process harness round-trip is not charged to the flood window, and so the gap created by the final write task and any late `longtask` record are included. The scroll budget reads `scroll.p95GapMs`. The whole-test `maxRafGapMs` is reported for context but is not a budget, because the probe spans the deliberate scroll-jank loop and every harness round-trip, which made it report the scroll phase rather than the output pipeline.
 
-The split-geometry case asserts the documented behaviour for the device class it actually got, because split view is desktop-only: it measures the available width, and requires the split to have opened and its panes to have sent geometry when that width is at least 700px, or the split to have been refused when it is narrower. The invariant the case is named for -- no geometry below 20 columns or 5 rows ever reaches a PTY -- is asserted unconditionally, including on the main terminal after the split closes. The case does not run on `client-redesign-webkit`; see ADR-0049.
+The split-geometry case asserts the documented behaviour for the device class it actually got: it measures the available width and requires split view to open and its panes to send geometry when that width is at least 700px, or requires split creation to be refused when it is narrower. The invariant the case is named for -- no geometry below 20 columns or 5 rows ever reaches a PTY -- is asserted unconditionally, including on the main terminal after the split closes. The case does not run on `client-redesign-webkit`; see ADR-0049. Split copy is covered separately by `e2e/tests/87-mobile-split-copy.spec.js`, which uses a wide touch-capable project and real touch actions rather than treating split view as a mobile-only layout.
 
 `e2e/tests/76-client-visual-evidence.spec.js` attaches dark and light screenshots at 1280x800, 393x852, and 852x393 on all redesign projects, while asserting the blocking chooser stays within horizontal bounds, clears the elevated tab strip, and initially displays every tool card without clipping in short landscape.
 
@@ -86,7 +86,11 @@ their source buffers, verifies `activeSplitIndex === 1`, and invokes `Copy Termi
 Output` through the visible palette input. It asserts that the right sentinel is
 copied and the main sentinel is excluded. Missing or invalid active split panes
 are an empty-copy failure; command-palette resolution never uses hidden main
-output as a fallback. Each test attaches a screenshot; setting
+output as a fallback. The dedicated `87-mobile-split-copy` project is a
+wide, touch-capable Chromium configuration. Its keys-panel and extra-keys cases
+use real locator taps and inspect the active right split marker, clipboard result,
+focus, keyboard state, and terminal geometry; they never invoke copy helpers or
+mutate styles/display. Each test attaches a screenshot; setting
 `AIORDIE_CLI_COPY_SCREENSHOT_DIR` writes an explicit evidence PNG for the
 requested passing, non-retry run without changing normal CI output. A screenshot
 may be linked from history only when that file exists; missing provider imagery

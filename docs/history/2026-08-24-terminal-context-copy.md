@@ -30,8 +30,8 @@ selection/SIGINT behavior.
 
 The same helper powers the mobile Control-mode `Copy screen` action. It is
 visible-screen copy, not full scrollback export. The command-palette `Copy
-Terminal Output` action remains deliberately separate: it selects the entire
-xterm buffer, invokes browser copy, and clears the selection. Split context
+Terminal Output` action remains deliberately separate: it reads the complete
+active xterm buffer without creating or clearing a selection. Split context
 menus resolve the pane that received the event.
 
 The client ships xterm 6.0.0. Because xterm 6 removed the Canvas renderer,

@@ -142,9 +142,28 @@ class ExtraKeys {
     }
   }
 
+  _activeTerminal() {
+    if (!this.app) return null;
+    if (typeof this.app.getActiveTerminal === 'function') {
+      try {
+        return this.app.getActiveTerminal();
+      } catch (_) {
+        return null;
+      }
+    }
+    if (this.app.splitContainer?.enabled) {
+      const splits = this.app.splitContainer.splits;
+      const index = this.app.splitContainer.activeSplitIndex;
+      if (!Array.isArray(splits) || !Number.isInteger(index) ||
+          index < 0 || index >= splits.length) return null;
+      return splits[index]?.terminal || null;
+    }
+    return this.app.terminal || null;
+  }
+
   async _handleCopy() {
     if ('vibrate' in navigator) try { navigator.vibrate(10); } catch (_) {}
-    const term = this.app && this.app.terminal;
+    const term = this._activeTerminal();
     const TC = (typeof window !== 'undefined' && window.TerminalCopy)
       || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
     let result;
@@ -167,6 +186,7 @@ class ExtraKeys {
       else if (result && result.reason === 'error') window.feedback.warning('Unable to read terminal output');
       else window.feedback.warning('Clipboard access denied');
     }
+    return result;
   }
 
   async _handlePaste() {

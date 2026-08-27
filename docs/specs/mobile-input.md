@@ -1,6 +1,6 @@
 # Spec: Mobile input for Claude Code (key matrix + two-mode model)
 
-Status: active. Owner: mobile. Related: ADR-0037. Tests: `test/key-encoder.test.js` (executable source of truth), `test/extra-keys-sequences.test.js`, `test/terminal-copy.test.js`, `e2e/tests/77-mobile-input-completeness.spec.js`, `e2e/tests/78-mobile-composer-copy.spec.js`, `e2e/tests/86-cli-copy.spec.js`.
+Status: active. Owner: mobile. Related: ADR-0037. Tests: `test/key-encoder.test.js` (executable source of truth), `test/extra-keys-sequences.test.js`, `test/keys-panel.test.js`, `test/terminal-copy.test.js`, `test/command-palette.test.js`, `e2e/tests/77-mobile-input-completeness.spec.js`, `e2e/tests/78-mobile-composer-copy.spec.js`, `e2e/tests/86-cli-copy.spec.js`, `e2e/tests/87-mobile-split-copy.spec.js`.
 
 ## Goal
 A user on an iPhone (installed PWA, Edge on iOS = WebKit) must fully drive the Claude Code TUI by touch with no desktop fallback. Every key the TUI needs is reachable; anything the soft keyboard lacks is presented in the on-screen keys bar or the keys panel.
@@ -81,4 +81,11 @@ The native composer is the existing **InputOverlay** (`src/public/input-overlay.
 
 The explicit `Copy screen` action belongs to Control mode, while the composer
 belongs to Compose mode. Copying from the keys panel must not transfer focus to
-the composer or xterm, reopen the keyboard, or alter the terminal's geometry.
+the
+composer or xterm, reopen the keyboard, or alter the terminal's geometry. A real
+touch may leave the keys-panel launcher or copy button focused; the contract is
+that copy does not focus xterm or cause a keyboard or geometry transition. In
+split mode, the copy controls use the active pane's terminal. An invalid active
+pane produces unavailable/no-copy feedback and never uses hidden main output.
+The extra-keys `Cp` control has the same active-pane and invalid-pane behavior
+while preserving all non-copy input and paste routing.

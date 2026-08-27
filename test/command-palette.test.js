@@ -46,7 +46,55 @@ describe('command palette terminal copy seam', function () {
     assert.strictEqual(manager._getActiveTerminal(app), app.terminal);
   });
 
-  it('resolves the active split terminal when split view is enabled', async function () {
+  it('delegates active-terminal resolution to the app resolver', async function () {
+    const calls = [];
+    const right = { marker: 'right' };
+    const app = {
+      terminal: { marker: 'hidden-main' },
+      getActiveTerminal() {
+        calls.push('resolver');
+        return right;
+      },
+    };
+    const loaded = loadManager({
+      app,
+      copyBuffer: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'buffer' };
+      },
+    });
+
+    assert.strictEqual(loaded.manager._getActiveTerminal(app), right);
+    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+      ok: true,
+      source: 'buffer',
+    });
+    assert.deepStrictEqual(calls, ['resolver', 'resolver', right]);
+  });
+
+  it('returns empty when the app resolver throws', async function () {
+    const calls = [];
+    const app = {
+      terminal: { marker: 'hidden-main' },
+      getActiveTerminal() { throw new Error('resolver failure'); },
+    };
+    const loaded = loadManager({
+      app,
+      copyBuffer: (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'buffer' };
+      },
+    });
+
+    assert.strictEqual(loaded.manager._getActiveTerminal(app), null);
+    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+      ok: false,
+      reason: 'empty',
+    });
+    assert.deepStrictEqual(calls, []);
+  });
+
+  it('keeps a split-aware fallback for isolated fixtures', async function () {
     const calls = [];
     const left = { marker: 'left' };
     const right = { marker: 'right' };

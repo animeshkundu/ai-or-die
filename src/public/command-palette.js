@@ -395,10 +395,18 @@ class CommandPaletteManager {
 
   _getActiveTerminal(app) {
     if (!app) return null;
+    if (typeof app.getActiveTerminal === 'function') {
+      try {
+        return app.getActiveTerminal();
+      } catch (_) {
+        return null;
+      }
+    }
     if (app.splitContainer?.enabled) {
       const splits = app.splitContainer.splits;
       const index = app.splitContainer.activeSplitIndex;
-      if (!Array.isArray(splits) || !Number.isInteger(index) || index < 0) return null;
+      if (!Array.isArray(splits) || !Number.isInteger(index) ||
+          index < 0 || index >= splits.length) return null;
       return splits[index]?.terminal || null;
     }
     return app.terminal || null;

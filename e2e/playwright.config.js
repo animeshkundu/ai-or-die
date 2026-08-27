@@ -241,6 +241,22 @@ module.exports = defineConfig({
       testMatch: '20-server-restart.spec.js',
       timeout: 120000,
     },
+    // Wide touch split-copy regression. Chromium retains touch input while the
+    // viewport stays wide enough for split view. The spec uses
+    // serviceWorkers:'block' so it exercises the current client assets.
+    {
+      name: 'wide-touch-split-copy',
+      testMatch: '87-mobile-split-copy.spec.js',
+      timeout: 120000,
+      use: {
+        viewport: { width: 1600, height: 900 },
+        browserName: 'chromium',
+        hasTouch: true,
+        userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36',
+        serviceWorkers: 'block',
+        permissions: [],
+      },
+    },
     // iOS mobile-input suite on WebKit (approximates Edge-on-iOS), specs 77-79.
     // CI runs these on Ubuntu only, per ADR-0049 (which amends ADR-0037 on this
     // point): Playwright-WebKit on the Windows runner wedges inbound WebSocket

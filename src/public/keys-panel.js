@@ -31,6 +31,25 @@ class KeysPanel {
     return null;
   }
 
+  _activeTerminal() {
+    if (!this.app) return null;
+    if (typeof this.app.getActiveTerminal === 'function') {
+      try {
+        return this.app.getActiveTerminal();
+      } catch (_) {
+        return null;
+      }
+    }
+    if (this.app.splitContainer?.enabled) {
+      const splits = this.app.splitContainer.splits;
+      const index = this.app.splitContainer.activeSplitIndex;
+      if (!Array.isArray(splits) || !Number.isInteger(index) ||
+          index < 0 || index >= splits.length) return null;
+      return splits[index]?.terminal || null;
+    }
+    return this.app.terminal || null;
+  }
+
   _terminalModes() {
     const term = this.app && this.app.terminal;
     const modes = {};
@@ -130,8 +149,7 @@ class KeysPanel {
     body.className = 'keys-panel__body';
 
     // Utility: copy the visible terminal screen (Control mode is where you read
-    // output). Uses TerminalCopy; falls back to the visible buffer on the mobile
-    // Canvas renderer where long-press selection is unavailable.
+    // output). Uses TerminalCopy's renderer-independent buffer access.
     const util = document.createElement('div');
     util.className = 'keys-panel__util';
     const copyBtn = document.createElement('button');
@@ -214,7 +232,7 @@ class KeysPanel {
   _copyScreen() {
     const TC = (typeof window !== 'undefined' && window.TerminalCopy)
       || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
-    const term = this.app && this.app.terminal;
+    const term = this._activeTerminal();
     let pending;
     if (!TC || !term || typeof TC.copyVisible !== 'function') {
       pending = Promise.resolve({ ok: false, reason: 'unavailable' });
@@ -227,7 +245,7 @@ class KeysPanel {
         pending = Promise.resolve({ ok: false, reason: 'error' });
       }
     }
-    Promise.resolve(pending).then((res) => {
+    return Promise.resolve(pending).then((res) => {
       const present = typeof window !== 'undefined' && window.presentCopyResult;
       if (typeof present === 'function') {
         present(res, window.feedback);
@@ -239,6 +257,7 @@ class KeysPanel {
         else if (res && res.reason === 'error') window.feedback.warning('Unable to read terminal output');
         else window.feedback.warning('Clipboard access denied');
       }
+      return res;
     }).catch(() => {
       const error = { ok: false, reason: 'error' };
       if (typeof window !== 'undefined' && typeof window.presentCopyResult === 'function') {
@@ -246,6 +265,7 @@ class KeysPanel {
       } else if (window.feedback) {
         window.feedback.warning('Unable to read terminal output');
       }
+      return error;
     });
   }
 
