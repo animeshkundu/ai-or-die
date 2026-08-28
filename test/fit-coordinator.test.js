@@ -391,4 +391,220 @@ describe('FitCoordinator', function () {
     while (queue.length) queue.shift()();
     assert.deepStrictEqual(resizes, [{ cols: 80, rows: 25 }]);
   });
+
+  it('resolves requestAndWait after resize and send settle', async function () {
+    const queue = [];
+    const timers = [];
+    const resizes = [];
+    const sends = [];
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize: (cols, rows) => resizes.push({ cols, rows }) },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send: (size) => sends.push(size),
+    });
+    queue.shift()();
+    const settled = coordinator.requestAndWait('main', { forceSend: true, generation: 7 });
+    assert.strictEqual(timers.length, 1, 'waiter arms one timeout');
+    queue.shift()();
+    assert.deepStrictEqual(await settled, { cols: 80, rows: 25 });
+    assert.deepStrictEqual(resizes, [{ cols: 80, rows: 25 }]);
+    assert.strictEqual(sends.length, 2, 'forceSend is preserved for the requested pass');
+    assert.strictEqual(timers.length, 1, 'clearing a timer does not remove the test timer record');
+  });
+
+  it('rejects requestAndWait on timeout without changing request behavior', async function () {
+    const queue = [];
+    const timers = [];
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+      requestWaitTimeoutMs: 25,
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 0, height: 0 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => null,
+    });
+    queue.shift()();
+    const pending = coordinator.requestAndWait('main', { generation: 1 });
+    queue.shift()();
+    assert.strictEqual(timers.length, 2, 'retry and waiter timers are both bounded');
+    const timeout = timers.pop();
+    timeout();
+    await assert.rejects(pending, (error) => error.name === 'FitRequestTimeoutError'
+      && error.code === 'FIT_REQUEST_TIMEOUT');
+
+    coordinator.request('main');
+    assert.strictEqual(queue.length, 1, 'regular request still queues a fit');
+  });
+
+  it('rejects stale generations without settling the newer waiter', async function () {
+    const queue = [];
+    const timers = [];
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+    });
+    let proposed = { cols: 80, rows: 25 };
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => proposed,
+      send: () => true,
+    });
+    queue.shift()();
+    const first = coordinator.requestAndWait('main', { generation: 10 });
+    const second = coordinator.requestAndWait('main', { generation: 11 });
+    await assert.rejects(first, (error) => error.name === 'FitRequestSupersededError'
+      && error.code === 'FIT_REQUEST_SUPERSEDED');
+    queue.shift()();
+    assert.deepStrictEqual(await second, { cols: 80, rows: 25 });
+    proposed = { cols: 100, rows: 25 };
+    const timersBeforeStale = timers.length;
+    const stale = coordinator.requestAndWait('main', { generation: 10 });
+    await assert.rejects(stale, (error) => error.name === 'FitRequestSupersededError');
+    assert.strictEqual(timers.length, timersBeforeStale, 'stale generations do not arm a waiter timer');
+
+    coordinator.destroy();
+    assert.strictEqual(queue.length, 0, 'stale generation does not leave a queued fit');
+  });
+
+  it('does not cross-cancel waiters for different targets', async function () {
+    const queue = [];
+    const timers = [];
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+    });
+    const target = {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send: () => true,
+    };
+    coordinator.register('a', target);
+    coordinator.register('b', target);
+    while (queue.length) queue.shift()();
+    const a = coordinator.requestAndWait('a', { generation: 1 });
+    const b = coordinator.requestAndWait('b', { generation: 1 });
+    while (queue.length) queue.shift()();
+    assert.deepStrictEqual(await a, { cols: 80, rows: 25 });
+    assert.deepStrictEqual(await b, { cols: 80, rows: 25 });
+    assert.strictEqual(timers.length, 2, 'each target owns its waiter timer');
+  });
+
+  it('still applies a timed-out request when its frame runs later', async function () {
+    const queue = [];
+    const timers = [];
+    const resizes = [];
+    const sends = [];
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize: (cols, rows) => resizes.push({ cols, rows }) },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send: (size) => sends.push(size),
+    });
+    const pending = coordinator.requestAndWait('main', { generation: 1, timeoutMs: 5 });
+    const timeout = timers.pop();
+    timeout();
+    await assert.rejects(pending, (error) => error.name === 'FitRequestTimeoutError');
+    queue.shift()();
+    assert.deepStrictEqual(resizes, [{ cols: 80, rows: 25 }]);
+    assert.deepStrictEqual(sends, [{ cols: 80, rows: 25 }]);
+  });
+
+  it('preserves a retry after a timed-out waiter', async function () {
+    const queue = [];
+    const timers = [];
+    let open = false;
+    let sends = 0;
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+      retryDelayMs: 10,
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send: () => {
+        sends++;
+        return open;
+      },
+    });
+    while (queue.length) queue.shift()();
+    const pending = coordinator.requestAndWait('main', { generation: 1, timeoutMs: 5 });
+    while (queue.length) queue.shift()();
+    const timeout = timers.pop();
+    timeout();
+    await assert.rejects(pending, (error) => error.name === 'FitRequestTimeoutError');
+    assert.strictEqual(timers.length, 1, 'fit retry remains armed after waiter timeout');
+    timers.shift()();
+    while (queue.length) queue.shift()();
+    open = true;
+    timers.shift()();
+    while (queue.length) queue.shift()();
+    assert.strictEqual(open, true, 'the ordinary retry path remains active');
+    assert.strictEqual(sends, 4, 'the retry sends again after the waiter times out');
+  });
+
+  it('lets a regular request share and complete a pending waiter generation', async function () {
+    const queue = [];
+    const timers = [];
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize() {} },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send: () => true,
+    });
+    while (queue.length) queue.shift()();
+    const pending = coordinator.requestAndWait('main', { generation: 4 });
+    coordinator.request('main');
+    queue.shift()();
+    assert.deepStrictEqual(await pending, { cols: 80, rows: 25 });
+  });
+
+  it('applies one queued fit while a newer generation supersedes the old waiter', async function () {
+    const queue = [];
+    const timers = [];
+    let resizes = 0;
+    const coordinator = new FitCoordinator({
+      requestAnimationFrame: (fn) => queue.push(fn),
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: () => {},
+    });
+    coordinator.register('main', {
+      container: { isConnected: true, getBoundingClientRect: () => ({ width: 800, height: 400 }) },
+      terminal: { resize: () => { resizes++; } },
+      proposeDimensions: () => ({ cols: 80, rows: 25 }),
+      send: () => true,
+    });
+    while (queue.length) queue.shift()();
+    const oldWaiter = coordinator.requestAndWait('main', { generation: 8 });
+    const newWaiter = coordinator.requestAndWait('main', { generation: 9 });
+    await assert.rejects(oldWaiter, (error) => error.name === 'FitRequestSupersededError');
+    queue.shift()();
+    assert.deepStrictEqual(await newWaiter, { cols: 80, rows: 25 });
+    assert.strictEqual(resizes, 1, 'supersession coalesces the queued fit');
+  });
 });
