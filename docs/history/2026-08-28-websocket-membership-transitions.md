@@ -1,0 +1,51 @@
+# WebSocket Membership Transition Fencing
+
+## What Happened
+
+A single browser WebSocket could issue rapid `join_session` and `leave_session` messages while replay assembly was awaiting rendered terminal state. Asynchronous handlers could commit an older membership after a newer request, allowing old-session output to reach the wrong tab.
+
+## Root Cause
+
+Membership was stored directly on `wsInfo` while replay and geometry-detach operations yielded to the event loop. The socket could therefore be observed as belonging to one session while its session connection set still named another, and a closed socket could be re-added by a late continuation.
+
+## Fix
+
+The server now serializes create, join, and leave operations per socket, tracks a membership generation and committed transition ID, detaches old memberships before asynchronous work, and checks socket identity, generation, and open state before every commit. Tagged input is rejected when its session or transition does not match the committed active membership. URL auto-join uses the same queue without producing an explicit transition acknowledgment.
+
+## Watch For
+
+Keep the membership commit and `session_joined` response contiguous with no intervening await. Internal transition composition must not enqueue recursively. Any new await in a membership operation needs a map-identity, generation, and open-socket check afterward.
+
+## Scope Note
+
+The transition queue intentionally covers only membership operations. Input, output, heartbeat, and geometry controls retain their existing scheduling and terminal semantics. No files under `src/public/` are part of this server slice.
+
+## Verification
+
+Baseline: `b5b0249736502a77dcc0e7995c1e41a1516ea47f`.
+
+Focused server membership, replay, output, and geometry tests report 37 passing tests. A broader relevant core run completed with 116 passing tests. The integration run emitted one sandbox warning about an ENOENT session-store rename during a terminal activity test but completed without test failures.
+
+Commands run:
+
+- `node --check src/server.js`
+- `node --check test/server-membership-transition.test.js`
+- `git diff --check`
+- `npx mocha --require test/hooks/session-sandbox.js --exit --timeout 5000 test/server-membership-transition.test.js test/join-replay-buffer.test.js test/output-throttle.test.js test/server-terminal-geometry.test.js`
+- `npm run test:core -- --grep 'E2E: Server lifecycle|E2E: Session|server|join replay|Output Throttle'`
+
+Windows CI and cross-platform browser verification remain the parent integration gate. Do not infer CI status from these local checks.
+
+## Integration Invariants
+
+- A closed socket must never be re-added by a late replay continuation, even if the target snapshot promise resolves after close.
+- A tagged input frame is accepted only when both supplied session and transition IDs match the socket's committed active membership.
+- The queue tail always resolves after an operation failure, allowing subsequent membership requests to execute in FIFO order.
+- An untagged same-session re-join emits no `session_left` and preserves the committed transition tuple internally without echoing it.
+- A response includes `transitionId` only when the corresponding request supplied a valid transition ID.
+- Session-scoped exits, errors, and stopped frames carry `sessionId` additively while retaining prior fields.
+- The null bridge-session path releases the manual geometry output hold before returning.
+
+No ADR was added. This is protocol hardening within the existing WebSocket/session architecture, covered by the server specification and protocol architecture docs.
+
+No push was performed. The parent should integrate this Conventional Commit without client-file changes or unrelated copy/readiness edits, preserving the Windows timeout ancestry and copy/readiness work on the parent branch.
