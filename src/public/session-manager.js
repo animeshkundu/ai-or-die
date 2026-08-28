@@ -10,6 +10,7 @@ class SessionTabManager {
         this.tabs = new Map(); // sessionId -> tab element
         this.activeSessions = new Map(); // sessionId -> session data
         this.activeTabId = null;
+        this._switchGeneration = 0;
         this.tabOrder = []; // visual order of tabs
         this.tabHistory = []; // most recently used order
         this.notificationsEnabled = false;
@@ -794,6 +795,9 @@ class SessionTabManager {
     async switchToTab(sessionId, options = {}) {
         if (!this.tabs.has(sessionId)) return;
 
+        this._switchGeneration = (this._switchGeneration || 0) + 1;
+        const generation = this._switchGeneration;
+
         const { skipHistoryUpdate = false } = options;
 
         // Cancel any pending capture-on-settle: the shared terminal is about to
@@ -874,6 +878,7 @@ class SessionTabManager {
             }
         }
         await this.claudeInterface.joinSession(sessionId);
+        if (this._switchGeneration !== generation || this.activeTabId !== sessionId) return;
         this.updateHeaderInfo(sessionId);
 
         const srSwitch = document.getElementById('srAnnounce');
@@ -884,6 +889,7 @@ class SessionTabManager {
 
         // Fit terminal to container and capture focus after tab switch
         requestAnimationFrame(() => {
+            if (this._switchGeneration !== generation || this.activeTabId !== sessionId) return;
             const container = document.getElementById('terminalContainer');
             if (!container || container.offsetHeight === 0) return;
             if (this.claudeInterface.fitTerminal) this.claudeInterface.fitTerminal();
