@@ -10,7 +10,7 @@ function fakeSocket() {
   return {
     sent,
     readyState: WebSocket.OPEN,
-    send(value) { sent.push(JSON.parse(Buffer.isBuffer(value) ? value.toString() : value)); },
+    send(value) { sent.push(Buffer.isBuffer(value) ? value : JSON.parse(value)); },
   };
 }
 
@@ -116,8 +116,98 @@ describe('server WebSocket membership transitions', function () {
     assert.strictEqual(wsInfo.claudeSessionId, 'a');
     assert.strictEqual(wsInfo.committedTransitionId, 'committed');
     assert.strictEqual(session.connections.has('ws1'), true);
+    assert.strictEqual(wsInfo.ws.sent.some((frame) => frame.type === 'session_left'), false);
   });
 
+  it('resumes a previously paused socket after a successful same-session rejoin', async function () {
+    const { server, wsInfo, sessions } = makeHarness();
+    const session = makeSession('a');
+    session.connections.add('ws1');
+    sessions.set('a', session);
+    wsInfo.claudeSessionId = 'a';
+    wsInfo.committedTransitionId = 'committed';
+    wsInfo._flowPaused = true;
+
+    await server.joinClaudeSession('ws1', 'a');
+
+    assert.strictEqual(wsInfo._flowPaused, false);
+
+    session._pendingChunks = ['post-join output'];
+    session._pendingBytes = 'post-join output'.length;
+    server._flushSessionOutput('a');
+    assert.strictEqual(wsInfo.ws.sent.at(-1).toString(), 'post-join output');
+  });
+
+  it('keeps membership live while same-session replay is awaiting a snapshot', async function () {
+    const { server, wsInfo, sessions } = makeHarness();
+    const session = makeSession('a');
+    session.connections.add('ws1');
+    session._ctlTranscript = {};
+    sessions.set('a', session);
+    wsInfo.claudeSessionId = 'a';
+    wsInfo.committedTransitionId = 'committed';
+    let release;
+    server._peekWithTimeout = () => new Promise((resolve) => { release = resolve; });
+
+    const join = server.joinClaudeSession('ws1', 'a');
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(sessions.get('a').connections.has('ws1'), true);
+    assert.strictEqual(wsInfo.claudeSessionId, 'a');
+    assert.strictEqual(wsInfo.committedTransitionId, 'committed');
+    assert.strictEqual(typeof release, 'function');
+
+    release(null);
+    await join;
+  });
+
+  it('accepts tagged input when both membership tags match', async function () {
+    const { server, wsInfo, sessions } = makeHarness();
+    const session = makeSession('a');
+    session.active = true;
+    session.agent = 'terminal';
+    session.connections.add('ws1');
+    sessions.set('a', session);
+    wsInfo.claudeSessionId = 'a';
+    wsInfo.committedTransitionId = 'committed';
+    let writes = 0;
+    server.getBridgeForAgent = () => ({ sendInput: async () => { writes++; } });
+    server.terminalGeometry = null;
+
+    await server.handleMessage('ws1', {
+      type: 'input', data: 'ok', sessionId: 'a', transitionId: 'committed',
+    });
+
+    assert.strictEqual(writes, 1);
+  });
+
+  it('rejects a single tagged input field without PTY access', async function () {
+    const { server, wsInfo, sessions } = makeHarness();
+    const session = makeSession('a');
+    session.active = true;
+    session.agent = 'terminal';
+    session.connections.add('ws1');
+    sessions.set('a', session);
+    wsInfo.claudeSessionId = 'a';
+    wsInfo.committedTransitionId = 'committed';
+    let writes = 0;
+    server.getBridgeForAgent = () => ({ sendInput: async () => { writes++; } });
+    server.terminalGeometry = null;
+    server.sendToWebSocket = (socket, frame) => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
+    };
+    // A partial tag is rejected by the production fence, before bridge lookup.
+    // Keep this assertion independent of any later input error frames.
+    const before = wsInfo.ws.sent.length;
+
+    await server.handleMessage('ws1', {
+      type: 'input', data: 'nope', sessionId: 'a',
+    });
+
+    assert.strictEqual(writes, 0);
+    assert.strictEqual(wsInfo.ws.sent.length, before + 1);
+    assert.strictEqual(wsInfo.ws.sent.at(-1).code, 'stale_session_transition');
+  });
 
   it('rejects tagged input whose session or transition is stale without PTY access', async function () {
     const { server, wsInfo, sessions } = makeHarness();

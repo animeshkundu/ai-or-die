@@ -3846,8 +3846,9 @@ class ClaudeCodeWebServer {
     const hasTransitionId = Object.prototype.hasOwnProperty.call(data, 'transitionId');
     if (!hasSessionId && !hasTransitionId) return true;
     if (!this._membershipStillValid(wsId, wsInfo, wsInfo.membershipGeneration)) return false;
-    if (hasSessionId && data.sessionId !== wsInfo.claudeSessionId) return false;
-    if (hasTransitionId && data.transitionId !== wsInfo.committedTransitionId) return false;
+    if (!hasSessionId || !hasTransitionId) return false;
+    if (data.sessionId !== wsInfo.claudeSessionId) return false;
+    if (data.transitionId !== wsInfo.committedTransitionId) return false;
     const session = this.claudeSessions.get(wsInfo.claudeSessionId);
     return !!(session && session.connections.has(wsId));
   }
@@ -4315,7 +4316,8 @@ class ClaudeCodeWebServer {
     const sameSessionRejoin = currentSessionId === claudeSessionId;
     const priorTransitionId = wsInfo.committedTransitionId;
     let detach = null;
-    let wasFlowPaused = wsInfo._flowPaused === true;
+    const wasFlowPaused = wsInfo._flowPaused === true;
+    let replayCommitted = false;
     if (sameSessionRejoin) wsInfo._flowPaused = true;
     if (currentSessionId && !sameSessionRejoin) {
       const oldSession = this.claudeSessions.get(currentSessionId);
@@ -4373,6 +4375,7 @@ class ClaudeCodeWebServer {
       wsInfo.committedTransitionId = transition.supplied && !transition.autoJoin
         ? transition.transitionId : (sameSessionRejoin ? priorTransitionId : null);
       wsInfo._flowPaused = false;
+      replayCommitted = true;
       session.connections.add(wsId);
       this.sendToWebSocket(wsInfo.ws, joinedFrame);
 
@@ -4390,10 +4393,11 @@ class ClaudeCodeWebServer {
       if (this.dev) console.log(`WebSocket ${wsId} joined Claude session ${claudeSessionId}`);
       return true;
     } finally {
-      // A stale/closed continuation cannot leave a live socket paused. For a
-      // same-session rejoin, restore the socket's pre-replay flow state unless
-      // the commit path already explicitly resumed it.
-      if (sameSessionRejoin && this._membershipStillValid(wsId, wsInfo, generation)) {
+      // A stale/closed continuation cannot leave a live socket paused. Restore
+      // the pre-replay state only when replay did not reach its commit boundary;
+      // after a successful commit, the ack path deliberately resumes output.
+      if (sameSessionRejoin && !replayCommitted
+          && this._membershipStillValid(wsId, wsInfo, generation)) {
         wsInfo._flowPaused = wasFlowPaused;
       }
     }

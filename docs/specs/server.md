@@ -323,7 +323,7 @@ The WebSocket server (`ws.Server`) is attached to the same HTTP(S) server instan
 
 During a join, the server synchronously detaches the old membership only when switching to a different session, then awaits any geometry transfer before preparing the target replay and draining pending coalesced output. Same-session re-joins keep the existing `session.connections` membership, `wsInfo.claudeSessionId`, committed transition tuple, and geometry attachment live while replay is assembled. The final target commit and `session_joined` send have no intervening await. Every awaited continuation verifies the same map value, unchanged membership generation, and an open WebSocket. Same-session re-joins remain free of `session_left`; an untagged same-session re-join preserves the committed transition tuple but does not echo it. A session switch replaces the committed transition with the explicit tag or `null` for legacy operations.
 
-Tagged `input` frames may carry optional `sessionId` and `transitionId` fields. When either field is supplied, both values must match the committed active membership exactly. Mismatches receive `error` with code `stale_session_transition` and never reach a PTY. Untagged input keeps legacy routing and geometry behavior.
+Tagged `input` frames may carry optional `sessionId` and `transitionId` fields. When either field is supplied, both tags are required and must match the committed active membership, and the socket must still be a member of that session. Mismatches receive `error` with code `stale_session_transition` and never reach a PTY. Untagged input keeps legacy routing and geometry behavior. A successful same-session re-join clears any prior flow pause before acknowledging, so subsequent session output is delivered normally.
 
 Lifecycle `exit` and `*_stopped` frames, plus error frames that carry session context (`stale_session_transition`, `input_not_sent`, membership not-found errors, and bridge error broadcasts), include `sessionId` additively. Geometry hold timeout/truncation notifications and generic start/parse errors retain their existing fields and may omit `sessionId`. Session broadcasts still verify both the session connection set and the WebSocket's committed membership.
 
@@ -362,7 +362,7 @@ All messages are JSON. The `type` field determines the handler.
 | Tool not available | "{tool} is not available. Please ensure the {tool} CLI is installed..." |
 | Spawn failure | "Failed to start {tool}: {error}" |
 
-| `input` | Send raw terminal input to the running agent. Fields: required `data`; optional `sessionId` and `transitionId` tags. If either tag is supplied, both must match the socket's committed membership or the server returns `stale_session_transition` without writing to the PTY. |
+| `input` | Send raw terminal input to the running agent. Fields: required `data`; optional `sessionId` and `transitionId` tags. Every supplied tag must match the socket's committed membership or the server returns `stale_session_transition` without writing to the PTY. |
 | `resize` | Resize the pty. Fields: `cols`, `rows`. |
 | `stop` | Terminate the running agent process. |
 | `ping` | Keep-alive. Server responds with `{ type: "pong" }`. |

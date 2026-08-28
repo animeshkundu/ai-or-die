@@ -24,7 +24,7 @@ The transition queue intentionally covers only membership operations. Input, out
 
 Baseline: `b5b0249736502a77dcc0e7995c1e41a1516ea47f`.
 
-The focused server membership, replay, output, and geometry suite reports 38 passing tests, including the same-session no-detach regression. The membership transition file reports 13 passing tests. A broader relevant core run completed with 116 passing tests before this follow-up. The integration run emitted one sandbox warning about an ENOENT session-store rename during a terminal activity test but completed without test failures.
+The focused server membership, replay, output, and geometry suite reports 42 passing tests, including same-session no-detach, flow-resume, mid-replay membership, and tagged-input regressions. The membership transition file reports 17 passing tests. A broader relevant core run completed with 116 passing tests before these follow-ups. The integration run emitted one sandbox warning about an ENOENT session-store rename during a terminal activity test but completed without test failures.
 
 Commands run:
 
@@ -39,9 +39,9 @@ Windows CI and cross-platform browser verification remain the parent integration
 ## Integration Invariants
 
 - A closed socket must never be re-added by a late replay continuation, even if the target snapshot promise resolves after close.
-- A tagged input frame is accepted only when both supplied session and transition IDs match the socket's committed active membership.
+- A tagged input frame is accepted only when both session and transition IDs are supplied, both match the corresponding committed membership values, and the socket remains in that session.
 - The queue tail always resolves after an operation failure, allowing subsequent membership requests to execute in FIFO order.
-- An untagged same-session re-join emits no `session_left`, preserves the live session membership and geometry attachment, and preserves the committed transition tuple internally without echoing it.
+- An untagged same-session re-join emits no `session_left`, preserves the live session membership and geometry attachment, clears any prior flow pause after successful replay, and preserves the committed transition tuple internally without echoing it.
 - A response includes `transitionId` only when the corresponding request supplied a valid transition ID.
 - Session-scoped exits and stopped frames carry `sessionId` additively. Error frames carry it when the server has session context; geometry hold timeout/truncation and generic start/parse errors may retain their legacy fields.
 - The null bridge-session path releases the manual geometry output hold before returning.

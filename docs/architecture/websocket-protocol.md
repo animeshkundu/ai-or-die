@@ -18,7 +18,7 @@ wss://localhost:{port}?token={authToken}
 
 If a `sessionId` query parameter is provided, the server queues an untagged, server-initiated join to that session after the connection handshake. It cannot satisfy a tagged explicit join.
 
-Membership operations are strict FIFO per WebSocket. An optional opaque `transitionId` string (maximum 256 characters) is echoed only by its matching membership response. Close/error synchronously invalidate membership before asynchronous cleanup. A same-session re-join does not detach the existing session connection or geometry attachment; it keeps the committed tuple live while replay is assembled and emits no `session_left`. Tagged `input` messages may carry optional `sessionId` and `transitionId` fields; when either is supplied, both must match the committed active membership exactly or the server returns `stale_session_transition` without PTY delivery. Session-scoped lifecycle frames include `sessionId` additively; only error frames with session context are guaranteed to carry it.
+Membership operations are strict FIFO per WebSocket. An optional opaque `transitionId` string (maximum 256 characters) is echoed only by its matching membership response. Close/error synchronously invalidate membership before asynchronous cleanup. A same-session re-join does not detach the existing session connection or geometry attachment; it keeps the committed tuple live while replay is assembled and emits no `session_left`. Tagged `input` messages may carry optional `sessionId` and `transitionId` fields; when either is supplied, both tags are required to match the committed active membership and the socket must still be a member of that session, or the server returns `stale_session_transition` without PTY delivery. Session-scoped lifecycle frames include `sessionId` additively; only error frames with session context are guaranteed to carry it.
 
 A tagged join can be acknowledged as follows:
 
@@ -30,7 +30,7 @@ A tagged join can be acknowledged as follows:
 }
 ```
 
-The matching `session_joined` echoes `transitionId`. An untagged same-session re-join continues to omit `session_left` and does not echo an older committed transition ID.
+The matching `session_joined` echoes `transitionId`. An untagged same-session re-join continues to omit `session_left` and does not echo an older committed transition ID. A successful same-session re-join clears any prior flow pause before acknowledging, so subsequent session output is delivered normally.
 
 Additional connection example:
 
@@ -183,10 +183,10 @@ Send user input (keystrokes) to the running CLI process.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `data` | string | Yes | Raw terminal input data. Use `\r` for Enter. |
-| `sessionId` | string (UUID) | No | Optional membership tag. If either tag is supplied, this must match the socket's committed active session. |
-| `transitionId` | string | No | Optional membership tag, at most 256 characters. If either tag is supplied, this must match the socket's committed transition. |
+| `sessionId` | string (UUID) | No | Optional membership tag. When tagging input, this value is required and must match the socket's committed active session. |
+| `transitionId` | string | No | Optional membership tag, at most 256 characters. When tagging input, this value is required and must match the socket's committed transition. |
 
-When either optional tag is supplied, both supplied values must match the committed active membership and the socket must still be a member of that session. A mismatch receives an `error` with code `stale_session_transition`; the server does not look up the bridge or write to the PTY. Untagged input retains legacy routing. The server also validates that a CLI process is actively running before forwarding the input. If no agent is running, the server responds with an `info` or `error` message.
+When either optional tag is supplied, both tags are required, both must match the corresponding committed membership values, and the socket must still be a member of that session. A mismatch receives an `error` with code `stale_session_transition`; the server does not look up the bridge or write to the PTY. Untagged input retains legacy routing. The server also validates that a CLI process is actively running before forwarding the input. If no agent is running, the server responds with an `info` or `error` message.
 
 ---
 
