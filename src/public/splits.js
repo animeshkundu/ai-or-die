@@ -465,9 +465,7 @@ class Split {
             if (!isCurrent()) return;
             if (splitIsBinary(event.data)) {
                 const chunk = splitToUint8Array(event.data);
-                if (!chunk) return;
-                if (!this._joinAcked) this._quarantinePreAck(chunk, socketFence);
-                else this._enqueueOrdered({ kind: 'binary', value: chunk }, socketFence);
+                if (chunk) this._queueOutput(chunk, socketFence);
                 return;
             }
             try {
@@ -559,6 +557,16 @@ class Split {
         this._heartbeat.start();
         this._heartbeatTimer = null;
         this._pongTimer = null;
+    }
+
+    _queueOutput(chunk, fence) {
+        const currentFence = fence || this._currentFence();
+        if (!chunk || !this._fenceMatches(currentFence)) return;
+        if (!this._joinAcked) {
+            this._quarantinePreAck(chunk, currentFence);
+            return;
+        }
+        this._enqueueOrdered({ kind: 'binary', value: chunk }, currentFence);
     }
 
     _quarantinePreAck(value, fence) {
