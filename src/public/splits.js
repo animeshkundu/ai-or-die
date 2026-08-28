@@ -526,12 +526,13 @@ class Split {
             this._reconnectAttempts += 1;
             if (this._reconnectTimer) clearTimeout(this._reconnectTimer);
             const reconnectFence = {
+                socketGeneration: socketFence.socketGeneration,
                 transitionId: socketFence.transitionId,
                 sessionId: socketFence.sessionId
             };
             this._reconnectTimer = setTimeout(() => {
                 this._reconnectTimer = null;
-                if (this._closing || !this._transitionIsCurrent(reconnectFence)) return;
+                if (this._closing || !this._fenceMatches(reconnectFence)) return;
                 this.connect(this.desiredSessionId, reconnectFence).catch((error) => {
                     console.error(`[Split ${this.index}] Reconnect failed:`, error);
                 });
