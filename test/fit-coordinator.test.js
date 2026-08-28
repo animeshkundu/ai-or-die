@@ -426,6 +426,7 @@ describe('FitCoordinator', function () {
       setTimeout: (fn) => { timers.push(fn); return timers.length; },
       clearTimeout: () => {},
       requestWaitTimeoutMs: 25,
+      maxRetries: 0,
     });
     coordinator.register('main', {
       container: { isConnected: true, getBoundingClientRect: () => ({ width: 0, height: 0 }) },
@@ -435,8 +436,8 @@ describe('FitCoordinator', function () {
     queue.shift()();
     const pending = coordinator.requestAndWait('main', { generation: 1 });
     queue.shift()();
-    assert.strictEqual(timers.length, 2, 'retry and waiter timers are both bounded');
-    const timeout = timers.pop();
+    assert.strictEqual(timers.length, 1, 'waiter timeout is bounded even without a retry');
+    const timeout = timers[0];
     timeout();
     await assert.rejects(pending, (error) => error.name === 'FitRequestTimeoutError'
       && error.code === 'FIT_REQUEST_TIMEOUT');
