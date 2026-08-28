@@ -321,11 +321,11 @@ The WebSocket server (`ws.Server`) is attached to the same HTTP(S) server instan
 3. `create_session`, `join_session`, and `leave_session` execute in strict FIFO order on that socket. An optional opaque `transitionId` string of at most 256 characters is echoed only by the response for the tagged operation. A rejected queue operation is isolated so later membership operations still run.
 4. On close or error, membership is invalidated synchronously: the generation advances, the queue closes, and the socket ID is removed from the current session before any asynchronous geometry cleanup.
 
-During a join, the server synchronously detaches the old membership, prepares the target replay and drains pending coalesced output, then commits the target membership and sends `session_joined` without an intervening await. Every awaited continuation verifies the same map value, unchanged membership generation, and an open WebSocket. Same-session re-joins remain free of `session_left`; an untagged same-session re-join preserves the committed transition tuple but does not echo it. A session switch replaces the committed transition with the explicit tag or `null` for legacy operations.
+During a join, the server synchronously detaches the old membership only when switching to a different session, then awaits any geometry transfer before preparing the target replay and draining pending coalesced output. Same-session re-joins keep the existing `session.connections` membership, `wsInfo.claudeSessionId`, committed transition tuple, and geometry attachment live while replay is assembled. The final target commit and `session_joined` send have no intervening await. Every awaited continuation verifies the same map value, unchanged membership generation, and an open WebSocket. Same-session re-joins remain free of `session_left`; an untagged same-session re-join preserves the committed transition tuple but does not echo it. A session switch replaces the committed transition with the explicit tag or `null` for legacy operations.
 
-Tagged `input` frames carrying `sessionId` or `transitionId` must match the committed active membership exactly. Mismatches receive `error` with code `stale_session_transition` and never reach a PTY. Untagged input keeps legacy routing and geometry behavior.
+Tagged `input` frames may carry optional `sessionId` and `transitionId` fields. When either field is supplied, both values must match the committed active membership exactly. Mismatches receive `error` with code `stale_session_transition` and never reach a PTY. Untagged input keeps legacy routing and geometry behavior.
 
-Lifecycle `exit`, `*_stopped`, and session-scoped error frames include `sessionId` additively. Session broadcasts still verify both the session connection set and the WebSocket's committed membership.
+Lifecycle `exit` and `*_stopped` frames, plus error frames that carry session context (`stale_session_transition`, `input_not_sent`, membership not-found errors, and bridge error broadcasts), include `sessionId` additively. Geometry hold timeout/truncation notifications and generic start/parse errors retain their existing fields and may omit `sessionId`. Session broadcasts still verify both the session connection set and the WebSocket's committed membership.
 
 During a join, the server prepares the replay snapshot and drains any pending
 coalesced output before adding the socket to the session's live-output
@@ -362,7 +362,7 @@ All messages are JSON. The `type` field determines the handler.
 | Tool not available | "{tool} is not available. Please ensure the {tool} CLI is installed..." |
 | Spawn failure | "Failed to start {tool}: {error}" |
 
-| `input` | Send raw terminal input to the running agent. Fields: `data`. |
+| `input` | Send raw terminal input to the running agent. Fields: required `data`; optional `sessionId` and `transitionId` tags. If either tag is supplied, both must match the socket's committed membership or the server returns `stale_session_transition` without writing to the PTY. |
 | `resize` | Resize the pty. Fields: `cols`, `rows`. |
 | `stop` | Terminate the running agent process. |
 | `ping` | Keep-alive. Server responds with `{ type: "pong" }`. |
@@ -382,7 +382,7 @@ All messages are JSON. The `type` field determines the handler.
 | `claude_stopped` / `codex_stopped` / `agent_stopped` | Agent process terminated. |
 | `output` | Terminal output data from the agent. Fields: `data`. |
 | `exit` | Agent process exited. Fields: `sessionId`, `code`, `signal`. |
-| `error` | Error message. Fields: `message`, plus `sessionId` for session-scoped errors and `code`/`transitionId` where applicable. |
+| `error` | Error message. Fields: `message`; `sessionId` on errors that carry session context, and `code`/`transitionId` where applicable. Geometry hold timeout/truncation and generic start/parse errors may omit `sessionId`. |
 | `info` | Informational message (e.g., "No agent is running"). |
 | `pong` | Response to `ping`. |
 | `usage_update` | Usage statistics payload (see Usage Analytics spec). |

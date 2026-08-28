@@ -99,7 +99,25 @@ describe('server WebSocket membership transitions', function () {
     assert.strictEqual(wsInfo.committedTransitionId, 'committed');
     assert.strictEqual(wsInfo.ws.sent[0].transitionId, undefined);
     assert.deepStrictEqual(wsInfo.ws.sent.map((frame) => frame.type), ['session_joined']);
+    assert.strictEqual(sessions.get('a').connections.has('ws1'), true);
   });
+
+  it('does not detach geometry or membership for a same-session rejoin', async function () {
+    const { server, wsInfo, sessions } = makeHarness();
+    const session = makeSession('a');
+    session.connections.add('ws1');
+    sessions.set('a', session);
+    wsInfo.claudeSessionId = 'a';
+    wsInfo.committedTransitionId = 'committed';
+    let detachCalls = 0;
+    server.terminalGeometry.detachConnection = async () => { detachCalls++; };
+    await server.joinClaudeSession('ws1', 'a');
+    assert.strictEqual(detachCalls, 0);
+    assert.strictEqual(wsInfo.claudeSessionId, 'a');
+    assert.strictEqual(wsInfo.committedTransitionId, 'committed');
+    assert.strictEqual(session.connections.has('ws1'), true);
+  });
+
 
   it('rejects tagged input whose session or transition is stale without PTY access', async function () {
     const { server, wsInfo, sessions } = makeHarness();

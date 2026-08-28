@@ -18,7 +18,7 @@ wss://localhost:{port}?token={authToken}
 
 If a `sessionId` query parameter is provided, the server queues an untagged, server-initiated join to that session after the connection handshake. It cannot satisfy a tagged explicit join.
 
-Membership operations are strict FIFO per WebSocket. An optional opaque `transitionId` string (maximum 256 characters) is echoed only by its matching membership response. Close/error synchronously invalidate membership before asynchronous cleanup. Tagged `input` messages carrying `sessionId` or `transitionId` must match the committed active membership exactly or receive `stale_session_transition` without PTY delivery. Session-scoped lifecycle frames include `sessionId` additively.
+Membership operations are strict FIFO per WebSocket. An optional opaque `transitionId` string (maximum 256 characters) is echoed only by its matching membership response. Close/error synchronously invalidate membership before asynchronous cleanup. A same-session re-join does not detach the existing session connection or geometry attachment; it keeps the committed tuple live while replay is assembled and emits no `session_left`. Tagged `input` messages may carry optional `sessionId` and `transitionId` fields; when either is supplied, both must match the committed active membership exactly or the server returns `stale_session_transition` without PTY delivery. Session-scoped lifecycle frames include `sessionId` additively; only error frames with session context are guaranteed to carry it.
 
 A tagged join can be acknowledged as follows:
 
@@ -174,15 +174,19 @@ Send user input (keystrokes) to the running CLI process.
 ```json
 {
   "type": "input",
-  "data": "hello world\r"
+  "data": "hello world\r",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "transitionId": "tab-switch-42"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `data` | string | Yes | Raw terminal input data. Use `\r` for Enter. |
+| `sessionId` | string (UUID) | No | Optional membership tag. If either tag is supplied, this must match the socket's committed active session. |
+| `transitionId` | string | No | Optional membership tag, at most 256 characters. If either tag is supplied, this must match the socket's committed transition. |
 
-The server validates that the sending WebSocket connection belongs to the target session and that a CLI process is actively running before forwarding the input. If no agent is running, the server responds with an `info` or `error` message.
+When either optional tag is supplied, both supplied values must match the committed active membership and the socket must still be a member of that session. A mismatch receives an `error` with code `stale_session_transition`; the server does not look up the bridge or write to the PTY. Untagged input retains legacy routing. The server also validates that a CLI process is actively running before forwarding the input. If no agent is running, the server responds with an `info` or `error` message.
 
 ---
 
@@ -421,7 +425,7 @@ An error occurred. Sent to the originating client or broadcast to the session de
 | Field | Type | Description |
 |-------|------|-------------|
 | `message` | string | Human-readable error description. |
-| `sessionId` | string | Included on session-scoped errors. |
+| `sessionId` | string | Included on errors that carry session context, such as membership, input, and bridge error broadcasts. Geometry hold timeout/truncation and generic start/parse errors may omit it. |
 | `code` | string | Machine-readable error code when available, including `stale_session_transition`. |
 | `transitionId` | string | Echoed on a transition error only when the request supplied a valid opaque ID. |
 

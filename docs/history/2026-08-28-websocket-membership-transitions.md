@@ -10,7 +10,7 @@ Membership was stored directly on `wsInfo` while replay and geometry-detach oper
 
 ## Fix
 
-The server now serializes create, join, and leave operations per socket, tracks a membership generation and committed transition ID, detaches old memberships before asynchronous work, and checks socket identity, generation, and open state before every commit. Tagged input is rejected when its session or transition does not match the committed active membership. URL auto-join uses the same queue without producing an explicit transition acknowledgment.
+The server now serializes create, join, and leave operations per socket, tracks a membership generation and committed transition ID, detaches old memberships before asynchronous work, and checks socket identity, generation, and open state before every commit. Same-session re-joins preserve the live session connection, committed membership tuple, and geometry attachment while replay is assembled, without emitting `session_left`. Tagged input is rejected when its session or transition does not match the committed active membership. URL auto-join uses the same queue without producing an explicit transition acknowledgment.
 
 ## Watch For
 
@@ -24,7 +24,7 @@ The transition queue intentionally covers only membership operations. Input, out
 
 Baseline: `b5b0249736502a77dcc0e7995c1e41a1516ea47f`.
 
-Focused server membership, replay, output, and geometry tests report 37 passing tests. A broader relevant core run completed with 116 passing tests. The integration run emitted one sandbox warning about an ENOENT session-store rename during a terminal activity test but completed without test failures.
+The focused server membership, replay, output, and geometry suite reports 38 passing tests, including the same-session no-detach regression. The membership transition file reports 13 passing tests. A broader relevant core run completed with 116 passing tests before this follow-up. The integration run emitted one sandbox warning about an ENOENT session-store rename during a terminal activity test but completed without test failures.
 
 Commands run:
 
@@ -41,9 +41,9 @@ Windows CI and cross-platform browser verification remain the parent integration
 - A closed socket must never be re-added by a late replay continuation, even if the target snapshot promise resolves after close.
 - A tagged input frame is accepted only when both supplied session and transition IDs match the socket's committed active membership.
 - The queue tail always resolves after an operation failure, allowing subsequent membership requests to execute in FIFO order.
-- An untagged same-session re-join emits no `session_left` and preserves the committed transition tuple internally without echoing it.
+- An untagged same-session re-join emits no `session_left`, preserves the live session membership and geometry attachment, and preserves the committed transition tuple internally without echoing it.
 - A response includes `transitionId` only when the corresponding request supplied a valid transition ID.
-- Session-scoped exits, errors, and stopped frames carry `sessionId` additively while retaining prior fields.
+- Session-scoped exits and stopped frames carry `sessionId` additively. Error frames carry it when the server has session context; geometry hold timeout/truncation and generic start/parse errors may retain their legacy fields.
 - The null bridge-session path releases the manual geometry output hold before returning.
 
 No ADR was added. This is protocol hardening within the existing WebSocket/session architecture, covered by the server specification and protocol architecture docs.

@@ -4315,7 +4315,9 @@ class ClaudeCodeWebServer {
     const sameSessionRejoin = currentSessionId === claudeSessionId;
     const priorTransitionId = wsInfo.committedTransitionId;
     let detach = null;
-    if (currentSessionId) {
+    let wasFlowPaused = wsInfo._flowPaused === true;
+    if (sameSessionRejoin) wsInfo._flowPaused = true;
+    if (currentSessionId && !sameSessionRejoin) {
       const oldSession = this.claudeSessions.get(currentSessionId);
       if (oldSession) {
         oldSession.connections.delete(wsId);
@@ -4331,51 +4333,69 @@ class ClaudeCodeWebServer {
         await detach;
         if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
       }
-      if (!sameSessionRejoin) this.sendToWebSocket(wsInfo.ws, { type: 'session_left', sessionId: currentSessionId });
+      this.sendToWebSocket(wsInfo.ws, { type: 'session_left', sessionId: currentSessionId });
     }
-    let renderedSnapshot = session.renderedSnapshot || null;
-    if (session._ctlTranscript) {
-      renderedSnapshot = (await this._peekWithTimeout(session._ctlTranscript, 200, 300)) || renderedSnapshot;
+
+    // Keep a same-session rejoin attached to its existing geometry lease and
+    // membership. Pause this socket only while replay is assembled so output
+    // generated during the await remains in the authoritative ring for replay.
+    try {
+      let renderedSnapshot = session.renderedSnapshot || null;
+      if (session._ctlTranscript) {
+        renderedSnapshot = (await this._peekWithTimeout(session._ctlTranscript, 200, 300)) || renderedSnapshot;
+        if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
+      }
+      this._flushSessionOutput(claudeSessionId);
+      const joinedFrame = {
+        type: 'session_joined',
+        sessionId: claudeSessionId,
+        sessionName: session.name,
+        workingDir: session.workingDir,
+        active: session.active,
+        wasActive: session.wasActive || false,
+        agent: session.agent || null,
+        outputBuffer: this._buildJoinReplay(session),
+        renderedSnapshot,
+        stickyNote: session.stickyNote || null,
+        autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
+        stickyNotesEnabled: session.stickyNotesEnabled === true,
+        geometry: this.terminalGeometry.getFrame(claudeSessionId),
+        stickyNotesStatus: this.stickyNoteEngine.getStatus(),
+        ...(transition.supplied && !transition.autoJoin ? { transitionId: transition.transitionId } : {}),
+      };
       if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
-    }
-    this._flushSessionOutput(claudeSessionId);
-    const joinedFrame = {
-      type: 'session_joined',
-      sessionId: claudeSessionId,
-      sessionName: session.name,
-      workingDir: session.workingDir,
-      active: session.active,
-      wasActive: session.wasActive || false,
-      agent: session.agent || null,
-      outputBuffer: this._buildJoinReplay(session),
-      renderedSnapshot,
-      stickyNote: session.stickyNote || null,
-      autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
-      stickyNotesEnabled: session.stickyNotesEnabled === true,
-      geometry: this.terminalGeometry.getFrame(claudeSessionId),
-      stickyNotesStatus: this.stickyNoteEngine.getStatus(),
-      ...(transition.supplied && !transition.autoJoin ? { transitionId: transition.transitionId } : {}),
-    };
-    if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
-    session.lastActivity = new Date();
-    this._pushEvictionEntry(claudeSessionId);
-    session.lastAccessed = Date.now();
-    wsInfo.claudeSessionId = claudeSessionId;
-    wsInfo.committedTransitionId = transition.supplied && !transition.autoJoin
-      ? transition.transitionId : (sameSessionRejoin ? priorTransitionId : null);
-    wsInfo._flowPaused = false;
-    session.connections.add(wsId);
-    this.sendToWebSocket(wsInfo.ws, joinedFrame);
-    const review = this.artifactReviews.get(claudeSessionId);
-    if (review && review.status !== 'ended' && review.visibility !== 'dismissed') {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'artifact_review_opened', sessionId: claudeSessionId, key: review.key,
-        file: review.file, viewUrl: `/api/artifact/${encodeURIComponent(claudeSessionId)}/view`,
-      });
-    } else if (review && review.status === 'ended') {
-      this.sendToWebSocket(wsInfo.ws, { type: 'artifact_review_ended', sessionId: claudeSessionId });
-    } else if (review && review.visibility === 'dismissed') {
-      this.sendToWebSocket(wsInfo.ws, { type: 'artifact_review_dismissed', sessionId: claudeSessionId, dismissed: true });
+
+      // No await between the liveness fence, membership commit, and joined ack.
+      session.lastActivity = new Date();
+      this._pushEvictionEntry(claudeSessionId);
+      session.lastAccessed = Date.now();
+      wsInfo.claudeSessionId = claudeSessionId;
+      wsInfo.committedTransitionId = transition.supplied && !transition.autoJoin
+        ? transition.transitionId : (sameSessionRejoin ? priorTransitionId : null);
+      wsInfo._flowPaused = false;
+      session.connections.add(wsId);
+      this.sendToWebSocket(wsInfo.ws, joinedFrame);
+
+      const review = this.artifactReviews.get(claudeSessionId);
+      if (review && review.status !== 'ended' && review.visibility !== 'dismissed') {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'artifact_review_opened', sessionId: claudeSessionId, key: review.key,
+          file: review.file, viewUrl: `/api/artifact/${encodeURIComponent(claudeSessionId)}/view`,
+        });
+      } else if (review && review.status === 'ended') {
+        this.sendToWebSocket(wsInfo.ws, { type: 'artifact_review_ended', sessionId: claudeSessionId });
+      } else if (review && review.visibility === 'dismissed') {
+        this.sendToWebSocket(wsInfo.ws, { type: 'artifact_review_dismissed', sessionId: claudeSessionId, dismissed: true });
+      }
+      if (this.dev) console.log(`WebSocket ${wsId} joined Claude session ${claudeSessionId}`);
+      return true;
+    } finally {
+      // A stale/closed continuation cannot leave a live socket paused. For a
+      // same-session rejoin, restore the socket's pre-replay flow state unless
+      // the commit path already explicitly resumed it.
+      if (sameSessionRejoin && this._membershipStillValid(wsId, wsInfo, generation)) {
+        wsInfo._flowPaused = wasFlowPaused;
+      }
     }
   }
 
