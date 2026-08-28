@@ -41,12 +41,13 @@ The copy assertions have exact scope:
   operations. They read xterm's active viewport rows, rejoin `isWrapped`
   continuations, trim trailing blank logical rows, preserve internal blank rows,
   and do not promise complete scrollback export.
-- `Copy Terminal Output` in the command palette is the separate full-buffer
-  action. It reads the complete active xterm buffer through
-  `TerminalCopy.copyBuffer()` without creating or clearing a selection. In split
-  mode it resolves `splitContainer.activeSplitIndex`; a missing or invalid pane
-  is an empty-copy failure and never falls back to hidden main output. Do not
-  use it as evidence for the visible-screen controls.
+- `Copy Terminal Output` in the command palette shares the
+  selection-first visible-viewport contract with context-menu and keys-panel
+  copy. It uses `TerminalCopy.copyVisible()` without creating or clearing a
+  selection. In split mode it resolves `splitContainer.activeSplitIndex`; a
+  missing or invalid pane is an empty-copy failure and never falls back to
+  hidden main output. A future full-scrollback action must be named and tested
+  separately through `TerminalCopy.copyBuffer()`.
 - Split context-menu actions operate on the pane that received the event. The
   mobile keys panel is Control mode: it does not focus xterm, raise the soft
   keyboard, or change terminal geometry. Compose-mode keyboard behavior is a
@@ -77,16 +78,17 @@ external CLI installations, authentication, or network access. It is a fake
 fixture boundary, not proof that the latest real provider CLI was installed or
 run.
 
-Desktop Chromium copies through the context menu. The iPhone16 WebKit project
-copies through the Control-mode keys panel, then verifies that opening and using
-the panel leaves the keyboard closed, terminal height unchanged, and the
-keyboard transition settled. The desktop-width active-split case creates real
-fixture-backed main and right sessions, waits until both unique sentinels are in
-their source buffers, verifies `activeSplitIndex === 1`, and invokes `Copy Terminal
-Output` through the visible palette input. It asserts that the right sentinel is
-copied and the main sentinel is excluded. Missing or invalid active split panes
-are an empty-copy failure; command-palette resolution never uses hidden main
-output as a fallback. The dedicated `87-mobile-split-copy` project is an 800px-wide,
+Desktop Chromium copies through the context menu. The command-palette parity case
+is desktop-only and compares that result with `Copy Terminal Output`, including
+selection precedence. The iPhone16 WebKit project copies through the Control-mode
+keys panel, then verifies that opening and using the panel leaves the keyboard
+closed, terminal height unchanged, and the keyboard transition settled. The
+desktop-width active-split case creates real fixture-backed main and right
+sessions, waits until both unique sentinels are in their source buffers, verifies
+`activeSplitIndex === 1`, and invokes `Copy Terminal Output` through the visible
+palette input. It asserts that the right sentinel is copied and the main
+sentinel is excluded. Missing or invalid active split panes are an empty-copy
+failure; command-palette resolution never uses hidden main output as a fallback. The dedicated `87-mobile-split-copy` project is an 800px-wide,
 touch-capable Chromium configuration. Its keys-panel and extra-keys cases use
 real tab-drag, pane-tap, keyboard, and copy-control interactions and inspect the
 active right split marker, clipboard result, focus, keyboard state, and terminal

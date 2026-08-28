@@ -59,7 +59,9 @@ blank logical rows, and preserving internal blank rows. The shared
 `screen`; failure reasons are `empty`, `unavailable`, `denied`, or `error` and
 are surfaced as truthful feedback. This is visible-screen copy, not an export of
 the entire scrollback. The command palette's `Copy Terminal Output` action uses
-the separate full-buffer `copyBuffer()` operation and reports `source: 'buffer'`.
+the same selection-first `copyVisible()` operation and reports
+`source: 'selection' | 'screen'`, so every explicit copy surface returns the same
+content for the same terminal state.
 
 This path is provider-agnostic: Claude, Copilot, Codex, Gemini, and Terminal
 sessions all arrive at the same xterm buffer and use the same copy helper. The

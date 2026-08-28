@@ -97,7 +97,7 @@ writes the visible-screen text to `navigator.clipboard.writeText`. Results are
 `{ ok: true, source: 'selection' | 'screen' }` or
 `{ ok: false, reason: 'empty' | 'unavailable' | 'denied' | 'error' }`.
 `copySelection(terminal)` is selection-only for keyboard shortcuts, and
-`copyBuffer(terminal)` reads the complete active buffer for the command palette.
+`copyBuffer(terminal)` remains available for an explicit full-buffer export.
 Copy operations do not clear selection or change focus or viewport.
 
 `ClaudeCodeWebInterface.getActiveTerminal()` is the app-level resolver shared by
@@ -130,16 +130,19 @@ clipboard access reports `Clipboard access denied`, and extraction failures
 report `Unable to read terminal output`. It never focuses xterm or raises the
 soft keyboard.
 
-The command-palette `Copy Terminal Output` action is intentionally distinct. It
-uses `TerminalCopy.copyBuffer()` to copy the complete active xterm buffer without
-creating or clearing a selection. It is a full-buffer operation, not the
-context-menu/mobile visible-viewport fallback, and reports `source: 'buffer'` on
-success. Its active terminal is resolved by `_getActiveTerminal(app)`: when split
-view is enabled, only `splits[activeSplitIndex]?.terminal` is eligible; a missing
-or invalid active pane returns no terminal and therefore an `{ ok: false, reason:
-'empty' }` result. It never falls back to the hidden main `app.terminal` while
-split view is enabled. When split view is disabled, it uses `app.terminal` as
-usual. The existing copy-result presenter remains responsible for user feedback.
+The command-palette `Copy Terminal Output` action uses the same
+`TerminalCopy.copyVisible()` operation as the context menu. It copies the
+current selection when one exists; otherwise it copies the visible active
+viewport, rather than silently returning a different full-buffer result. Success
+reports `source: 'selection' | 'screen'`. Its active terminal is resolved by
+`_getActiveTerminal(app)`: when split view is enabled, only
+`splits[activeSplitIndex]?.terminal` is eligible; a missing or invalid active
+pane returns no terminal and therefore an `{ ok: false, reason: 'empty' }`
+result. It never falls back to the hidden main `app.terminal` while split view is
+enabled. When split view is disabled, it uses `app.terminal` as usual. The
+existing `copyBuffer()` helper remains reserved for a future explicit
+full-scrollback action. The existing copy-result presenter remains responsible
+for user feedback.
 
 ### Keyboard shortcuts and paste utilities
 

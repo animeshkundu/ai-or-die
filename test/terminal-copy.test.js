@@ -72,6 +72,14 @@ describe('terminal-copy: visible extraction', function () {
     assert.deepStrictEqual(calls, [true, true]);
   });
 
+  it('preserves a meaningful space before a wrapped continuation', function () {
+    const term = fakeTerminal([
+      { text: 'word ', isWrapped: false, padding: '   ' },
+      { text: 'continuation', isWrapped: true, padding: ' ' },
+    ], { rows: 2 });
+    assert.strictEqual(TerminalCopy.getVisibleText(term), 'word continuation');
+  });
+
   it('joins a short wrapped row without null-cell padding', function () {
     const term = fakeTerminal([
       { text: 'head', isWrapped: false },

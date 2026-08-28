@@ -17,11 +17,12 @@ version were exposure conditions, not separate clipboard implementations.
 
 The copy gate now tests the provider-agnostic production route/UI contract with
 a deterministic Node fixture. The fixture emits ANSI-wrapped, tool-labelled
-output and stays alive for the copy action. Context-menu and iPhone16 WebKit
-Control-mode tests exercise selection-first visible-viewport copy; the command
-palette is separately covered as full active-buffer copy. The test suite blocks
-service workers for deterministic copy assertions, while PWA tests retain their
-explicit service-worker coverage.
+output and stays alive for the copy action. Context-menu, command-palette, and
+iPhone16 WebKit Control-mode tests exercise selection-first visible-viewport copy.
+The test suite blocks service workers for deterministic copy assertions, while PWA
+tests retain their explicit service-worker coverage. Older evidence that described
+the command-palette action as full-buffer is historical and no longer describes
+the current action.
 
 The fixture proves bridge routing, PTY/WebSocket delivery, xterm buffer
 extraction, logical wrapped-line handling, and UI copy behavior. It does not

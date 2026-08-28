@@ -361,6 +361,92 @@ test.describe('CLI-specific terminal copy', () => {
     });
   }
 
+  test('command-palette copy matches right-click visible copy', async ({ page }) => {
+    test.setTimeout(90000);
+    const sessionId = await createSessionViaApi(port, 'cli-copy-menu-parity');
+    await openPage(page, sessionId);
+    test.skip(await page.evaluate(() => !!(window.app && window.app.isMobile)),
+      'command-palette parity uses desktop context-menu and palette controls');
+    await stubClipboard(page);
+    await startTool(page, sessionId, 'copilot');
+    await waitForFixtureScreen(page, 'copilot');
+
+    const markers = {
+      scrollback: `COPY_MENU_SCROLLBACK_${Date.now()}`,
+      visible: `COPY_MENU_VISIBLE_${Date.now()}`,
+    };
+    await page.evaluate(({ scrollback, visible }) => new Promise((resolve) => {
+      const terminal = window.app.terminal;
+      const filler = Array.from(
+        { length: Math.max(1, terminal.rows + 1) },
+        (_, index) => `COPY_MENU_FILLER_${index}`
+      );
+      const payload = [
+        '\x1b[?1049l\x1b[2J\x1b[H' + scrollback,
+        ...filler,
+        visible,
+      ].join('\r\n') + '\r\n';
+      terminal.write(payload, resolve);
+    }), markers);
+    await waitForTerminalText(page, markers.visible, 15000);
+    await page.evaluate(() => {
+      const terminal = window.app.terminal;
+      terminal.clearSelection();
+      if (typeof terminal.scrollToBottom === 'function') terminal.scrollToBottom();
+    });
+
+    const visibleText = await page.evaluate(() =>
+      window.TerminalCopy.getVisibleText(window.app.terminal)
+    );
+    expect(visibleText).toContain(markers.visible);
+    expect(visibleText).not.toContain(markers.scrollback);
+
+    const terminalArea = page.locator('#terminal .xterm-screen').first();
+    await terminalArea.click({ button: 'right', position: { x: 100, y: 50 } });
+    await page.locator('#termContextMenu [data-action="copy"]').click();
+    await waitForClipboardWrite(page);
+    const contextCopy = await page.evaluate(() => window.__cliClipboard.text);
+    expect(contextCopy).toBe(visibleText);
+
+    await page.keyboard.press('Control+k');
+    const paletteInput = page.locator('ninja-keys input[type="text"]').first();
+    await expect(paletteInput).toBeVisible({ timeout: 10000 });
+    await paletteInput.fill('Copy Terminal Output');
+    await expect(paletteInput).toHaveValue('Copy Terminal Output');
+    await expect(page.getByText('Copy Terminal Output', { exact: true })).toBeVisible();
+    await paletteInput.press('Enter');
+    await expect.poll(() => page.evaluate(() => window.__cliClipboard), {
+      timeout: 5000,
+    }).toMatchObject({ attempts: 2, completed: 2, error: null });
+
+    const paletteCopy = await page.evaluate(() => window.__cliClipboard.text);
+    expect(paletteCopy).toBe(contextCopy);
+    expect(paletteCopy).toContain(markers.visible);
+    expect(paletteCopy).not.toContain(markers.scrollback);
+
+    await page.evaluate(() => window.app.terminal.selectAll());
+    const selectedText = await page.evaluate(() => window.app.terminal.getSelection());
+    expect(selectedText).toBeTruthy();
+
+    await terminalArea.click({ button: 'right', position: { x: 100, y: 50 } });
+    await page.locator('#termContextMenu [data-action="copy"]').click();
+    await expect.poll(() => page.evaluate(() => window.__cliClipboard), {
+      timeout: 5000,
+    }).toMatchObject({ attempts: 3, completed: 3, error: null });
+    const selectedContextCopy = await page.evaluate(() => window.__cliClipboard.text);
+    expect(selectedContextCopy).toBe(selectedText);
+
+    await page.keyboard.press('Control+k');
+    await expect(paletteInput).toBeVisible({ timeout: 10000 });
+    await paletteInput.fill('Copy Terminal Output');
+    await paletteInput.press('Enter');
+    await expect.poll(() => page.evaluate(() => window.__cliClipboard), {
+      timeout: 5000,
+    }).toMatchObject({ attempts: 4, completed: 4, error: null });
+    const selectedPaletteCopy = await page.evaluate(() => window.__cliClipboard.text);
+    expect(selectedPaletteCopy).toBe(selectedContextCopy);
+  });
+
   test('command palette copy follows the active split terminal', async ({ page, context }, testInfo) => {
     test.setTimeout(120000);
     const mainSession = await createSessionViaApi(port, 'cli-copy-palette-main');

@@ -7,7 +7,7 @@ class CommandPaletteManager {
   constructor(options = {}) {
     this.ninja = null;
     this.app = options.app || null;
-    this._copyBuffer = options.copyBuffer || null; // injectable test seam
+    this._copyVisible = options.copyVisible || null; // injectable test seam
     // Wait for both DOM and ninja-keys custom element to be defined
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', () => this._init());
@@ -314,11 +314,11 @@ class CommandPaletteManager {
     actions.push({
       id: 'copy-output',
       title: 'Copy Terminal Output',
-      description: 'Select and copy all terminal content to clipboard',
+      description: 'Copy the selected text or visible terminal screen',
       section: 'Actions',
       handler: () => {
         const activeApp = (typeof window !== 'undefined' && window.app) || app;
-        this._copyActiveBuffer(activeApp).then((result) => {
+        this._copyActiveVisible(activeApp).then((result) => {
           this._presentCopyResult(result);
         }).catch(() => {
           this._presentCopyResult({ ok: false, reason: 'error' });
@@ -412,14 +412,14 @@ class CommandPaletteManager {
     return app.terminal || null;
   }
 
-  _copyActiveBuffer(app) {
+  _copyActiveVisible(app) {
     const terminal = this._getActiveTerminal(app);
     if (!terminal) return Promise.resolve({ ok: false, reason: 'empty' });
-    const copy = this._copyBuffer || ((term, nav) => {
+    const copy = this._copyVisible || ((term, nav) => {
       const TC = (typeof window !== 'undefined' && window.TerminalCopy)
         || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
-      return TC && typeof TC.copyBuffer === 'function'
-        ? TC.copyBuffer(term, nav)
+      return TC && typeof TC.copyVisible === 'function'
+        ? TC.copyVisible(term, nav)
         : Promise.resolve({ ok: false, reason: 'unavailable' });
     });
     try {

@@ -58,16 +58,16 @@ describe('command palette terminal copy seam', function () {
     };
     const loaded = loadManager({
       app,
-      copyBuffer: async (terminal) => {
+      copyVisible: async (terminal) => {
         calls.push(terminal);
-        return { ok: true, source: 'buffer' };
+        return { ok: true, source: 'screen' };
       },
     });
 
     assert.strictEqual(loaded.manager._getActiveTerminal(app), right);
-    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+    assert.deepStrictEqual(await loaded.manager._copyActiveVisible(app), {
       ok: true,
-      source: 'buffer',
+      source: 'screen',
     });
     assert.deepStrictEqual(calls, ['resolver', 'resolver', right]);
   });
@@ -80,14 +80,14 @@ describe('command palette terminal copy seam', function () {
     };
     const loaded = loadManager({
       app,
-      copyBuffer: (terminal) => {
+      copyVisible: (terminal) => {
         calls.push(terminal);
-        return { ok: true, source: 'buffer' };
+        return { ok: true, source: 'screen' };
       },
     });
 
     assert.strictEqual(loaded.manager._getActiveTerminal(app), null);
-    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+    assert.deepStrictEqual(await loaded.manager._copyActiveVisible(app), {
       ok: false,
       reason: 'empty',
     });
@@ -108,16 +108,16 @@ describe('command palette terminal copy seam', function () {
     };
     const loaded = loadManager({
       app,
-      copyBuffer: async (terminal) => {
+      copyVisible: async (terminal) => {
         calls.push(terminal);
-        return { ok: true, source: 'buffer' };
+        return { ok: true, source: 'screen' };
       },
     });
 
     assert.strictEqual(loaded.manager._getActiveTerminal(app), right);
-    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+    assert.deepStrictEqual(await loaded.manager._copyActiveVisible(app), {
       ok: true,
-      source: 'buffer',
+      source: 'screen',
     });
     assert.deepStrictEqual(calls, [right]);
   });
@@ -135,14 +135,14 @@ describe('command palette terminal copy seam', function () {
     };
     const loaded = loadManager({
       app,
-      copyBuffer: (terminal) => {
+      copyVisible: (terminal) => {
         calls.push(terminal);
-        return { ok: true, source: 'buffer' };
+        return { ok: true, source: 'screen' };
       },
     });
 
     assert.strictEqual(loaded.manager._getActiveTerminal(app), null);
-    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+    assert.deepStrictEqual(await loaded.manager._copyActiveVisible(app), {
       ok: false,
       reason: 'empty',
     });
@@ -150,7 +150,7 @@ describe('command palette terminal copy seam', function () {
 
     app.splitContainer.activeSplitIndex = 2;
     assert.strictEqual(loaded.manager._getActiveTerminal(app), null);
-    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+    assert.deepStrictEqual(await loaded.manager._copyActiveVisible(app), {
       ok: false,
       reason: 'empty',
     });
@@ -158,26 +158,26 @@ describe('command palette terminal copy seam', function () {
 
     app.splitContainer.activeSplitIndex = '1';
     assert.strictEqual(loaded.manager._getActiveTerminal(app), null);
-    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), {
+    assert.deepStrictEqual(await loaded.manager._copyActiveVisible(app), {
       ok: false,
       reason: 'empty',
     });
     assert.deepStrictEqual(calls, []);
   });
 
-  it('copies the complete active buffer through the injected seam', async function () {
+  it('copies the active visible terminal through the injected seam', async function () {
     const calls = [];
     const app = { terminal: { marker: 'active' } };
     const loaded = loadManager({
       app,
-      copyBuffer: async (terminal) => {
+      copyVisible: async (terminal) => {
         calls.push(terminal);
-        return { ok: true, source: 'buffer' };
+        return { ok: true, source: 'screen' };
       },
     });
     assert.ok(loaded.manager, 'manager should load');
-    const result = await loaded.manager._copyActiveBuffer(app);
-    assert.deepStrictEqual(result, { ok: true, source: 'buffer' });
+    const result = await loaded.manager._copyActiveVisible(app);
+    assert.deepStrictEqual(result, { ok: true, source: 'screen' });
     assert.deepStrictEqual(calls, [app.terminal]);
   });
 
@@ -189,10 +189,10 @@ describe('command palette terminal copy seam', function () {
     };
     const loaded = loadManager({
       app,
-      copyBuffer: () => ({ ok: false, reason: 'empty' }),
+      copyVisible: () => ({ ok: false, reason: 'empty' }),
     });
     const source = fs.readFileSync(SOURCE, 'utf8');
     assert.ok(!source.includes('execCommand'), 'palette must not use execCommand');
-    assert.deepStrictEqual(await loaded.manager._copyActiveBuffer(app), { ok: false, reason: 'empty' });
+    assert.deepStrictEqual(await loaded.manager._copyActiveVisible(app), { ok: false, reason: 'empty' });
   });
 });

@@ -21,6 +21,11 @@ panes return `null` and produce the existing `{ ok: false, reason: 'empty' }`
 result without invoking the copy seam or falling back to hidden main output.
 Single-pane mode continues to use `app.terminal`.
 
+The palette action now uses the shared selection-first visible-viewport
+`TerminalCopy.copyVisible()` operation, matching context-menu and mobile copy.
+The complete-buffer `copyBuffer()` helper remains available only for a future,
+separately named full-scrollback action.
+
 Unit coverage exercises single-pane resolution, the right sentinel at index 1,
 and missing/out-of-range/non-integer active indices. The desktop-only CLI copy
 regression uses the real fake bridge and palette UI, waits for distinct main and
