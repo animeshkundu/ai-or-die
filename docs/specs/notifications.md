@@ -107,6 +107,11 @@ after the decision.
 - Audio only plays if `notifSound` is `true` and `notifVolume > 0`
 - Desktop only fires if `notifDesktop` is `true`
 
+Clipboard feedback is not a desktop notification. A successful terminal or
+mobile screen copy uses the local `Copied` badge or `Copied screen` toast at the
+copy trigger; it does not enter the background-session notification path. A
+failed or empty copy uses local error/warning feedback instead.
+
 ## Service Worker Integration
 
 ### `service-worker.js`
@@ -135,7 +140,8 @@ Plays synthesized chime for given type. Respects `notifSound` and `notifVolume` 
 | `src/public/feedback-manager.js` | `FeedbackManager` class — toast API (Layer 2) |
 | `src/public/components/feedback.css` | Toast styles |
 | `src/public/components/banner-base.css` | Shared banner base styles (Layer 3) |
-| `src/public/clipboard-handler.js` | Micro-feedback callback (`showCopiedFeedback`) |
+| `src/public/clipboard-handler.js` | Terminal copy result presenter and micro-feedback callback (`showCopiedFeedback`) |
+| `src/public/terminal-copy.js` | Selection, visible-screen, and full-buffer copy results |
 | `src/public/app-identity.js` | Shared notification title formatter (`formatNotificationTitle`) |
 | `src/public/session-manager.js` | Notification triggering, shared title formatting, chime synthesis, desktop notifications |
 | `src/public/service-worker.js` | `notificationclick` handler, cache version |

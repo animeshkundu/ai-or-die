@@ -1,6 +1,6 @@
 # Spec: Mobile input for Claude Code (key matrix + two-mode model)
 
-Status: active. Owner: mobile. Related: ADR-0037. Tests: `test/key-encoder.test.js` (executable source of truth), `test/extra-keys-sequences.test.js`, `e2e/tests/77-mobile-input-completeness.spec.js`.
+Status: active. Owner: mobile. Related: ADR-0037. Tests: `test/key-encoder.test.js` (executable source of truth), `test/extra-keys-sequences.test.js`, `test/keys-panel.test.js`, `test/terminal-copy.test.js`, `test/command-palette.test.js`, `e2e/tests/77-mobile-input-completeness.spec.js`, `e2e/tests/78-mobile-composer-copy.spec.js`, `e2e/tests/86-cli-copy.spec.js`, `e2e/tests/87-mobile-split-copy.spec.js`.
 
 ## Goal
 A user on an iPhone (installed PWA, Edge on iOS = WebKit) must fully drive the Claude Code TUI by touch with no desktop fallback. Every key the TUI needs is reachable; anything the soft keyboard lacks is presented in the on-screen keys bar or the keys panel.
@@ -49,5 +49,45 @@ Readline word-ops surfaced in the panel: Alt+B / Alt+F / Alt+D / Alt+Backspace, 
 ## Reachability requirement
 Every row above must map to a reachable affordance (soft keyboard, extra-keys bar, or keys panel). Enforced by the completeness unit test. Critical keys (Esc, one-tap Ctrl+C, Shift+Tab, arrows, Enter) emit a **complete sequence directly** — they must not depend on the sticky-modifier + soft-keyboard-letter path (sticky modifiers are convenience only).
 
+## Copy in the two-mode model
+
+Control mode includes an explicit `Copy screen` utility in the keys panel. It
+copies the current xterm selection when one exists and otherwise copies the
+visible viewport rows, joining wrapped rows into logical lines, trimming trailing
+blank logical rows, and preserving internal blank rows. The shared
+`TerminalCopy.copyVisible()` helper returns a success source of `selection` or
+`screen`; failure reasons are `empty`, `unavailable`, `denied`, or `error` and
+are surfaced as truthful feedback. This is visible-screen copy, not an export of
+the entire scrollback. The command palette's `Copy Terminal Output` action uses
+the same selection-first `copyVisible()` operation and reports
+`source: 'selection' | 'screen'`, so every explicit copy surface returns the same
+content for the same terminal state.
+
+This path is provider-agnostic: Claude, Copilot, Codex, Gemini, and Terminal
+sessions all arrive at the same xterm buffer and use the same copy helper. The
+root cause of the earlier CLI-specific report was the shared context-menu gate,
+which treated `hasSelection() === false` as disabled and then attempted to copy
+only `getSelection()`. Full-screen TUI output commonly has no browser selection,
+so that gate hid a valid copy affordance even though the output was present.
+
+xterm 6.0.0 removed the Canvas renderer. Mobile therefore uses the default DOM
+renderer, but the copy contract intentionally reads xterm's buffer API rather
+than depending on DOM selection or a renderer. The keys panel is not a focus
+trap: opening it and tapping `Copy screen` do not focus xterm, do not raise the
+soft keyboard, and do not change terminal geometry. This is the Control-mode
+focus guarantee. Compose mode retains the native input overlay and its keyboard.
+
 ## Composer
+
 The native composer is the existing **InputOverlay** (`src/public/input-overlay.js`), reused rather than duplicated. Its `<textarea id="inputOverlayText">` carries `autocorrect="off" autocapitalize="none" autocomplete="off" spellcheck="false" inputmode="text"` so iOS text mutation never reaches the pty. Multi-line editing; Insert/Send modes; Send wraps in bracketed paste (when `bracketedPasteMode`) and appends CR. The existing STT/voice pipeline dictates into it via `app._voiceTarget = 'overlay'` (set on show, restored to `'terminal'` on hide). Reachable on mobile via the tab-actions composer button (`#inputOverlayBtn`, not in the mobile-hidden set). Tests: `test/input-overlay-composer.test.js`.
+
+The explicit `Copy screen` action belongs to Control mode, while the composer
+belongs to Compose mode. Copying from the keys panel must not transfer focus to
+the
+composer or xterm, reopen the keyboard, or alter the terminal's geometry. A real
+touch may leave the keys-panel launcher or copy button focused; the contract is
+that copy does not focus xterm or cause a keyboard or geometry transition. In
+split mode, the copy controls use the active pane's terminal. An invalid active
+pane produces unavailable/no-copy feedback and never uses hidden main output.
+The extra-keys `Cp` control has the same active-pane and invalid-pane behavior
+while preserving all non-copy input and paste routing.

@@ -8,6 +8,42 @@
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root) root.FitCoordinator = api.FitCoordinator;
 })(typeof window !== 'undefined' ? window : globalThis, function (geometry) {
+  class FitRequestSupersededError extends Error {
+    constructor(id, generation) {
+      super(`[terminal-fit] request for ${id} was superseded`);
+      this.name = 'FitRequestSupersededError';
+      this.code = 'FIT_REQUEST_SUPERSEDED';
+      this.id = id;
+      this.generation = generation;
+    }
+  }
+
+  class FitRequestTimeoutError extends Error {
+    constructor(id, timeoutMs, generation) {
+      super(`[terminal-fit] request for ${id} timed out after ${timeoutMs}ms`);
+      this.name = 'FitRequestTimeoutError';
+      this.code = 'FIT_REQUEST_TIMEOUT';
+      this.id = id;
+      this.timeoutMs = timeoutMs;
+      this.generation = generation;
+    }
+  }
+
+  class FitRequestCancelledError extends Error {
+    constructor(id, generation, reason) {
+      super(`[terminal-fit] request for ${id} was cancelled${reason ? ` (${reason})` : ''}`);
+      this.name = 'FitRequestCancelledError';
+      this.code = 'FIT_REQUEST_CANCELLED';
+      this.id = id;
+      this.generation = generation;
+      this.reason = reason;
+    }
+  }
+
+  function numericGeneration(value) {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+  }
+
   class FitCoordinator {
     constructor(options) {
       options = options || {};
@@ -37,6 +73,26 @@
       this._retryTimer = null;
       this._retryDelayMs = options.retryDelayMs != null ? options.retryDelayMs : 120;
       this._maxRetries = options.maxRetries != null ? options.maxRetries : 12;
+
+      // Completion waiters are deliberately separate from the fit queue. The
+      // ordinary request() path must keep its existing coalescing and retry
+      // behavior; only the completion notification is generation-fenced.
+      this._waitStates = new Map();
+      this._waiters = new Map();
+      this._latestExplicitGeneration = new Map();
+      this._waitSequence = 0;
+      const maxWait = options.maxRequestWaitTimeoutMs != null
+        ? Number(options.maxRequestWaitTimeoutMs)
+        : options.maxWaitTimeoutMs != null ? Number(options.maxWaitTimeoutMs) : 10000;
+      this._maxRequestWaitTimeoutMs = Number.isFinite(maxWait) ? Math.max(0, maxWait) : 10000;
+      const defaultWait = options.requestWaitTimeoutMs != null
+        ? Number(options.requestWaitTimeoutMs)
+        : options.waitTimeoutMs != null ? Number(options.waitTimeoutMs)
+          : options.requestTimeoutMs != null ? Number(options.requestTimeoutMs) : 1000;
+      this._requestWaitTimeoutMs = Number.isFinite(defaultWait)
+        ? Math.min(Math.max(0, defaultWait), this._maxRequestWaitTimeoutMs)
+        : Math.min(1000, this._maxRequestWaitTimeoutMs);
+
       this._onVisibilityChange = () => {
         if (!this._document || this._document.visibilityState === 'visible') this.requestAll();
       };
@@ -62,11 +118,125 @@
     unregister(id) {
       const target = this._targets.get(id);
       if (target && target.observer) target.observer.disconnect();
+      this._rejectWaiters(id, 'unregistered');
       this._targets.delete(id);
       this._queued.delete(id);
       this._forceSend.delete(id);
       this._retries.delete(id);
       this._pendingRetry.delete(id);
+      this._latestExplicitGeneration.delete(id);
+    }
+
+    /**
+     * Queue a fit and resolve after this target's requested fit has been
+     * measured, applied, and advertised successfully. Multiple callers for
+     * one generation share a completion; a newer generation supersedes the
+     * older waiters without changing the underlying fit work.
+     *
+     * @returns {Promise<{cols:number,rows:number}>}
+     */
+    requestAndWait(id, options) {
+      options = options || {};
+      if (!this._targets.has(id)) {
+        return Promise.reject(new Error(`[terminal-fit] unknown target: ${id}`));
+      }
+
+      const explicit = options.generation !== undefined;
+      const generation = explicit ? options.generation : ++this._waitSequence;
+      if (explicit && this._isStaleGeneration(id, generation)) {
+        return Promise.reject(new FitRequestSupersededError(id, generation));
+      }
+
+      let state = this._waitStates.get(id);
+      if (!state || state.explicit !== explicit || !Object.is(state.generation, generation)) {
+        if (state) this._rejectWaiters(id, 'superseded');
+        state = { explicit, generation };
+        this._waitStates.set(id, state);
+        this._rememberExplicitGeneration(id, generation, explicit);
+      }
+
+      const timeoutMs = this._boundedWaitTimeout(options.timeoutMs);
+      return new Promise((resolve, reject) => {
+        const waiter = { id, generation, state, resolve, reject, timer: null };
+        let waiters = this._waiters.get(id);
+        if (!waiters) {
+          waiters = new Set();
+          this._waiters.set(id, waiters);
+        }
+        waiters.add(waiter);
+        if (this._setTimeout) {
+          waiter.timer = this._setTimeout(() => {
+            if (!waiters.delete(waiter)) return;
+            waiter.timer = null;
+            if (!waiters.size) {
+              this._waiters.delete(id);
+              if (this._waitStates.get(id) === state) this._waitStates.delete(id);
+            }
+            reject(new FitRequestTimeoutError(id, timeoutMs, generation));
+          }, timeoutMs);
+        }
+        // Use the public request path so retry reset, forceSend, and queue
+        // coalescing remain exactly the same for ordinary callers.
+        this.request(id, options);
+      });
+    }
+
+    _boundedWaitTimeout(timeoutMs) {
+      let value;
+      try {
+        value = timeoutMs == null ? this._requestWaitTimeoutMs : Number(timeoutMs);
+      } catch (_) {
+        value = this._requestWaitTimeoutMs;
+      }
+      if (!Number.isFinite(value)) return this._requestWaitTimeoutMs;
+      return Math.min(Math.max(0, value), this._maxRequestWaitTimeoutMs);
+    }
+
+    _isStaleGeneration(id, generation) {
+      const requested = numericGeneration(generation);
+      const latest = numericGeneration(this._latestExplicitGeneration.get(id));
+      return requested !== null && latest !== null && requested < latest;
+    }
+
+    _rememberExplicitGeneration(id, generation, explicit) {
+      if (!explicit) return;
+      const next = numericGeneration(generation);
+      if (next === null) return;
+      const latest = numericGeneration(this._latestExplicitGeneration.get(id));
+      if (latest === null || next > latest) this._latestExplicitGeneration.set(id, generation);
+    }
+
+    _clearWaiterTimer(waiter) {
+      if (waiter.timer != null && this._clearTimeout) this._clearTimeout(waiter.timer);
+      waiter.timer = null;
+    }
+
+    _rejectWaiters(id, reason) {
+      const waiters = this._waiters.get(id);
+      this._waiters.delete(id);
+      this._waitStates.delete(id);
+      if (!waiters) return;
+      for (const waiter of waiters) {
+        this._clearWaiterTimer(waiter);
+        if (reason === 'superseded') {
+          waiter.reject(new FitRequestSupersededError(id, waiter.generation));
+        } else {
+          waiter.reject(new FitRequestCancelledError(id, waiter.generation, reason));
+        }
+      }
+    }
+
+    _resolveWaiters(id, next, state) {
+      if (!state || this._waitStates.get(id) !== state) return;
+      this._waitStates.delete(id);
+      const waiters = this._waiters.get(id);
+      this._waiters.delete(id);
+      if (!waiters) return;
+      for (const waiter of waiters) {
+        this._clearWaiterTimer(waiter);
+        if (waiter.state === state) waiter.resolve(next);
+        else waiter.reject(new FitRequestSupersededError(id, waiter.generation));
+      }
     }
 
     /**
@@ -188,6 +358,9 @@
     _apply(id) {
       const target = this._targets.get(id);
       if (!target) return;
+      // Snapshot the waiter state. Geometry still applies normally if this
+      // state later times out or is superseded; only completion is fenced.
+      const waitState = this._waitStates.get(id) || null;
       let proposed = null;
       try {
         // `measureCapacity` measures the OUTER element directly and is preferred
@@ -251,6 +424,7 @@
         this._forceSend.delete(id);
         this._retries.delete(id);
         this._pendingRetry.delete(id);
+        if (waitState) this._resolveWaiters(id, next, waitState);
       } else {
         // The geometry is known but the peer has not received it. Nothing else
         // will re-trigger this target, so keep trying until the socket opens.
@@ -259,5 +433,10 @@
     }
   }
 
-  return { FitCoordinator };
+  return {
+    FitCoordinator,
+    FitRequestSupersededError,
+    FitRequestTimeoutError,
+    FitRequestCancelledError,
+  };
 });

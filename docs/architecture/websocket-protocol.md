@@ -16,9 +16,25 @@ Or with HTTPS:
 wss://localhost:{port}?token={authToken}
 ```
 
-If a `sessionId` query parameter is provided, the server will automatically join the client to that session after the connection handshake:
+If a `sessionId` query parameter is provided, the server queues an untagged, server-initiated join to that session after the connection handshake. It cannot satisfy a tagged explicit join.
 
+Membership operations are strict FIFO per WebSocket. An optional opaque `transitionId` string (maximum 256 characters) is echoed only by its matching membership response. Close/error synchronously invalidate membership before asynchronous cleanup. A same-session re-join does not detach the existing session connection or geometry attachment; it keeps the committed tuple live while replay is assembled and emits no `session_left`. Tagged `input` messages may carry optional `sessionId` and `transitionId` fields; when either is supplied, both tags are required to match the committed active membership and the socket must still be a member of that session, or the server returns `stale_session_transition` without PTY delivery. Session-scoped lifecycle frames include `sessionId` additively; only error frames with session context are guaranteed to carry it.
+
+A tagged join can be acknowledged as follows:
+
+```json
+{
+  "type": "join_session",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "transitionId": "tab-switch-42"
+}
 ```
+
+The matching `session_joined` echoes `transitionId`. An untagged same-session re-join continues to omit `session_left` and does not echo an older committed transition ID. A successful same-session re-join clears any prior flow pause before acknowledging, so subsequent session output is delivered normally.
+
+Additional connection example:
+
+```text
 ws://localhost:{port}?token={authToken}&sessionId={sessionId}
 ```
 
@@ -44,6 +60,7 @@ Create a new session and automatically join it.
 |-------|------|----------|-------------|
 | `name` | string | No | Human-readable session name. Defaults to `"Session {timestamp}"`. |
 | `workingDir` | string | No | Working directory for the session. Must be within the server's base directory. Defaults to the selected working directory or the server's base folder. |
+| `transitionId` | string | No | Opaque request identifier, at most 256 characters. The matching `session_created` echoes it. |
 
 ---
 
@@ -61,6 +78,7 @@ Join an existing session. Receives the output buffer for replay.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `sessionId` | string (UUID) | Yes | The ID of the session to join. |
+| `transitionId` | string | No | Opaque request identifier, at most 256 characters. The matching `session_joined` echoes it. |
 
 ---
 
@@ -74,7 +92,11 @@ Disconnect from the current session without stopping the CLI process.
 }
 ```
 
-No additional fields. The server removes the WebSocket connection from the session's connection set but leaves the CLI process running.
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `transitionId` | string | No | Opaque request identifier, at most 256 characters. The matching `session_left` echoes it. |
+
+The server removes the WebSocket connection from the session's connection set but leaves the CLI process running.
 
 ---
 
@@ -152,15 +174,19 @@ Send user input (keystrokes) to the running CLI process.
 ```json
 {
   "type": "input",
-  "data": "hello world\r"
+  "data": "hello world\r",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "transitionId": "tab-switch-42"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `data` | string | Yes | Raw terminal input data. Use `\r` for Enter. |
+| `sessionId` | string (UUID) | No | Optional membership tag. When tagging input, this value is required and must match the socket's committed active session. |
+| `transitionId` | string | No | Optional membership tag, at most 256 characters. When tagging input, this value is required and must match the socket's committed transition. |
 
-The server validates that the sending WebSocket connection belongs to the target session and that a CLI process is actively running before forwarding the input. If no agent is running, the server responds with an `info` or `error` message.
+When either optional tag is supplied, both tags are required, both must match the corresponding committed membership values, and the socket must still be a member of that session. A mismatch receives an `error` with code `stale_session_transition`; the server does not look up the bridge or write to the PTY. Untagged input retains legacy routing. The server also validates that a CLI process is actively running before forwarding the input. If no agent is running, the server responds with an `info` or `error` message.
 
 ---
 
@@ -262,6 +288,7 @@ Confirmation that a new session was created and the client has joined it.
 | `sessionId` | string (UUID) | The new session's unique identifier. |
 | `sessionName` | string | The human-readable session name. |
 | `workingDir` | string | The resolved working directory. |
+| `transitionId` | string | Echoed only when the request supplied a valid opaque transition ID. |
 
 ---
 
@@ -287,6 +314,7 @@ Confirmation that the client has joined an existing session. Includes the output
 | `workingDir` | string | The session's working directory. |
 | `active` | boolean | Whether a CLI process is currently running. |
 | `outputBuffer` | string[] | The last 200 lines of terminal output for replay. |
+| `transitionId` | string | Echoed only when the explicit join supplied a valid opaque transition ID. |
 
 ---
 
@@ -296,9 +324,12 @@ Confirmation that the client has left the current session.
 
 ```json
 {
-  "type": "session_left"
+  "type": "session_left",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000"
 }
 ```
+
+`transitionId` is echoed only when the explicit leave supplied a valid opaque transition ID.
 
 ---
 
@@ -374,6 +405,7 @@ The CLI process has exited. Broadcast to all clients in the session.
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `sessionId` | string (UUID) | The session whose process exited. |
 | `code` | number | The process exit code. `0` indicates success. |
 | `signal` | string \| null | The signal that terminated the process, if any (e.g., `"SIGTERM"`, `"SIGKILL"`). |
 
@@ -393,6 +425,9 @@ An error occurred. Sent to the originating client or broadcast to the session de
 | Field | Type | Description |
 |-------|------|-------------|
 | `message` | string | Human-readable error description. |
+| `sessionId` | string | Included on errors that carry session context, such as membership, input, and bridge error broadcasts. Geometry hold timeout/truncation and generic start/parse errors may omit it. |
+| `code` | string | Machine-readable error code when available, including `stale_session_transition`. |
+| `transitionId` | string | Echoed on a transition error only when the request supplied a valid opaque ID. |
 
 Common error scenarios:
 - No session joined when trying to start a CLI or send input
@@ -413,7 +448,7 @@ Broadcast to all clients in the session when the corresponding CLI process is ex
 }
 ```
 
-These messages indicate the process was stopped by user action, as opposed to `exit` which indicates the process terminated on its own.
+These messages include the affected `sessionId` additively and indicate the process was stopped by user action, as opposed to `exit` which indicates the process terminated on its own.
 
 ---
 

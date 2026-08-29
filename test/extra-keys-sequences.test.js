@@ -47,6 +47,7 @@ const EXTRA_KEYS_SRC = path.join(__dirname, '..', 'src', 'public', 'extra-keys.j
         focus() {},
         modes: { applicationCursorKeysMode: false, bracketedPasteMode: false },
       },
+      getActiveTerminal() { return this.terminal; },
     };
   });
 
@@ -150,6 +151,86 @@ const EXTRA_KEYS_SRC = path.join(__dirname, '..', 'src', 'public', 'extra-keys.j
     ek.destroy();
     assert.ok(!document.body.contains(ek.container));
     assert.doesNotThrow(() => ek.destroy());
+  });
+
+  it('copy uses the app-selected split terminal and excludes hidden main', async function () {
+    const ek = makeBar();
+    const hiddenMain = app.terminal;
+    const right = { marker: 'right' };
+    const calls = [];
+    app.getActiveTerminal = () => right;
+    window.TerminalCopy = {
+      copyVisible: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'screen' };
+      },
+    };
+
+    const result = await ek._handleCopy();
+
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.source, 'screen');
+    assert.deepStrictEqual(calls, [right]);
+    assert.notStrictEqual(calls[0], hiddenMain);
+  });
+
+  it('copy is unavailable when the app resolver throws', async function () {
+    const ek = makeBar();
+    const calls = [];
+    app.getActiveTerminal = () => { throw new Error('resolver failure'); };
+    window.TerminalCopy = {
+      copyVisible: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'screen' };
+      },
+    };
+
+    const result = await ek._handleCopy();
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, 'unavailable');
+    assert.deepStrictEqual(calls, []);
+  });
+
+  it('copy is unavailable when the active split terminal is invalid', async function () {
+    const ek = makeBar();
+    const calls = [];
+    app.getActiveTerminal = () => null;
+    window.TerminalCopy = {
+      copyVisible: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'screen' };
+      },
+    };
+
+    const result = await ek._handleCopy();
+
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(result.reason, 'unavailable');
+    assert.deepStrictEqual(calls, []);
+  });
+
+  it('keeps the split-aware fallback for isolated fixtures', async function () {
+    const ek = makeBar();
+    delete app.getActiveTerminal;
+    const right = { marker: 'right-fallback' };
+    app.terminal = { marker: 'hidden-main' };
+    app.splitContainer = {
+      enabled: true,
+      activeSplitIndex: 1,
+      splits: [{ terminal: { marker: 'left' } }, { terminal: right }],
+    };
+    const calls = [];
+    window.TerminalCopy = {
+      copyVisible: async (terminal) => {
+        calls.push(terminal);
+        return { ok: true, source: 'screen' };
+      },
+    };
+
+    await ek._handleCopy();
+
+    assert.deepStrictEqual(calls, [right]);
   });
 
   // Regression for the iOS WebKit bug where touchstart.preventDefault suppresses

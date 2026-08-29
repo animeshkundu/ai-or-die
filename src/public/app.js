@@ -488,6 +488,24 @@ class ClaudeCodeWebInterface {
         } catch (_) { /* best-effort */ }
     }
 
+    // Resolve the terminal owned by the current copy target. Split mode is
+    // intentionally strict: a malformed or unavailable active pane must not
+    // expose the hidden single-pane terminal as a fallback.
+    getActiveTerminal() {
+        const splitContainer = this.splitContainer;
+        if (!splitContainer || !splitContainer.enabled) return this.terminal;
+
+        const splits = splitContainer.splits;
+        const index = splitContainer.activeSplitIndex;
+        if (!Array.isArray(splits) || !Number.isInteger(index) ||
+            index < 0 || index >= splits.length) {
+            return null;
+        }
+
+        const split = splits[index];
+        return split && split.terminal ? split.terminal : null;
+    }
+
     getAlias(kind) {
         if (this.aliases && this.aliases[kind]) {
             return this.aliases[kind];
@@ -4508,10 +4526,34 @@ class ClaudeCodeWebInterface {
             sendFn(normalized);
         };
 
-        // Helper: show clipboard error via inline badge
+        // Helper: show clipboard error via inline badge for paste actions.
         const showClipboardError = () => {
             if (window.showClipboardError) {
-                window.showClipboardError('Clipboard denied');
+                window.showClipboardError('Clipboard access denied');
+            }
+        };
+
+        // Right-click copy uses the shared result presenter exposed by the
+        // clipboard handler. Keeping this callback local avoids coupling the
+        // extraction utility to any UI implementation.
+        const presentCopyResult = (result) => {
+            const presenter = window.presentCopyResult;
+            if (typeof presenter === 'function') {
+                presenter(result, window.feedback);
+                return;
+            }
+            if (result && result.ok) {
+                if (window.attachClipboardHandler?.showCopiedToast) {
+                    window.attachClipboardHandler.showCopiedToast();
+                }
+            } else if (window.feedback) {
+                if (result && result.reason === 'empty') {
+                    window.feedback.warning('Nothing to copy');
+                } else if (result && result.reason === 'error') {
+                    window.feedback.warning('Unable to read terminal output');
+                } else {
+                    window.feedback.warning('Clipboard access denied');
+                }
             }
         };
 
@@ -4542,12 +4584,12 @@ class ClaudeCodeWebInterface {
                 menu.style.display = 'block';
             }
 
-            // Disable copy if no selection
+            // Copy always remains enabled: the canonical operation uses the
+            // selection when present and otherwise copies the visible screen.
             const copyItem = menu.querySelector('[data-action="copy"]');
             if (copyItem) {
-                const hasSelection = activeTerminal.hasSelection();
-                copyItem.classList.toggle('disabled', !hasSelection);
-                copyItem.setAttribute('aria-disabled', !hasSelection);
+                copyItem.classList.remove('disabled');
+                copyItem.removeAttribute('aria-disabled');
             }
 
             // Disable "Paste Image" if clipboard.read() is not available
@@ -4573,30 +4615,40 @@ class ClaudeCodeWebInterface {
             if (!action) return;
             menu.style.display = 'none';
 
+            // Snapshot the target before any clipboard await. A second
+            // right-click can update the menu's active target while the first
+            // read is pending; each action must remain routed to its original
+            // terminal and split socket.
+            const actionTerminal = activeTerminal;
+            const actionSendFn = activeSendFn;
+
             switch (action) {
                 case 'copy': {
-                    const sel = activeTerminal.getSelection();
-                    if (sel) {
-                        try {
-                            await navigator.clipboard.writeText(sel);
-                            if (window.attachClipboardHandler?.showCopiedToast) {
-                                window.attachClipboardHandler.showCopiedToast();
-                            }
-                        } catch { showClipboardError(); }
+                    const TC = (typeof window !== 'undefined' && window.TerminalCopy)
+                        || (typeof TerminalCopy !== 'undefined' ? TerminalCopy : null); // eslint-disable-line no-undef
+                    let result;
+                    try {
+                        result = TC && typeof TC.copyVisible === 'function'
+                            ? await TC.copyVisible(actionTerminal)
+                            : { ok: false, reason: 'unavailable' };
+                    } catch (err) {
+                        console.error('Terminal copy failed:', err);
+                        result = { ok: false, reason: 'error' };
                     }
+                    presentCopyResult(result);
                     break;
                 }
                 case 'paste': {
                     try {
                         const text = await navigator.clipboard.readText();
-                        if (text) sendPasteData(text, activeSendFn, activeTerminal);
+                        if (text) sendPasteData(text, actionSendFn, actionTerminal);
                     } catch { showClipboardError(); }
                     break;
                 }
                 case 'pastePlain': {
                     try {
                         const text = await navigator.clipboard.readText();
-                        if (text) sendPasteData(text, activeSendFn, activeTerminal);
+                        if (text) sendPasteData(text, actionSendFn, actionTerminal);
                     } catch { showClipboardError(); }
                     break;
                 }
@@ -4617,12 +4669,12 @@ class ClaudeCodeWebInterface {
                                 }
                             }
                             // No image found
-                            if (activeTerminal) {
-                                activeTerminal.write('\r\n\x1b[33mNo image found in clipboard.\x1b[0m\r\n');
+                            if (actionTerminal) {
+                                actionTerminal.write('\r\n\x1b[33mNo image found in clipboard.\x1b[0m\r\n');
                             }
                         } else {
-                            if (activeTerminal) {
-                                activeTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach File instead.\x1b[0m\r\n');
+                            if (actionTerminal) {
+                                actionTerminal.write('\r\n\x1b[33mImage paste requires HTTPS. Use Attach File instead.\x1b[0m\r\n');
                             }
                         }
                     } catch (err) {
@@ -4646,13 +4698,16 @@ class ClaudeCodeWebInterface {
                     break;
                 }
                 case 'selectAll':
-                    activeTerminal.selectAll();
+                    actionTerminal.selectAll();
                     break;
                 case 'clear':
-                    activeTerminal.clear();
+                    actionTerminal.clear();
                     break;
             }
-            if (activeTerminal) activeTerminal.focus();
+            // Restoring focus after a desktop menu action keeps keyboard
+            // navigation convenient. On mobile, refocusing the xterm textarea
+            // would reopen the soft keyboard and undo the user's menu action.
+            if (actionTerminal && !this.isMobile) actionTerminal.focus();
         });
 
         // Keyboard navigation within menu
@@ -4688,7 +4743,7 @@ class ClaudeCodeWebInterface {
                 case 'Tab':
                     e.preventDefault();
                     menu.style.display = 'none';
-                    if (activeTerminal) activeTerminal.focus();
+                    if (activeTerminal && !this.isMobile) activeTerminal.focus();
                     break;
             }
         });

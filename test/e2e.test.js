@@ -3,6 +3,10 @@ const http = require('http');
 const WebSocket = require('ws');
 const { ClaudeCodeWebServer } = require('../src/server');
 
+// Leave scheduling headroom beyond TerminalBridge's 10-second Windows
+// PowerShell readiness budget before the vanilla-shell fallback completes.
+const TERMINAL_START_TIMEOUT_MS = process.platform === 'win32' ? 20000 : 15000;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -684,9 +688,10 @@ describe('E2E: Terminal tool session', function () {
     wsSend(ws, { type: 'create_session', name: 'Terminal Test' });
     const created = await waitForMessage(ws, 'session_created');
 
-    // Start terminal (bash/powershell)
+    // Start terminal (bash/powershell). Windows PowerShell can need the
+    // production shell-integration readiness budget before it falls back.
     wsSend(ws, { type: 'start_terminal' });
-    const started = await waitForMessage(ws, 'terminal_started', 10000);
+    const started = await waitForMessage(ws, 'terminal_started', TERMINAL_START_TIMEOUT_MS);
     assert.strictEqual(started.type, 'terminal_started');
     // Started broadcasts must carry workingDir so the client's
     // resolver-chain `getWorkingDir()` callback has a deterministic
@@ -740,11 +745,11 @@ describe('E2E: Terminal tool session', function () {
     await waitForMessage(ws, 'session_created');
 
     wsSend(ws, { type: 'start_terminal' });
-    await waitForMessage(ws, 'terminal_started', 10000);
+    await waitForMessage(ws, 'terminal_started', TERMINAL_START_TIMEOUT_MS);
 
     // Starting the same tool again should succeed idempotently
     wsSend(ws, { type: 'start_terminal' });
-    const msg = await waitForMessage(ws, 'terminal_started', 10000);
+    const msg = await waitForMessage(ws, 'terminal_started', TERMINAL_START_TIMEOUT_MS);
     assert(msg.sessionId, 'Expected terminal_started with sessionId');
     // Even on the idempotent re-start path, workingDir must be present —
     // a client joining post-start needs the resolver-chain prime too.
@@ -764,7 +769,7 @@ describe('E2E: Terminal tool session', function () {
     await waitForMessage(ws, 'session_created');
 
     wsSend(ws, { type: 'start_terminal' });
-    await waitForMessage(ws, 'terminal_started', 10000);
+    await waitForMessage(ws, 'terminal_started', TERMINAL_START_TIMEOUT_MS);
 
     // Send resize -- should not produce an error
     wsSend(ws, { type: 'resize', cols: 120, rows: 40 });
@@ -930,7 +935,9 @@ describe('E2E: Input/output round-trip', function () {
 
 
 describe('E2E: Multi-session isolation', function () {
-  this.timeout(30000);
+  // Two sequential terminal starts can each use the Windows PowerShell
+  // readiness budget, so keep the suite bound above both starts plus cleanup.
+  this.timeout(60000);
 
   let server;
   let port;
@@ -951,7 +958,7 @@ describe('E2E: Multi-session isolation', function () {
     wsSend(wsA, { type: 'create_session', name: 'Session A' });
     const createdA = await waitForMessage(wsA, 'session_created');
     wsSend(wsA, { type: 'start_terminal' });
-    await waitForMessage(wsA, 'terminal_started', 10000);
+    await waitForMessage(wsA, 'terminal_started', TERMINAL_START_TIMEOUT_MS);
     // Drain initial output
     await collectMessages(wsA, 'output', 1500);
 
@@ -959,7 +966,7 @@ describe('E2E: Multi-session isolation', function () {
     wsSend(wsB, { type: 'create_session', name: 'Session B' });
     const createdB = await waitForMessage(wsB, 'session_created');
     wsSend(wsB, { type: 'start_terminal' });
-    await waitForMessage(wsB, 'terminal_started', 10000);
+    await waitForMessage(wsB, 'terminal_started', TERMINAL_START_TIMEOUT_MS);
     // Drain initial output
     await collectMessages(wsB, 'output', 1500);
 

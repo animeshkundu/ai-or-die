@@ -123,6 +123,7 @@ const MAX_COALESCE_BYTES_FG = 32 * 1024;
 const MAX_COALESCE_BYTES_BG = 8 * 1024;
 const BACKPRESSURE_LIMIT_FG = 256 * 1024;
 const BACKPRESSURE_LIMIT_BG = 128 * 1024;
+const MAX_MEMBERSHIP_TRANSITION_ID = 256;
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -3643,6 +3644,10 @@ class ClaudeCodeWebServer {
       id: wsId,
       ws,
       claudeSessionId: null,
+      membershipGeneration: 0,
+      committedTransitionId: null,
+      membershipQueue: Promise.resolve(),
+      membershipQueueClosed: false,
       created: new Date(),
       secure: !!req.connection.encrypted,
       capabilities: new Set(),
@@ -3757,10 +3762,104 @@ class ClaudeCodeWebServer {
       connectionId: wsId
     });
 
-    // If sessionId provided, auto-join that session
+    // If sessionId provided, auto-join that session through the membership FIFO.
+    // Auto-join is server-initiated and never carries a transitionId.
     if (claudeSessionId && this.claudeSessions.has(claudeSessionId)) {
-      this.joinClaudeSession(wsId, claudeSessionId);
+      this.joinClaudeSession(wsId, claudeSessionId, { autoJoin: true });
     }
+  }
+
+  _membershipTransition(request = {}) {
+    const supplied = Object.prototype.hasOwnProperty.call(request, 'transitionId');
+    const transitionId = supplied ? request.transitionId : undefined;
+    return {
+      supplied,
+      transitionId,
+      autoJoin: request.autoJoin === true,
+      valid: !supplied || (typeof transitionId === 'string' && transitionId.length <= MAX_MEMBERSHIP_TRANSITION_ID),
+    };
+  }
+
+  _membershipStillValid(wsId, wsInfo, generation) {
+    return this.webSocketConnections.get(wsId) === wsInfo
+      && wsInfo.membershipGeneration === generation
+      && !wsInfo.membershipQueueClosed
+      && wsInfo.ws && wsInfo.ws.readyState === WebSocket.OPEN;
+  }
+
+  _transitionErrorFrame(error, transition) {
+    return {
+      type: 'error',
+      code: error && error.code || 'membership_transition_failed',
+      message: error && error.message || 'Membership transition failed',
+      ...(error && error.sessionId !== undefined ? { sessionId: error.sessionId } : {}),
+      ...(transition && transition.supplied && transition.valid ? { transitionId: transition.transitionId } : {}),
+    };
+  }
+
+  _queueMembership(wsId, request, operation) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo || wsInfo.membershipQueueClosed) return Promise.resolve(false);
+    const transition = this._membershipTransition(request);
+    const run = wsInfo.membershipQueue.then(
+      () => operation(wsInfo, transition),
+      () => operation(wsInfo, transition)
+    );
+    wsInfo.membershipQueue = run.catch(() => {});
+    return run.catch((error) => {
+      if (!this._membershipStillValid(wsId, wsInfo, wsInfo.membershipGeneration)) return false;
+      this.sendToWebSocket(wsInfo.ws, this._transitionErrorFrame(error, transition));
+      return false;
+    });
+  }
+
+  _membershipError(wsId, wsInfo, transition, message, code, sessionId) {
+    if (!this._membershipStillValid(wsId, wsInfo, wsInfo.membershipGeneration)) return;
+    this.sendToWebSocket(wsInfo.ws, {
+      type: 'error',
+      message,
+      ...(code ? { code } : {}),
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(transition.supplied && transition.valid ? { transitionId: transition.transitionId } : {}),
+    });
+  }
+
+  _detachMembershipSync(wsId, wsInfo) {
+    const sessionId = wsInfo.claudeSessionId;
+    if (!sessionId) return { sessionId: null, detachPromise: null };
+    const session = this.claudeSessions.get(sessionId);
+    if (session) {
+      session.connections.delete(wsId);
+      session.lastActivity = new Date();
+      this._pushEvictionEntry(sessionId);
+    }
+    wsInfo.claudeSessionId = null;
+    wsInfo.committedTransitionId = null;
+    const detachPromise = this.terminalGeometry && typeof this.terminalGeometry.detachConnection === 'function'
+      ? this.terminalGeometry.detachConnection(sessionId, wsId)
+      : null;
+    return { sessionId, detachPromise };
+  }
+
+  _membershipInputMatches(wsId, wsInfo, data) {
+    const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'sessionId');
+    const hasTransitionId = Object.prototype.hasOwnProperty.call(data, 'transitionId');
+    if (!hasSessionId && !hasTransitionId) return true;
+    if (!this._membershipStillValid(wsId, wsInfo, wsInfo.membershipGeneration)) return false;
+    if (!hasSessionId || !hasTransitionId) return false;
+    if (data.sessionId !== wsInfo.claudeSessionId) return false;
+    if (data.transitionId !== wsInfo.committedTransitionId) return false;
+    const session = this.claudeSessions.get(wsInfo.claudeSessionId);
+    return !!(session && session.connections.has(wsId));
+  }
+
+  _staleMembershipInput(wsInfo, data) {
+    const error = new Error('Input belongs to a stale session transition');
+    error.code = 'stale_session_transition';
+    error.sessionId = Object.prototype.hasOwnProperty.call(data, 'sessionId')
+      ? data.sessionId : (wsInfo.claudeSessionId || null);
+    if (Object.prototype.hasOwnProperty.call(data, 'transitionId')) error.transitionId = data.transitionId;
+    return error;
   }
 
   async handleMessage(wsId, data) {
@@ -3769,15 +3868,15 @@ class ClaudeCodeWebServer {
 
     switch (data.type) {
       case 'create_session':
-        await this.createAndJoinSession(wsId, data.name, data.workingDir);
+        await this.createAndJoinSession(wsId, data.name, data.workingDir, data);
         break;
 
       case 'join_session':
-        await this.joinClaudeSession(wsId, data.sessionId);
+        await this.joinClaudeSession(wsId, data.sessionId, data);
         break;
 
       case 'leave_session':
-        await this.leaveClaudeSession(wsId);
+        await this.leaveClaudeSession(wsId, data);
         break;
 
       case 'start_claude':
@@ -3800,46 +3899,62 @@ class ClaudeCodeWebServer {
         if (data.data && data.data.length > 256 * 1024) {
           data.data = data.data.slice(0, 256 * 1024);
         }
+        const hasSessionId = Object.prototype.hasOwnProperty.call(data, 'sessionId');
+        const hasTransitionId = Object.prototype.hasOwnProperty.call(data, 'transitionId');
+        if ((hasSessionId || hasTransitionId) &&
+            !this._membershipInputMatches(wsId, wsInfo, data)) {
+          const stale = this._staleMembershipInput(wsInfo, data);
+          this.sendToWebSocket(wsInfo.ws, {
+            type: 'error',
+            code: stale.code,
+            message: stale.message,
+            sessionId: stale.sessionId,
+            ...(hasTransitionId ? { transitionId: stale.transitionId } : {}),
+          });
+          break;
+        }
         if (wsInfo.claudeSessionId) {
           // Verify the session exists and the WebSocket is part of it
-          const session = this.claudeSessions.get(wsInfo.claudeSessionId);
+          const inputSessionId = wsInfo.claudeSessionId;
+          const session = this.claudeSessions.get(inputSessionId);
           if (session && session.connections.has(wsId)) {
             // Only send if an agent is running in this session
             if (session.active && session.agent) {
               try {
                 const inputBridge = this.getBridgeForAgent(session.agent);
                 if (inputBridge) {
-                  const sendInput = () => inputBridge.sendInput(wsInfo.claudeSessionId, data.data);
+                  const sendInput = () => inputBridge.sendInput(inputSessionId, data.data);
                   if (data.claim === true && this.terminalGeometry) {
                     await this.terminalGeometry.withDeliberateAction(
-                      wsInfo.claudeSessionId,
+                      inputSessionId,
                       wsId,
                       data.viewId,
                       sendInput
                     );
                   } else if (this.terminalGeometry) {
-                    await this.terminalGeometry.runSerialized(
-                      wsInfo.claudeSessionId,
-                      sendInput
-                    );
+                    await this.terminalGeometry.runSerialized(inputSessionId, sendInput);
                   } else {
                     await sendInput();
                   }
                 }
               } catch (error) {
                 if (this.dev) {
-                  console.error(`Failed to send input to session ${wsInfo.claudeSessionId}:`, error.message);
+                  console.error(`Failed to send input to session ${inputSessionId}:`, error.message);
                 }
                 this.sendToWebSocket(wsInfo.ws, {
                   type: 'error',
                   code: 'input_not_sent',
-                  message: `Input was not sent: ${error.message}`
+                  message: `Input was not sent: ${error.message}`,
+                  sessionId: inputSessionId,
+                  ...(hasTransitionId ? { transitionId: data.transitionId } : {}),
                 });
               }
             } else {
               this.sendToWebSocket(wsInfo.ws, {
                 type: 'info',
-                message: 'No agent is running. Choose an option to start.'
+                message: 'No agent is running. Choose an option to start.',
+                sessionId: inputSessionId,
+                ...(hasTransitionId ? { transitionId: data.transitionId } : {}),
               });
             }
           }
@@ -4074,20 +4189,28 @@ class ClaudeCodeWebServer {
     }
   }
 
-  async createAndJoinSession(wsId, name, workingDir) {
+  createAndJoinSession(wsId, name, workingDir, request = {}) {
+    return this._queueMembership(wsId, request, (wsInfo, transition) => (
+      this._createAndJoinSessionLocked(wsId, name, workingDir, transition)
+    ));
+  }
+
+  _createAndJoinSessionLocked(wsId, name, workingDir, transition = {}) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
+    const generation = wsInfo.membershipGeneration;
+    if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
+    if (!transition.valid) {
+      this._membershipError(wsId, wsInfo, transition, 'transitionId must be a string no longer than 256 characters', 'invalid_transition_id');
+      return;
+    }
 
     // DISK-03: refuse new sessions when the circuit breaker is open.
     // Existing sessions continue to function read-only-ish (output
     // buffer is bounded; we just can't durably persist new state).
     if (this._diskFull) {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'error',
-        code: 'disk_full',
-        message: 'Cannot create new session — local disk is full. Delete some sessions or free disk space.'
-      });
-      return;
+      this._membershipError(wsId, wsInfo, transition, 'Cannot create new session — local disk is full. Delete some sessions or free disk space.', 'disk_full');
+      return false;
     }
 
     // Validate working directory if provided
@@ -4095,15 +4218,26 @@ class ClaudeCodeWebServer {
     if (workingDir) {
       const validation = this.validatePath(workingDir);
       if (!validation.valid) {
-        this.sendToWebSocket(wsInfo.ws, {
-          type: 'error',
-          message: 'Cannot create session with working directory outside the allowed area'
-        });
+        this._membershipError(wsId, wsInfo, transition, 'Cannot create session with working directory outside the allowed area', 'invalid_working_directory');
         return;
       }
       validWorkingDir = validation.path;
     } else if (this.selectedWorkingDir) {
       validWorkingDir = this.selectedWorkingDir;
+    }
+
+    // Detach the old membership synchronously before any async work.
+    const oldSessionId = wsInfo.claudeSessionId;
+    if (oldSessionId) {
+      const oldSession = this.claudeSessions.get(oldSessionId);
+      if (oldSession) {
+        oldSession.connections.delete(wsId);
+        oldSession.lastActivity = new Date();
+        this._pushEvictionEntry(oldSessionId);
+      }
+      wsInfo.claudeSessionId = null;
+      wsInfo.committedTransitionId = null;
+      if (this.terminalGeometry) this.terminalGeometry.detachConnection(oldSessionId, wsId).catch(() => {});
     }
 
     // Create new Claude session
@@ -4115,7 +4249,7 @@ class ClaudeCodeWebServer {
       lastActivity: new Date(),
       active: false,
       workingDir: validWorkingDir,
-      connections: new Set([wsId]),
+      connections: new Set(),
       outputBuffer: new CircularBuffer(1000),
       priority: 'foreground',
       sessionStartTime: null, // Will be set when Claude starts
@@ -4139,126 +4273,133 @@ class ClaudeCodeWebServer {
     
     this.claudeSessions.set(sessionId, session);
     if (this.terminalGeometry) this.terminalGeometry.initializeSession(sessionId, session);
-    this._pushEvictionEntry(sessionId); // PROC-04
-    wsInfo.claudeSessionId = sessionId;
+    this._pushEvictionEntry(sessionId);
     this.sessionStore.markDirty();
+    this.saveSessionsToDisk().catch(() => {});
 
-    // Save sessions after creating new one
-    this.saveSessionsToDisk();
-    
+    // Commit membership and acknowledgement contiguously after the fence.
+    if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
+    wsInfo.claudeSessionId = sessionId;
+    wsInfo.committedTransitionId = transition.supplied && !transition.autoJoin ? transition.transitionId : null;
+    session.connections.add(wsId);
     this.sendToWebSocket(wsInfo.ws, {
       type: 'session_created',
       sessionId,
       sessionName: session.name,
-      workingDir: session.workingDir
+      workingDir: session.workingDir,
+      ...(transition.supplied && !transition.autoJoin ? { transitionId: transition.transitionId } : {}),
     });
+    return true;
   }
 
-  async joinClaudeSession(wsId, claudeSessionId) {
+  joinClaudeSession(wsId, claudeSessionId, request = {}) {
+    return this._queueMembership(wsId, request, (wsInfo, transition) => (
+      this._joinClaudeSessionLocked(wsId, claudeSessionId, transition)
+    ));
+  }
+
+  async _joinClaudeSessionLocked(wsId, claudeSessionId, transition = {}) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
-
-    const session = this.claudeSessions.get(claudeSessionId);
-    if (!session) {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'error',
-        message: 'Session not found'
-      });
+    const generation = wsInfo.membershipGeneration;
+    if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
+    if (!transition.valid) {
+      this._membershipError(wsId, wsInfo, transition, 'transitionId must be a string no longer than 256 characters', 'invalid_transition_id');
       return;
     }
-
-    // Leave current session only if switching to a DIFFERENT one.
-    // Same-session re-joins (post-reconnect auto-rejoin, in-app same-tab
-    // click) used to emit a spurious `session_left` followed immediately
-    // by `session_joined`, which causes the client to briefly null
-    // currentClaudeSessionId, clear the terminal, and flicker the tab
-    // status to "disconnected" — only to be restored ms later. Skipping
-    // the leave makes the re-join silent and idempotent.
-    if (wsInfo.claudeSessionId && wsInfo.claudeSessionId !== claudeSessionId) {
-      await this.leaveClaudeSession(wsId);
+    const session = this.claudeSessions.get(claudeSessionId);
+    if (!session) {
+      this._membershipError(wsId, wsInfo, transition, 'Session not found', 'session_not_found', claudeSessionId);
+      return;
+    }
+    const currentSessionId = wsInfo.claudeSessionId;
+    const sameSessionRejoin = currentSessionId === claudeSessionId;
+    const priorTransitionId = wsInfo.committedTransitionId;
+    let detach = null;
+    const wasFlowPaused = wsInfo._flowPaused === true;
+    let replayCommitted = false;
+    if (sameSessionRejoin) wsInfo._flowPaused = true;
+    if (currentSessionId && !sameSessionRejoin) {
+      const oldSession = this.claudeSessions.get(currentSessionId);
+      if (oldSession) {
+        oldSession.connections.delete(wsId);
+        oldSession.lastActivity = new Date();
+        this._pushEvictionEntry(currentSessionId);
+      }
+      wsInfo.claudeSessionId = null;
+      wsInfo.committedTransitionId = null;
+      detach = this.terminalGeometry && typeof this.terminalGeometry.detachConnection === 'function'
+        ? this.terminalGeometry.detachConnection(currentSessionId, wsId)
+        : null;
+      if (detach) {
+        await detach;
+        if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
+      }
+      this.sendToWebSocket(wsInfo.ws, { type: 'session_left', sessionId: currentSessionId });
     }
 
-    // Join new session
-    wsInfo.claudeSessionId = claudeSessionId;
-    session.lastActivity = new Date();
-    this._pushEvictionEntry(claudeSessionId); // PROC-04
-    session.lastAccessed = Date.now();
-
-    // Send session info and replay buffer. Prefer a live rendered tail, but
-    // never block the join on a slow drain — fall back to the stored snapshot.
-    let renderedSnapshot = session.renderedSnapshot || null;
-    if (session._ctlTranscript) {
-      renderedSnapshot = (await this._peekWithTimeout(session._ctlTranscript, 200, 300)) || renderedSnapshot;
-    }
-    // Drain any coalesced output that is already represented in outputBuffer
-    // before the new subscriber is added. Otherwise the pending coalescer flush
-    // sends those same bytes immediately after session_joined replays them.
-    this._flushSessionOutput(claudeSessionId);
-    // Do not subscribe the socket to live binary output until the replay payload
-    // is ready. Otherwise output emitted during the awaited snapshot peek is both
-    // broadcast live and included in outputBuffer, duplicating the boundary frame.
-    //
-    // Re-check liveness first. The await above can take up to 300ms, and wsInfo
-    // was captured before it. If the socket closed inside that window,
-    // cleanupWebSocketConnection already removed wsId from session.connections
-    // (harmlessly — it was not there yet), and adding it here would put a DEAD
-    // id back permanently. Nothing removes it afterwards, so session.connections
-    // grows monotonically across reconnect storms and _flushSessionOutput's
-    // `connections.size === 0` idle short-circuit never fires again for that
-    // session: every PTY flush then pays a join, a regex pass and a Buffer copy
-    // for zero real subscribers.
-    //
-    // Gate on the socket's own readyState rather than on webSocketConnections
-    // membership. An earlier version returned early on the map lookup and broke
-    // a legitimate join path — the map is bookkeeping, readyState is the actual
-    // liveness signal. Only the subscription is skipped; the join response below
-    // is still sent, because a caller that is still open deserves an answer.
-    const wsStillOpen = wsInfo && wsInfo.ws && wsInfo.ws.readyState === WebSocket.OPEN;
-    if (wsStillOpen) session.connections.add(wsId);
-    this.sendToWebSocket(wsInfo.ws, {
-      type: 'session_joined',
-      sessionId: claudeSessionId,
-      sessionName: session.name,
-      workingDir: session.workingDir,
-      active: session.active,
-      wasActive: session.wasActive || false,
-      agent: session.agent || null,
-      outputBuffer: this._buildJoinReplay(session),
-      renderedSnapshot, // rendered last screen so idle/empty-buffer joins repaint
-      stickyNote: session.stickyNote || null,
-      autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
-      stickyNotesEnabled: session.stickyNotesEnabled === true,
-      geometry: this.terminalGeometry.getFrame(claudeSessionId),
-      // Deliver the engine status on every join so the toolbar toggle reliably
-      // appears once the model is ready (the broadcast-on-init can race a late
-      // joiner; this never misses).
-      stickyNotesStatus: this.stickyNoteEngine.getStatus()
-    });
-
-    const review = this.artifactReviews.get(claudeSessionId);
-    if (review && review.status !== 'ended' && review.visibility !== 'dismissed') {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'artifact_review_opened',
+    // Keep a same-session rejoin attached to its existing geometry lease and
+    // membership. Pause this socket only while replay is assembled so output
+    // generated during the await remains in the authoritative ring for replay.
+    try {
+      let renderedSnapshot = session.renderedSnapshot || null;
+      if (session._ctlTranscript) {
+        renderedSnapshot = (await this._peekWithTimeout(session._ctlTranscript, 200, 300)) || renderedSnapshot;
+        if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
+      }
+      this._flushSessionOutput(claudeSessionId);
+      const joinedFrame = {
+        type: 'session_joined',
         sessionId: claudeSessionId,
-        key: review.key,
-        file: review.file,
-        viewUrl: `/api/artifact/${encodeURIComponent(claudeSessionId)}/view`,
-      });
-    } else if (review && review.status === 'ended') {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'artifact_review_ended',
-        sessionId: claudeSessionId,
-      });
-    } else if (review && review.visibility === 'dismissed') {
-      this.sendToWebSocket(wsInfo.ws, {
-        type: 'artifact_review_dismissed',
-        sessionId: claudeSessionId,
-        dismissed: true,
-      });
-    }
+        sessionName: session.name,
+        workingDir: session.workingDir,
+        active: session.active,
+        wasActive: session.wasActive || false,
+        agent: session.agent || null,
+        outputBuffer: this._buildJoinReplay(session),
+        renderedSnapshot,
+        stickyNote: session.stickyNote || null,
+        autoTitle: session.nameIsUserSet ? null : (session.autoTitle || null),
+        stickyNotesEnabled: session.stickyNotesEnabled === true,
+        geometry: this.terminalGeometry.getFrame(claudeSessionId),
+        stickyNotesStatus: this.stickyNoteEngine.getStatus(),
+        ...(transition.supplied && !transition.autoJoin ? { transitionId: transition.transitionId } : {}),
+      };
+      if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
 
-    if (this.dev) {
-      console.log(`WebSocket ${wsId} joined Claude session ${claudeSessionId}`);
+      // No await between the liveness fence, membership commit, and joined ack.
+      session.lastActivity = new Date();
+      this._pushEvictionEntry(claudeSessionId);
+      session.lastAccessed = Date.now();
+      wsInfo.claudeSessionId = claudeSessionId;
+      wsInfo.committedTransitionId = transition.supplied && !transition.autoJoin
+        ? transition.transitionId : (sameSessionRejoin ? priorTransitionId : null);
+      wsInfo._flowPaused = false;
+      replayCommitted = true;
+      session.connections.add(wsId);
+      this.sendToWebSocket(wsInfo.ws, joinedFrame);
+
+      const review = this.artifactReviews.get(claudeSessionId);
+      if (review && review.status !== 'ended' && review.visibility !== 'dismissed') {
+        this.sendToWebSocket(wsInfo.ws, {
+          type: 'artifact_review_opened', sessionId: claudeSessionId, key: review.key,
+          file: review.file, viewUrl: `/api/artifact/${encodeURIComponent(claudeSessionId)}/view`,
+        });
+      } else if (review && review.status === 'ended') {
+        this.sendToWebSocket(wsInfo.ws, { type: 'artifact_review_ended', sessionId: claudeSessionId });
+      } else if (review && review.visibility === 'dismissed') {
+        this.sendToWebSocket(wsInfo.ws, { type: 'artifact_review_dismissed', sessionId: claudeSessionId, dismissed: true });
+      }
+      if (this.dev) console.log(`WebSocket ${wsId} joined Claude session ${claudeSessionId}`);
+      return true;
+    } finally {
+      // A stale/closed continuation cannot leave a live socket paused. Restore
+      // the pre-replay state only when replay did not reach its commit boundary;
+      // after a successful commit, the ack path deliberately resumes output.
+      if (sameSessionRejoin && !replayCommitted
+          && this._membershipStillValid(wsId, wsInfo, generation)) {
+        wsInfo._flowPaused = wasFlowPaused;
+      }
     }
   }
 
@@ -4283,27 +4424,43 @@ class ClaudeCodeWebServer {
     return items.slice(start);
   }
 
-  async leaveClaudeSession(wsId) {
+  leaveClaudeSession(wsId, request = {}) {
+    return this._queueMembership(wsId, request, (wsInfo, transition) => (
+      this._leaveClaudeSessionLocked(wsId, transition)
+    ));
+  }
+
+  async _leaveClaudeSessionLocked(wsId, transition = {}) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo || !wsInfo.claudeSessionId) return;
-
+    const generation = wsInfo.membershipGeneration;
+    if (!transition.valid) {
+      this._membershipError(wsId, wsInfo, transition, 'transitionId must be a string no longer than 256 characters', 'invalid_transition_id');
+      return;
+    }
     const leftSessionId = wsInfo.claudeSessionId;
-
     const session = this.claudeSessions.get(leftSessionId);
     if (session) {
       session.connections.delete(wsId);
-      await this.terminalGeometry.detachConnection(leftSessionId, wsId);
       session.lastActivity = new Date();
-      this._pushEvictionEntry(leftSessionId); // PROC-04
+      this._pushEvictionEntry(leftSessionId);
     }
-
     wsInfo.claudeSessionId = null;
-
+    wsInfo.committedTransitionId = null;
+    const detach = this.terminalGeometry && typeof this.terminalGeometry.detachConnection === 'function'
+      ? this.terminalGeometry.detachConnection(leftSessionId, wsId)
+      : null;
+    if (detach) {
+      await detach;
+      if (!this._membershipStillValid(wsId, wsInfo, generation)) return;
+    }
     this.sendToWebSocket(wsInfo.ws, {
       type: 'session_left',
-      sessionId: leftSessionId
+      sessionId: leftSessionId,
+      ...(transition.supplied ? { transitionId: transition.transitionId } : {}),
     });
   }
+
 
   // Artifact sub-resources (images/css/fonts the artifact HTML references inside
   // the sandboxed iframe) cannot set an Authorization header or inherit the
@@ -5011,7 +5168,7 @@ class ClaudeCodeWebServer {
           }
           try { this.stickyNoteSummarizer && this.stickyNoteSummarizer.flushExit(sessionId); } catch (_) { /* isolate */ }
           if (this.controlEventBus) this.controlEventBus.append(sessionId, 'exited', { code, signal });
-          this.broadcastToSession(sessionId, { type: 'exit', code, signal });
+          this.broadcastToSession(sessionId, { type: 'exit', sessionId, code, signal });
         },
         onError: (error) => {
           const s = this.claudeSessions.get(sessionId);
@@ -5021,7 +5178,11 @@ class ClaudeCodeWebServer {
             s._geometrySpawning = false;
             this.sessionStore.markDirty();
           }
-          this.broadcastToSession(sessionId, { type: 'error', message: error.message });
+          this.broadcastToSession(sessionId, {
+            type: 'error',
+            sessionId,
+            message: error.message,
+          });
         },
         extraEnv,
       });
@@ -5031,6 +5192,7 @@ class ClaudeCodeWebServer {
       // leaving it latched makes isActive() false forever, and the geometry
       // coordinator would silently ignore the session for the rest of its life.
       if (!startedBridgeSession) {
+        this._releaseGeometryOutput(sessionId);
         session._geometrySpawning = false;
         return;
       }
@@ -5763,7 +5925,7 @@ class ClaudeCodeWebServer {
           // Final sticky-note flush to capture the "done" state, then stop.
           this.stickyNoteSummarizer.flushExit(sessionId);
           this.controlEventBus.append(sessionId, 'exited', { code, signal });
-          this.broadcastToSession(sessionId, { type: 'exit', code, signal });
+          this.broadcastToSession(sessionId, { type: 'exit', sessionId, code, signal });
           this.activityBroadcastTimestamps.delete(sessionId);
           this.broadcastSessionActivity(sessionId, 'session_exit', { code, signal });
         },
@@ -5776,7 +5938,7 @@ class ClaudeCodeWebServer {
             this.sessionStore.markDirty();
           }
           this.activityBroadcastTimestamps.delete(sessionId);
-          this.broadcastToSession(sessionId, { type: 'error', message: error.message });
+          this.broadcastToSession(sessionId, { type: 'error', sessionId, message: error.message });
           this.broadcastSessionActivity(sessionId, 'session_error');
         },
         ...options,
@@ -5786,7 +5948,11 @@ class ClaudeCodeWebServer {
           ...claudeArtifactEnv,
         }
       });
-      if (!startedBridgeSession) return;
+      if (!startedBridgeSession) {
+        this._releaseGeometryOutput(sessionId);
+        session._geometrySpawning = false;
+        return;
+      }
 
       if (this.terminalGeometry) {
         try {
@@ -5874,7 +6040,7 @@ class ClaudeCodeWebServer {
     session.lastActivity = new Date();
     this._pushEvictionEntry(sessionId); // PROC-04
     this.sessionStore.markDirty();
-    this.broadcastToSession(sessionId, { type: `${agentType}_stopped` });
+    this.broadcastToSession(sessionId, { type: `${agentType}_stopped`, sessionId });
     this.activityBroadcastTimestamps.delete(sessionId);
     this.broadcastSessionActivity(sessionId, 'session_stopped', { agent: agentType });
   }
@@ -7633,42 +7799,38 @@ class ClaudeCodeWebServer {
     } catch (_) { /* best effort */ }
   }
 
+  invalidateWebSocketMembership(wsId) {
+    const wsInfo = this.webSocketConnections.get(wsId);
+    if (!wsInfo) return;
+    wsInfo.membershipQueueClosed = true;
+    wsInfo.membershipGeneration += 1;
+    const sessionId = wsInfo.claudeSessionId;
+    const session = sessionId && this.claudeSessions.get(sessionId);
+    if (session) {
+      session.connections.delete(wsId);
+      session.lastActivity = new Date();
+      this._pushEvictionEntry(sessionId);
+      if (this.terminalGeometry) this.terminalGeometry.detachConnection(sessionId, wsId).catch(() => {});
+    }
+    wsInfo.claudeSessionId = null;
+    wsInfo.committedTransitionId = null;
+  }
+
   cleanupWebSocketConnection(wsId) {
     const wsInfo = this.webSocketConnections.get(wsId);
     if (!wsInfo) return;
+    if (!wsInfo.membershipQueueClosed) this.invalidateWebSocketMembership(wsId);
 
     // Release any sticky-note "expanded viewer" leases this socket held, so a
     // dropped browser can't keep a session's note inference running forever.
     this._clearStickyActiveForWs(wsId);
 
-    // Remove from Claude session if joined
-    if (wsInfo.claudeSessionId) {
-      const session = this.claudeSessions.get(wsInfo.claudeSessionId);
-      if (session) {
-        session.connections.delete(wsId);
-        this.terminalGeometry.detachConnection(wsInfo.claudeSessionId, wsId)
-          .catch((error) => {
-            if (this.dev) console.error('[terminal-geometry] disconnect transfer failed:', error.message);
-          });
-        session.lastActivity = new Date();
-        this._pushEvictionEntry(wsInfo.claudeSessionId); // PROC-04
-
-        // Don't stop Claude if other connections exist
-        if (session.connections.size === 0 && this.dev) {
-          console.log(`No more connections to session ${wsInfo.claudeSessionId}`);
-        }
-      }
-    }
+    // Membership invalidation above synchronously removed the wsId from the
+    // current session before any asynchronous geometry cleanup.
+    // Keep listener teardown and map deletion in this method only.
 
     // PROC-03 defense-in-depth: explicitly drop the message/close/error
-    // listeners attached in handleWebSocketConnection (lines ~2855-2898).
-    // Today there is no observed leak — GC reclaims listeners once the
-    // Map entry is dropped — but the explicit teardown mirrors the
-    // `_ptyDisposables` pattern (base-bridge.js) and `_cleanupFsWatchSession`
-    // (this file). Belt-and-suspenders against (a) future delayed callbacks
-    // executing post-close, (b) future handler additions that forget
-    // teardown, and (c) listener-closure GC pressure under reconnect storms.
-    // See docs/audits/proc-ws-listener-cleanup.md.
+    // listeners attached in handleWebSocketConnection.
     try {
       if (wsInfo.ws && typeof wsInfo.ws.removeAllListeners === 'function') {
         wsInfo.ws.removeAllListeners();
@@ -7806,6 +7968,13 @@ class ClaudeCodeWebServer {
 
     // Stop all VS Code tunnels
     try { await this.vscodeTunnel.stopAll(); } catch (_) { /* ignore */ }
+
+    // Invalidate every WebSocket membership synchronously before final session
+    // teardown. Late replay continuations then fail both the closed-queue and
+    // map/generation fences.
+    for (const wsId of this.webSocketConnections.keys()) {
+      this.invalidateWebSocketMembership(wsId);
+    }
 
     // Clean up temp images for all sessions
     for (const [, session] of this.claudeSessions) {

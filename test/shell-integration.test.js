@@ -11,6 +11,11 @@ const {
   zshEncoderAndHook,
   powershellShim,
 } = require('../src/shell-integration');
+const TerminalBridge = require('../src/terminal-bridge');
+
+const SHELL_INTEGRATION_READY_TIMEOUT_MS = 2000;
+const WINDOWS_POWERSHELL_READY_TIMEOUT_MS = 10000;
+const SHELL_INTEGRATION_READY_POLL_MS = 25;
 
 function has(command) {
   try {
@@ -109,6 +114,10 @@ describe('session-scoped shell integration', function () {
   });
 
   (has('pwsh') ? it : it.skip)('PowerShell URI builder encodes drive, UNC, spaces, unicode, hash, and question mark paths', function () {
+    // A cold pwsh process on a hosted Ubuntu runner can exceed the 5s core
+    // default even though its own child-process bound is 10s. Keep this
+    // external-process test bounded without widening the whole unit suite.
+    this.timeout(15000);
     const integration = manager.prepare('uri-session', 'pwsh');
     const script = integration.script.replace(/'/g, "''");
     const home = path.join(root, 'empty-home');
@@ -151,6 +160,138 @@ describe('session-scoped shell integration', function () {
     assert.strictEqual(manager.prepare('fish', '/usr/bin/fish'), null);
     assert.strictEqual(manager.prepare('cmd', 'cmd.exe'), null);
     assert.strictEqual(manager.prepare('other', '/bin/sh'), null);
+  });
+
+  it('selects the longer readiness window only for Windows PowerShell integration', function () {
+    const powershell = { kind: 'powershell' };
+    const bash = { kind: 'bash' };
+    const bridge = new TerminalBridge();
+    bridge.isWindows = true;
+    assert.strictEqual(bridge._getShellIntegrationReadyTimeoutMs(powershell), WINDOWS_POWERSHELL_READY_TIMEOUT_MS);
+    assert.strictEqual(bridge._getShellIntegrationReadyTimeoutMs(bash), SHELL_INTEGRATION_READY_TIMEOUT_MS);
+    bridge.isWindows = false;
+    assert.strictEqual(bridge._getShellIntegrationReadyTimeoutMs(powershell), SHELL_INTEGRATION_READY_TIMEOUT_MS);
+    bridge.isWindows = true;
+    assert.strictEqual(bridge._getShellIntegrationReadyTimeoutMs(null), SHELL_INTEGRATION_READY_TIMEOUT_MS);
+    return bridge.cleanup();
+  });
+
+  it('waits deterministically for delayed readiness and returns ready', async function () {
+    let now = 0;
+    const sleeps = [];
+    const readyFile = path.join(root, 'delayed-ready');
+    const bridge = new TerminalBridge();
+    await bridge._commandReady;
+    bridge.isWindows = true;
+    bridge.sessions.set('delayed', {});
+    try {
+      assert.strictEqual(
+        await bridge._waitForShellIntegration(
+          'delayed',
+          { kind: 'powershell', readyFile },
+          {
+            now: () => now,
+            sleep: async (ms) => {
+              sleeps.push(ms);
+              now += ms;
+              if (now >= 2500) fs.writeFileSync(readyFile, 'ready');
+            },
+          }
+        ),
+        'ready'
+      );
+    } finally {
+      bridge.sessions.delete('delayed');
+      fs.rmSync(readyFile, { force: true });
+      await bridge.cleanup();
+    }
+    assert.strictEqual(now, 2500);
+    assert.strictEqual(sleeps.length, 2500 / SHELL_INTEGRATION_READY_POLL_MS);
+  });
+
+  it('accepts readiness that appears at the final deadline', async function () {
+    let now = 0;
+    const sleeps = [];
+    const readyFile = path.join(root, 'boundary-ready');
+    const bridge = new TerminalBridge();
+    await bridge._commandReady;
+    bridge.isWindows = true;
+    bridge.sessions.set('boundary', {});
+    try {
+      assert.strictEqual(
+        await bridge._waitForShellIntegration(
+          'boundary',
+          { kind: 'powershell', readyFile },
+          {
+            now: () => now,
+            sleep: async (ms) => {
+              sleeps.push(ms);
+              now += ms;
+              if (now >= WINDOWS_POWERSHELL_READY_TIMEOUT_MS) fs.writeFileSync(readyFile, 'ready');
+            },
+          }
+        ),
+        'ready'
+      );
+    } finally {
+      bridge.sessions.delete('boundary');
+      fs.rmSync(readyFile, { force: true });
+      await bridge.cleanup();
+    }
+    assert.strictEqual(now, WINDOWS_POWERSHELL_READY_TIMEOUT_MS);
+    assert.strictEqual(
+      sleeps.length,
+      WINDOWS_POWERSHELL_READY_TIMEOUT_MS / SHELL_INTEGRATION_READY_POLL_MS
+    );
+  });
+
+  it('times out using the selected platform/shell window', async function () {
+    let now = 0;
+    const sleeps = [];
+    const readyFile = path.join(root, 'never-ready');
+    const bridge = new TerminalBridge();
+    await bridge._commandReady;
+    bridge.isWindows = true;
+    bridge.sessions.set('timeout', {});
+    try {
+      assert.strictEqual(
+        await bridge._waitForShellIntegration(
+          'timeout',
+          { kind: 'powershell', readyFile },
+          {
+            now: () => now,
+            sleep: async (ms) => {
+              sleeps.push(ms);
+              now += ms;
+            },
+          }
+        ),
+        'timed_out'
+      );
+    } finally {
+      bridge.sessions.delete('timeout');
+      await bridge.cleanup();
+    }
+    assert.strictEqual(now, WINDOWS_POWERSHELL_READY_TIMEOUT_MS);
+    assert.strictEqual(
+      sleeps.length,
+      WINDOWS_POWERSHELL_READY_TIMEOUT_MS / SHELL_INTEGRATION_READY_POLL_MS
+    );
+  });
+
+  it('returns exited immediately when the session exits while waiting', async function () {
+    let now = 0;
+    const bridge = new TerminalBridge();
+    await bridge._commandReady;
+    bridge.sessions.set('exited', {});
+    const result = bridge._waitForShellIntegration(
+      'exited',
+      { kind: 'bash', readyFile: 'missing' },
+      { now: () => now, sleep: async (ms) => { now += ms; } }
+    );
+    bridge.sessions.delete('exited');
+    assert.strictEqual(await result, 'exited');
+    await bridge.cleanup();
   });
 
   it('prefers in-box Windows PowerShell over cmd.exe when pwsh is absent', async function () {

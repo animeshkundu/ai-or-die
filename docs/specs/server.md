@@ -316,9 +316,16 @@ The WebSocket server (`ws.Server`) is attached to the same HTTP(S) server instan
 
 ### Connection Lifecycle
 
-1. Client connects. Server assigns a `wsId` (UUID), stores it in `webSocketConnections`, and sends `{ type: "connected", connectionId: wsId }`.
-2. If `?sessionId=` is present in the URL and the session exists, the server auto-joins that session.
-3. On close or error, the connection is removed from `webSocketConnections` and its session's `connections` Set.
+1. Client connects. Server assigns a `wsId` (UUID), stores it in `webSocketConnections`, initializes the per-socket membership generation, committed transition ID, FIFO queue, and close flag, and sends `{ type: "connected", connectionId: wsId }`.
+2. If `?sessionId=` is present in the URL and the session exists, the server queues an untagged server-initiated auto-join. It cannot satisfy a tagged explicit transition.
+3. `create_session`, `join_session`, and `leave_session` execute in strict FIFO order on that socket. An optional opaque `transitionId` string of at most 256 characters is echoed only by the response for the tagged operation. A rejected queue operation is isolated so later membership operations still run.
+4. On close or error, membership is invalidated synchronously: the generation advances, the queue closes, and the socket ID is removed from the current session before any asynchronous geometry cleanup.
+
+During a join, the server synchronously detaches the old membership only when switching to a different session, then awaits any geometry transfer before preparing the target replay and draining pending coalesced output. Same-session re-joins keep the existing `session.connections` membership, `wsInfo.claudeSessionId`, committed transition tuple, and geometry attachment live while replay is assembled. The final target commit and `session_joined` send have no intervening await. Every awaited continuation verifies the same map value, unchanged membership generation, and an open WebSocket. Same-session re-joins remain free of `session_left`; an untagged same-session re-join preserves the committed transition tuple but does not echo it. A session switch replaces the committed transition with the explicit tag or `null` for legacy operations.
+
+Tagged `input` frames may carry optional `sessionId` and `transitionId` fields. When either field is supplied, both tags are required and must match the committed active membership, and the socket must still be a member of that session. Mismatches receive `error` with code `stale_session_transition` and never reach a PTY. Untagged input keeps legacy routing and geometry behavior. A successful same-session re-join clears any prior flow pause before acknowledging, so subsequent session output is delivered normally.
+
+Lifecycle `exit` and `*_stopped` frames, plus error frames that carry session context (`stale_session_transition`, `input_not_sent`, membership not-found errors, and bridge error broadcasts), include `sessionId` additively. Geometry hold timeout/truncation notifications and generic start/parse errors retain their existing fields and may omit `sessionId`. Session broadcasts still verify both the session connection set and the WebSocket's committed membership.
 
 During a join, the server prepares the replay snapshot and drains any pending
 coalesced output before adding the socket to the session's live-output
@@ -336,9 +343,9 @@ All messages are JSON. The `type` field determines the handler.
 
 | Client Message | Description |
 |---------------|-------------|
-| `create_session` | Create a new session and join it. Fields: `name`, `workingDir`. |
-| `join_session` | Join an existing session. Fields: `sessionId`. Replays the newest stored output up to a 256 KiB byte cap. |
-| `leave_session` | Disconnect from current session without stopping the agent. |
+| `create_session` | Create a new session and join it. Fields: `name`, `workingDir`, optional opaque `transitionId` (string, max 256 characters). |
+| `join_session` | Join an existing session. Fields: `sessionId`, optional opaque `transitionId` (string, max 256 characters). Replays the newest stored output up to a 256 KiB byte cap. |
+| `leave_session` | Disconnect from current session without stopping the agent. Optional opaque `transitionId` is echoed by `session_left`. |
 | `start_claude` | Launch Claude CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
 | `start_codex` | Launch Codex CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
 | `start_copilot` | Launch Copilot CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
@@ -355,7 +362,7 @@ All messages are JSON. The `type` field determines the handler.
 | Tool not available | "{tool} is not available. Please ensure the {tool} CLI is installed..." |
 | Spawn failure | "Failed to start {tool}: {error}" |
 
-| `input` | Send raw terminal input to the running agent. Fields: `data`. |
+| `input` | Send raw terminal input to the running agent. Fields: required `data`; optional `sessionId` and `transitionId` tags. Every supplied tag must match the socket's committed membership or the server returns `stale_session_transition` without writing to the PTY. |
 | `resize` | Resize the pty. Fields: `cols`, `rows`. |
 | `stop` | Terminate the running agent process. |
 | `ping` | Keep-alive. Server responds with `{ type: "pong" }`. |
@@ -367,15 +374,15 @@ All messages are JSON. The `type` field determines the handler.
 | Server Message | Description |
 |---------------|-------------|
 | `connected` | Initial connection acknowledgment with `connectionId`. |
-| `session_created` | Session successfully created. Fields: `sessionId`, `sessionName`, `workingDir`. |
-| `session_joined` | Joined an existing session. Fields: `sessionId`, `sessionName`, `workingDir`, `active`, `outputBuffer`; followed by a live shown artifact review replay when one exists. |
-| `session_left` | Successfully left the session. Fields: `sessionId`. |
+| `session_created` | Session successfully created. Fields: `sessionId`, `sessionName`, `workingDir`; echoes `transitionId` only when the request supplied one. |
+| `session_joined` | Joined an existing session. Fields: `sessionId`, `sessionName`, `workingDir`, `active`, `outputBuffer`; followed by a live shown artifact review replay when one exists. Echoes a supplied `transitionId` only for the matching explicit join. |
+| `session_left` | Successfully left the session. Fields: `sessionId`; echoes a supplied `transitionId` only for the matching explicit leave. |
 | `session_deleted` | Session was deleted by another client or via REST API. |
 | `claude_started` / `codex_started` / `agent_started` | Agent process launched. |
 | `claude_stopped` / `codex_stopped` / `agent_stopped` | Agent process terminated. |
 | `output` | Terminal output data from the agent. Fields: `data`. |
-| `exit` | Agent process exited. Fields: `code`, `signal`. |
-| `error` | Error message. Fields: `message`. |
+| `exit` | Agent process exited. Fields: `sessionId`, `code`, `signal`. |
+| `error` | Error message. Fields: `message`; `sessionId` on errors that carry session context, and `code`/`transitionId` where applicable. Geometry hold timeout/truncation and generic start/parse errors may omit `sessionId`. |
 | `info` | Informational message (e.g., "No agent is running"). |
 | `pong` | Response to `ping`. |
 | `usage_update` | Usage statistics payload (see Usage Analytics spec). |

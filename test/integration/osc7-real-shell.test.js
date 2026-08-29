@@ -163,10 +163,10 @@ class Session {
     return this;
   }
 
-  async startTerminal() {
+  async startTerminal(timeoutMs = 10000) {
     const outputLength = this.outputAccum.length;
     this.ws.send(JSON.stringify({ type: 'start_terminal', cols: 80, rows: 24 }));
-    await this.waitFor('terminal_started', 10000);
+    await this.waitFor('terminal_started', timeoutMs);
     await this.waitForOutputAfter(outputLength, '', 5000);
     return this;
   }
@@ -487,7 +487,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
     const sess = new Session();
     try {
       await sess.open(baseDir);
-      await sess.startTerminal();
+      await sess.startTerminal(process.platform === 'win32' ? 20000 : 10000);
     } finally {
       process.env.HOME = originalHome;
       if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -514,7 +514,7 @@ suite('OSC 7 real-shell integration (ADR-0019)', function () {
     server.terminalBridge.command = execFileSync('where.exe', ['powershell.exe'], { encoding: 'utf8' }).trim().split(/\r?\n/)[0];
     const sess = new Session();
     await sess.open(baseDir);
-    await sess.startTerminal();
+    await sess.startTerminal(20000);
     await sess.waitForOutput('PS ', 10000);
     sess.reset();
     const target = path.join(baseDir, 'foo bar').replace(/'/g, "''");

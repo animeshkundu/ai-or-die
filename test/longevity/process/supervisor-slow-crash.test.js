@@ -116,6 +116,18 @@ async function waitForEscalation(escalations, tier, timeoutMs) {
   return false;
 }
 
+async function waitForStdio(stdio, pattern, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (pattern instanceof RegExp) pattern.lastIndex = 0;
+    if (pattern.test(stdio.text)) return true;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(25, remaining));
+  }
+  return false;
+}
+
 // PROC-01-fixup: wait for ANY tier ≥ minTier. Used by the contract test
 // that must tolerate runner-speed-induced tier-1-skip (Windows shared
 // hosts where multiple crashes land in one tick → supervisor jumps to
@@ -233,13 +245,17 @@ describe('PROC-01: supervisor circuit-breaker tiered escalation', function () {
         'expected stderr to include "TIER 2 ESCALATION" loud log'
       );
 
-      // IPC supervisor_warning should be queued for the next child. Wait
-      // a tier-2 delay (240ms) + spawn time so the next child gets it,
-      // and that child's mock-warning echo lands on stdout.
-      await sleep(500);
+      // IPC supervisor_warning should be queued for the next child. Poll
+      // through the tier-2 delay (240ms) + spawn time until the mock-warning
+      // echo lands on stdout, rather than assuming a fixed delivery delay.
+      const gotSupervisorWarning = await waitForStdio(
+        stdio,
+        /\[mock-warning\] .*"tier":2/,
+        1000
+      );
       assert.ok(
-        /\[mock-warning\] .*"tier":2/.test(stdio.text),
-        `expected the next child to receive supervisor_warning tier=2 — stdio: ${stdio.text.slice(-1000)}`
+        gotSupervisorWarning,
+        `expected the next child to receive supervisor_warning tier=2 — final stdio: ${stdio.text.slice(-1000)}`
       );
     });
   });

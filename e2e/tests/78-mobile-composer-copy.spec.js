@@ -8,13 +8,122 @@ const {
   waitForWebSocket,
   waitForTerminalCanvas,
   joinSessionAndStartTerminal,
+  waitForWsMessage,
 } = require('../helpers/terminal-helpers');
 
 let server, port, url;
 
 // WebKit does not recognize Chromium's clipboard permissions inherited from
-// the root config; the copy spec stubs navigator.clipboard directly.
-test.use({ permissions: [] });
+// the root config; the copy spec stubs navigator.clipboard directly. Blocking
+// the service worker keeps clipboard assertions on the page's live APIs.
+test.use({ permissions: [], serviceWorkers: 'block' });
+
+async function stubClipboard(page) {
+  await page.evaluate(() => {
+    const state = { attempts: 0, completed: 0, text: null, error: null };
+    const writeText = (text) => new Promise((resolve, reject) => {
+      state.attempts += 1;
+      if (typeof text !== 'string') {
+        state.error = `clipboard.writeText expects a string, got ${typeof text}`;
+        reject(new TypeError(state.error));
+        return;
+      }
+      // Keep completion asynchronous so the test proves the UI awaits the
+      // clipboard write instead of relying on a same-tick assignment.
+      setTimeout(() => {
+        state.text = text;
+        state.completed += 1;
+        resolve();
+      }, 0);
+    });
+
+    let installed = false;
+    let installError = null;
+    try {
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText },
+        configurable: true,
+      });
+      installed = !!(navigator.clipboard && navigator.clipboard.writeText === writeText);
+    } catch (error) {
+      installError = error;
+    }
+
+    if (!installed && navigator.clipboard) {
+      try {
+        Object.defineProperty(navigator.clipboard, 'writeText', {
+          value: writeText,
+          configurable: true,
+        });
+        installed = navigator.clipboard.writeText === writeText;
+      } catch (error) {
+        installError = error;
+      }
+    }
+
+    if (!installed) {
+      throw new Error(`Unable to install clipboard stub: ${installError ? installError.message : 'unknown error'}`);
+    }
+    window.__mobileClipboard = state;
+  });
+}
+
+async function waitForClipboardWrite(page) {
+  await expect.poll(() => page.evaluate(() => {
+    const state = window.__mobileClipboard;
+    if (!state) return { attempts: 0, completed: 0, error: 'clipboard stub missing' };
+    return {
+      attempts: state.attempts,
+      completed: state.completed,
+      text: state.text,
+      error: state.error,
+    };
+  }), { timeout: 5000 }).toMatchObject({ attempts: 1, completed: 1, error: null });
+}
+
+async function recordTouchEvents(locator) {
+  await locator.evaluate((button) => {
+    window.__mobileCopyEvents = [];
+    for (const type of ['touchstart', 'touchend', 'click']) {
+      button.addEventListener(type, () => window.__mobileCopyEvents.push(type));
+    }
+  });
+}
+
+async function expectTouchCopy(page) {
+  await expect.poll(() => page.evaluate(() => window.__mobileCopyEvents || []), {
+    timeout: 5000,
+  }).toEqual(['touchstart', 'touchend']);
+  await expect.poll(() => page.evaluate(() => window.__mobileClipboard), {
+    timeout: 5000,
+  }).toMatchObject({ attempts: 1, completed: 1, error: null });
+}
+
+async function waitForKeyboardSettled(page, expected) {
+  await expect.poll(() => page.evaluate(() => ({
+    keyboardOpen: document.body.classList.contains('keyboard-open'),
+    inKeyboardTransition: !!(window.app && window.app._inKeyboardTransition),
+    terminalHeight: document.getElementById('terminal')?.style.height || '',
+  })), { timeout: 5000 }).toEqual({
+    ...expected,
+    inKeyboardTransition: false,
+  });
+}
+
+async function expectVisibleText(page) {
+  await page.waitForFunction(() => {
+    const t = window.app && window.app.terminal;
+    if (!t || !t.buffer || !t.buffer.active) return false;
+    const buf = t.buffer.active;
+    const rows = t.rows || 24;
+    const start = buf.viewportY || 0;
+    for (let i = 0; i < rows; i++) {
+      const line = buf.getLine(start + i);
+      if (line && line.translateToString(true).trim()) return true;
+    }
+    return false;
+  }, null, { timeout: 15000 });
+}
 
 test.beforeAll(async () => {
   ({ server, port, url } = await createServer());
@@ -62,6 +171,9 @@ async function startTerminal(page, name) {
   await waitForWebSocket(page);
   await waitForTerminalCanvas(page);
   await joinTerminalWithRetry(page, sessionId);
+  const started = await waitForWsMessage(page, 'recv', 'terminal_started', 10000);
+  expect(started, 'terminal_started frame should be received').toBeTruthy();
+  expect(started).toMatchObject({ type: 'terminal_started', sessionId });
   await page.evaluate(() => document.body.classList.remove('keyboard-open'));
   return sessionId;
 }
@@ -142,69 +254,42 @@ test.describe('ADR-0037 mobile composer and copy', () => {
     await startTerminal(page, 'mobile-copy-screen');
     await expectMobileContract(page);
 
-    // Wait until the terminal has SOME visible text (the live shell prompt).
-    // We do NOT inject a marker: writing into a live shell is non-deterministic
-    // (the shell's own streaming output redraws/scrolls it away, which flaked on
-    // Windows WebKit). The exact getVisibleText contract is unit-tested in
-    // test/terminal-copy.test.js; here we verify the button copies the visible
-    // screen text to the clipboard.
-    await page.waitForFunction(() => {
-      const t = window.app && window.app.terminal;
-      if (!t || !t.buffer || !t.buffer.active) return false;
-      const buf = t.buffer.active;
-      const rows = t.rows || 24;
-      const start = buf.viewportY || 0;
-      for (let i = 0; i < rows; i++) {
-        const line = buf.getLine(start + i);
-        if (line && line.translateToString(true).trim()) return true;
-      }
-      return false;
-    }, null, { timeout: 15000 });
+    // A live shell prompt is enough to prove the visible-screen fallback, but
+    // wait for it to settle before installing the strict asynchronous stub.
+    await expectVisibleText(page);
+    await stubClipboard(page);
 
-    await page.evaluate(() => {
-      window.__mobileCopiedText = null;
-      const clipboard = {
-        writeText: (text) => {
-          window.__mobileCopiedText = String(text);
-          return Promise.resolve();
-        },
-      };
-      try {
-        Object.defineProperty(navigator, 'clipboard', { value: clipboard, configurable: true });
-      } catch (_) {
-        if (navigator.clipboard) {
-          try {
-            Object.defineProperty(navigator.clipboard, 'writeText', { value: clipboard.writeText, configurable: true });
-          } catch (__) {}
-        }
-      }
-    });
-
+    const before = await page.evaluate(() => ({
+      keyboardOpen: document.body.classList.contains('keyboard-open'),
+      terminalHeight: document.getElementById('terminal')?.style.height || '',
+    }));
     const launcher = page.locator('#keysPanelBtn');
     await expect(launcher).toBeVisible();
+    await recordTouchEvents(launcher);
     await launcher.tap();
     await expect(page.locator('#keysPanel')).toHaveClass(/keys-panel--open/);
-    await page.waitForTimeout(250);
 
     const copyButton = page.locator('.keys-panel__util-btn');
     await expect(copyButton).toBeVisible();
+    await recordTouchEvents(copyButton);
     await copyButton.tap();
+    await expectTouchCopy(page);
+    await waitForClipboardWrite(page);
 
-    const copiedNonEmpty = () =>
-      typeof window.__mobileCopiedText === 'string' && window.__mobileCopiedText.length > 0;
-    try {
-      await page.waitForFunction(copiedNonEmpty, null, { timeout: 1000 });
-    } catch (_) {
-      // WebKit's synthetic tap does not always emit the compatibility click when
-      // the handler preventDefault()s touchstart; the production handler is
-      // click-based, so dispatch that after the real tap.
-      await copyButton.dispatchEvent('click');
-      await page.waitForFunction(copiedNonEmpty, null, { timeout: 5000 });
-    }
-    // Copy-screen wrote the visible terminal text (a live shell always shows a
-    // prompt) to the clipboard.
-    const copied = await page.evaluate(() => window.__mobileCopiedText);
+    const copied = await page.evaluate(() => window.__mobileClipboard.text);
     expect(typeof copied).toBe('string');
     expect(copied.length).toBeGreaterThan(0);
+    await expect(page.locator('.toast--success .toast__msg')).toContainText('Copied screen');
+    await waitForKeyboardSettled(page, before);
+    expect(await page.evaluate(() => window.__mobileClipboard.error)).toBeNull();
+    expect(await page.evaluate(() => window.__mobileClipboard.attempts)).toBe(1);
+    expect(await page.evaluate(() => window.__mobileClipboard.completed)).toBe(1);
+    expect(await page.evaluate(() => window.__mobileCopyEvents)).toEqual(
+      expect.arrayContaining(['touchstart', 'touchend'])
+    );
+
+    // Copy-screen wrote the visible terminal text (a live shell always shows a
+    // prompt) to the clipboard.
+    expect(copied).not.toBe('');
   });
 });

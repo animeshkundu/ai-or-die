@@ -178,12 +178,12 @@ module.exports = defineConfig({
     },
     {
       name: 'client-redesign',
-      testMatch: /(?:^|[\\/])(?:7[4-6]-.*|8[1-5]-.*)\.spec\.js$/,
+      testMatch: /(?:^|[\\/])(?:7[4-6]-.*|8[1-6]-.*)\.spec\.js$/,
       timeout: 90000,
     },
     {
       name: 'client-redesign-webkit',
-      testMatch: /(?:^|[\\/])(?:7[4-6]-.*|8[1-5]-.*)\.spec\.js$/,
+      testMatch: /(?:^|[\\/])(?:7[4-6]-.*|8[1-6]-.*)\.spec\.js$/,
       // Split view is desktop-only: the client refuses it below 700px of
       // available width. Under WebKit's phone device profile `setViewportSize`
       // does not reliably yield a desktop-class layout (`width=device-width`
@@ -240,6 +240,22 @@ module.exports = defineConfig({
       name: 'restart',
       testMatch: '20-server-restart.spec.js',
       timeout: 120000,
+    },
+    // Wide touch split-copy regression. Chromium retains touch capability at
+    // the 800px split-capable boundary. The width gate makes app.isMobile true
+    // without a mobile UA, preserving HTML5 tab-drag semantics for split setup.
+    // serviceWorkers:'block' exercises the current client assets.
+    {
+      name: 'wide-touch-split-copy',
+      testMatch: '87-mobile-split-copy.spec.js',
+      timeout: 120000,
+      use: {
+        viewport: { width: 800, height: 900 },
+        browserName: 'chromium',
+        hasTouch: true,
+        serviceWorkers: 'block',
+        permissions: [],
+      },
     },
     // iOS mobile-input suite on WebKit (approximates Edge-on-iOS), specs 77-79.
     // CI runs these on Ubuntu only, per ADR-0049 (which amends ADR-0037 on this

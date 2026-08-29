@@ -16,13 +16,92 @@ The flood gate reads the median frame gap rather than the maximum. On an unchang
 
 Budgets are also scoped to the phase each one is named for. The flood budget is sampled from the start of the flood until one animation frame after the client write queue drains, entirely in-page so the cross-process harness round-trip is not charged to the flood window, and so the gap created by the final write task and any late `longtask` record are included. The scroll budget reads `scroll.p95GapMs`. The whole-test `maxRafGapMs` is reported for context but is not a budget, because the probe spans the deliberate scroll-jank loop and every harness round-trip, which made it report the scroll phase rather than the output pipeline.
 
-The split-geometry case asserts the documented behaviour for the device class it actually got, because split view is desktop-only: it measures the available width, and requires the split to have opened and its panes to have sent geometry when that width is at least 700px, or the split to have been refused when it is narrower. The invariant the case is named for -- no geometry below 20 columns or 5 rows ever reaches a PTY -- is asserted unconditionally, including on the main terminal after the split closes. The case does not run on `client-redesign-webkit`; see ADR-0049.
+The split-geometry case asserts the documented behaviour for the device class it actually got: it measures the available width and requires split view to open and its panes to send geometry when that width is at least 700px, or requires split creation to be refused when it is narrower. The invariant the case is named for -- no geometry below 20 columns or 5 rows ever reaches a PTY -- is asserted unconditionally, including on the main terminal after the split closes. The case does not run on `client-redesign-webkit`; see ADR-0049. Split copy is covered separately by `e2e/tests/87-mobile-split-copy.spec.js`, which uses a wide touch-capable project and real touch actions rather than treating split view as a mobile-only layout.
 
 `e2e/tests/76-client-visual-evidence.spec.js` attaches dark and light screenshots at 1280x800, 393x852, and 852x393 on all redesign projects, while asserting the blocking chooser stays within horizontal bounds, clears the elevated tab strip, and initially displays every tool card without clipping in short landscape.
 
 `waitForTerminalText` in `e2e/helpers/terminal-helpers.js` is wrap-aware: rows flagged `isWrapped` are rejoined into their logical line before the search. A logical line wider than the terminal spans several buffer rows and `translateToString` returns one row, so a naive per-row search never matches text straddling the wrap point. The terminal is narrower on Windows than on Linux at the same CSS viewport (38 versus 41 columns at 393px wide, from font metrics), so a marker that fits on one row on Linux can wrap on Windows and hang the search until timeout.
 
 The accepted ADR-0037 WebKit specs 77 through 79 are hard gates: inability to initialize `window.app`, the terminal, or required mobile controls fails the job rather than being converted to a skipped test.
+
+## Copy evidence and test boundaries
+
+The copy gate is provider-agnostic at the product boundary. Claude and Copilot
+are separate production bridge routes, but both write through node-pty and the
+same xterm buffer and clipboard helper. The deterministic fixture proves the
+route and UI contract without claiming that the latest real Claude or Copilot
+CLI was installed, authenticated, or exercised. It emits a stable tool label
+and marker, stays alive long enough for the copy action, and is deliberately a
+fake tool boundary. Real-latest-CLI validation remains a separate manual or
+environment-specific gate and must be recorded as such.
+
+The copy assertions have exact scope:
+
+- Context-menu and keys-panel copy are selection-first visible-viewport
+  operations. They read xterm's active viewport rows, rejoin `isWrapped`
+  continuations, trim trailing blank logical rows, preserve internal blank rows,
+  and do not promise complete scrollback export.
+- `Copy Terminal Output` in the command palette shares the
+  selection-first visible-viewport contract with context-menu and keys-panel
+  copy. It uses `TerminalCopy.copyVisible()` without creating or clearing a
+  selection. In split mode it resolves `splitContainer.activeSplitIndex`; a
+  missing or invalid pane is an empty-copy failure and never falls back to
+  hidden main output. A future full-scrollback action must be named and tested
+  separately through `TerminalCopy.copyBuffer()`.
+- Split context-menu actions operate on the pane that received the event. The
+  mobile keys panel is Control mode: it does not focus xterm, raise the soft
+  keyboard, or change terminal geometry. Compose-mode keyboard behavior is a
+  different contract.
+
+The default Playwright context uses `serviceWorkers: 'block'` so stale PWA
+responses cannot masquerade as current client behavior. Projects that test the
+PWA explicitly opt into service workers. Production `src/public/service-worker.js`
+currently uses cache name `ai-or-die-v13`; that version is a cache fact, not a
+copy-test result. The client ships xterm 6.0.0, where the Canvas renderer was
+removed; mobile uses the default DOM renderer, while buffer-based copy remains
+renderer-independent.
+
+Manual evidence must identify the device and OS/browser versions, project or
+command, provider/route, fixture-versus-real-CLI boundary, viewport/orientation,
+copy surface used, selection state, copied marker/text result, keyboard and
+geometry observations, service-worker mode, screenshot/video artifact path,
+and pass/fail plus observer/date. Never link an artifact that is not present.
+
+## CLI copy gate
+
+`e2e/tests/86-cli-copy.spec.js` exercises the production `start_claude` and
+`start_copilot` WebSocket routes against `e2e/fixtures/fake-cli-copy.js`. The
+fixture is a cross-platform Node process that prints stable, tool-labelled
+output and stays alive, so the test exercises each production bridge, node-pty,
+WebSocket coalescing, xterm's visible buffer, and the clipboard UI without
+external CLI installations, authentication, or network access. It is a fake
+fixture boundary, not proof that the latest real provider CLI was installed or
+run.
+
+Desktop Chromium copies through the context menu. The command-palette parity case
+is desktop-only and compares that result with `Copy Terminal Output`, including
+selection precedence. The iPhone16 WebKit project copies through the Control-mode
+keys panel, then verifies that opening and using the panel leaves the keyboard
+closed, terminal height unchanged, and the keyboard transition settled. The
+desktop-width active-split case creates real fixture-backed main and right
+sessions, waits until both unique sentinels are in their source buffers, verifies
+`activeSplitIndex === 1`, and invokes `Copy Terminal Output` through the visible
+palette input. It asserts that the right sentinel is copied and the main
+sentinel is excluded. Missing or invalid active split panes are an empty-copy
+failure; command-palette resolution never uses hidden main output as a fallback. The dedicated `87-mobile-split-copy` project is an 800px-wide,
+touch-capable Chromium configuration. Its keys-panel and extra-keys cases use
+real tab-drag, pane-tap, keyboard, and copy-control interactions and inspect the
+active right split marker, clipboard result, focus, keyboard state, and terminal
+geometry; they never invoke copy helpers, force taps, synthetic clicks, or mutate
+styles/display. The extra-keys case waits for the keyboard-open state and a
+settled viewport/layout sample after resizing, because a delayed visualViewport
+callback can otherwise begin the production transition after the bar is already
+visible. Each test owns a fresh server so mobile tab overflow cannot leak
+sessions between cases. Each test attaches a screenshot; setting
+`AIORDIE_CLI_COPY_SCREENSHOT_DIR` writes an explicit evidence PNG for the
+requested passing, non-retry run without changing normal CI output. A screenshot
+may be linked from history only when that file exists; missing provider imagery
+is not evidence.
 
 ## 1. Research Findings
 
@@ -50,7 +129,13 @@ Alternative approaches considered and rejected:
 
 ### 1.2 Testing xterm.js Terminal Emulation E2E
 
-xterm.js itself uses Playwright for its integration test suite, running tests against the browser-rendered terminal canvas. For our use case, however, the critical path is **server-side**: data flows from the spawned CLI process through node-pty, over WebSocket, to the client. The xterm.js rendering layer is a display concern.
+xterm 6.0.0 removed the Canvas renderer. The shipped client uses the default DOM
+renderer on mobile and may use WebGL on suitable desktop hardware, with a DOM
+fallback. Regardless of renderer, xterm's buffer API is the test seam for
+terminal text; DOM selectors and browser selection are not the copy contract.
+The critical path is **server-side**: data flows from the spawned CLI process
+through node-pty, over WebSocket, to the client. The rendering layer is a
+display concern.
 
 **Our strategy splits into two tiers:**
 
@@ -303,9 +388,10 @@ Browser-level tests run Chromium via Playwright, validating the full stack from 
 | `01-golden-path` | Real user flow: spawn CLI → browser → click Terminal → type → see output |
 | `02-terminal-io` | Echo round-trip, multi-line output, terminal dimensions |
 | `03-clipboard` | Ctrl+C copies selection (not SIGINT), Ctrl+V pastes from clipboard |
-| `04-context-menu` | Right-click shows menu, items work, keyboard navigation, Escape closes |
+| `04-context-menu` | Right-click shows menu, copy works with or without selection, items work, keyboard navigation, Escape closes |
 | `05-tab-switching` | Two sessions isolated, no garbled text after switching |
 | `06-large-paste` | 3KB+ paste arrives intact through chunked write pipeline |
+| `86-cli-copy` | Claude and Copilot bridge output copies on desktop and flicker-free mobile Control mode |
 
 **Key design decisions:**
 - `serviceWorkers: 'block'` prevents stale cache interference
@@ -347,6 +433,10 @@ while IFS= read -r line; do
     echo "Assistant: I received '$line'"
 done
 ```
+
+`e2e/fixtures/fake-cli-copy.js` is the browser-E2E fixture for tool-specific
+copy coverage. It intentionally uses Node rather than shell syntax so the same
+fixture runs under Linux and Windows PTY implementations.
 
 ### 5.3 Performance/Load Testing
 

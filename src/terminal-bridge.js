@@ -35,6 +35,9 @@ const { ShellIntegrationManager } = require('./shell-integration');
 const OSC7_CACHE_MAX_ENTRIES = 256;
 const OSC7_CACHE_TTL_MS = 5000;
 const MAX_DEFERRED_SHELL_OUTPUT = 256 * 1024;
+const SHELL_INTEGRATION_READY_TIMEOUT_MS = 2000;
+const WINDOWS_POWERSHELL_READY_TIMEOUT_MS = 10000;
+const SHELL_INTEGRATION_READY_POLL_MS = 25;
 
 class TerminalBridge extends BaseBridge {
   constructor() {
@@ -255,6 +258,7 @@ class TerminalBridge extends BaseBridge {
     try {
       const session = await super.startSession(sessionId, { ...spawnOptions, onOutput: wrappedOnOutput });
       if (integration) {
+        const readinessStartedAt = Date.now();
         const state = await this._waitForShellIntegration(sessionId, integration);
         if (state !== 'ready') {
           await super.stopSession(sessionId);
@@ -263,6 +267,18 @@ class TerminalBridge extends BaseBridge {
             this._uninstallOsc7State(sessionId);
             return null;
           }
+          // Keep the fallback observable: a slow shell and an exited wrapper
+          // need different follow-up, and both should be diagnosable without
+          // reconstructing timing from raw PTY output. Do not label an
+          // explicitly cancelled start as a fallback.
+          // eslint-disable-next-line no-console
+          console.warn('terminal-bridge: shell integration not ready; falling back', {
+            sessionId,
+            kind: integration.kind || 'unknown',
+            state,
+            timeoutMs: this._getShellIntegrationReadyTimeoutMs(integration),
+            elapsedMs: Math.max(0, Date.now() - readinessStartedAt),
+          });
           integrationStarting = false;
           fallbackAttempted = true;
           deferredOutput = '';
@@ -345,16 +361,30 @@ class TerminalBridge extends BaseBridge {
     return super.cleanup();
   }
 
-  async _waitForShellIntegration(sessionId, integration) {
-    const deadline = Date.now() + 2000;
-    while (Date.now() < deadline) {
+  async _waitForShellIntegration(sessionId, integration, clock = {}) {
+    const now = typeof clock.now === 'function' ? clock.now : Date.now;
+    const sleep = typeof clock.sleep === 'function'
+      ? clock.sleep
+      : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const timeoutMs = this._getShellIntegrationReadyTimeoutMs(integration);
+    const deadline = now() + timeoutMs;
+    while (now() < deadline) {
       if (!this.sessions.has(sessionId)) return 'exited';
       if (integration.readyFile && fs.existsSync(integration.readyFile)) {
         return this.sessions.has(sessionId) ? 'ready' : 'exited';
       }
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await sleep(SHELL_INTEGRATION_READY_POLL_MS);
+    }
+    if (this.sessions.has(sessionId) && integration.readyFile && fs.existsSync(integration.readyFile)) {
+      return 'ready';
     }
     return this.sessions.has(sessionId) ? 'timed_out' : 'exited';
+  }
+
+  _getShellIntegrationReadyTimeoutMs(integration) {
+    return this.isWindows === true && integration && integration.kind === 'powershell'
+      ? WINDOWS_POWERSHELL_READY_TIMEOUT_MS
+      : SHELL_INTEGRATION_READY_TIMEOUT_MS;
   }
 
   // ------------------------------------------------------------------------
