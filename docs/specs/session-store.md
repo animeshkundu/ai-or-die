@@ -26,6 +26,7 @@ new SessionStore()
 
 - Sets `this.storageDir` to `AI_OR_DIE_SESSION_DIR` when provided, otherwise `path.join(os.homedir(), '.ai-or-die')`.
 - Sets `this.sessionsFile` to `path.join(this.storageDir, 'sessions.json')`.
+- Sets `maxSafeLoadBytes` to 128 MiB by default (overrideable via constructor option `maxSafeLoadBytes` for tests).
 - Calls `initializeStorage()` to ensure the directory exists.
 
 ---
@@ -75,25 +76,27 @@ Restores sessions from disk into an in-memory `Map`.
 
 **Process:**
 
-1. Checks file existence via `fs.access`.
-2. Reads file contents as UTF-8.
-3. Handles empty/whitespace-only files by returning an empty `Map`.
-4. Parses JSON with error recovery:
-   - On parse failure, preserves the unusable file as `sessions.json.corrupted.<timestamp>` for forensics, then returns an empty `Map`.
-5. Validates the parsed structure:
+1. Opens `sessions.json` once (`fs.open`) and uses `handle.stat()` from that same file handle before any read.
+2. If `stats.size` exceeds `maxSafeLoadBytes` (default **128 MiB**), closes the handle, preserves the file byte-for-byte as `sessions.json.oversized.<timestamp>` (rename-first, copy-and-unlink fallback), and returns an empty `Map` so startup cannot crash-loop on huge JSON.
+3. Otherwise reads from that same open handle in positioned chunks, stopping after at most `maxSafeLoadBytes + 1` bytes. A post-read handle stat catches growth after the initial stat; an actual oversized file is preserved and never passed to `JSON.parse`.
+4. Handles empty/whitespace-only files by clearing metadata cache and returning an empty `Map`.
+5. Parses JSON with error recovery:
+   - On parse failure, closes the handle, preserves the unusable file as `sessions.json.corrupted.<timestamp>` for forensics, then returns an empty `Map`.
+6. Validates the parsed structure:
    - Must be a non-null object with a `sessions` array property.
    - Preserves valid JSON with the wrong structure through the same corruption-recovery path before returning an empty `Map`.
-   - Preservation first renames the source and falls back to a byte-for-byte copy if rename is unavailable.
+   - Preservation first renames the source and falls back to a byte-for-byte copy followed by unlinking the source if rename is unavailable.
+   - If copy succeeds but unlink fails, the exact backup is retained and the source remains protected; later saves are blocked with `ESESSIONBACKUPFAILED` and include the removal error.
    - If neither operation succeeds, the store keeps the source in place and blocks later saves with `ESESSIONBACKUPFAILED` so autosave cannot overwrite unrecovered bytes.
-6. Checks the `savedAt` timestamp -- if older than **7 days**, the data is considered stale and an empty `Map` is returned. This intentional expiry does not create a corruption backup.
-7. For each session entry:
+7. Checks the `savedAt` timestamp -- if older than **7 days**, the data is considered stale and an empty `Map` is returned. This intentional expiry does not create a corruption backup.
+8. For each session entry:
    - Skips entries without an `id` field.
    - Deserializes `created` and `lastActivity` back to `Date` objects.
    - Forces `active = false`.
    - Converts `connections` back to an empty `Set`.
-   - Restores `outputBuffer` (defaults to `[]`).
-   - Sets `maxBufferSize` to `1000`.
-   - Restores `usageData` if available.
+   - Restores `outputBuffer` as `CircularBuffer.fromArray(..., 1000, 512 * 1024)` (defaults to an empty array input).
+   - Sets `maxBufferSize` to `1000` (item cap; byte cap is enforced by the buffer).
+   - Restores `sessionUsage` if available.
 
 **Returns:** `Map<sessionId, Session>`.
 
@@ -105,9 +108,17 @@ Deletes the `sessions.json` file entirely.
 
 ### `getSessionMetadata() => Promise<Object>`
 
-Returns metadata about the persistence file without loading full session data.
+Returns metadata about the persistence file without parsing large payloads.
 
-**Success response:**
+Behavior:
+
+1. Opens `sessions.json` once and uses `handle.stat()` from that same handle (no path-level stat/read TOCTOU).
+2. Returns cached `{ savedAt, sessionCount, version }` only when the cached file identity still matches the live file identity (`size + mtimeMs + available dev/ino/ctimeMs fields`); `dev` and `ino` are stored as strings to avoid integer-precision loss.
+3. If cache is cold or stale and file size is <= 64 KiB, reads at most `64 KiB + 1 byte` from the same open handle, and parses only when bytes read are within the limit and non-whitespace.
+4. If fallback bytes exceed 64 KiB, metadata parsing is skipped (never parse oversized fallback reads).
+5. Never reads/parses the full file on the metadata path when the file is large; it still returns `exists: true` and `fileSize`, with unknown metadata fields set to `null` until cache is warmed by save/load.
+
+**Success response (cache warm):**
 ```json
 {
   "exists": true,
@@ -115,6 +126,17 @@ Returns metadata about the persistence file without loading full session data.
   "sessionCount": 5,
   "fileSize": 12345,
   "version": "1.0"
+}
+```
+
+**Success response (existing large file, cache cold):**
+```json
+{
+  "exists": true,
+  "savedAt": null,
+  "sessionCount": null,
+  "fileSize": 73400320,
+  "version": null
 }
 ```
 
@@ -140,7 +162,7 @@ Each session in the `sessions` array has this shape:
   "lastActivity": "2026-02-05T11:00:00.000Z",
   "workingDir": "/home/user/project",
   "active": false,
-  "outputBuffer": ["line1", "line2", "...up to 100"],
+  "outputBuffer": ["line1", "line2", "...bounded tail"],
   "connections": [],
   "lastAccessed": 1738750800000,
   "sessionStartTime": "2026-02-05T10:30:00.000Z",
@@ -177,9 +199,10 @@ The server calls `SessionStore` in these contexts:
 
 The store handles corruption gracefully:
 
-1. **Empty file** -- Detected by checking `!data || !data.trim()`. Returns empty Map.
-2. **Invalid JSON** -- Caught by `JSON.parse` try/catch. The unusable file is moved to a `.corrupted.<timestamp>` sibling, or copied there if rename fails, then returns empty Map.
-3. **Invalid structure** -- Valid JSON that is not an object with a `sessions` array uses the same byte-preserving backup path before returning empty Map.
-4. **Backup failure** -- If both rename and copy fail, the source remains untouched and subsequent saves return `false` with `ESESSIONBACKUPFAILED` without incrementing the ordinary save-failure counter. The in-memory block clears when the protected file is removed, a later load parses successfully, or `clearOldSessions()` removes it.
-5. **Stale data** -- Sessions older than 7 days are intentionally discarded without a backup; a well-formed expired file is not labelled as corruption.
-6. **Invalid session entries** -- Individual entries without an `id` field are silently skipped.
+1. **Empty file** -- Detected by checking `!data || !data.trim()`. Clears metadata cache and returns empty Map.
+2. **Oversized file (>128 MiB default)** -- The file is preserved under `.oversized.<timestamp>` and load returns empty Map for manual recovery instead of startup crash-looping.
+3. **Invalid JSON** -- Caught by `JSON.parse` try/catch. The unusable file is moved to a `.corrupted.<timestamp>` sibling, or copied there if rename fails, then returns empty Map.
+4. **Invalid structure** -- Valid JSON that is not an object with a `sessions` array uses the same byte-preserving backup path before returning empty Map.
+5. **Backup failure** -- If both rename and copy fail, or if fallback unlink fails after an exact copy, the source remains protected and subsequent saves return `false` with `ESESSIONBACKUPFAILED` (including the removal error when applicable) without incrementing the ordinary save-failure counter. The in-memory block clears when the protected file is removed, a later load parses successfully, or `clearOldSessions()` removes it.
+6. **Stale data** -- Sessions older than 7 days are intentionally discarded without a backup; a well-formed expired file is not labelled as corruption.
+7. **Invalid session entries** -- Individual entries without an `id` field are silently skipped.

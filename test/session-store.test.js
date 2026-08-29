@@ -111,6 +111,114 @@ describe('SessionStore', function() {
       );
     });
 
+    it('detects file growth after the initial stat and keeps the read bounded', async function () {
+      sessionStore.maxSafeLoadBytes = 256;
+      const initial = Buffer.from('{"sessions":[]}');
+      const growth = Buffer.alloc(2048, 'x');
+      await fs.writeFile(sessionStore.sessionsFile, initial);
+      const originalOpen = fs.open;
+      const reads = [];
+      let grew = false;
+      fs.open = async (...args) => {
+        const handle = await originalOpen(...args);
+        const originalRead = handle.read.bind(handle);
+        handle.read = async (buffer, offset, length, position) => {
+          reads.push({ length, position });
+          if (!grew) {
+            grew = true;
+            await fs.appendFile(sessionStore.sessionsFile, growth);
+          }
+          return originalRead(buffer, offset, length, position);
+        };
+        return handle;
+      };
+
+      try {
+        const loaded = await sessionStore.loadSessions();
+        const files = await fs.readdir(tempDir);
+        const backup = files.find((file) => (
+          file.startsWith(`${path.basename(sessionStore.sessionsFile)}.oversized.`)
+        ));
+        assert.strictEqual(loaded.size, 0);
+        assert.ok(backup);
+        assert.ok(reads.length > 0);
+        assert.ok(reads.reduce((total, read) => total + read.length, 0) <= sessionStore.maxSafeLoadBytes + 1);
+        assert.strictEqual(
+          Buffer.compare(await fs.readFile(path.join(tempDir, backup)), Buffer.concat([initial, growth])),
+          0
+        );
+        await assert.rejects(fs.access(sessionStore.sessionsFile), { code: 'ENOENT' });
+      } finally {
+        fs.open = originalOpen;
+      }
+    });
+
+    it('preserves oversized files under .oversized without reading/parsing the whole file', async function () {
+      sessionStore.maxSafeLoadBytes = 256;
+      const bytes = Buffer.from('{"sessions":[' + 'x'.repeat(2048));
+      await fs.writeFile(sessionStore.sessionsFile, bytes);
+
+      const originalOpen = fs.open;
+      let handleReadFileCalls = 0;
+      fs.open = async (...args) => {
+        const handle = await originalOpen(...args);
+        const originalHandleReadFile = handle.readFile.bind(handle);
+        handle.readFile = async (...readArgs) => {
+          handleReadFileCalls++;
+          return originalHandleReadFile(...readArgs);
+        };
+        return handle;
+      };
+
+      try {
+        const loaded = await sessionStore.loadSessions();
+        const files = await fs.readdir(tempDir);
+        const backup = files.find((file) => (
+          file.startsWith(`${path.basename(sessionStore.sessionsFile)}.oversized.`)
+        ));
+
+        assert.strictEqual(loaded.size, 0);
+        assert.ok(backup);
+        assert.strictEqual(handleReadFileCalls, 0, 'oversized loads must not read the whole file');
+        assert.strictEqual(
+          Buffer.compare(await fs.readFile(path.join(tempDir, backup)), bytes),
+          0
+        );
+        await assert.rejects(fs.access(sessionStore.sessionsFile), { code: 'ENOENT' });
+      } finally {
+        fs.open = originalOpen;
+      }
+    });
+
+    it('copies oversized data to the backup when rename fails', async function () {
+      sessionStore.maxSafeLoadBytes = 256;
+      const bytes = Buffer.from('{"sessions":[' + 'x'.repeat(2048));
+      await fs.writeFile(sessionStore.sessionsFile, bytes);
+      const originalRename = fs.rename;
+      fs.rename = async () => {
+        const error = new Error('rename unavailable');
+        error.code = 'EACCES';
+        throw error;
+      };
+
+      try {
+        const loaded = await sessionStore.loadSessions();
+        const files = await fs.readdir(tempDir);
+        const backup = files.find((file) => (
+          file.startsWith(`${path.basename(sessionStore.sessionsFile)}.oversized.`)
+        ));
+        assert.strictEqual(loaded.size, 0);
+        assert.ok(backup);
+        assert.strictEqual(
+          Buffer.compare(await fs.readFile(path.join(tempDir, backup)), bytes),
+          0
+        );
+        await assert.rejects(fs.access(sessionStore.sessionsFile), { code: 'ENOENT' });
+      } finally {
+        fs.rename = originalRename;
+      }
+    });
+
     it('copies invalid data to the backup when rename fails', async function () {
       const bytes = Buffer.from('{"sessions": "x"}');
       await fs.writeFile(sessionStore.sessionsFile, bytes);
@@ -133,12 +241,56 @@ describe('SessionStore', function() {
           Buffer.compare(await fs.readFile(path.join(tempDir, backup)), bytes),
           0
         );
+        await assert.rejects(fs.access(sessionStore.sessionsFile), { code: 'ENOENT' });
+      } finally {
+        fs.rename = originalRename;
+      }
+    });
+
+    it('blocks saves when fallback unlink fails after an exact copy', async function () {
+      const bytes = Buffer.from('{"sessions": "x"}');
+      await fs.writeFile(sessionStore.sessionsFile, bytes);
+      const originalRename = fs.rename;
+      const originalUnlink = fs.unlink;
+      fs.rename = async () => {
+        const error = new Error('rename unavailable');
+        error.code = 'EACCES';
+        throw error;
+      };
+      fs.unlink = async (file) => {
+        if (file === sessionStore.sessionsFile) {
+          const error = new Error('remove unavailable');
+          error.code = 'EACCES';
+          throw error;
+        }
+        return originalUnlink(file);
+      };
+
+      try {
+        const loaded = await sessionStore.loadSessions();
+        const files = await fs.readdir(tempDir);
+        const backup = files.find((file) => (
+          file.startsWith(`${path.basename(sessionStore.sessionsFile)}.corrupted.`)
+        ));
+        assert.strictEqual(loaded.size, 0);
+        assert.ok(backup);
+        assert.strictEqual(
+          Buffer.compare(await fs.readFile(path.join(tempDir, backup)), bytes),
+          0
+        );
         assert.strictEqual(
           Buffer.compare(await fs.readFile(sessionStore.sessionsFile), bytes),
           0
         );
+        assert.strictEqual(sessionStore._saveBlockedReason.removeError.code, 'EACCES');
+        assert.strictEqual(sessionStore._lastSaveError.code, 'ESESSIONBACKUPFAILED');
+
+        sessionStore.markDirty();
+        assert.strictEqual(await sessionStore.saveSessions(new Map()), false);
+        assert.strictEqual(sessionStore._lastSaveError.code, 'ESESSIONBACKUPFAILED');
       } finally {
         fs.rename = originalRename;
+        fs.unlink = originalUnlink;
       }
     });
 
@@ -259,6 +411,215 @@ describe('SessionStore', function() {
       const files = await fs.readdir(tempDir);
       assert.strictEqual(loaded.size, 0);
       assert.strictEqual(files.some((file) => file.includes('.corrupted.')), false);
+    });
+
+    it('clears metadata cache when loading an empty or whitespace-only file', async function () {
+      await fs.writeFile(sessionStore.sessionsFile, JSON.stringify({
+        version: '1.0',
+        savedAt: new Date().toISOString(),
+        sessions: [{ id: 'cached', outputBuffer: [] }],
+      }));
+      await sessionStore.loadSessions();
+      assert.ok(sessionStore._sessionMetadataCache, 'warm cache before empty-load check');
+
+      await fs.writeFile(sessionStore.sessionsFile, '   \n\t   ');
+      const loaded = await sessionStore.loadSessions();
+      assert.strictEqual(loaded.size, 0);
+      assert.strictEqual(sessionStore._sessionMetadataCache, null);
+    });
+  });
+
+  describe('file identity helpers', function() {
+    it('stores dev and ino identities as strings', function() {
+      const identity = sessionStore._fileIdentityFromStats({
+        size: 1,
+        mtimeMs: 2,
+        dev: 9007199254740993n,
+        ino: 9007199254740995n,
+        ctimeMs: 3,
+      });
+      assert.strictEqual(identity.dev, '9007199254740993');
+      assert.strictEqual(identity.ino, '9007199254740995');
+      assert.strictEqual(typeof identity.dev, 'string');
+      assert.strictEqual(typeof identity.ino, 'string');
+    });
+  });
+
+  describe('getSessionMetadata', function() {
+    it('returns cached metadata after a successful save without rereading sessions.json', async function() {
+      const testSessions = new Map([
+        ['session1', { id: 'session1', name: 'A', created: new Date() }],
+        ['session2', { id: 'session2', name: 'B', created: new Date() }],
+      ]);
+
+      sessionStore.markDirty();
+      await sessionStore.saveSessions(testSessions);
+
+      const originalReadFile = fs.readFile;
+      let readAttempts = 0;
+      fs.readFile = async () => {
+        readAttempts++;
+        throw new Error('getSessionMetadata should use cached save metadata');
+      };
+
+      try {
+        const metadata = await sessionStore.getSessionMetadata();
+        assert.strictEqual(metadata.exists, true);
+        assert.strictEqual(metadata.sessionCount, 2);
+        assert.strictEqual(metadata.version, '1.0');
+        assert.ok(typeof metadata.savedAt === 'string' && metadata.savedAt.length > 0);
+        assert.ok(metadata.fileSize > 0);
+        assert.strictEqual(readAttempts, 0);
+      } finally {
+        fs.readFile = originalReadFile;
+      }
+    });
+
+    it('returns cached metadata after a successful load without rereading sessions.json', async function() {
+      const envelope = {
+        version: '1.0',
+        savedAt: new Date().toISOString(),
+        sessions: [
+          { id: 'loaded-1', outputBuffer: [] },
+          { id: 'loaded-2', outputBuffer: [] },
+        ],
+      };
+      await fs.writeFile(sessionStore.sessionsFile, JSON.stringify(envelope));
+
+      const loaded = await sessionStore.loadSessions();
+      assert.strictEqual(loaded.size, 2);
+
+      const originalReadFile = fs.readFile;
+      let readAttempts = 0;
+      fs.readFile = async () => {
+        readAttempts++;
+        throw new Error('getSessionMetadata should use cached load metadata');
+      };
+
+      try {
+        const metadata = await sessionStore.getSessionMetadata();
+        assert.strictEqual(metadata.exists, true);
+        assert.strictEqual(metadata.savedAt, envelope.savedAt);
+        assert.strictEqual(metadata.sessionCount, 2);
+        assert.strictEqual(metadata.version, '1.0');
+        assert.ok(metadata.fileSize > 0);
+        assert.strictEqual(readAttempts, 0);
+      } finally {
+        fs.readFile = originalReadFile;
+      }
+    });
+
+    it('parses a bounded small file when cache is cold', async function() {
+      const envelope = {
+        version: '1.0',
+        savedAt: '2026-07-01T00:00:00.000Z',
+        sessions: [{ id: 'small', outputBuffer: [] }],
+      };
+      await fs.writeFile(sessionStore.sessionsFile, JSON.stringify(envelope));
+
+      const metadata = await sessionStore.getSessionMetadata();
+      assert.strictEqual(metadata.exists, true);
+      assert.strictEqual(metadata.savedAt, envelope.savedAt);
+      assert.strictEqual(metadata.sessionCount, 1);
+      assert.strictEqual(metadata.version, '1.0');
+      assert.ok(metadata.fileSize > 0);
+    });
+
+    it('invalidates stale cache on same-size atomic replacement', async function () {
+      const firstEnvelope = {
+        version: '1.0',
+        savedAt: '2026-07-01T00:00:00.000Z',
+        sessions: [{ id: 'a', outputBuffer: [] }],
+      };
+      const secondEnvelope = {
+        version: '1.0',
+        savedAt: '2026-07-02T00:00:00.000Z',
+        sessions: [{ id: 'b', outputBuffer: [] }],
+      };
+      const firstBytes = JSON.stringify(firstEnvelope);
+      const secondBytes = JSON.stringify(secondEnvelope);
+      assert.strictEqual(
+        Buffer.byteLength(firstBytes, 'utf8'),
+        Buffer.byteLength(secondBytes, 'utf8'),
+        'test setup requires equal-size replacements'
+      );
+
+      await fs.writeFile(sessionStore.sessionsFile, firstBytes);
+      const warm = await sessionStore.getSessionMetadata();
+      assert.strictEqual(warm.savedAt, firstEnvelope.savedAt);
+
+      const priorStats = await fs.stat(sessionStore.sessionsFile);
+      const replacement = `${sessionStore.sessionsFile}.replace`;
+      await fs.writeFile(replacement, secondBytes);
+      await fs.rename(replacement, sessionStore.sessionsFile);
+      const priorMtime = new Date(priorStats.mtimeMs);
+      await fs.utimes(sessionStore.sessionsFile, priorMtime, priorMtime);
+
+      const metadata = await sessionStore.getSessionMetadata();
+      assert.strictEqual(metadata.savedAt, secondEnvelope.savedAt);
+      assert.strictEqual(metadata.sessionCount, 1);
+    });
+
+    it('uses a bounded handle read and skips parse when fallback bytes exceed the cap', async function () {
+      const oversized = '{"version":"1.0","savedAt":"x","sessions":[],"padding":"' + 'x'.repeat(70 * 1024) + '"}';
+      await fs.writeFile(sessionStore.sessionsFile, oversized);
+
+      const originalOpen = fs.open;
+      const originalParse = JSON.parse;
+      const readLengths = [];
+      let parseAttempts = 0;
+
+      fs.open = async (...args) => {
+        const handle = await originalOpen(...args);
+        const originalRead = handle.read.bind(handle);
+        handle.read = async (...readArgs) => {
+          readLengths.push(readArgs[2]);
+          return originalRead(...readArgs);
+        };
+        return handle;
+      };
+      JSON.parse = (...args) => {
+        parseAttempts++;
+        return originalParse(...args);
+      };
+
+      try {
+        const metadata = await sessionStore.getSessionMetadata();
+        assert.strictEqual(metadata.exists, true);
+        assert.strictEqual(metadata.savedAt, null);
+        assert.strictEqual(metadata.sessionCount, null);
+        assert.strictEqual(metadata.version, null);
+        assert.ok(readLengths.length >= 1, 'bounded fallback should perform one handle.read');
+        assert.ok(readLengths.every((len) => len === 64 * 1024 + 1));
+        assert.strictEqual(parseAttempts, 0, 'oversized fallback bytes must never be parsed');
+      } finally {
+        fs.open = originalOpen;
+        JSON.parse = originalParse;
+      }
+    });
+
+    it('returns exists:true for a large invalid file without reading or parsing the whole file', async function() {
+      const oversizedInvalid = '{' + 'x'.repeat(70 * 1024);
+      await fs.writeFile(sessionStore.sessionsFile, oversizedInvalid);
+
+      const originalReadFile = fs.readFile;
+      let readAttempts = 0;
+      fs.readFile = async (...args) => {
+        readAttempts++;
+        return originalReadFile.apply(fs, args);
+      };
+
+      try {
+        const metadata = await sessionStore.getSessionMetadata();
+        assert.strictEqual(metadata.exists, true);
+        assert.strictEqual(metadata.savedAt, null);
+        assert.strictEqual(metadata.sessionCount, null);
+        assert.strictEqual(metadata.version, null);
+        assert.strictEqual(metadata.fileSize, Buffer.byteLength(oversizedInvalid, 'utf8'));
+        assert.strictEqual(readAttempts, 0, 'large metadata path must avoid fs.readFile entirely');
+      } finally {
+        fs.readFile = originalReadFile;
+      }
     });
   });
 

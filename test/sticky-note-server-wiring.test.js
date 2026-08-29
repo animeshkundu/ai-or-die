@@ -371,6 +371,92 @@ describe('sticky-note JSONL binding (ownership + resume)', function () {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   });
 
+  it('SIDECAR: _readClaudeBindSidecar rejects oversized files (>64 KiB)', async function () {
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'oversized.json');
+    const payload = JSON.stringify({
+      schema: 1,
+      claudeSessionId: 'session-1',
+      transcriptPath: path.join(dir, 'session-1.jsonl'),
+      event: 'start',
+      at: Date.now(),
+      padding: 'x'.repeat(70 * 1024),
+    });
+    fs.writeFileSync(sidecar, payload);
+
+    const parsed = await self._readClaudeBindSidecar({ claudeBindSidecar: sidecar });
+    assert.strictEqual(parsed, null);
+  });
+
+  it('SIDECAR: _readClaudeBindSidecar rejects malformed claudeSessionId/transcriptPath field types', async function () {
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'malformed.json');
+    const malformedRecords = [
+      { schema: 1, claudeSessionId: 123, transcriptPath: '/tmp/a.jsonl', event: 'start', at: Date.now() },
+      { schema: 1, claudeSessionId: 'ok', transcriptPath: null, event: 'start', at: Date.now() },
+      { schema: 1, claudeSessionId: { nested: true }, transcriptPath: '/tmp/a.jsonl', event: 'end', at: Date.now() },
+      { schema: 1, claudeSessionId: 'ok', transcriptPath: ['array'], event: 'end', at: Date.now() },
+    ];
+
+    for (const record of malformedRecords) {
+      fs.writeFileSync(sidecar, JSON.stringify(record));
+      // eslint-disable-next-line no-await-in-loop
+      const parsed = await self._readClaudeBindSidecar({ claudeBindSidecar: sidecar });
+      assert.strictEqual(parsed, null);
+    }
+  });
+
+  it('SIDECAR: a present but malformed/oversized sidecar suppresses newest-mtime fallback binding', async function () {
+    const cwd = '/Users/x/proj';
+    writeSession(cwd, 'stranger.jsonl', null, 0);
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'tab1.json');
+    self.claudeSessions.set('tab1', { nameIsUserSet: false, claudeBindSidecar: sidecar, _sidecarSeen: false });
+
+    const payloads = [
+      '{not-json',
+      JSON.stringify({
+        schema: 1,
+        claudeSessionId: 'too-big',
+        transcriptPath: path.join(dir, 'too-big.jsonl'),
+        event: 'start',
+        at: Date.now(),
+        padding: 'x'.repeat(70 * 1024),
+      }),
+    ];
+
+    for (const payload of payloads) {
+      fs.writeFileSync(sidecar, payload);
+      self._stickyJsonl.delete('tab1');
+      self.claudeSessions.get('tab1')._sidecarSeen = false;
+      // eslint-disable-next-line no-await-in-loop
+      await self._pumpStickyJsonl('tab1', cwd);
+      assert.strictEqual(self._stickyJsonl.has('tab1'), false, 'no inference fallback bind while sidecar is present');
+      assert.strictEqual(self.claudeSessions.get('tab1')._sidecarSeen, true, 'opened sidecar marks the tab as sidecar-managed');
+    }
+  });
+
+  it('SIDECAR: _readClaudeBindSidecar preserves valid SessionEnd records', async function () {
+    const self = makeBindStub();
+    const sidecar = path.join(dir, 'session-end.json');
+    const expected = {
+      schema: 1,
+      claudeSessionId: 'session-end',
+      transcriptPath: path.join(dir, 'session-end.jsonl'),
+      cwd: '/Users/x/proj',
+      event: 'end',
+      reason: 'prompt_input_exit',
+      at: Date.now(),
+    };
+    fs.writeFileSync(sidecar, JSON.stringify(expected));
+
+    const parsed = await self._readClaudeBindSidecar({ claudeBindSidecar: sidecar });
+    assert.ok(parsed);
+    assert.strictEqual(parsed.event, 'end');
+    assert.strictEqual(parsed.claudeSessionId, expected.claudeSessionId);
+    assert.strictEqual(parsed.transcriptPath, expected.transcriptPath);
+  });
+
   // --- Deterministic sidecar binding (github-router SessionStart hook) ---
   it('SIDECAR: binds to the sidecar transcript, ignoring a newer growing unowned session', async function () {
     const cwd = '/Users/x/proj';

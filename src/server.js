@@ -123,6 +123,9 @@ const MAX_COALESCE_BYTES_FG = 32 * 1024;
 const MAX_COALESCE_BYTES_BG = 8 * 1024;
 const BACKPRESSURE_LIMIT_FG = 256 * 1024;
 const BACKPRESSURE_LIMIT_BG = 128 * 1024;
+const SESSION_OUTPUT_BUFFER_CAPACITY = 1000;
+const SESSION_OUTPUT_BUFFER_MAX_BYTES = CircularBuffer.LIVE_OUTPUT_MAX_BYTES;
+const CLAUDE_BIND_SIDECAR_MAX_BYTES = 64 * 1024;
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -1502,7 +1505,7 @@ class ClaudeCodeWebServer {
         agent: null, // 'claude' | 'codex' when started
         workingDir: validWorkingDir,
         connections: new Set(),
-        outputBuffer: new CircularBuffer(1000),
+        outputBuffer: new CircularBuffer(SESSION_OUTPUT_BUFFER_CAPACITY, SESSION_OUTPUT_BUFFER_MAX_BYTES),
         priority: 'foreground',
         sessionStartTime: null,
         sessionUsage: {
@@ -1513,7 +1516,7 @@ class ClaudeCodeWebServer {
           totalCost: 0,
           models: {}
         },
-        maxBufferSize: 1000
+        maxBufferSize: SESSION_OUTPUT_BUFFER_CAPACITY
       };
       
       this.claudeSessions.set(sessionId, session);
@@ -4116,7 +4119,7 @@ class ClaudeCodeWebServer {
       active: false,
       workingDir: validWorkingDir,
       connections: new Set([wsId]),
-      outputBuffer: new CircularBuffer(1000),
+      outputBuffer: new CircularBuffer(SESSION_OUTPUT_BUFFER_CAPACITY, SESSION_OUTPUT_BUFFER_MAX_BYTES),
       priority: 'foreground',
       sessionStartTime: null, // Will be set when Claude starts
       sessionUsage: {
@@ -4127,7 +4130,7 @@ class ClaudeCodeWebServer {
         totalCost: 0,
         models: {}
       },
-      maxBufferSize: 1000,
+      maxBufferSize: SESSION_OUTPUT_BUFFER_CAPACITY,
       // Sticky-note (local-LLM summary) state. Disabled by default; a client can
       // explicitly opt in via set_sticky_notes. autoTitle/nameIsUserSet drive
       // model-free Claude tab titling without clobbering a manual rename.
@@ -4271,16 +4274,7 @@ class ClaudeCodeWebServer {
           ? session.outputBuffer.toArray()
           : []
       );
-    let bytes = 0;
-    let start = items.length;
-    while (start > 0) {
-      const item = items[start - 1];
-      const itemBytes = Buffer.byteLength(typeof item === 'string' ? item : String(item || ''), 'utf8');
-      if (bytes > 0 && bytes + itemBytes > maxBytes) break;
-      bytes += itemBytes;
-      start--;
-    }
-    return items.slice(start);
+    return CircularBuffer.newestItemsWithinBytes(items, maxBytes);
   }
 
   async leaveClaudeSession(wsId) {
@@ -4794,7 +4788,7 @@ class ClaudeCodeWebServer {
         agent: null, // 'claude' | 'codex' when started
         workingDir: validWorkingDir,
         connections: new Set(),
-        outputBuffer: new CircularBuffer(1000),
+        outputBuffer: new CircularBuffer(SESSION_OUTPUT_BUFFER_CAPACITY, SESSION_OUTPUT_BUFFER_MAX_BYTES),
         priority: 'foreground',
         sessionStartTime: null,
         sessionUsage: {
@@ -4805,7 +4799,7 @@ class ClaudeCodeWebServer {
           totalCost: 0,
           models: {}
         },
-        maxBufferSize: 1000
+        maxBufferSize: SESSION_OUTPUT_BUFFER_CAPACITY
       };
 
       this.claudeSessions.set(sessionId, session);
@@ -6455,23 +6449,37 @@ class ClaudeCodeWebServer {
   /**
    * Read + parse the tab's sidecar (written atomically by github-router's hook).
    * Returns the parsed record `{claudeSessionId, transcriptPath, cwd, event,
-   * source?, reason?}` or null (no file / unreadable / malformed). The file is
-   * tiny, so we re-read every tick (no mtime cache: a SessionEnd→SessionStart
+   * source?, reason?}` or null (no file / unreadable / malformed). Reads are
+   * hard-capped at 64 KiB from a single open/read handle, then parsed each tick
+   * (no mtime cache: a SessionEnd→SessionStart
    * rewrite on /resume can land in the same mtime tick, and a cache keyed on
    * mtime would then serve the stale record and never rebind). Never throws — any
-   * error yields null so the poll is unaffected.
+   * error yields null so the poll is unaffected. A successfully opened sidecar
+   * marks `session._sidecarSeen = true` BEFORE validation so malformed/oversized
+   * content cannot fall through to newest-mtime inference in _pumpStickyJsonl.
    */
   async _readClaudeBindSidecar(session) {
     if (!session || !session.claudeBindSidecar) return null;
-    let raw;
+    let handle = null;
+    let raw = '';
     try {
-      raw = await fs.promises.readFile(session.claudeBindSidecar, 'utf8');
+      handle = await fs.promises.open(session.claudeBindSidecar, 'r');
+      session._sidecarSeen = true;
+      const chunk = Buffer.alloc(CLAUDE_BIND_SIDECAR_MAX_BYTES + 1);
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, 0);
+      if (bytesRead <= 0 || bytesRead > CLAUDE_BIND_SIDECAR_MAX_BYTES) return null;
+      raw = chunk.toString('utf8', 0, bytesRead);
     } catch (_) {
       return null; // no sidecar yet (claude not launched via github-router, or pending)
+    } finally {
+      if (handle) {
+        try { await handle.close(); } catch (_) { /* best effort */ }
+      }
     }
     try {
       const obj = JSON.parse(raw);
-      if (!obj || typeof obj !== 'object' || typeof obj.claudeSessionId !== 'string') return null;
+      if (!obj || typeof obj !== 'object') return null;
+      if (typeof obj.claudeSessionId !== 'string' || typeof obj.transcriptPath !== 'string') return null;
       return obj;
     } catch (_) {
       return null; // mid-write / malformed → skip this tick
