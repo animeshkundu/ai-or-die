@@ -16,6 +16,8 @@ const TerminalBridge = require('../../../src/terminal-bridge');
 const ClaudeBridge = require('../../../src/claude-bridge');
 const { ControlEventBus } = require('../../../src/control/event-bus');
 
+const SESSION_OUTPUT_BUFFER_MAX_BYTES = CircularBuffer.LIVE_OUTPUT_MAX_BYTES;
+
 let ClaudeCodeWebServer;
 try {
   ({ ClaudeCodeWebServer } = require('../../../src/server'));
@@ -62,7 +64,7 @@ function makeSession(id, active = false) {
     agent: null,
     workingDir: process.cwd(),
     connections: new Set(),
-    outputBuffer: new CircularBuffer(1000),
+    outputBuffer: new CircularBuffer(1000, SESSION_OUTPUT_BUFFER_MAX_BYTES),
     priority: 'foreground',
     stickyNotesEnabled: false,
   };
@@ -71,6 +73,11 @@ function makeSession(id, active = false) {
 function makeChunk(index, bytes) {
   const prefix = `chunk-${index.toString().padStart(4, '0')}:`;
   return prefix + 'x'.repeat(bytes - Buffer.byteLength(prefix));
+}
+
+function chunkIndex(chunk) {
+  const match = /^chunk-(\d+):/.exec(chunk);
+  return match ? Number(match[1]) : null;
 }
 
 function waitForBridgeExit(bridge, sessionId, options = {}) {
@@ -180,7 +187,7 @@ function waitForBridgeExit(bridge, sessionId, options = {}) {
     );
   });
 
-  it('proves the real PTY onOutput sink is chunk-counted rather than byte- or line-counted', async function () {
+  it('proves the real PTY onOutput sink keeps a newline-free tail capped at 512 KiB', async function () {
     const sessionId = 'pty-chunk-bound';
     const session = makeSession(sessionId);
     server.claudeSessions.set(sessionId, session);
@@ -206,27 +213,64 @@ function waitForBridgeExit(bridge, sessionId, options = {}) {
       callbacks.onOutput(makeChunk(index, chunkBytes));
     }
 
+    const retained = session.outputBuffer.toArray();
+    const retainedIndexes = retained.map((chunk) => chunkIndex(chunk));
+    const expectedStart = 1000 - retained.length;
+    const expectedIndexes = Array.from({ length: retained.length }, (_, i) => expectedStart + i);
+
     const diagnostics = server._collectDiagnostics();
     const measured = diagnostics.retention.output_buffers.active.per_session[0];
-    assert.strictEqual(measured.items, 1000, 'the raw onOutput chunks fill the 1000-item cap');
-    assert.strictEqual(measured.bytes, 1000 * chunkBytes);
-    assert.ok(
-      measured.bytes > 512 * 1024,
-      `live buffer retained ${(measured.bytes / 1048576).toFixed(1)} MiB; SessionStore only applies its 512 KiB cap when persisting`
-    );
+    assert.ok(measured.items > 0 && measured.items < 1000, 'byte cap trims the newest tail before item capacity is reached');
+    assert.ok(measured.bytes <= SESSION_OUTPUT_BUFFER_MAX_BYTES, 'live output tail is capped at 512 KiB');
+    assert.deepStrictEqual(retainedIndexes, expectedIndexes, 'retained chunks are the newest suffix by chunk index');
     assert.ok(
       session.outputBuffer.toArray().every((chunk) => !chunk.includes('\n')),
-      'the proving stream has no lines, so this is conclusively a chunk—not-line—cap'
+      'the proving stream has no lines, so this is the real newline-free PTY path'
     );
     callbacks.onExit(0, null);
     server._retentionByteMetricsCache = null;
     const afterExit = server._collectDiagnostics().retention.output_buffers.inactive.per_session[0];
-    assert.strictEqual(afterExit.bytes, measured.bytes, 'the real exit callback leaves raw scrollback reachable');
+    assert.ok(afterExit.bytes <= SESSION_OUTPUT_BUFFER_MAX_BYTES, 'inactive session still retains a bounded tail');
+    assert.strictEqual(afterExit.bytes, measured.bytes, 'natural exit keeps the bounded tail reachable');
   });
 
-  it('keeps inactive exited-session buffers reachable until the seven-day eviction threshold', async function () {
+  it('caps a single coalesced onOutput chunk to the newest <=512 KiB suffix', async function () {
+    const sessionId = 'pty-oversized-chunk';
+    const session = makeSession(sessionId);
+    server.claudeSessions.set(sessionId, session);
+    server.webSocketConnections.set('ws-oversized', {
+      claudeSessionId: sessionId,
+      ws: { readyState: 1, send() {} },
+    });
+    let callbacks;
+    const bridge = {
+      _commandReady: Promise.resolve(),
+      isAvailable: () => true,
+      startSession: async (_id, options) => { callbacks = options; },
+    };
+
+    await server.startToolSession('ws-oversized', 'terminal', bridge, {}, 80, 24);
+    if (session._ctlTranscript) {
+      session._ctlTranscript.dispose();
+      session._ctlTranscript = null;
+    }
+
+    const oversized = 'prefix-' + 'x'.repeat(700 * 1024) + '-tail';
+    callbacks.onOutput(oversized);
+
+    const retained = session.outputBuffer.toArray();
+    assert.strictEqual(retained.length, 1, 'single oversized coalesced write remains one capped chunk');
+    const stored = retained[0];
+    assert.ok(Buffer.byteLength(stored, 'utf8') <= SESSION_OUTPUT_BUFFER_MAX_BYTES);
+    assert.strictEqual(stored, oversized.slice(oversized.length - stored.length), 'stored output is the newest suffix');
+    assert.ok(stored.endsWith('-tail'));
+
+    callbacks.onExit(0, null);
+  });
+
+  it('keeps inactive exited-session buffers reachable as bounded tails until the seven-day eviction threshold', async function () {
     const sessionCount = 8;
-    const chunksPerSession = 4;
+    const chunksPerSession = 20;
     const chunkBytes = 64 * 1024;
     for (let sessionIndex = 0; sessionIndex < sessionCount; sessionIndex++) {
       const session = makeSession(`dead-${sessionIndex}`, false);
@@ -244,7 +288,8 @@ function waitForBridgeExit(bridge, sessionId, options = {}) {
     assert.strictEqual(evicted, 0, 'freshly exited sessions do not meet the seven-day eviction threshold');
     assert.strictEqual(after.sessions, sessionCount);
     assert.strictEqual(after.bytes, before.bytes);
-    assert.strictEqual(after.bytes, sessionCount * chunksPerSession * chunkBytes);
+    assert.strictEqual(after.bytes, sessionCount * SESSION_OUTPUT_BUFFER_MAX_BYTES);
+    assert.ok(after.per_session.every((entry) => entry.bytes <= SESSION_OUTPUT_BUFFER_MAX_BYTES));
   });
 
   it('retains unbounded pending transcript text while JSONL summary inference cannot run', function () {
@@ -374,7 +419,7 @@ function waitForBridgeExit(bridge, sessionId, options = {}) {
       const bytes = output.reduce((total, chunk) => total + Buffer.byteLength(chunk), 0);
       assert.ok(bytes >= 1024 * 1024, `expected at least 1 MiB from the real PTY, got ${bytes}`);
       assert.ok(output.length > 0, 'BaseBridge must invoke its output sink');
-      assert.ok(output.every((chunk) => !chunk.includes('\n')), 'the real PTY output has no line boundaries');
+      assert.ok(output.some((chunk) => !chunk.includes('\n')), 'the PTY stream includes raw batches without line-boundary splitting');
     } finally {
       await bridge.cleanup();
     }

@@ -256,7 +256,7 @@ Clears `selectedWorkingDir` back to `null`.
 **Response:** `{ "success": true, "message": "Working directory cleared" }`
 
 #### `GET /api/sessions/persistence`
-Returns persistence metadata from `SessionStore.getSessionMetadata()`.
+Returns persistence metadata from `SessionStore.getSessionMetadata()`. The response always includes `exists`, `savedAt`, `sessionCount`, `fileSize`, and `version`; for very large files before cache warm-up, metadata fields may be `null` while `exists:true` and `fileSize` remain accurate.
 
 **Response:**
 ```json
@@ -337,7 +337,7 @@ All messages are JSON. The `type` field determines the handler.
 | Client Message | Description |
 |---------------|-------------|
 | `create_session` | Create a new session and join it. Fields: `name`, `workingDir`. |
-| `join_session` | Join an existing session. Fields: `sessionId`. Replays the newest stored output up to a 256 KiB byte cap. |
+| `join_session` | Join an existing session. Fields: `sessionId`. Replays a hard-capped newest suffix up to 256 KiB total bytes (including trimming a single oversized chunk). |
 | `leave_session` | Disconnect from current session without stopping the agent. |
 | `start_claude` | Launch Claude CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
 | `start_codex` | Launch Codex CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
@@ -411,8 +411,8 @@ All messages are JSON. The `type` field determines the handler.
   agent: null,                  // 'claude' | 'codex' | 'agent' | null
   workingDir: '/path',
   connections: Set<wsId>,       // WebSocket connection IDs
-  outputBuffer: CircularBuffer, // Rolling buffer of raw terminal-output chunks
-  maxBufferSize: 1000,          // Max items in outputBuffer (not a byte or line limit)
+  outputBuffer: CircularBuffer, // Rolling raw-output chunks (1,000 items + 512 KiB byte cap)
+  maxBufferSize: 1000,          // Item cap applied alongside the 512 KiB byte cap
   sessionStartTime: Date|null,  // Set on first agent start
   sessionUsage: {               // Aggregated token/cost tracking
     requests: 0,
@@ -435,7 +435,7 @@ Sessions are persisted to disk via `SessionStore` every 30 seconds (`setInterval
 
 ### Session Restoration
 
-On startup, `loadPersistedSessions()` loads sessions from disk. All sessions are restored with `active: false` and empty `connections` Sets since pty processes do not survive restarts.
+On startup, `loadPersistedSessions()` loads sessions from disk. All sessions are restored with `active: false` and empty `connections` Sets since pty processes do not survive restarts. Each restored `outputBuffer` is rebuilt as a `CircularBuffer` with the same live caps used at runtime (1,000 items + 512 KiB), and join replay is independently hard-capped at 256 KiB by taking the newest bounded suffix (never exceeding the cap even for a single oversized item).
 
 ---
 

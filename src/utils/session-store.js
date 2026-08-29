@@ -3,7 +3,11 @@ const path = require('path');
 const os = require('os');
 const CircularBuffer = require('./circular-buffer');
 
-const MAX_BUFFER_BYTES_PER_SESSION = 512 * 1024; // 512KB per-session byte cap
+const SESSION_OUTPUT_BUFFER_CAPACITY = 1000;
+const MAX_BUFFER_BYTES_PER_SESSION = CircularBuffer.LIVE_OUTPUT_MAX_BYTES;
+const METADATA_FALLBACK_MAX_BYTES = 64 * 1024;
+const DEFAULT_MAX_SAFE_LOAD_BYTES = 128 * 1024 * 1024;
+const FILE_READ_CHUNK_BYTES = 64 * 1024;
 
 /**
  * Migrate a persisted sticky note to the v2 shape:
@@ -77,6 +81,10 @@ class SessionStore {
         // call waits for the prior in-flight save to settle before
         // entering the write critical section.
         this._inFlightSave = Promise.resolve();
+        this._sessionMetadataCache = null;
+        this.maxSafeLoadBytes = Number.isFinite(options.maxSafeLoadBytes) && options.maxSafeLoadBytes > 0
+            ? Math.floor(options.maxSafeLoadBytes)
+            : DEFAULT_MAX_SAFE_LOAD_BYTES;
         this.initializeStorage();
     }
 
@@ -93,7 +101,10 @@ class SessionStore {
         // Walk backwards from the end (newest lines) summing byte lengths
         let startIndex = lines.length;
         for (let i = lines.length - 1; i >= 0; i--) {
-            const lineBytes = Buffer.byteLength(lines[i] || '', 'utf8');
+            const line = lines[i];
+            const lineBytes = Buffer.isBuffer(line)
+                ? line.length
+                : Buffer.byteLength(typeof line === 'string' ? line : String(line || ''), 'utf8');
             if (totalBytes + lineBytes > MAX_BUFFER_BYTES_PER_SESSION) break;
             totalBytes += lineBytes;
             startIndex = i;
@@ -222,7 +233,7 @@ class SessionStore {
                 wasActive: session.active || false, // Preserve active state for restart awareness
                 agent: session.agent || null, // Which tool was running (claude, codex, etc.)
                 outputBuffer: (session.outputBuffer && typeof session.outputBuffer.slice === 'function')
-                    ? this._capBufferByBytes(session.outputBuffer.slice(-1000)) : [], // Keep last 1000 lines, capped at 512KB
+                    ? this._capBufferByBytes(session.outputBuffer.slice(-SESSION_OUTPUT_BUFFER_CAPACITY)) : [], // Keep last 1000 lines, capped at 512KB
                 connections: [], // Clear connections (they won't persist)
                 lastAccessed: session.lastAccessed || Date.now(),
                 // Session-specific usage tracking
@@ -338,6 +349,11 @@ class SessionStore {
             }
 
             this._dirty = false;
+            let savedStats = null;
+            try {
+                savedStats = await fs.stat(this.sessionsFile);
+            } catch (_) { /* best effort */ }
+            this._cacheSessionMetadata(data, savedStats);
             this._lastSaveError = null;
             return true;
         } catch (error) {
@@ -348,43 +364,100 @@ class SessionStore {
         }
     }
 
+    async _readHandleUpTo(handle, maxBytes, chunkBytes = FILE_READ_CHUNK_BYTES) {
+        const chunks = [];
+        let totalBytes = 0;
+        const hardLimit = maxBytes + 1;
+
+        while (totalBytes < hardLimit) {
+            const length = Math.min(chunkBytes, hardLimit - totalBytes);
+            const chunk = Buffer.alloc(length);
+            const result = await handle.read(chunk, 0, length, totalBytes);
+            if (!result.bytesRead) break;
+            chunks.push(result.bytesRead === chunk.length
+                ? chunk
+                : chunk.subarray(0, result.bytesRead));
+            totalBytes += result.bytesRead;
+            if (result.bytesRead < length) break;
+        }
+
+        return {
+            buffer: Buffer.concat(chunks, totalBytes),
+            bytesRead: totalBytes,
+            oversized: totalBytes > maxBytes
+        };
+    }
+
     async loadSessions() {
+        let handle = null;
         try {
-            // Check if sessions file exists
-            await fs.access(this.sessionsFile);
-            
-            const data = await fs.readFile(this.sessionsFile, 'utf8');
-            
+            handle = await fs.open(this.sessionsFile, 'r');
+            const stats = await handle.stat();
+
+            if (stats.size > this.maxSafeLoadBytes) {
+                this._sessionMetadataCache = null;
+                console.log(
+                    `Sessions file exceeds safe load limit (${this.maxSafeLoadBytes} bytes); preserving for manual recovery and starting fresh`
+                );
+                await handle.close();
+                handle = null;
+                await this._preserveUnusableSessionsFile('oversized load limit exceeded', 'oversized');
+                return new Map();
+            }
+
+            const readResult = await this._readHandleUpTo(handle, this.maxSafeLoadBytes);
+            const readStats = await handle.stat();
+            if (readResult.oversized || readStats.size > this.maxSafeLoadBytes) {
+                this._sessionMetadataCache = null;
+                console.log(
+                    `Sessions file exceeds safe load limit (${this.maxSafeLoadBytes} bytes); preserving for manual recovery and starting fresh`
+                );
+                await handle.close();
+                handle = null;
+                await this._preserveUnusableSessionsFile('oversized load limit exceeded', 'oversized');
+                return new Map();
+            }
+
+            const data = readResult.buffer.toString('utf8');
+
             // Check if file is empty or just whitespace
             if (!data || !data.trim()) {
+                this._sessionMetadataCache = null;
                 console.log('Sessions file is empty, starting fresh');
                 return new Map();
             }
-            
+
             let parsed;
             try {
                 parsed = JSON.parse(data);
             } catch (parseError) {
-                console.error('Sessions file is corrupted, starting fresh:', parseError.message);
+                this._sessionMetadataCache = null;
+                console.error('Sessions file is invalid JSON, starting fresh:', parseError.message);
+                await handle.close();
+                handle = null;
                 await this._preserveUnusableSessionsFile('invalid JSON');
                 return new Map();
             }
-            
+
             // Validate parsed data structure
             if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sessions)) {
+                this._sessionMetadataCache = null;
                 console.log('Invalid sessions file format, starting fresh');
+                await handle.close();
+                handle = null;
                 await this._preserveUnusableSessionsFile('invalid structure');
                 return new Map();
             }
 
             this._clearSaveBlock();
-            
+            this._cacheSessionMetadata(parsed, readStats);
+
             // Check if data is recent (within last 7 days)
             if (parsed.savedAt) {
                 const savedAt = new Date(parsed.savedAt);
                 const now = new Date();
                 const daysSinceSave = (now - savedAt) / (1000 * 60 * 60 * 24);
-                
+
                 if (daysSinceSave > 7) {
                     console.log('Sessions are too old, starting fresh');
                     return new Map();
@@ -395,7 +468,7 @@ class SessionStore {
             const sessions = new Map();
             for (const session of parsed.sessions) {
                 if (!session || !session.id) continue; // Skip invalid sessions
-                
+
                 // Restore session with default values for runtime properties
                 sessions.set(session.id, {
                     ...session,
@@ -404,8 +477,8 @@ class SessionStore {
                     lastActivity: session.lastActivity ? new Date(session.lastActivity) : new Date(),
                     active: false,
                     connections: new Set(),
-                    outputBuffer: CircularBuffer.fromArray(session.outputBuffer || [], 1000),
-                    maxBufferSize: 1000,
+                    outputBuffer: CircularBuffer.fromArray(session.outputBuffer || [], SESSION_OUTPUT_BUFFER_CAPACITY, MAX_BUFFER_BYTES_PER_SESSION),
+                    maxBufferSize: SESSION_OUTPUT_BUFFER_CAPACITY,
                     // Restore usage data if available (saved under sessionUsage key)
                     sessionUsage: session.sessionUsage || null
                 });
@@ -414,11 +487,16 @@ class SessionStore {
             console.log(`Restored ${sessions.size} sessions from disk`);
             return sessions;
         } catch (error) {
+            this._sessionMetadataCache = null;
             // File doesn't exist or other errors, return empty Map
             if (error.code !== 'ENOENT') {
                 console.error('Failed to load sessions:', error.message);
             }
             return new Map();
+        } finally {
+            if (handle) {
+                try { await handle.close(); } catch (_) { /* best effort */ }
+            }
         }
     }
 
@@ -430,8 +508,19 @@ class SessionStore {
         }
     }
 
-    async _preserveUnusableSessionsFile(reason) {
-        const backupFile = `${this.sessionsFile}.corrupted.${Date.now()}`;
+    _setSaveBlockedReason(details) {
+        this._saveBlockedReason = details;
+        this._saveBlockedWarningLogged = false;
+        const error = new Error(
+            'Session save blocked because ' + this.sessionsFile + ' could not be preserved'
+        );
+        error.code = 'ESESSIONBACKUPFAILED';
+        error.reason = details;
+        this._lastSaveError = error;
+    }
+
+    async _preserveUnusableSessionsFile(reason, tag = 'corrupted') {
+        const backupFile = `${this.sessionsFile}.${tag}.${Date.now()}`;
         let fileStats = null;
         try {
             fileStats = await fs.stat(this.sessionsFile);
@@ -448,12 +537,14 @@ class SessionStore {
             renameError = error;
         }
 
+        let copyError;
         try {
             await fs.copyFile(this.sessionsFile, backupFile);
-            this._clearSaveBlock();
-            return backupFile;
-        } catch (copyError) {
-            this._saveBlockedReason = {
+        } catch (error) {
+            copyError = error;
+        }
+        if (copyError) {
+            const details = {
                 reason,
                 at: Date.now(),
                 file: this.sessionsFile,
@@ -462,10 +553,36 @@ class SessionStore {
                 renameError,
                 copyError
             };
-            this._saveBlockedWarningLogged = false;
+            this._setSaveBlockedReason(details);
             console.error(
                 `Failed to preserve unusable sessions file (${reason}); future saves are blocked:`,
                 copyError.message
+            );
+            return null;
+        }
+
+        // A copy is only a recovery if the original is removed. If removal
+        // fails, retain the protection latch so autosave cannot overwrite the
+        // unrecovered source, while the completed copy remains byte-exact.
+        try {
+            await fs.unlink(this.sessionsFile);
+            this._clearSaveBlock();
+            return backupFile;
+        } catch (removeError) {
+            const details = {
+                reason,
+                at: Date.now(),
+                file: this.sessionsFile,
+                size: fileStats ? fileStats.size : null,
+                mtimeMs: fileStats ? fileStats.mtimeMs : null,
+                renameError,
+                removeError,
+                backupFile
+            };
+            this._setSaveBlockedReason(details);
+            console.error(
+                `Failed to remove original unusable sessions file (${reason}); future saves are blocked:`,
+                removeError.message
             );
             return null;
         }
@@ -500,6 +617,7 @@ class SessionStore {
         try {
             await fs.unlink(this.sessionsFile);
             this._clearSaveBlock();
+            this._sessionMetadataCache = null;
             console.log('Cleared old sessions');
             return true;
         } catch (error) {
@@ -510,25 +628,96 @@ class SessionStore {
         }
     }
 
+    _fileIdentityFromStats(stats) {
+        if (!stats || typeof stats !== 'object') return null;
+        const identity = {
+            size: stats.size,
+            mtimeMs: stats.mtimeMs,
+        };
+        if (stats.dev !== undefined && stats.dev !== null) identity.dev = String(stats.dev);
+        if (stats.ino !== undefined && stats.ino !== null) identity.ino = String(stats.ino);
+        if (typeof stats.ctimeMs === 'number') identity.ctimeMs = stats.ctimeMs;
+        return identity;
+    }
+
+    _sameFileIdentity(a, b) {
+        if (!a || !b) return false;
+        const keys = ['size', 'mtimeMs', 'dev', 'ino', 'ctimeMs'];
+        for (const key of keys) {
+            const hasA = Object.prototype.hasOwnProperty.call(a, key);
+            const hasB = Object.prototype.hasOwnProperty.call(b, key);
+            if (hasA !== hasB) return false;
+            if (hasA && a[key] !== b[key]) return false;
+        }
+        return true;
+    }
+
+    _cacheSessionMetadata(parsed, stats) {
+        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.sessions)) {
+            this._sessionMetadataCache = null;
+            return;
+        }
+        this._sessionMetadataCache = {
+            savedAt: typeof parsed.savedAt === 'string' ? parsed.savedAt : null,
+            sessionCount: parsed.sessions.length,
+            version: typeof parsed.version === 'string' ? parsed.version : null,
+            identity: this._fileIdentityFromStats(stats),
+        };
+    }
+
     async getSessionMetadata() {
+        let handle = null;
         try {
-            await fs.access(this.sessionsFile);
-            const stats = await fs.stat(this.sessionsFile);
-            const data = await fs.readFile(this.sessionsFile, 'utf8');
-            const parsed = JSON.parse(data);
-            
+            handle = await fs.open(this.sessionsFile, 'r');
+            const stats = await handle.stat();
+            const identity = this._fileIdentityFromStats(stats);
+
+            if (this._sessionMetadataCache && !this._sameFileIdentity(this._sessionMetadataCache.identity, identity)) {
+                this._sessionMetadataCache = null;
+            }
+
+            if (!this._sessionMetadataCache) {
+                try {
+                    const readResult = await this._readHandleUpTo(
+                        handle,
+                        METADATA_FALLBACK_MAX_BYTES,
+                        METADATA_FALLBACK_MAX_BYTES + 1
+                    );
+                    if (readResult.bytesRead > 0 && !readResult.oversized) {
+                        const data = readResult.buffer.toString('utf8');
+                        if (data.trim()) {
+                            const parsed = JSON.parse(data);
+                            this._cacheSessionMetadata(parsed, stats);
+                        } else {
+                            this._sessionMetadataCache = null;
+                        }
+                    } else {
+                        this._sessionMetadataCache = null;
+                    }
+                } catch (_) {
+                    // Best-effort fallback only. For large files we never parse here.
+                    this._sessionMetadataCache = null;
+                }
+            }
+
+            const metadata = this._sessionMetadataCache;
             return {
                 exists: true,
-                savedAt: parsed.savedAt,
-                sessionCount: parsed.sessions ? parsed.sessions.length : 0,
+                savedAt: metadata ? metadata.savedAt : null,
+                sessionCount: metadata ? metadata.sessionCount : null,
                 fileSize: stats.size,
-                version: parsed.version
+                version: metadata ? metadata.version : null
             };
         } catch (error) {
+            this._sessionMetadataCache = null;
             return {
                 exists: false,
                 error: error.message
             };
+        } finally {
+            if (handle) {
+                try { await handle.close(); } catch (_) { /* best effort */ }
+            }
         }
     }
 }

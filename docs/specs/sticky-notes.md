@@ -95,10 +95,15 @@ basename / `--resume` key), so notes are durable and resume. Binding is resolved
 Terminal tab, ai-or-die sets `AIORDIE_CLAUDE_BIND=<dataDir>/claude-bindings/<sessionId>.json`
 in the shell env. github-router's `SessionStart`/`SessionEnd` hook (`internal-session-bind`)
 atomically writes `{schema, claudeSessionId, transcriptPath, cwd, event, source?, reason?,
-at}` there on every startup / `/resume` / `/clear` / `/compact`. When a sidecar exists it is
-AUTHORITATIVE: the tab binds directly to `transcriptPath` by exact path (no cwd, no mtime),
-rebinding when `claudeSessionId` changes. This survives in-session `/resume`, `/clear` and
-exit→relaunch, and works when `liveCwd` is null (`cmd.exe` / no OSC 7). The hook skips
+at}` there on every startup / `/resume` / `/clear` / `/compact`. Sidecar reads are hard-capped
+at 64 KiB and parsed from a single open/read handle (no stat+full-read path); records are
+accepted only when both `claudeSessionId` and `transcriptPath` are strings. Opening the sidecar
+marks the tab as sidecar-managed before validation, so malformed/oversized sidecars return `null`
+for direct callers yet still suppress newest-mtime inference fallback (preventing cross-tab
+session theft). When a sidecar exists it is AUTHORITATIVE: the tab binds directly to
+`transcriptPath` by exact path (no cwd, no mtime), rebinding when `claudeSessionId` changes. This
+survives in-session `/resume`, `/clear` and exit→relaunch, and works when `liveCwd` is null
+(`cmd.exe` / no OSC 7). The hook skips
 subagent/teammate payloads (`agent_id`/`agent_type`); github-router strips
 `AIORDIE_CLAUDE_BIND` from claude's env so a nested launch can't hijack the tab. A stale
 sidecar is cleared on each terminal (re)start; orphans are swept on startup and on tab close;
