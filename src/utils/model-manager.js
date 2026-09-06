@@ -15,25 +15,25 @@ const MODEL_REGISTRY = {
     {
       name: 'encoder.int8.onnx',
       url: `https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/resolve/main/encoder.int8.onnx`,
-      expectedSize: 652184281,
+      expectedSize: 654040552,
       sha256: 'TODO_COMPUTE_HASH'
     },
     {
       name: 'decoder.int8.onnx',
       url: `https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/resolve/main/decoder.int8.onnx`,
-      expectedSize: 11845275,
+      expectedSize: 7257753,
       sha256: 'TODO_COMPUTE_HASH'
     },
     {
       name: 'joiner.int8.onnx',
       url: `https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/resolve/main/joiner.int8.onnx`,
-      expectedSize: 6355277,
+      expectedSize: 1735860,
       sha256: 'TODO_COMPUTE_HASH'
     },
     {
       name: 'tokens.txt',
       url: `https://huggingface.co/csukuangfj2/sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming/resolve/main/tokens.txt`,
-      expectedSize: 93939,
+      expectedSize: 8952,
       sha256: 'TODO_COMPUTE_HASH'
     }
   ],
