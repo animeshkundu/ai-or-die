@@ -142,8 +142,12 @@ class ClaudeBridge extends BaseBridge {
     }
   }
 
-  async stopSession(sessionId) {
+  onSessionDisposed(sessionId) {
     this._trustPromptHandled.delete(sessionId);
+  }
+
+  async stopSession(sessionId) {
+    this.onSessionDisposed(sessionId);
     return super.stopSession(sessionId);
   }
 }

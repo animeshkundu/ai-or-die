@@ -44,6 +44,30 @@ describe('CircularBuffer', () => {
       buf.push('z');
       assert.strictEqual(buf.byteLength, 4);
     });
+
+    it('enforces maxBytes by evicting oldest whole chunks', () => {
+      const buf = new CircularBuffer(10, { maxBytes: 10 });
+      buf.push('1234'); // 4 bytes
+      buf.push('5678'); // 4 bytes, total 8
+      assert.strictEqual(buf.byteLength, 8);
+      assert.strictEqual(buf.length, 2);
+      buf.push('abcd'); // 4 bytes, 8 + 4 = 12 > 10 => evicts '1234', byteLength = 8
+      assert.strictEqual(buf.byteLength, 8);
+      assert.deepStrictEqual(buf.toArray(), ['5678', 'abcd']);
+    });
+
+    it('truncateToBytes trims buffer down to target byte ceiling', () => {
+      const buf = new CircularBuffer(10);
+      buf.push('chunk-1-10b'); // 11 bytes
+      buf.push('chunk-2-10b'); // 11 bytes
+      buf.push('chunk-3-10b'); // 11 bytes
+      assert.strictEqual(buf.length, 3);
+      assert.strictEqual(buf.byteLength, 33);
+      buf.truncateToBytes(15);
+      assert.strictEqual(buf.length, 1);
+      assert.strictEqual(buf.byteLength, 11);
+      assert.deepStrictEqual(buf.toArray(), ['chunk-3-10b']);
+    });
   });
 
   describe('slice', () => {

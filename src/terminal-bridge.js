@@ -323,13 +323,18 @@ class TerminalBridge extends BaseBridge {
     }
   }
 
+  onSessionDisposed(sessionId) {
+    this._shellIntegrationStarts.delete(sessionId);
+    this._shellIntegration.cleanup(sessionId);
+    this._uninstallOsc7State(sessionId);
+  }
+
   async stopSession(sessionId) {
     this._shellIntegrationStarts.delete(sessionId);
     try {
       return await super.stopSession(sessionId);
     } finally {
-      this._shellIntegration.cleanup(sessionId);
-      this._uninstallOsc7State(sessionId);
+      this.onSessionDisposed(sessionId);
     }
   }
 

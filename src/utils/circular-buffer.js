@@ -8,8 +8,9 @@
  * Provides Array-compatible .slice(), .toArray(), .toJSON(), and iteration.
  */
 class CircularBuffer {
-  constructor(capacity) {
+  constructor(capacity, options = {}) {
     this.capacity = capacity;
+    this.maxBytes = typeof options === 'number' ? options : (options && options.maxBytes) || null;
     this.buffer = new Array(capacity);
     this._itemByteLengths = new Array(capacity).fill(0);
     this.head = 0;   // next write position
@@ -17,17 +18,72 @@ class CircularBuffer {
     this.byteLength = 0;
   }
 
-  /** Add an item, evicting the oldest if at capacity. O(1). */
+  /**
+   * Oldest index in insertion order.
+   */
+  get tail() {
+    return (this.head - this.size + this.capacity) % this.capacity;
+  }
+
+  /** Evict the oldest item. */
+  shift() {
+    if (this.size === 0) return undefined;
+    const oldIndex = this.tail;
+    const item = this.buffer[oldIndex];
+    this.byteLength -= this._itemByteLengths[oldIndex];
+    this.buffer[oldIndex] = undefined;
+    this._itemByteLengths[oldIndex] = 0;
+    this.size--;
+    return item;
+  }
+
+  /** Add an item, evicting the oldest if at capacity or exceeding maxBytes. */
   push(item) {
-    const bytes = Buffer.isBuffer(item)
-      ? item.length
-      : Buffer.byteLength(typeof item === 'string' ? item : String(item || ''), 'utf8');
-    this.byteLength -= this._itemByteLengths[this.head];
-    this.buffer[this.head] = item;
+    let cleanItem = item;
+    // Flatten string if needed to break SlicedString retainers
+    if (typeof cleanItem === 'string' && cleanItem.length > 256) {
+      cleanItem = Buffer.from(cleanItem, 'utf8').toString('utf8');
+    }
+
+    const bytes = Buffer.isBuffer(cleanItem)
+      ? cleanItem.length
+      : Buffer.byteLength(typeof cleanItem === 'string' ? cleanItem : String(cleanItem || ''), 'utf8');
+
+    // If at item capacity, evict oldest
+    if (this.size === this.capacity) {
+      this.shift();
+    }
+
+    // If maxBytes is set, evict oldest whole chunks until new item fits (or buffer is empty)
+    if (this.maxBytes && this.maxBytes > 0) {
+      while (this.size > 0 && (this.byteLength + bytes > this.maxBytes)) {
+        this.shift();
+      }
+    }
+
+    this.buffer[this.head] = cleanItem;
     this._itemByteLengths[this.head] = bytes;
     this.byteLength += bytes;
     this.head = (this.head + 1) % this.capacity;
-    if (this.size < this.capacity) this.size++;
+    this.size++;
+  }
+
+  /**
+   * Truncate the buffer to at most targetBytes of the most recent tail.
+   * Evicts oldest chunks until byteLength <= targetBytes.
+   */
+  truncateToBytes(targetBytes) {
+    if (!targetBytes || targetBytes <= 0) {
+      this.buffer.fill(undefined);
+      this._itemByteLengths.fill(0);
+      this.head = 0;
+      this.size = 0;
+      this.byteLength = 0;
+      return;
+    }
+    while (this.size > 0 && this.byteLength > targetBytes) {
+      this.shift();
+    }
   }
 
   /**

@@ -129,6 +129,15 @@ class ControlEventBus extends EventEmitter {
     this._bumpEvicted(seq);
     const cur = this._evictedBySession.get(key) || 0;
     if (seq > cur) this._evictedBySession.set(key, seq);
+    // Bound the _evictedBySession map cardinality to prevent multi-week leaks
+    if (this._evictedBySession.size > this._maxSessions * 2) {
+      const excess = this._evictedBySession.size - (this._maxSessions * 2);
+      const iterator = this._evictedBySession.keys();
+      for (let i = 0; i < excess; i++) {
+        const k = iterator.next().value;
+        if (k) this._evictedBySession.delete(k);
+      }
+    }
   }
 
   /** The cursor a fresh consumer should start from (i.e. "only new events"). */

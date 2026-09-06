@@ -438,6 +438,11 @@ class BaseBridge {
           session.active = false;
           this.sessions.delete(sessionId);
         }
+        try {
+          this.onSessionDisposed(sessionId);
+        } catch (e) {
+          console.warn(`[${this.toolName}] onSessionDisposed error:`, e && e.message);
+        }
         onExit(exitCode, signal);
       });
       this._addPtyDisposable(session, onExitDisposable);
@@ -524,6 +529,11 @@ class BaseBridge {
       console.error(`Failed to start ${this.toolName} session ${sessionId}:`, error);
       throw new Error(`Failed to start ${this.toolName}: ${error.message}`);
     }
+  }
+
+  // Subclass hook called when a session is disposed (natural exit, stopSession, error, etc.)
+  onSessionDisposed(sessionId) {
+    // Override in subclasses for tool-specific state teardown
   }
 
   // Override in subclasses for tool-specific argument construction
