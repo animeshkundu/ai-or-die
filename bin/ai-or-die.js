@@ -38,7 +38,7 @@ program
   .option('--tunnel', 'enable dev tunnel (requires devtunnel CLI installed)')
   .option('--tunnel-allow-anonymous', 'allow anonymous access to dev tunnel')
   .option('--mesh', 'expose this instance over a permanent Tailscale mesh (userspace; requires tailscale installed; set AIORDIE_TS_AUTHKEY to enroll)')
-  .option('--no-stt', 'disable local speech-to-text (on by default; downloads ~670MB Parakeet V3 model on first use)')
+  .option('--no-stt', 'disable local speech-to-text (on by default; downloads ~670MB Parakeet Unified English 0.6B model on first use)')
   .option('--stt-endpoint <url>', 'use external STT endpoint (OpenAI-compatible)')
   .option('--stt-model-dir <path>', 'custom directory for STT model files')
   .option('--stt-threads <number>', 'CPU threads for STT inference (default: auto, max 4)')

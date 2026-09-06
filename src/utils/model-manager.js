@@ -6,38 +6,11 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
-// Default model family: Parakeet Unified English 0.6B / Parakeet TDT 0.6B V3
-// Supports both English-optimized and multilingual variants.
-const DEFAULT_MODEL_ID = process.env.AIORDIE_STT_MODEL_ID || 'sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8';
-const MODEL_ID = DEFAULT_MODEL_ID;
+// Default model: Parakeet Unified English 0.6B (sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming)
+const DEFAULT_MODEL_ID = 'sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming';
+const MODEL_ID = process.env.AIORDIE_STT_MODEL_ID || DEFAULT_MODEL_ID;
 
 const MODEL_REGISTRY = {
-  'sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8': [
-    {
-      name: 'encoder.int8.onnx',
-      url: `https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/encoder.int8.onnx`,
-      expectedSize: 652184281,
-      sha256: 'TODO_COMPUTE_HASH'
-    },
-    {
-      name: 'decoder.int8.onnx',
-      url: `https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/decoder.int8.onnx`,
-      expectedSize: 11845275,
-      sha256: 'TODO_COMPUTE_HASH'
-    },
-    {
-      name: 'joiner.int8.onnx',
-      url: `https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/joiner.int8.onnx`,
-      expectedSize: 6355277,
-      sha256: 'TODO_COMPUTE_HASH'
-    },
-    {
-      name: 'tokens.txt',
-      url: `https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/tokens.txt`,
-      expectedSize: 93939,
-      sha256: 'TODO_COMPUTE_HASH'
-    }
-  ],
   'sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming': [
     {
       name: 'encoder.int8.onnx',
@@ -63,10 +36,36 @@ const MODEL_REGISTRY = {
       expectedSize: 93939,
       sha256: 'TODO_COMPUTE_HASH'
     }
+  ],
+  'sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8': [
+    {
+      name: 'encoder.int8.onnx',
+      url: `https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/encoder.int8.onnx`,
+      expectedSize: 652184281,
+      sha256: 'TODO_COMPUTE_HASH'
+    },
+    {
+      name: 'decoder.int8.onnx',
+      url: `https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/decoder.int8.onnx`,
+      expectedSize: 11845275,
+      sha256: 'TODO_COMPUTE_HASH'
+    },
+    {
+      name: 'joiner.int8.onnx',
+      url: `https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/joiner.int8.onnx`,
+      expectedSize: 6355277,
+      sha256: 'TODO_COMPUTE_HASH'
+    },
+    {
+      name: 'tokens.txt',
+      url: `https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main/tokens.txt`,
+      expectedSize: 93939,
+      sha256: 'TODO_COMPUTE_HASH'
+    }
   ]
 };
 
-const MODEL_FILES = MODEL_REGISTRY[MODEL_ID] || MODEL_REGISTRY['sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8'];
+const MODEL_FILES = MODEL_REGISTRY[MODEL_ID] || MODEL_REGISTRY[DEFAULT_MODEL_ID];
 
 // Total model size across all files (~670MB)
 const TOTAL_MODEL_SIZE = MODEL_FILES.reduce((sum, f) => sum + f.expectedSize, 0);
