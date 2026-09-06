@@ -123,6 +123,9 @@ const MAX_COALESCE_BYTES_FG = 32 * 1024;
 const MAX_COALESCE_BYTES_BG = 8 * 1024;
 const BACKPRESSURE_LIMIT_FG = 256 * 1024;
 const BACKPRESSURE_LIMIT_BG = 128 * 1024;
+const SESSION_OUTPUT_BUFFER_CAPACITY = 1000;
+const SESSION_OUTPUT_BUFFER_MAX_BYTES = CircularBuffer.LIVE_OUTPUT_MAX_BYTES;
+const CLAUDE_BIND_SIDECAR_MAX_BYTES = 64 * 1024;
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -334,13 +337,17 @@ class ClaudeCodeWebServer {
         if (wsInfo) this.sendToWebSocket(wsInfo.ws, frame);
       },
     });
-    this.usageReader = new UsageReader(this.sessionDurationHours);
+    // Usage reader is opt-in (off by default) to keep the core daemon lean (~50MB) and avoid background JSONL disk scans
+    this.usageEnabled = options.usage === true || process.env.AIORDIE_ENABLE_USAGE === '1';
+    this.usageReader = this.usageEnabled ? new UsageReader(this.sessionDurationHours) : null;
     this.usageAnalytics = new UsageAnalytics({
       sessionDurationHours: this.sessionDurationHours,
       plan: options.plan || process.env.CLAUDE_PLAN || 'max20',
       customCostLimit: parseFloat(process.env.CLAUDE_COST_LIMIT || options.customCostLimit || 50.00)
     });
     this.autoSaveInterval = null;
+    this._lastTimerTick = Date.now();
+    this._systemResumeGraceUntil = 0;
     this.activityBroadcastTimestamps = new Map(); // sessionId -> last broadcast timestamp
     this.startTime = Date.now(); // Track server start time
     this.isShuttingDown = false; // Flag to prevent duplicate shutdown
@@ -401,8 +408,16 @@ class ClaudeCodeWebServer {
   }
   
   setupAutoSave() {
-    // Auto-save sessions every 30 seconds
+    // Auto-save sessions every 30 seconds (also tracks sleep/resume clock jumps)
     this.autoSaveInterval = setInterval(() => {
+      const now = Date.now();
+      const delta = now - this._lastTimerTick;
+      this._lastTimerTick = now;
+      // If delta exceeds 60s for a 30s timer, system woke from sleep/hibernation.
+      // Grant 15s grace period to prevent false-positive watchdog evictions.
+      if (delta > 60000) {
+        this._systemResumeGraceUntil = now + 15000;
+      }
       this.saveSessionsToDisk();
     }, 30000);
 
@@ -1502,7 +1517,7 @@ class ClaudeCodeWebServer {
         agent: null, // 'claude' | 'codex' when started
         workingDir: validWorkingDir,
         connections: new Set(),
-        outputBuffer: new CircularBuffer(1000),
+        outputBuffer: new CircularBuffer(SESSION_OUTPUT_BUFFER_CAPACITY, SESSION_OUTPUT_BUFFER_MAX_BYTES),
         priority: 'foreground',
         sessionStartTime: null,
         sessionUsage: {
@@ -1513,7 +1528,7 @@ class ClaudeCodeWebServer {
           totalCost: 0,
           models: {}
         },
-        maxBufferSize: 1000
+        maxBufferSize: SESSION_OUTPUT_BUFFER_CAPACITY
       };
       
       this.claudeSessions.set(sessionId, session);
@@ -1566,21 +1581,18 @@ class ClaudeCodeWebServer {
         return res.status(404).json({ error: 'Session not found' });
       }
       
-      // Stop running process if active. Must `await` so the PTY teardown
-      // (listener disposal + kill + bounded wait) completes BEFORE we
-      // remove the session from claudeSessions. Without the await, the
-      // PTY exit callback raced session map mutation: callers landing
-      // mid-teardown saw a session that was "gone" from the map but
-      // whose ptyProcess was still alive holding FDs.
-      if (session.active) {
-        const bridge = this.getBridgeForAgent(session.agent);
-        if (bridge) {
-          try {
-            await bridge.stopSession(sessionId);
-          } catch (err) {
-            console.warn(`stopSession failed during DELETE for ${sessionId}: ${err && err.message}`);
-          }
+      // Stop running process if active, and trigger bridge teardown
+      const bridge = this.getBridgeForAgent(session.agent);
+      if (bridge) {
+        try {
+          await bridge.stopSession(sessionId);
+        } catch (err) {
+          console.warn(`stopSession failed during DELETE for ${sessionId}: ${err && err.message}`);
         }
+      } else {
+        // Inactive session: ensure all bridges clean up any subclass maps (e.g. TerminalBridge OSC7)
+        try { if (this.terminalBridge) this.terminalBridge.onSessionDisposed(sessionId); } catch (_) {}
+        try { if (this.claudeBridge) this.claudeBridge.onSessionDisposed(sessionId); } catch (_) {}
       }
       
       // Notify WebSocket connections that this session was deleted
@@ -1624,6 +1636,7 @@ class ClaudeCodeWebServer {
       this.claudeSessions.delete(sessionId);
       if (this.terminalGeometry) this.terminalGeometry.removeSession(sessionId);
       if (this.controlEventBus) this.controlEventBus.append(sessionId, 'session_deleted');
+      if (this._controlSessionSeq) this._controlSessionSeq.delete(sessionId);
       this.activityBroadcastTimestamps.delete(sessionId);
       this.sessionStore.markDirty();
 
@@ -3593,11 +3606,19 @@ class ClaudeCodeWebServer {
       this.handleWebSocketConnection(ws, req);
     });
 
-    // WS keepalive: DERP relays (mesh mode) drop idle sockets; a server ping
-    // every 15s keeps long-lived terminal connections alive and reaps dead ones.
+    // WS keepalive & half-open socket detection:
+    // Ping every 15s. If a client fails to respond to pings (e.g. laptop slept/dropped connection),
+    // terminate the socket so it doesn't leak memory or hang indefinitely.
     this._wsKeepalive = setInterval(() => {
       for (const ws of this.wss.clients) {
-        if (ws.readyState === WebSocket.OPEN) { try { ws.ping(); } catch (_) {} }
+        if (ws.readyState === WebSocket.OPEN) {
+          if (ws._isAlive === false) {
+            try { ws.terminate(); } catch (_) {}
+            continue;
+          }
+          ws._isAlive = false;
+          try { ws.ping(); } catch (_) {}
+        }
       }
     }, 15000);
     if (this._wsKeepalive.unref) this._wsKeepalive.unref();
@@ -3647,6 +3668,8 @@ class ClaudeCodeWebServer {
       secure: !!req.connection.encrypted,
       capabilities: new Set(),
     };
+    ws._isAlive = true;
+    ws.on('pong', () => { ws._isAlive = true; });
     this.webSocketConnections.set(wsId, wsInfo);
 
     ws.on('message', (message, isBinary) => {
@@ -4116,7 +4139,7 @@ class ClaudeCodeWebServer {
       active: false,
       workingDir: validWorkingDir,
       connections: new Set([wsId]),
-      outputBuffer: new CircularBuffer(1000),
+      outputBuffer: new CircularBuffer(SESSION_OUTPUT_BUFFER_CAPACITY, SESSION_OUTPUT_BUFFER_MAX_BYTES),
       priority: 'foreground',
       sessionStartTime: null, // Will be set when Claude starts
       sessionUsage: {
@@ -4127,7 +4150,7 @@ class ClaudeCodeWebServer {
         totalCost: 0,
         models: {}
       },
-      maxBufferSize: 1000,
+      maxBufferSize: SESSION_OUTPUT_BUFFER_CAPACITY,
       // Sticky-note (local-LLM summary) state. Disabled by default; a client can
       // explicitly opt in via set_sticky_notes. autoTitle/nameIsUserSet drive
       // model-free Claude tab titling without clobbering a manual rename.
@@ -4271,16 +4294,7 @@ class ClaudeCodeWebServer {
           ? session.outputBuffer.toArray()
           : []
       );
-    let bytes = 0;
-    let start = items.length;
-    while (start > 0) {
-      const item = items[start - 1];
-      const itemBytes = Buffer.byteLength(typeof item === 'string' ? item : String(item || ''), 'utf8');
-      if (bytes > 0 && bytes + itemBytes > maxBytes) break;
-      bytes += itemBytes;
-      start--;
-    }
-    return items.slice(start);
+    return CircularBuffer.newestItemsWithinBytes(items, maxBytes);
   }
 
   async leaveClaudeSession(wsId) {
@@ -4794,7 +4808,7 @@ class ClaudeCodeWebServer {
         agent: null, // 'claude' | 'codex' when started
         workingDir: validWorkingDir,
         connections: new Set(),
-        outputBuffer: new CircularBuffer(1000),
+        outputBuffer: new CircularBuffer(SESSION_OUTPUT_BUFFER_CAPACITY, SESSION_OUTPUT_BUFFER_MAX_BYTES),
         priority: 'foreground',
         sessionStartTime: null,
         sessionUsage: {
@@ -4805,7 +4819,7 @@ class ClaudeCodeWebServer {
           totalCost: 0,
           models: {}
         },
-        maxBufferSize: 1000
+        maxBufferSize: SESSION_OUTPUT_BUFFER_CAPACITY
       };
 
       this.claudeSessions.set(sessionId, session);
@@ -5723,7 +5737,7 @@ class ClaudeCodeWebServer {
         ...osc7Hooks,
         onOutput: (data) => {
           const currentSession = this.claudeSessions.get(sessionId);
-          if (!currentSession) return;
+          if (!currentSession || currentSession.sealed) return;
           currentSession.outputBuffer.push(data);
           try { if (currentSession._ctlTranscript) currentSession._ctlTranscript.write(data); } catch (_) { /* isolate */ }
           this.sessionStore.markDirty();
@@ -5752,13 +5766,16 @@ class ClaudeCodeWebServer {
           if (currentSession) {
             this._flushAndClearOutputTimer(currentSession, sessionId);
             currentSession.active = false;
+            currentSession.sealed = true;
             currentSession.agent = null;
             currentSession._geometrySpawning = false;
             currentSession._lastExit = { code, signal };
+            // Deflate output buffer immediately on exit to ~32 KiB tail to prevent
+            // dead sessions from hoarding 60+ MB for 7 days in the V8 heap.
+            if (currentSession.outputBuffer && typeof currentSession.outputBuffer.truncateToBytes === 'function') {
+              currentSession.outputBuffer.truncateToBytes(32 * 1024);
+            }
             this.sessionStore.markDirty();
-            // Persist the last rendered screen before disposing so a later
-            // refresh/join repaints an idle session instead of going blank.
-            this._persistSnapshotAndDispose(currentSession);
           }
           // Final sticky-note flush to capture the "done" state, then stop.
           this.stickyNoteSummarizer.flushExit(sessionId);
@@ -5881,6 +5898,14 @@ class ClaudeCodeWebServer {
 
   sendToWebSocket(ws, data) {
     if (ws && ws.readyState === WebSocket.OPEN) {
+      // WebSocket backpressure protection: if bufferedAmount exceeds 512 KiB,
+      // the client is lagging or disconnected without TCP FIN. Drop non-critical deltas
+      // to avoid unconstrained Buffer accumulation in V8 memory.
+      if (ws.bufferedAmount && ws.bufferedAmount > 512 * 1024) {
+        if (data && data.type === 'output') {
+          return; // Shed output delta; client will resync on reconnection
+        }
+      }
       ws.send(JSON.stringify(data));
     }
   }
@@ -6463,15 +6488,26 @@ class ClaudeCodeWebServer {
    */
   async _readClaudeBindSidecar(session) {
     if (!session || !session.claudeBindSidecar) return null;
-    let raw;
+    let handle = null;
+    let raw = '';
     try {
-      raw = await fs.promises.readFile(session.claudeBindSidecar, 'utf8');
+      handle = await fs.promises.open(session.claudeBindSidecar, 'r');
+      session._sidecarSeen = true;
+      const chunk = Buffer.alloc(CLAUDE_BIND_SIDECAR_MAX_BYTES + 1);
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, 0);
+      if (bytesRead <= 0 || bytesRead > CLAUDE_BIND_SIDECAR_MAX_BYTES) return null;
+      raw = chunk.toString('utf8', 0, bytesRead);
     } catch (_) {
       return null; // no sidecar yet (claude not launched via github-router, or pending)
+    } finally {
+      if (handle) {
+        try { await handle.close(); } catch (_) { /* best effort */ }
+      }
     }
     try {
       const obj = JSON.parse(raw);
-      if (!obj || typeof obj !== 'object' || typeof obj.claudeSessionId !== 'string') return null;
+      if (!obj || typeof obj !== 'object') return null;
+      if (typeof obj.claudeSessionId !== 'string' || typeof obj.transcriptPath !== 'string') return null;
       return obj;
     } catch (_) {
       return null; // mid-write / malformed → skip this tick
@@ -6994,6 +7030,7 @@ class ClaudeCodeWebServer {
         if (this.terminalGeometry) this.terminalGeometry.removeSession(top.id);
         this.claudeSessions.delete(top.id);
         this.controlEventBus.append(top.id, 'session_deleted');
+        if (this._controlSessionSeq) this._controlSessionSeq.delete(top.id);
         this.activityBroadcastTimestamps.delete(top.id);
         try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
         evictedCount++;
@@ -7417,17 +7454,17 @@ class ClaudeCodeWebServer {
           sticky_note: {
             status: this.stickyNoteEngine && this.stickyNoteEngine.getStatus
               ? this.stickyNoteEngine.getStatus() : null,
-            queue_length: (this.stickyNoteEngine && this.stickyNoteEngine._queue && this.stickyNoteEngine._queue.length) || 0,
-            live: !!(this.stickyNoteEngine && this.stickyNoteEngine._worker),
-            spawning: !!(this.stickyNoteEngine && this.stickyNoteEngine._spawningWorker),
-            restart_attempts: (this.stickyNoteEngine && this.stickyNoteEngine._restartAttempts) || 0,
+            queue_length: (this.stickyNoteEngine && this.stickyNoteEngine._host && this.stickyNoteEngine._host._queue && this.stickyNoteEngine._host._queue.length) || 0,
+            live: !!(this.stickyNoteEngine && this.stickyNoteEngine._host && this.stickyNoteEngine._host._generation && this.stickyNoteEngine._host._generation.child),
+            spawning: !!(this.stickyNoteEngine && this.stickyNoteEngine._host && this.stickyNoteEngine._host._state === 'loading'),
+            restart_attempts: (this.stickyNoteEngine && this.stickyNoteEngine._host && this.stickyNoteEngine._host._consecutiveFailures) || 0,
           },
           stt: {
             status: this.sttEngine && this.sttEngine.getStatus ? this.sttEngine.getStatus() : null,
-            queue_length: (this.sttEngine && this.sttEngine._queue && this.sttEngine._queue.length) || 0,
-            live: !!(this.sttEngine && this.sttEngine._worker),
-            spawning: !!(this.sttEngine && this.sttEngine._spawningWorker),
-            restart_attempts: (this.sttEngine && this.sttEngine._restartAttempts) || 0,
+            queue_length: (this.sttEngine && this.sttEngine._host && this.sttEngine._host._queue && this.sttEngine._host._queue.length) || 0,
+            live: !!(this.sttEngine && this.sttEngine._host && this.sttEngine._host._generation && this.sttEngine._host._generation.child),
+            spawning: !!(this.sttEngine && this.sttEngine._host && this.sttEngine._host._state === 'loading'),
+            restart_attempts: (this.sttEngine && this.sttEngine._host && this.sttEngine._host._consecutiveFailures) || 0,
           },
         },
         maps: {
@@ -7621,9 +7658,9 @@ class ClaudeCodeWebServer {
    */
   async _pruneCrashFilesOnce() {
     if (!this.sessionStore || !this.sessionStore.storageDir) return;
-    const UsageReader = require('./usage-reader');
+    const { pruneCrashFiles } = require('./utils/log-rotator');
     try {
-      const result = await UsageReader.pruneCrashFiles(this.sessionStore.storageDir);
+      const result = await pruneCrashFiles(this.sessionStore.storageDir);
       if (result && result.pruned && result.pruned.length > 0) {
         console.log('[disk-prune-crash]', JSON.stringify({
           pruned_count: result.pruned.length,
@@ -7901,7 +7938,35 @@ class ClaudeCodeWebServer {
   }
 
   async handleGetUsage(wsInfo) {
+    if (!this.usageReader) {
+      // Usage tracking is disabled by default to keep the daemon lean (<50MB) and avoid periodic disk scans.
+      // Return O(1) empty response without touching disk.
+      this.sendToWebSocket(wsInfo.ws, {
+        type: 'usage_update',
+        enabled: false,
+        sessionStats: {
+          requests: 0,
+          totalTokens: 0,
+          totalCost: 0,
+          message: 'Usage tracking is disabled (opt-in with --usage)'
+        },
+        dailyStats: null,
+        sessionTimer: null,
+        analytics: null,
+        burnRate: null,
+        overlappingSessions: 0,
+        plan: this.usageAnalytics ? this.usageAnalytics.currentPlan : 'max20',
+        limits: null
+      });
+      return;
+    }
+
     try {
+      // Periodically clean up activeSessions map so it stays bounded
+      if (this.usageAnalytics && typeof this.usageAnalytics.cleanup === 'function') {
+        this.usageAnalytics.cleanup();
+      }
+
       // Get usage stats for the current Claude session window
       const currentSessionStats = await this.usageReader.getCurrentSessionStats();
       

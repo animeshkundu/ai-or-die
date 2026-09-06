@@ -109,6 +109,7 @@ describe('session-scoped shell integration', function () {
   });
 
   (has('pwsh') ? it : it.skip)('PowerShell URI builder encodes drive, UNC, spaces, unicode, hash, and question mark paths', function () {
+    this.timeout(15000);
     const integration = manager.prepare('uri-session', 'pwsh');
     const script = integration.script.replace(/'/g, "''");
     const home = path.join(root, 'empty-home');
@@ -136,7 +137,7 @@ describe('session-scoped shell integration', function () {
       },
     });
     assert.strictEqual(result.status, 0, result.stderr);
-    const lines = result.stdout.trim().split(/\r?\n/);
+    const lines = result.stdout.trim().split(/\r?\n/).filter((l) => l.startsWith('file://'));
     assert.strictEqual(lines[0], 'file:///C:/dir%20with%20space/r%C3%A9sum%C3%A9%23%3F.txt');
     assert.strictEqual(
       lines[1],

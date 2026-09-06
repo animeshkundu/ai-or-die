@@ -246,9 +246,24 @@ async function pruneOldFiles(dirPath, pattern, opts) {
     return { ok: true, pruned, skipped };
 }
 
+/**
+ * Prune .crash orphan files from the session storage dir.
+ * Keeps the most recent crash file for operator inspection;
+ * deletes anything older than maxAgeMs (default 7 days).
+ */
+async function pruneCrashFiles(sessionsDir, opts = {}) {
+    const maxAgeMs = opts.maxAgeMs || (7 * 24 * 60 * 60 * 1000);
+    return pruneOldFiles(
+        sessionsDir,
+        /^sessions\.json\.crash(\.\d+)?$/,
+        { maxAgeMs, preserveLatestN: 1 }
+    );
+}
+
 module.exports = {
     compactJsonlFile,
     pruneOldFiles,
+    pruneCrashFiles,
     _atomicMove,           // exported for testing
     _fsyncBestEffort,      // exported for testing
 };

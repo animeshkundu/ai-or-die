@@ -35,7 +35,7 @@ async function main() {
   if (doStt) {
     const ModelManager = require('../src/utils/model-manager');
     const m = new ModelManager();
-    console.log(`STT (Parakeet V3 INT8) -> ${m.getModelPath()}`);
+    console.log(`STT (Parakeet Unified English 0.6B INT8) -> ${m.getModelPath()}`);
     await m.ensureModel(onProgress('STT'));
     console.log('STT model ready.');
   }

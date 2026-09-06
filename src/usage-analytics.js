@@ -472,11 +472,11 @@ class UsageAnalytics extends EventEmitter {
   }
 
   /**
-   * Clean up old data
+   * Clean up old data and enforce bounded LRU on activeSessions
    */
   cleanup() {
     const now = new Date();
-    
+
     // Remove expired sessions
     for (const [id, session] of this.activeSessions) {
       if (session.endTime < now) {
@@ -484,10 +484,20 @@ class UsageAnalytics extends EventEmitter {
         this.activeSessions.delete(id);
       }
     }
-    
-    // Keep only last 24 hours of history
+
+    // Bound activeSessions count defensively (LRU limit: max 100)
+    if (this.activeSessions.size > 100) {
+      const keysToDelete = Array.from(this.activeSessions.keys()).slice(0, this.activeSessions.size - 100);
+      for (const k of keysToDelete) {
+        this.activeSessions.delete(k);
+      }
+    }
+
+    // Keep only last 24 hours of history and cap history length at 200
     const cutoff = new Date(now - 24 * 60 * 60 * 1000);
-    this.sessionHistory = this.sessionHistory.filter(s => s.endTime > cutoff);
+    this.sessionHistory = this.sessionHistory.filter(s => s.endTime > cutoff).slice(-200);
+    this.burnRateHistory = (this.burnRateHistory || []).slice(-100);
+    this.recentUsage = (this.recentUsage || []).slice(-100);
   }
 }
 

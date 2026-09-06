@@ -6785,15 +6785,9 @@ class ClaudeCodeWebInterface {
     }
 
     requestUsageStats() {
+        // UI usage display is removed; do not poll periodically unless explicitly invoked
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             this.socket.send(JSON.stringify({ type: 'get_usage' }));
-        }
-        
-        // Start periodic updates if not already running
-        if (!this.usageUpdateTimer) {
-            this.usageUpdateTimer = setInterval(() => {
-                this.requestUsageStats();
-            }, 10000); // Update every 10 seconds for more real-time stats
         }
     }
 

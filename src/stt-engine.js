@@ -217,10 +217,20 @@ class SttEngine extends EventEmitter {
     formData.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'audio.wav');
     formData.append('model', 'parakeet');
     const url = this._sttEndpoint.replace(/\/+$/, '') + '/v1/audio/transcriptions';
-    const response = await fetch(url, { method: 'POST', body: formData });
-    if (!response.ok) throw new Error(`External STT failed: HTTP ${response.status}`);
-    const result = await response.json();
-    return (result.text || '').trim();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error('External STT timed out after 60s')), 60000);
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`External STT failed: HTTP ${response.status}`);
+      const result = await response.json();
+      return (result.text || '').trim();
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   _float32ToWav(samples, sampleRate) {

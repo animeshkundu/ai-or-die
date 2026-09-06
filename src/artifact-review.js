@@ -483,6 +483,12 @@ class ArtifactReviewStore extends EventEmitter {
 
     review.status = 'ended';
     review.updatedAt = nowIso();
+    // Payload shedding: once ended, drop the large DOM snapshot and trim chat history
+    // to prevent ended reviews from acting as multi-megabyte memory retainers.
+    review.domSnapshot = null;
+    if (Array.isArray(review.chat) && review.chat.length > 50) {
+      review.chat = review.chat.slice(-50);
+    }
     const event = this._appendEvent(review, { kind: 'ended' });
     this.emit('ended', { aiSessionId, id: event.id, review });
     return review;
