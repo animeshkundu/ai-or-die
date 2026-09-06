@@ -406,6 +406,10 @@ class ClaudeCodeWebInterface {
                         this.send({ type: 'set_priority', sessions });
                     }
                 }
+                // Cancel active voice capture when tab/page is hidden
+                if (this.voiceController && this.voiceController.isRecording) {
+                    try { this.voiceController.cancelRecording(); } catch (_) {}
+                }
             } else {
                 // Tab became visible — restore foreground for active session
                 if (this.currentClaudeSessionId) {
@@ -4916,7 +4920,10 @@ class ClaudeCodeWebInterface {
         const apply = () => {
             const standalone = this._isInstalledPWA();
             document.documentElement.classList.toggle('pwa-standalone', standalone);
-            if (standalone) this._polyfillSafeAreaInsets();
+            if (standalone) {
+                this._polyfillSafeAreaInsets();
+                this._updateWindowControlsOverlay();
+            }
         };
         apply();
         try {
@@ -4931,7 +4938,34 @@ class ClaudeCodeWebInterface {
                 if (mql.addEventListener) mql.addEventListener('change', apply);
                 else if (mql.addListener) mql.addListener(apply);
             });
+
+            // Listen to Window Controls Overlay geometry changes (Windows/Mac PWA)
+            if ('windowControlsOverlay' in navigator) {
+                navigator.windowControlsOverlay.addEventListener('geometrychange', () => {
+                    this._updateWindowControlsOverlay();
+                });
+            }
+            window.addEventListener('resize', () => {
+                if (this._isInstalledPWA()) this._updateWindowControlsOverlay();
+            });
         } catch (_) { /* ignore */ }
+    }
+
+    _updateWindowControlsOverlay() {
+        const root = document.documentElement;
+        if ('windowControlsOverlay' in navigator && navigator.windowControlsOverlay.visible) {
+            const rect = navigator.windowControlsOverlay.getTitlebarAreaRect();
+            if (rect && rect.width > 0) {
+                const rightControlsWidth = Math.max(0, window.innerWidth - (rect.x + rect.width));
+                root.style.setProperty('--wco-padding-right', `${rightControlsWidth + 10}px`);
+                root.style.setProperty('--wco-padding-left', `${Math.max(10, rect.x)}px`);
+                return;
+            }
+        }
+        // If standalone on Windows/Mac desktop without explicit WCO API measurement,
+        // env(titlebar-area-*) governs in CSS; clear manual overrides.
+        root.style.removeProperty('--wco-padding-right');
+        root.style.removeProperty('--wco-padding-left');
     }
 
     _polyfillSafeAreaInsets() {
@@ -5251,6 +5285,15 @@ class ClaudeCodeWebInterface {
         } else {
             document.documentElement.removeAttribute('data-theme');
         }
+
+        // Dynamically update browser/PWA meta theme-color to match theme surface
+        try {
+            const metaTheme = document.querySelector('meta[name="theme-color"]');
+            if (metaTheme) {
+                const surfaceColor = getComputedStyle(document.documentElement).getPropertyValue('--surface-primary').trim();
+                if (surfaceColor) metaTheme.setAttribute('content', surfaceColor);
+            }
+        } catch (_) {}
 
         // Apply terminal settings
         this.terminal.options.fontSize = settings.fontSize;

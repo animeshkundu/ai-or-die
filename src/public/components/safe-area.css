@@ -85,3 +85,40 @@
     left: calc(16px + var(--sa-left));
     right: calc(16px + var(--sa-right));
 }
+
+/* --- Window Controls Overlay (desktop PWA titlebar) ------------------------
+   Loaded last so WCO titlebar area padding wins over tabs.css cascade.
+   Supports both native CSS env(), dynamic --wco-padding-right, and html.pwa-standalone. */
+@media (display-mode: window-controls-overlay), (display-mode: standalone) {
+    .session-tabs-bar {
+        padding-top: env(titlebar-area-y, 0px) !important;
+        padding-left: var(--wco-padding-left, max(10px, env(titlebar-area-x, 10px))) !important;
+        padding-right: var(--wco-padding-right, max(10px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 10px))) !important;
+        -webkit-app-region: drag;
+        app-region: drag;
+    }
+    .session-tabs-bar button,
+    .session-tabs-bar .session-tab,
+    .session-tabs-bar .tab-actions,
+    .session-tabs-bar input,
+    .session-tabs-bar select {
+        -webkit-app-region: no-drag;
+        app-region: no-drag;
+    }
+}
+
+html.pwa-standalone .session-tabs-bar {
+    padding-top: env(titlebar-area-y, 0px) !important;
+    padding-left: var(--wco-padding-left, max(10px, env(titlebar-area-x, 10px))) !important;
+    padding-right: var(--wco-padding-right, max(10px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 10px))) !important;
+    -webkit-app-region: drag;
+    app-region: drag;
+}
+html.pwa-standalone .session-tabs-bar button,
+html.pwa-standalone .session-tabs-bar .session-tab,
+html.pwa-standalone .session-tabs-bar .tab-actions,
+html.pwa-standalone .session-tabs-bar input,
+html.pwa-standalone .session-tabs-bar select {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
+}

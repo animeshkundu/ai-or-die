@@ -452,7 +452,8 @@
     cursor: pointer;
     border-radius: var(--radius-sm);
     transition: all var(--duration-normal) var(--ease-default);
-    margin-left: auto;
+    margin-left: 2px;
+    margin-right: 2px;
     flex-shrink: 0;
 }
 
@@ -687,23 +688,6 @@
         width: 14px;
     }
 
-    /* Hide desktop-only action buttons - moved to bottom nav */
-    .tab-actions .tab-browse-files,
-    .tab-actions .tab-vscode-tunnel,
-    .tab-actions .tab-attach-image,
-    .tab-actions .tab-voice-input {
-        display: none;
-    }
-
-    /* Hide the overflow menu button on mobile — bottom nav handles these actions */
-    .overflow-menu-btn {
-        display: none;
-    }
-
-    .overflow-menu-panel {
-        display: none;
-    }
-
     /* Keep settings gear visible on desktop tab bar */
     .tab-settings {
         width: 24px;
@@ -717,6 +701,25 @@
         border-radius: var(--radius-full);
         min-width: var(--hit-target-min);
         min-height: var(--hit-target-min);
+    }
+}
+
+@media (max-width: 820px) and (hover: none) and (pointer: coarse),
+       (max-height: 480px) and (max-width: 900px) and (hover: none) and (pointer: coarse) {
+    /* Hide desktop-only action buttons on mobile touch devices — moved to bottom nav */
+    .tab-actions .tab-browse-files,
+    .tab-actions .tab-vscode-tunnel,
+    .tab-actions .tab-attach-image,
+    .tab-actions .tab-voice-input {
+        display: none;
+    }
+
+    .overflow-menu-btn {
+        display: none;
+    }
+
+    .overflow-menu-panel {
+        display: none;
     }
 }
 

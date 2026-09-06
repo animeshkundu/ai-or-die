@@ -29,6 +29,10 @@
     --error: var(--status-error);
     --warning: var(--status-warning);
     --border: var(--border-default);
+
+    /* Window Controls Overlay padding variables populated dynamically by app.js */
+    --wco-padding-left: 0px;
+    --wco-padding-right: 0px;
 }
 
 * {
@@ -41,6 +45,13 @@ html {
     overflow-x: hidden;
     width: 100%;
     overscroll-behavior: none; /* Disable pull-to-refresh */
+    color-scheme: dark;
+}
+
+[data-theme="classic-light"],
+[data-theme="light"],
+[data-theme="solarized-light"] {
+    color-scheme: light;
 }
 
 body {
@@ -98,16 +109,21 @@ pre, code {
 /* ── PWA Window Controls Overlay ── */
 /* When installed as PWA with window-controls-overlay display mode,
    the tab bar extends into the title bar for a native terminal feel. */
-@media (display-mode: window-controls-overlay) {
+@media (display-mode: window-controls-overlay), (display-mode: standalone) {
     .session-tabs-bar {
-        padding-top: env(titlebar-area-y, 0);
-        padding-left: env(titlebar-area-x, 10px);
-        padding-right: calc(100% - env(titlebar-area-width, 100%) - env(titlebar-area-x, 0px) + 10px);
+        padding-top: env(titlebar-area-y, 0px);
+        padding-left: var(--wco-padding-left, max(10px, env(titlebar-area-x, 10px)));
+        padding-right: var(--wco-padding-right, max(10px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 10px)));
         -webkit-app-region: drag;
+        app-region: drag;
     }
     .session-tabs-bar button,
-    .session-tabs-bar .session-tab {
+    .session-tabs-bar .session-tab,
+    .session-tabs-bar .tab-actions,
+    .session-tabs-bar input,
+    .session-tabs-bar select {
         -webkit-app-region: no-drag;
+        app-region: no-drag;
     }
 }
 

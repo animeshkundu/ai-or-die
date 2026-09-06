@@ -229,11 +229,14 @@ SpeechRecognitionRecorder.prototype.start = function () {
 
     recognition.onend = function () {
       self._recording = false;
+      var durationMs = self._startTime ? (Date.now() - self._startTime) : 0;
+      var result = { text: self._resultText, durationMs: durationMs };
       if (self._resolveStop) {
-        var durationMs = Date.now() - self._startTime;
-        self._resolveStop({ text: self._resultText, durationMs: durationMs });
+        self._resolveStop(result);
         self._resolveStop = null;
         self._rejectStop = null;
+      } else if (self.onAutoStop) {
+        self.onAutoStop(result);
       }
     };
 
@@ -395,7 +398,11 @@ LocalVoiceRecorder.prototype.start = function () {
     // Set up auto-stop timer
     self._autoStopTimer = setTimeout(function () {
       if (self._recording) {
-        self._forceStop();
+        if (self.onAutoStop) {
+          self.onAutoStop();
+        } else {
+          self._forceStop();
+        }
       }
     }, MAX_RECORDING_SECONDS * 1000);
 
@@ -677,6 +684,27 @@ VoiceInputController.prototype.startRecording = function () {
 
   self._starting = true;
   self._recorder = self._createRecorder();
+  if (self._recorder) {
+    self._recorder.onAutoStop = function (autoResult) {
+      if (self._mode === 'cloud' && autoResult) {
+        var durationMs = autoResult.durationMs || 0;
+        if (durationMs < MIN_RECORDING_SECONDS * 1000) {
+          if (self._onError) {
+            self._onError(new Error('Recording too short (minimum ' + MIN_RECORDING_SECONDS + ' seconds)'));
+          }
+          return;
+        }
+        if (self._onRecordingStop) {
+          self._onRecordingStop(autoResult);
+        }
+        if (autoResult.text && self._onTranscription) {
+          self._onTranscription(autoResult.text);
+        }
+      } else {
+        self.stopRecording();
+      }
+    };
+  }
 
   self._recorder.start().then(function () {
     self._starting = false;
