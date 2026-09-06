@@ -3946,7 +3946,9 @@ class ClaudeCodeWebServer {
             await this.terminalGeometry.takeControl(
               wsInfo.claudeSessionId,
               wsId,
-              data.viewId
+              data.viewId,
+              data.cols,
+              data.rows
             );
           }
         }

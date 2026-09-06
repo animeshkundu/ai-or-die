@@ -81,7 +81,10 @@ The attachment that actually begins a successful tool spawn deliberately claims
 the lease; rejected and idempotent `start_*` requests only advertise and cannot
 steal control from an already-running viewer.
 After a lease becomes vacant, passive re-advertisement cannot reacquire it;
-restored sessions also remain vacant until a deliberate ownership act.
+restored sessions remain vacant until a deliberate ownership act (input tagged
+`claim: true` or `geometry_take_control`). `geometry_take_control` supports
+passing explicit geometry dimensions to atomically update capacity and seize
+control in a single frame.
 
 Restored sessions increment a persisted epoch and clear the runtime lease.
 Spawn precedence is owner capacity, persisted applied geometry, then 80x24.

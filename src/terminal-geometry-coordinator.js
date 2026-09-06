@@ -72,6 +72,7 @@ class TerminalGeometryCoordinator {
       attachmentSeq: 0,
       deliberateSeq: 0,
       automaticLeaseAvailable: !restored,
+      restored,
       ownerApplyTimer: null,
       queue: Promise.resolve(),
     };
@@ -187,7 +188,20 @@ class TerminalGeometryCoordinator {
     });
   }
 
-  takeControl(sessionId, connectionId, viewId) {
+  takeControl(sessionId, connectionId, viewId, cols, rows) {
+    if (Number.isInteger(cols) && Number.isInteger(rows)) {
+      const state = this._states.get(sessionId);
+      if (state) {
+        const capacity = normalizeGeometry(cols, rows);
+        if (capacity) {
+          const record = this._ensureAttachment(state, connectionId, viewId);
+          if (record) {
+            record.capacity = capacity;
+            record.eligible = true;
+          }
+        }
+      }
+    }
     return this.withDeliberateAction(sessionId, connectionId, viewId, null);
   }
 
