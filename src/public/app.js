@@ -4909,7 +4909,8 @@ class ClaudeCodeWebInterface {
     // --- PWA Install State Machine ---
 
     _isInstalledPWA() {
-        return window.matchMedia('(display-mode: standalone)').matches
+        return ('windowControlsOverlay' in navigator && navigator.windowControlsOverlay?.visible)
+            || window.matchMedia('(display-mode: standalone)').matches
             || window.matchMedia('(display-mode: window-controls-overlay)').matches
             || window.matchMedia('(display-mode: minimal-ui)').matches
             || window.matchMedia('(display-mode: fullscreen)').matches
@@ -4961,8 +4962,8 @@ class ClaudeCodeWebInterface {
             document.documentElement.classList.toggle('pwa-standalone', standalone);
             if (standalone) {
                 this._polyfillSafeAreaInsets();
-                this._updateWindowControlsOverlay();
             }
+            this._updateWindowControlsOverlay();
         };
         apply();
         try {

@@ -4,6 +4,7 @@
     bottom: 0;
     left: 0;
     right: 0;
+    box-sizing: content-box;
     height: var(--chrome-bottom-nav-height);
     background: var(--surface-secondary);
     border-top: 1px solid var(--border-default);

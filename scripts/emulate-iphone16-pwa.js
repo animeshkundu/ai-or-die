@@ -79,12 +79,28 @@ async function run() {
     await page.waitForSelector('#terminal');
     await page.waitForTimeout(1500);
 
-    // Click terminal option to start a session so we see the full active terminal screen
+    // If overlay start prompt is visible, click Terminal or create session
     const termCard = page.locator('.tool-card[data-tool="terminal"]');
     if (await termCard.isVisible({ timeout: 2000 }).catch(() => false)) {
       await termCard.click();
-      await page.waitForTimeout(2500);
+    } else {
+      await page.evaluate(() => {
+        window.app.send({ type: 'create_session', name: 'Terminal' });
+      });
+      await page.waitForTimeout(500);
+      await page.evaluate(() => {
+        window.app.send({ type: 'start_terminal' });
+      });
     }
+    await page.waitForTimeout(3000);
+
+    // Ensure mode switcher is visible for screenshot verification
+    await page.evaluate(() => {
+      if (window.app && typeof window.app.showModeSwitcher === 'function') {
+        window.app.showModeSwitcher();
+      }
+    });
+    await page.waitForTimeout(500);
 
     // Evaluate safe-area metrics and tabs-bar metrics
     const metrics = await page.evaluate(() => {
@@ -109,6 +125,7 @@ async function run() {
 
     // Attach Dynamic Island & Status Bar visual simulation overlay to match real iPhone 16 PWA
     await page.evaluate(() => {
+      // Hardware status bar + Dynamic island
       const overlay = document.createElement('div');
       overlay.id = 'iphone16-hardware-overlay';
       overlay.style.cssText = `
@@ -129,8 +146,7 @@ async function run() {
         color: #ffffff;
       `;
 
-      // Dynamic Island pill in center
-      // iPhone 16 Dynamic Island is ~125px wide, ~37px tall, centered, top ~11px
+      // Dynamic Island pill in center: ~125px wide, ~37px tall, centered, top ~11px
       overlay.innerHTML = `
         <div style="font-size: 15px; font-weight: 600; letter-spacing: -0.2px; margin-top: -6px;">9:41</div>
         <div style="
@@ -159,7 +175,7 @@ async function run() {
       `;
       document.body.appendChild(overlay);
 
-      // Home indicator bar at bottom
+      // Home indicator bar at bottom: centered, bottom ~8px
       const homeIndicator = document.createElement('div');
       homeIndicator.style.cssText = `
         position: fixed;

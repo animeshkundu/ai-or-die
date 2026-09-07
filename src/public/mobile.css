@@ -210,7 +210,7 @@
 
     /* Move mode switcher above bottom nav */
     .mode-switcher {
-        bottom: calc(62px + var(--sa-bottom));
+        bottom: calc(var(--chrome-bottom-nav-height) + var(--sa-bottom) + 12px);
     }
 }
 
@@ -404,6 +404,6 @@
     }
 
     .mode-switcher {
-        bottom: calc(62px + var(--sa-bottom));
+        bottom: calc(var(--chrome-bottom-nav-height) + var(--sa-bottom) + 12px);
     }
 }
