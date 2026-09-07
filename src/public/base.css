@@ -106,10 +106,10 @@ pre, code {
     overflow-wrap: break-word;
 }
 
-/* ── PWA Window Controls Overlay ── */
-/* When installed as PWA with window-controls-overlay display mode,
+/* ── PWA Window Controls Overlay (desktop only) ── */
+/* When installed as desktop PWA with window-controls-overlay display mode,
    the tab bar extends into the title bar for a native terminal feel. */
-@media (display-mode: window-controls-overlay), (display-mode: standalone) {
+@media (display-mode: window-controls-overlay) {
     .session-tabs-bar {
         padding-top: env(titlebar-area-y, 0px);
         padding-left: var(--wco-padding-left, max(10px, env(titlebar-area-x, 10px)));

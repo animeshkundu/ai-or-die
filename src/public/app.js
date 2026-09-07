@@ -4993,6 +4993,7 @@ class ClaudeCodeWebInterface {
     _updateWindowControlsOverlay() {
         const root = document.documentElement;
         if ('windowControlsOverlay' in navigator && navigator.windowControlsOverlay.visible) {
+            root.classList.add('wco-visible');
             const rect = navigator.windowControlsOverlay.getTitlebarAreaRect();
             if (rect && rect.width > 0) {
                 const rightControlsWidth = Math.max(0, window.innerWidth - (rect.x + rect.width));
@@ -5000,9 +5001,10 @@ class ClaudeCodeWebInterface {
                 root.style.setProperty('--wco-padding-left', `${Math.max(10, rect.x)}px`);
                 return;
             }
+        } else {
+            root.classList.remove('wco-visible');
         }
-        // If standalone on Windows/Mac desktop without explicit WCO API measurement,
-        // env(titlebar-area-*) governs in CSS; clear manual overrides.
+        // If not running under visible Window Controls Overlay, clear manual overrides.
         root.style.removeProperty('--wco-padding-right');
         root.style.removeProperty('--wco-padding-left');
     }
