@@ -90,6 +90,21 @@
    When running as standalone PWA on mobile (iOS/Android), the tab bar MUST
    clear the Dynamic Island / notch / status bar via --sa-top.
    Uses !important to defeat the tabs.css padding: 0 6px shorthand. */
+html.pwa-standalone:not(.wco-visible) {
+    height: 100vh;
+    min-height: 100vh;
+}
+html.pwa-standalone:not(.wco-visible) body {
+    height: 100vh;
+    min-height: 100vh;
+}
+html.pwa-standalone:not(.wco-visible) #app {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+}
 html.pwa-standalone:not(.wco-visible) .session-tabs-bar {
     padding-top: max(var(--sa-top, 0px), env(safe-area-inset-top, 0px)) !important;
     padding-left: max(10px, var(--sa-left, 0px), env(safe-area-inset-left, 0px)) !important;
@@ -97,6 +112,21 @@ html.pwa-standalone:not(.wco-visible) .session-tabs-bar {
 }
 
 @media (display-mode: standalone), (display-mode: fullscreen) {
+    html:not(.wco-visible) {
+        height: 100vh;
+        min-height: 100vh;
+    }
+    html:not(.wco-visible) body {
+        height: 100vh;
+        min-height: 100vh;
+    }
+    html:not(.wco-visible) #app {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        max-height: 100%;
+    }
     html:not(.wco-visible) .session-tabs-bar {
         padding-top: max(var(--sa-top, 0px), env(safe-area-inset-top, 0px)) !important;
         padding-left: max(10px, var(--sa-left, 0px), env(safe-area-inset-left, 0px)) !important;

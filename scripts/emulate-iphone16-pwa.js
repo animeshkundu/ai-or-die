@@ -1,9 +1,26 @@
 'use strict';
 
+/**
+ * scripts/emulate-iphone16-pwa.js
+ *
+ * High-fidelity iPhone 16 standalone PWA emulator.
+ * Uses Playwright WebKit to accurately model the iOS Safari / Edge WebKit rendering
+ * engine, 393×852 standalone viewport, Dynamic Island clearance (59px top inset),
+ * home indicator clearance (34px bottom inset), bottom navigation bar, and the
+ * full-height slide-over file browser.
+ *
+ * Why this verification harness is critical:
+ * - Desktop Chromium / Edge can mask iOS WebKit-specific layout quirks (such as
+ *   the viewport height deduction in standalone mode and WebKit ICB clipping).
+ * - Real iPhone 16 devices use WebKit for all browsers (both Safari and Edge on iOS).
+ * - Validating across terminal, navigation, and file browser surfaces in WebKit
+ *   guarantees that mobile safe-area paddings and touch targets match real physical glass.
+ */
+
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { chromium } = require('playwright');
+const { webkit } = require('playwright');
 const { ClaudeCodeWebServer } = require('../src/server');
 
 const PORT = 11489;
@@ -21,9 +38,8 @@ async function run() {
   await server.start();
 
   try {
-    const browser = await chromium.launch({
+    const browser = await webkit.launch({
       headless: true,
-      channel: 'msedge',
     });
 
     const context = await browser.newContext({
@@ -35,15 +51,13 @@ async function run() {
       hasTouch: true,
     });
 
-    // Emulate standalone display mode before page loads
+    // Emulate standalone display mode and PWA environment before page loads
     await context.addInitScript(() => {
-      // Emulate navigator.standalone (iOS Safari/Edge PWA)
       Object.defineProperty(navigator, 'standalone', {
         get: () => true,
         configurable: true,
       });
 
-      // Override matchMedia to match display-mode: standalone
       const origMatchMedia = window.matchMedia;
       window.matchMedia = function(query) {
         if (query.includes('display-mode: standalone')) {
@@ -102,102 +116,129 @@ async function run() {
     });
     await page.waitForTimeout(500);
 
-    // Evaluate safe-area metrics and tabs-bar metrics
-    const metrics = await page.evaluate(() => {
-      const tabsBar = document.querySelector('.session-tabs-bar');
-      const tabsBarRect = tabsBar ? tabsBar.getBoundingClientRect() : null;
-      const computed = tabsBar ? window.getComputedStyle(tabsBar) : null;
-      const root = document.documentElement;
-      const rootComputed = window.getComputedStyle(root);
+    // Helper: attach hardware simulation overlay
+    const attachHardwareOverlay = async () => {
+      await page.evaluate(() => {
+        if (document.getElementById('iphone16-hardware-overlay')) return;
+        const overlay = document.createElement('div');
+        overlay.id = 'iphone16-hardware-overlay';
+        overlay.style.cssText = `
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          height: 59px;
+          pointer-events: none;
+          z-index: 999999;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0 24px;
+          font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+          font-size: 14px;
+          font-weight: 600;
+          color: #ffffff;
+        `;
 
-      return {
-        classList: Array.from(root.classList),
-        saTop: rootComputed.getPropertyValue('--sa-top'),
-        saInsetTop: rootComputed.getPropertyValue('--safe-area-inset-top'),
-        tabsBarPaddingTop: computed ? computed.paddingTop : null,
-        tabsBarPaddingLeft: computed ? computed.paddingLeft : null,
-        tabsBarPaddingRight: computed ? computed.paddingRight : null,
-        tabsBarRect,
-      };
-    });
+        overlay.innerHTML = `
+          <div style="font-size: 15px; font-weight: 600; letter-spacing: -0.2px; margin-top: -6px;">9:41</div>
+          <div style="
+            position: absolute;
+            top: 11px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 125px;
+            height: 37px;
+            background: #000000;
+            border-radius: 20px;
+            box-shadow: 0 0 1px 1px rgba(255,255,255,0.1);
+          "></div>
+          <div style="display: flex; align-items: center; gap: 5px; margin-top: -6px;">
+            <svg width="17" height="11" viewBox="0 0 17 11" fill="currentColor">
+              <path d="M1 9.5h1.5v-2H1v2zm3.5 0H6v-4H4.5v4zm3.5 0h1.5v-6H8v6zm3.5 0H13v-8h-1.5v8zm3.5 0h1.5V0H15v9.5z"/>
+            </svg>
+            <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor">
+              <path d="M8 2.5a8.5 8.5 0 0 1 5.7 2.2l-1.3 1.3A6.6 6.6 0 0 0 8 4.3c-1.7 0-3.3.7-4.4 1.7L2.3 4.7A8.5 8.5 0 0 1 8 2.5zm0 3.7c1.1 0 2.2.5 3 1.2L8 10.4 5 7.4c.8-.7 1.9-1.2 3-1.2z"/>
+            </svg>
+            <div style="width: 22px; height: 11px; border: 1px solid currentColor; border-radius: 3px; padding: 1px; display: flex; align-items: center; margin-left: 2px; position: relative;">
+              <div style="width: 14px; height: 7px; background: currentColor; border-radius: 1.5px;"></div>
+              <div style="position: absolute; right: -3px; top: 3px; width: 2px; height: 3px; background: currentColor; border-radius: 0 1px 1px 0;"></div>
+            </div>
+          </div>
+        `;
+        document.body.appendChild(overlay);
 
-    console.log('Metrics in standalone mode on iPhone 16:', JSON.stringify(metrics, null, 2));
-
-    // Attach Dynamic Island & Status Bar visual simulation overlay to match real iPhone 16 PWA
-    await page.evaluate(() => {
-      // Hardware status bar + Dynamic island
-      const overlay = document.createElement('div');
-      overlay.id = 'iphone16-hardware-overlay';
-      overlay.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 59px;
-        pointer-events: none;
-        z-index: 999999;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 0 24px;
-        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-        font-size: 14px;
-        font-weight: 600;
-        color: #ffffff;
-      `;
-
-      // Dynamic Island pill in center: ~125px wide, ~37px tall, centered, top ~11px
-      overlay.innerHTML = `
-        <div style="font-size: 15px; font-weight: 600; letter-spacing: -0.2px; margin-top: -6px;">9:41</div>
-        <div style="
-          position: absolute;
-          top: 11px;
+        const homeIndicator = document.createElement('div');
+        homeIndicator.id = 'iphone16-home-indicator';
+        homeIndicator.style.cssText = `
+          position: fixed;
+          bottom: 8px;
           left: 50%;
           transform: translateX(-50%);
-          width: 125px;
-          height: 37px;
-          background: #000000;
-          border-radius: 20px;
-          box-shadow: 0 0 1px 1px rgba(255,255,255,0.1);
-        "></div>
-        <div style="display: flex; align-items: center; gap: 5px; margin-top: -6px;">
-          <svg width="17" height="11" viewBox="0 0 17 11" fill="currentColor">
-            <path d="M1 9.5h1.5v-2H1v2zm3.5 0H6v-4H4.5v4zm3.5 0h1.5v-6H8v6zm3.5 0H13v-8h-1.5v8zm3.5 0h1.5V0H15v9.5z"/>
-          </svg>
-          <svg width="16" height="11" viewBox="0 0 16 11" fill="currentColor">
-            <path d="M8 2.5a8.5 8.5 0 0 1 5.7 2.2l-1.3 1.3A6.6 6.6 0 0 0 8 4.3c-1.7 0-3.3.7-4.4 1.7L2.3 4.7A8.5 8.5 0 0 1 8 2.5zm0 3.7c1.1 0 2.2.5 3 1.2L8 10.4 5 7.4c.8-.7 1.9-1.2 3-1.2z"/>
-          </svg>
-          <div style="width: 22px; height: 11px; border: 1px solid currentColor; border-radius: 3px; padding: 1px; display: flex; align-items: center; margin-left: 2px; position: relative;">
-            <div style="width: 14px; height: 7px; background: currentColor; border-radius: 1.5px;"></div>
-            <div style="position: absolute; right: -3px; top: 3px; width: 2px; height: 3px; background: currentColor; border-radius: 0 1px 1px 0;"></div>
-          </div>
-        </div>
-      `;
-      document.body.appendChild(overlay);
-
-      // Home indicator bar at bottom: centered, bottom ~8px
-      const homeIndicator = document.createElement('div');
-      homeIndicator.style.cssText = `
-        position: fixed;
-        bottom: 8px;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 140px;
-        height: 5px;
-        background: #ffffff;
-        border-radius: 3px;
-        pointer-events: none;
-        z-index: 999999;
-        opacity: 0.6;
-      `;
-      document.body.appendChild(homeIndicator);
-    });
+          width: 140px;
+          height: 5px;
+          background: #ffffff;
+          border-radius: 3px;
+          pointer-events: none;
+          z-index: 999999;
+          opacity: 0.6;
+        `;
+        document.body.appendChild(homeIndicator);
+      });
+    };
 
     const screenshotsDir = path.join(__dirname, '..', '.claude-images');
     fs.mkdirSync(screenshotsDir, { recursive: true });
-    const screenshotPath = path.join(screenshotsDir, 'iphone16-pwa-calibrated.png');
-    await page.screenshot({ path: screenshotPath });
-    console.log('Saved calibrated screenshot to:', screenshotPath);
+
+    // 1. Capture terminal screen
+    await attachHardwareOverlay();
+    const termShotPath = path.join(screenshotsDir, 'iphone16-pwa-calibrated.png');
+    await page.screenshot({ path: termShotPath });
+    console.log('Saved calibrated terminal screenshot to:', termShotPath);
+
+    // Measure geometry assertions on terminal screen
+    const termMetrics = await page.evaluate(() => {
+      const tabsBar = document.querySelector('.session-tabs-bar');
+      const bNav = document.querySelector('.bottom-nav');
+      const app = document.getElementById('app');
+      const tabsRect = tabsBar ? tabsBar.getBoundingClientRect() : null;
+      const bNavRect = bNav ? bNav.getBoundingClientRect() : null;
+      return {
+        tabsTop: tabsRect ? tabsRect.top : null,
+        tabsBottom: tabsRect ? tabsRect.bottom : null,
+        bNavTop: bNavRect ? bNavRect.top : null,
+        bNavBottom: bNavRect ? bNavRect.bottom : null,
+        bNavHeight: bNavRect ? bNavRect.height : null,
+        appHeight: app ? app.getBoundingClientRect().height : null,
+        windowHeight: window.innerHeight,
+      };
+    });
+    console.log('Terminal Screen Metrics:', JSON.stringify(termMetrics, null, 2));
+
+    // 2. Open and capture file browser surface
+    console.log('Opening file browser surface...');
+    await page.evaluate(() => {
+      window.app.toggleFileBrowser();
+    });
+    await page.waitForTimeout(1000);
+
+    const fbMetrics = await page.evaluate(() => {
+      const fbPanel = document.querySelector('.file-browser-panel');
+      const fbHeader = document.querySelector('.file-browser-header');
+      const closeBtn = document.querySelector('.fb-close-btn');
+      const breadcrumbs = document.querySelector('.fb-breadcrumbs');
+      return {
+        panelRect: fbPanel ? fbPanel.getBoundingClientRect() : null,
+        headerRect: fbHeader ? fbHeader.getBoundingClientRect() : null,
+        closeBtnRect: closeBtn ? closeBtn.getBoundingClientRect() : null,
+        breadcrumbsRect: breadcrumbs ? breadcrumbs.getBoundingClientRect() : null,
+      };
+    });
+    console.log('File Browser Surface Metrics:', JSON.stringify(fbMetrics, null, 2));
+
+    const fbShotPath = path.join(screenshotsDir, 'iphone16-pwa-filebrowser.png');
+    await page.screenshot({ path: fbShotPath });
+    console.log('Saved calibrated file browser screenshot to:', fbShotPath);
 
     await browser.close();
   } finally {

@@ -869,11 +869,19 @@
    Responsive — Small Viewports (mobile full-width)
    ============================================================ */
 @media (max-width: 768px) {
-  .file-browser-panel { top: 0; width: 100%; z-index: var(--z-modal); }
+  .file-browser-panel {
+    top: 0;
+    width: 100%;
+    z-index: var(--z-modal);
+    box-sizing: border-box;
+    padding-bottom: max(var(--sa-bottom, 0px), env(safe-area-inset-bottom, 0px));
+  }
 
   .file-browser-header {
-    height: 52px;
-    min-height: 52px;
+    height: auto;
+    min-height: calc(52px + max(var(--sa-top, 0px), env(safe-area-inset-top, 0px)));
+    box-sizing: border-box;
+    padding-top: max(var(--sa-top, 0px), env(safe-area-inset-top, 0px));
   }
 
   .file-browser-item {

@@ -4785,7 +4785,7 @@ class ClaudeCodeWebInterface {
 
         // Keep the tab bar above the overlay so users can switch sessions
         const tabBar = document.getElementById('sessionTabsBar');
-        if (tabBar) tabBar.style.zIndex = '301';
+        if (tabBar) tabBar.style.zIndex = '360';
     }
 
     hideOverlay() {

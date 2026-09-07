@@ -17,8 +17,8 @@
     justify-content: space-around;
 }
 
-@media (max-width: 820px) and (hover: none) and (pointer: coarse),
-       (max-height: 480px) and (max-width: 900px) and (hover: none) and (pointer: coarse) {
+@media (max-width: 820px),
+       (max-height: 480px) and (max-width: 900px) {
     .bottom-nav {
         display: flex;
     }

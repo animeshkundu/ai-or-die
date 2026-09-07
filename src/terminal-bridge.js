@@ -346,7 +346,9 @@ class TerminalBridge extends BaseBridge {
   }
 
   async _waitForShellIntegration(sessionId, integration) {
-    const deadline = Date.now() + 2000;
+    const isWindows = process.platform === 'win32';
+    const timeoutMs = isWindows ? 5000 : 2000;
+    const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       if (!this.sessions.has(sessionId)) return 'exited';
       if (integration.readyFile && fs.existsSync(integration.readyFile)) {

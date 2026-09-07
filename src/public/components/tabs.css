@@ -737,14 +737,19 @@
     }
 }
 
-@media (max-width: 820px) and (hover: none) and (pointer: coarse),
-       (max-height: 480px) and (max-width: 900px) and (hover: none) and (pointer: coarse) {
-    /* Hide desktop-only action buttons on mobile touch devices — moved to bottom nav */
+@media (max-width: 820px),
+       (max-height: 480px) and (max-width: 900px) {
+    /* Hide desktop-only action buttons on mobile — moved to bottom nav */
     .tab-actions .tab-browse-files,
     .tab-actions .tab-vscode-tunnel,
     .tab-actions .tab-attach-image,
     .tab-actions .tab-voice-input {
-        display: none;
+        display: none !important;
+    }
+
+    .tab-actions .tab-tile,
+    .tab-actions .status-indicators {
+        display: none !important;
     }
 
     .overflow-menu-btn {

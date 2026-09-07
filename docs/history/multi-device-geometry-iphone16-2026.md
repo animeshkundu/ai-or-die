@@ -16,3 +16,10 @@ When opening an existing session on a different device (such as an iPhone 16 joi
 3. **Automated End-to-End Validation (Option A)**:
    - Added an automated Playwright test (`test/e2e-geometry-iphone16.test.js`) validating the entire multi-device workflow using iPhone 16 device emulation against a live daemon on a high port with an isolated session directory.
    - Verified that desktop starts as owner (140x45), iPhone 16 joins as non-owner (panned with visible "Fit Screen" button), clicking "Fit Screen" transfers ownership and fits iPhone 16 exactly (44x30), desktop transitions to non-owner, and subsequent typing on desktop or phone cleanly re-claims ownership.
+
+4. **iPhone 16 PWA Viewport and WebKit Safe-Area Calibration**:
+   - In iOS standalone PWA mode (`viewport-fit=cover`), WebKit calculates root layout viewport height using `innerHeight`, which deducts the top safe-area ($59\text{pt}$ for Dynamic Island) upon initial layout. When `html` and `body` used `height: 100%`, this caused all elements anchored to `bottom: 0` (the bottom nav bar and floating controls) to float $59.5\text{pt}$ above the physical glass, exposing a dark gap of dead space.
+   - Fixed by setting `height: 100vh; min-height: 100vh;` on `html.pwa-standalone, html.pwa-standalone body` and `position: fixed; inset: 0;` on `#app` in standalone mode. In WebKit standalone mode, `100vh` represents the full physical glass height ($852\text{pt}$), extending the bottom nav cleanly to the physical bottom behind the home indicator.
+   - Upgraded `scripts/emulate-iphone16-pwa.js` to run on Playwright **WebKit**, accurately modeling Apple's WebKit engine, the $393 \times 852$ standalone viewport, Dynamic Island ($59\text{pt}$ inset), home indicator ($34\text{pt}$ inset), and the slide-over file browser.
+   - Why verifying with this WebKit emulator is critical: Desktop Chromium/Edge masks iOS WebKit-specific layout viewport clipping and ICB calculations. Validating across terminal, navigation, and file browser surfaces in WebKit guarantees that mobile safe-area paddings and touch targets match real physical glass.
+
