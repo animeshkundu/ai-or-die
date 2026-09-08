@@ -32,7 +32,7 @@
 
 @media (max-height: 600px) and (max-width: 900px) {
     .terminal-overlay {
-        bottom: calc(var(--chrome-bottom-nav-height) + var(--sa-bottom));
+        bottom: calc(var(--chrome-bottom-nav-height) + var(--sa-bottom) + 1px);
         padding-top: calc(var(--chrome-tab-height) + max(var(--space-3), var(--sa-top)));
         padding-bottom: var(--space-3);
     }
