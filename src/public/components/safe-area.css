@@ -90,14 +90,6 @@
    When running as standalone PWA on mobile (iOS/Android), the tab bar MUST
    clear the Dynamic Island / notch / status bar via --sa-top.
    Uses !important to defeat the tabs.css padding: 0 6px shorthand. */
-html.pwa-standalone:not(.wco-visible) {
-    height: 100vh;
-    min-height: 100vh;
-}
-html.pwa-standalone:not(.wco-visible) body {
-    height: 100vh;
-    min-height: 100vh;
-}
 html.pwa-standalone:not(.wco-visible) #app {
     position: fixed;
     inset: 0;
@@ -112,14 +104,6 @@ html.pwa-standalone:not(.wco-visible) .session-tabs-bar {
 }
 
 @media (display-mode: standalone), (display-mode: fullscreen) {
-    html:not(.wco-visible) {
-        height: 100vh;
-        min-height: 100vh;
-    }
-    html:not(.wco-visible) body {
-        height: 100vh;
-        min-height: 100vh;
-    }
     html:not(.wco-visible) #app {
         position: fixed;
         inset: 0;

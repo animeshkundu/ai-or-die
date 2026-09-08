@@ -70,12 +70,6 @@ body {
     position: relative;
 }
 
-html.pwa-standalone,
-html.pwa-standalone body {
-    height: 100vh;
-    min-height: 100vh;
-}
-
 #app {
     display: flex;
     flex-direction: column;
