@@ -207,7 +207,7 @@ class KeysPanel {
     const bytes = enc.encode(spec, this._terminalModes());
     if (bytes == null) return;
     if ('vibrate' in navigator) try { navigator.vibrate(8); } catch (_) {}
-    this.app.send({ type: 'input', data: bytes });
+    this.app.send({ type: 'input', data: bytes, claim: true, viewId: 'main' });
     // Intentionally do NOT call terminal.focus(): Control mode is keyboard-down.
   }
 

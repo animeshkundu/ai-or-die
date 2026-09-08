@@ -204,7 +204,7 @@ class ExtraKeys {
     // are not executed line-by-line.
     const enc = this._encoder();
     const data = enc ? enc.wrapPaste(text, this._terminalModes()) : text;
-    this.app.send({ type: 'input', data });
+    this.app.send({ type: 'input', data, claim: true, viewId: 'main' });
     if (window.feedback) window.feedback.success('Pasted');
   }
 
@@ -245,7 +245,7 @@ class ExtraKeys {
     const bytes = this._encodeKey(key);
     if (bytes == null) return;
     if ('vibrate' in navigator) try { navigator.vibrate(10); } catch (_) {}
-    this.app.send({ type: 'input', data: bytes });
+    this.app.send({ type: 'input', data: bytes, claim: true, viewId: 'main' });
     this._consumeStickyModifiers();
     if (this.app.terminal) this.app.terminal.focus();
   }

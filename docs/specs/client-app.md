@@ -256,14 +256,16 @@ The client treats a "fast reconnect" as a hard requirement. The relevant pieces:
 
 The terminal auto-resizes via `FitAddon` triggered by a `ResizeObserver` on the terminal container, debounced to prevent excessive resize messages.
 
-### Input Buffering
+### Input Buffering and Deliberate Claim
 
 Terminal input uses a breather-flush pattern to batch keystrokes per animation frame rather than sending each keystroke individually:
 
 1. Each `onData` event appends to `_inputBuffer` instead of sending immediately.
-2. A `requestAnimationFrame` callback calls `_flushInput()`, which sends the entire buffer as a single `input` message.
+2. A `requestAnimationFrame` callback calls `_flushInput()`, which sends the entire buffer as a single `input` message with `claim: true` and `viewId: 'main'`.
 3. If the buffer exceeds `_INPUT_BUFFER_MAX`, it flushes immediately without waiting for the next frame.
 4. The buffer is cleared on WebSocket reconnect to prevent ghost keystrokes.
+5. All user terminal inputs (typing, paste, on-screen extra keys bar, mobile keys dialog, input-overlay modal, and splits) include `claim: true`, enabling deliberate ownership acquisition under multi-device terminal geometry (ADR-0052).
+6. When viewing an active session as a non-owner in `pan` or `scale` presentation regime, a visible **Fit Screen** toolbar action is displayed to allow explicit ownership transfer via `geometry_take_control` before typing.
 
 This reduces WebSocket message volume during fast typing and improves perceived responsiveness during heavy output.
 

@@ -235,7 +235,10 @@ class InputOverlay {
       data = data + '\r';
     }
 
-    sendFn({ type: 'input', data: data });
+    var viewId = (typeof this.app?._lastFocusedPaneIndex === 'number' && this.app._lastFocusedPaneIndex > 0)
+      ? `split-${this.app._lastFocusedPaneIndex}`
+      : 'main';
+    sendFn({ type: 'input', data: data, claim: true, viewId: viewId });
 
     // Clear and close
     this._textarea.value = '';

@@ -5,12 +5,12 @@
 /* Launcher: sits as the TOP of the right-side control column, directly above the
    mode-switcher (Esc + mode buttons), so ⌨ / Esc / mode read as one clean stack
    instead of overlapping. Matches the 56px circular mode-switcher buttons.
-   Offset = mode-switcher bottom (62px + sa) + its height (2×56 + 10 gap = 122) +
-   a 10px gap = 194px + sa. */
+   Offset = mode-switcher bottom (var(--chrome-bottom-nav-height) + sa + 12px) +
+   its height (2×56 + 10 gap = 122) + a 10px gap = 144px + bottom nav. */
 .keys-panel-fab {
   position: fixed;
   right: 20px;
-  bottom: calc(194px + var(--sa-bottom, 0px));
+  bottom: calc(var(--chrome-bottom-nav-height) + var(--sa-bottom, 0px) + 144px);
   z-index: var(--z-overlay);
   width: 56px;
   height: 56px;

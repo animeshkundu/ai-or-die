@@ -1,6 +1,6 @@
 // Bump this version when urlsToCache entries are added or removed.
 // Content changes to existing files are handled by the network-first fetch strategy.
-const CACHE_NAME = 'ai-or-die-v13';
+const CACHE_NAME = 'ai-or-die-v14';
 const urlsToCache = [
   '/',
   '/index.html',
@@ -39,6 +39,9 @@ const urlsToCache = [
   '/components/feedback.css',
   '/components/voice-input.css',
   '/components/input-overlay.css',
+  '/components/sticky-note.css',
+  '/components/artifact-panel.css',
+  '/components/safe-area.css',
   '/extra-keys.js',
   '/key-encoder.js',
   '/keys-panel.js',
@@ -47,6 +50,12 @@ const urlsToCache = [
   '/file-browser.js',
   '/file-editor.js',
   '/voice-handler.js',
+  '/voice-frame.js',
+  '/voice-processor.js',
+  '/viewport-regime.js',
+  '/fit-coordinator.js',
+  '/terminal-geometry.js',
+  '/terminal-presentation.js',
   '/image-handler.js',
   '/input-overlay.js',
   '/feedback-manager.js',

@@ -4,6 +4,7 @@
 .terminal-search-bar {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 4px;
     padding: 6px 12px;
     background-color: var(--surface-secondary);
@@ -12,8 +13,8 @@
 }
 
 .term-search-input {
-    flex: 1;
-    min-width: 180px;
+    flex: 1 1 140px;
+    min-width: 120px;
     max-width: 300px;
     padding: 4px 8px;
     font-size: 13px;
@@ -32,7 +33,7 @@
 .term-search-count {
     font-size: 11px;
     color: var(--text-muted);
-    min-width: 50px;
+    min-width: 44px;
     text-align: center;
     font-family: var(--font-mono);
 }
@@ -52,6 +53,13 @@
     font-size: 12px;
     font-weight: 600;
     font-family: var(--font-mono);
+}
+
+@media (pointer: coarse) {
+    .term-search-btn {
+        min-width: var(--hit-target-min, 44px);
+        min-height: var(--hit-target-min, 44px);
+    }
 }
 
 .term-search-btn:hover {

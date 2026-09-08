@@ -301,4 +301,19 @@ describe('TerminalGeometryCoordinator', function () {
     );
     assert.deepStrictEqual(order, ['resize', 'broadcast', 'release']);
   });
+
+  it('takeControl allows passing explicit geometry dimensions atomically', async function () {
+    const f = fixture();
+    await f.coordinator.advertise('s1', 'desktop', 'main', 160, 45);
+    await f.coordinator.advertise('s1', 'phone', 'main', 40, 38);
+    assert.deepStrictEqual(f.resizes, [{ cols: 160, rows: 45 }]);
+    assert.strictEqual(f.coordinator.getFrame('s1').owner.connectionId, 'desktop');
+
+    await f.coordinator.takeControl('s1', 'phone', 'main', 44, 40);
+    assert.deepStrictEqual(f.resizes.at(-1), { cols: 44, rows: 40 });
+    assert.deepStrictEqual(f.coordinator.getFrame('s1').owner, {
+      connectionId: 'phone',
+      viewId: 'main',
+    });
+  });
 });

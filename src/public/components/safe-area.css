@@ -32,7 +32,7 @@
 
 @media (max-height: 600px) and (max-width: 900px) {
     .terminal-overlay {
-        bottom: calc(var(--chrome-bottom-nav-height) + var(--sa-bottom));
+        bottom: calc(var(--chrome-bottom-nav-height) + var(--sa-bottom) + 1px);
         padding-top: calc(var(--chrome-tab-height) + max(var(--space-3), var(--sa-top)));
         padding-bottom: var(--space-3);
     }
@@ -84,4 +84,74 @@
     bottom: calc(16px + var(--sa-bottom));
     left: calc(16px + var(--sa-left));
     right: calc(16px + var(--sa-right));
+}
+
+/* --- Mobile / Notched Standalone PWA Safe-Area Top -------------------------
+   When running as standalone PWA on mobile (iOS/Android), the tab bar MUST
+   clear the Dynamic Island / notch / status bar via --sa-top.
+   Uses !important to defeat the tabs.css padding: 0 6px shorthand. */
+html.pwa-standalone:not(.wco-visible) #app {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-height: 100%;
+}
+html.pwa-standalone:not(.wco-visible) .session-tabs-bar {
+    padding-top: max(var(--sa-top, 0px), env(safe-area-inset-top, 0px)) !important;
+    padding-left: max(10px, var(--sa-left, 0px), env(safe-area-inset-left, 0px)) !important;
+    padding-right: max(10px, var(--sa-right, 0px), env(safe-area-inset-right, 0px)) !important;
+}
+
+@media (display-mode: standalone), (display-mode: fullscreen) {
+    html:not(.wco-visible) #app {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        max-height: 100%;
+    }
+    html:not(.wco-visible) .session-tabs-bar {
+        padding-top: max(var(--sa-top, 0px), env(safe-area-inset-top, 0px)) !important;
+        padding-left: max(10px, var(--sa-left, 0px), env(safe-area-inset-left, 0px)) !important;
+        padding-right: max(10px, var(--sa-right, 0px), env(safe-area-inset-right, 0px)) !important;
+    }
+}
+
+/* --- Window Controls Overlay (desktop PWA titlebar) ------------------------
+   Loaded last so WCO titlebar area padding wins over tabs.css cascade on desktop.
+   Scoped strictly to window-controls-overlay and html.wco-visible so it NEVER
+   overrides iOS/mobile standalone safe-area Dynamic Island insets. */
+@media (display-mode: window-controls-overlay) {
+    .session-tabs-bar {
+        padding-top: env(titlebar-area-y, 0px) !important;
+        padding-left: var(--wco-padding-left, max(10px, env(titlebar-area-x, 10px))) !important;
+        padding-right: var(--wco-padding-right, max(10px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 10px))) !important;
+        -webkit-app-region: drag;
+        app-region: drag;
+    }
+    .session-tabs-bar button,
+    .session-tabs-bar .session-tab,
+    .session-tabs-bar .tab-actions,
+    .session-tabs-bar input,
+    .session-tabs-bar select {
+        -webkit-app-region: no-drag;
+        app-region: no-drag;
+    }
+}
+
+html.wco-visible .session-tabs-bar {
+    padding-top: env(titlebar-area-y, 0px) !important;
+    padding-left: var(--wco-padding-left, max(10px, env(titlebar-area-x, 10px))) !important;
+    padding-right: var(--wco-padding-right, max(10px, calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 10px))) !important;
+    -webkit-app-region: drag;
+    app-region: drag;
+}
+html.wco-visible .session-tabs-bar button,
+html.wco-visible .session-tabs-bar .session-tab,
+html.wco-visible .session-tabs-bar .tab-actions,
+html.wco-visible .session-tabs-bar input,
+html.wco-visible .session-tabs-bar select {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
 }

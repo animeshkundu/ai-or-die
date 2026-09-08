@@ -231,7 +231,7 @@ class Split {
                         normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
                     }
                     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                        this.socket.send(JSON.stringify({ type: 'input', data: normalized }));
+                        this.socket.send(JSON.stringify({ type: 'input', data: normalized, claim: true, viewId: this._fitId }));
                     }
                 },
                 onError: (basename, msg) => {
@@ -245,7 +245,7 @@ class Split {
         // Setup terminal input handler
         this.terminal.onData((data) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(JSON.stringify({ type: 'input', data }));
+                this.socket.send(JSON.stringify({ type: 'input', data, claim: true, viewId: this._fitId }));
             }
         });
         

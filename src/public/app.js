@@ -255,6 +255,7 @@ class ClaudeCodeWebInterface {
         this._setupNotificationCapability();
         if (this.voiceInputConfig) this.setupVoiceInput();
         this.setupPlanDetector();
+        this._setupFitScreenButton();
         if (window.InputOverlay) {
             this._inputOverlay = new InputOverlay(this);
             var overlayBtn = document.getElementById('inputOverlayBtn');
@@ -405,6 +406,10 @@ class ClaudeCodeWebInterface {
                     if (sessions.length > 0) {
                         this.send({ type: 'set_priority', sessions });
                     }
+                }
+                // Cancel active voice capture when tab/page is hidden
+                if (this.voiceController && this.voiceController.isRecording) {
+                    try { this.voiceController.cancelRecording(); } catch (_) {}
                 }
             } else {
                 // Tab became visible — restore foreground for active session
@@ -738,7 +743,7 @@ class ClaudeCodeWebInterface {
         // Send Shift+Tab to terminal to trigger actual mode switch in Claude Code
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
             // Send Shift+Tab key combination (ESC[Z is the terminal sequence for Shift+Tab)
-            this.send({ type: 'input', data: '\x1b[Z' });
+            this.send({ type: 'input', data: '\x1b[Z', claim: true, viewId: 'main' });
         }
         
         // Add visual feedback
@@ -927,7 +932,7 @@ class ClaudeCodeWebInterface {
         // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
         attachClipboardHandler(this.terminal, (data) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.send({ type: 'input', data });
+                this.send({ type: 'input', data, claim: true, viewId: 'main' });
             }
         });
 
@@ -981,7 +986,7 @@ class ClaudeCodeWebInterface {
                         normalized = attachClipboardHandler.wrapBracketedPaste(normalized);
                     }
                     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                        this.send({ type: 'input', data: normalized });
+                        this.send({ type: 'input', data: normalized, claim: true, viewId: 'main' });
                     }
                 },
                 onError: (basename, msg) => {
@@ -2631,11 +2636,47 @@ class ClaudeCodeWebInterface {
         if (sbtn) this._refreshStickyNoteBtnVisibility();
     }
 
+    _setupFitScreenButton() {
+        const btn = document.getElementById('fitScreenBtn');
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+            const dims = (this.fitAddon && typeof this.fitAddon.proposeDimensions === 'function')
+                ? this.fitAddon.proposeDimensions()
+                : null;
+            const reserve = this.isMobile ? { cols: 0, rows: 1 } : { cols: 6, rows: 2 };
+            const container = document.querySelector('.terminal-wrapper') || document.getElementById('terminal');
+            const measured = (window.TerminalGeometry && typeof window.TerminalGeometry.measureTerminalGeometry === 'function')
+                ? window.TerminalGeometry.measureTerminalGeometry(container, dims, reserve)
+                : dims;
+            const payload = {
+                type: 'geometry_take_control',
+                viewId: 'main'
+            };
+            if (measured && measured.cols && measured.rows) {
+                payload.cols = measured.cols;
+                payload.rows = measured.rows;
+            }
+            this.send(payload);
+            if (window.feedback) window.feedback.info('Fitting terminal to this screen…');
+        });
+    }
+
+    _refreshFitScreenVisibility() {
+        const btn = document.getElementById('fitScreenBtn');
+        if (!btn) return;
+        // Show only when attached to an active session, non-owner, and regime is 'pan' or 'scale'
+        const isNonOwner = this._geometryIsOwner === false;
+        const regime = this._geometryPresentation ? this._geometryPresentation.regime : null;
+        const needsFit = isNonOwner && (regime === 'pan' || regime === 'scale');
+        btn.style.display = needsFit ? 'inline-flex' : 'none';
+    }
+
     // Flush accumulated input buffer to server as a single batched message
     _flushInput() {
         this._inputFlushScheduled = false;
         if (this._inputBuffer.length > 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
-            this.send({ type: 'input', data: this._inputBuffer });
+            this.send({ type: 'input', data: this._inputBuffer, claim: true, viewId: 'main' });
             this._inputBuffer = '';
         }
     }
@@ -2973,6 +3014,7 @@ class ClaudeCodeWebInterface {
             stage.style.transform =
                 `translate(${-p.offsetX}px, ${-p.offsetY}px) scale(${p.scale})`;
         }
+        this._refreshFitScreenVisibility();
     }
 
     /** Un-scaled cell metric in CSS px, or null if not measurable yet. */
@@ -3061,6 +3103,7 @@ class ClaudeCodeWebInterface {
                         stage.style.transform = '';
                         delete stage.dataset.regime;
                     }
+                    this._refreshFitScreenVisibility();
                 }
                 // Discard bytes queued under the OUTGOING session before
                 // switching the id. _flushWrites attributes whatever it drains
@@ -4866,7 +4909,8 @@ class ClaudeCodeWebInterface {
     // --- PWA Install State Machine ---
 
     _isInstalledPWA() {
-        return window.matchMedia('(display-mode: standalone)').matches
+        return ('windowControlsOverlay' in navigator && navigator.windowControlsOverlay?.visible)
+            || window.matchMedia('(display-mode: standalone)').matches
             || window.matchMedia('(display-mode: window-controls-overlay)').matches
             || window.matchMedia('(display-mode: minimal-ui)').matches
             || window.matchMedia('(display-mode: fullscreen)').matches
@@ -4916,7 +4960,10 @@ class ClaudeCodeWebInterface {
         const apply = () => {
             const standalone = this._isInstalledPWA();
             document.documentElement.classList.toggle('pwa-standalone', standalone);
-            if (standalone) this._polyfillSafeAreaInsets();
+            if (standalone) {
+                this._polyfillSafeAreaInsets();
+            }
+            this._updateWindowControlsOverlay();
         };
         apply();
         try {
@@ -4931,7 +4978,36 @@ class ClaudeCodeWebInterface {
                 if (mql.addEventListener) mql.addEventListener('change', apply);
                 else if (mql.addListener) mql.addListener(apply);
             });
+
+            // Listen to Window Controls Overlay geometry changes (Windows/Mac PWA)
+            if ('windowControlsOverlay' in navigator) {
+                navigator.windowControlsOverlay.addEventListener('geometrychange', () => {
+                    this._updateWindowControlsOverlay();
+                });
+            }
+            window.addEventListener('resize', () => {
+                if (this._isInstalledPWA()) this._updateWindowControlsOverlay();
+            });
         } catch (_) { /* ignore */ }
+    }
+
+    _updateWindowControlsOverlay() {
+        const root = document.documentElement;
+        if ('windowControlsOverlay' in navigator && navigator.windowControlsOverlay.visible) {
+            root.classList.add('wco-visible');
+            const rect = navigator.windowControlsOverlay.getTitlebarAreaRect();
+            if (rect && rect.width > 0) {
+                const rightControlsWidth = Math.max(0, window.innerWidth - (rect.x + rect.width));
+                root.style.setProperty('--wco-padding-right', `${rightControlsWidth + 10}px`);
+                root.style.setProperty('--wco-padding-left', `${Math.max(10, rect.x)}px`);
+                return;
+            }
+        } else {
+            root.classList.remove('wco-visible');
+        }
+        // If not running under visible Window Controls Overlay, clear manual overrides.
+        root.style.removeProperty('--wco-padding-right');
+        root.style.removeProperty('--wco-padding-left');
     }
 
     _polyfillSafeAreaInsets() {
@@ -5251,6 +5327,15 @@ class ClaudeCodeWebInterface {
         } else {
             document.documentElement.removeAttribute('data-theme');
         }
+
+        // Dynamically update browser/PWA meta theme-color to match theme surface
+        try {
+            const metaTheme = document.querySelector('meta[name="theme-color"]');
+            if (metaTheme) {
+                const surfaceColor = getComputedStyle(document.documentElement).getPropertyValue('--surface-primary').trim();
+                if (surfaceColor) metaTheme.setAttribute('content', surfaceColor);
+            }
+        } catch (_) {}
 
         // Apply terminal settings
         this.terminal.options.fontSize = settings.fontSize;

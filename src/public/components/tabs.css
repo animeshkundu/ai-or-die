@@ -452,13 +452,47 @@
     cursor: pointer;
     border-radius: var(--radius-sm);
     transition: all var(--duration-normal) var(--ease-default);
-    margin-left: auto;
+    margin-left: 2px;
+    margin-right: 2px;
     flex-shrink: 0;
 }
 
 .tab-settings:hover {
     background-color: var(--bg-tertiary);
     color: var(--text-primary);
+}
+
+/* Fit to screen / take geometry control button — shown when non-owner viewer is scaled or panned */
+.tab-fit-screen {
+    background: none;
+    border: 1px solid var(--border-default);
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--text-xs);
+    font-family: var(--font-sans);
+    font-weight: var(--weight-medium);
+    transition: color var(--duration-normal), background var(--duration-normal), border-color var(--duration-normal);
+    position: relative;
+    flex-shrink: 0;
+    height: 28px;
+}
+.tab-fit-screen:hover {
+    color: var(--accent-default);
+    border-color: var(--accent-default);
+    background: var(--accent-soft);
+}
+@media (pointer: coarse) {
+    .tab-fit-screen {
+        min-width: var(--hit-target-min);
+        min-height: var(--hit-target-min);
+        height: 44px;
+        padding: 6px 10px;
+    }
 }
 
 /* Sticky-note toggle (status note) — flat toolbar button, matches .tab-voice-input. */
@@ -687,23 +721,6 @@
         width: 14px;
     }
 
-    /* Hide desktop-only action buttons - moved to bottom nav */
-    .tab-actions .tab-browse-files,
-    .tab-actions .tab-vscode-tunnel,
-    .tab-actions .tab-attach-image,
-    .tab-actions .tab-voice-input {
-        display: none;
-    }
-
-    /* Hide the overflow menu button on mobile — bottom nav handles these actions */
-    .overflow-menu-btn {
-        display: none;
-    }
-
-    .overflow-menu-panel {
-        display: none;
-    }
-
     /* Keep settings gear visible on desktop tab bar */
     .tab-settings {
         width: 24px;
@@ -717,6 +734,30 @@
         border-radius: var(--radius-full);
         min-width: var(--hit-target-min);
         min-height: var(--hit-target-min);
+    }
+}
+
+@media (max-width: 820px),
+       (max-height: 480px) and (max-width: 900px) {
+    /* Hide desktop-only action buttons on mobile — moved to bottom nav */
+    .tab-actions .tab-browse-files,
+    .tab-actions .tab-vscode-tunnel,
+    .tab-actions .tab-attach-image,
+    .tab-actions .tab-voice-input {
+        display: none !important;
+    }
+
+    .tab-actions .tab-tile,
+    .tab-actions .status-indicators {
+        display: none !important;
+    }
+
+    .overflow-menu-btn {
+        display: none;
+    }
+
+    .overflow-menu-panel {
+        display: none;
     }
 }
 

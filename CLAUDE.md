@@ -85,7 +85,22 @@ bash scripts/validate.sh
 
 # Run validation (Windows PowerShell)
 powershell scripts/validate.ps1
+
+# Run iPhone 16 standalone PWA emulator & multi-surface visual test
+node scripts/emulate-iphone16-pwa.js
+node scripts/validate-surfaces.js
 ```
+
+### Mobile & PWA Device Verification (iPhone 16 Standalone)
+**Always verify mobile changes using `node scripts/emulate-iphone16-pwa.js`:**
+- Desktop Chromium/Edge masks iOS WebKit-specific layout viewport clipping, initial containing block (ICB) deductions, and safe-area calculation quirks.
+- Real iPhones render all browsers (Safari and Edge on iOS) using Apple's WebKit engine.
+- `scripts/emulate-iphone16-pwa.js` runs Playwright WebKit in $393 \times 852$ standalone mode with exact Dynamic Island ($59\text{pt}$ top inset) and home indicator ($34\text{pt}$ bottom inset) hardware overlays.
+- It automatically verifies and captures:
+  1. The active terminal screen and ensures `.bottom-nav` docks flush to the physical screen bottom behind the home indicator.
+  2. The full-screen mobile file browser (`.file-browser-panel`) to guarantee breadcrumbs and action buttons clear the Dynamic Island.
+  3. Floating controls (`.mode-switcher` and `.keys-panel-fab`) stacked above the bottom navigation.
+- Use `node scripts/validate-surfaces.js` to assert zero regressions across desktop web, desktop WCO PWA, mobile browser, and iPhone 16 standalone PWA.
 
 ## Architecture
 
