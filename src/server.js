@@ -133,6 +133,35 @@ const CLAUDE_BIND_SIDECAR_MAX_BYTES = 64 * 1024;
 const EVICTION_HEAP_MAX_ENTRIES = 5000;
 
 /**
+ * Alt-screen enter sequence re-issued when a join replay must converge into
+ * the alternate screen but the ring evicted the original enter. 1049h (save
+ * cursor + alt buffer + clear) is what Claude/Copilot/Opencode emit; it is a
+ * superset of 1047h semantics, so it also converges 1047-only apps.
+ */
+const ALT_ENTER_SEQ = '\x1b[?1049h';
+
+/**
+ * True when the replay tail already enters alt-screen after the last exit —
+ * i.e. no prepend is needed. Compares the last alt-enter marker against the
+ * last alt-exit marker over the joined text (join also heals markers split
+ * across chunk boundaries). Strings and Buffers both occur in the ring.
+ * Markers require the ESC[ prefix so prose mentioning "?1049h" (common in
+ * a coding assistant's output) can never suppress a needed prepend — only
+ * real control sequences count, and any raw ESC[?1049h bytes in the stream
+ * would have activated alt mode in the parser anyway.
+ */
+function replayHasAltEnterAfterExit(replayItems) {
+  if (!Array.isArray(replayItems) || replayItems.length === 0) return false;
+  const text = replayItems.map((item) => (
+    Buffer.isBuffer(item) ? item.toString('utf8') : String(item || '')
+  )).join('');
+  const lastEnter = Math.max(text.lastIndexOf('\x1b[?1049h'), text.lastIndexOf('\x1b[?1047h'));
+  if (lastEnter < 0) return false;
+  const lastExit = Math.max(text.lastIndexOf('\x1b[?1049l'), text.lastIndexOf('\x1b[?1047l'));
+  return lastEnter > lastExit;
+}
+
+/**
  * Cut an over-cap input string without splitting an in-progress escape
  * sequence (CSI/SGR mouse reports, OSC hyperlinks, single-char ESC
  * sequences) or a UTF-16 surrogate pair. Splitting mid-sequence would
@@ -4334,7 +4363,29 @@ class ClaudeCodeWebServer {
           ? session.outputBuffer.toArray()
           : []
       );
-    return CircularBuffer.newestItemsWithinBytes(items, maxBytes);
+    const replay = CircularBuffer.newestItemsWithinBytes(items, maxBytes);
+    // Alt-screen convergence: fullscreen TUIs (Claude/Copilot/Opencode all
+    // use DECSET 1049h) address rows absolutely. The ring evicts oldest
+    // chunks first, so a long session loses the alt-enter while the app is
+    // still in alt-screen — replaying the tail into the normal buffer then
+    // leaves stale rows that only a SIGWINCH repaint heals. When the
+    // headless transcript (which parses every chunk) reports alt-active
+    // but the tail no longer contains the enter, prepend it. Non-alt
+    // sessions and tails that already contain the enter are untouched.
+    let altActive = false;
+    try {
+      altActive = !!(
+        session && session._ctlTranscript &&
+        typeof session._ctlTranscript.isAltScreenActive === 'function' &&
+        session._ctlTranscript.isAltScreenActive()
+      );
+    } catch (_) {
+      altActive = false;
+    }
+    if (altActive && !replayHasAltEnterAfterExit(replay)) {
+      replay.unshift(ALT_ENTER_SEQ);
+    }
+    return replay;
   }
 
   async leaveClaudeSession(wsId) {

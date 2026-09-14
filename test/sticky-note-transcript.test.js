@@ -52,8 +52,7 @@ describe('sticky-note transcript buffer', function () {
     tb.dispose();
   });
 
-  it('does NOT count carriage-return-only redraws as new lines', async function () {
-    const tb = new TranscriptBuffer();
+  it('does NOT count carriage-return-only redraws as new lines', async function () {    const tb = new TranscriptBuffer();
     tb.write('spin');
     tb.write('\rspin.');
     tb.write('\rspin..');
@@ -83,5 +82,23 @@ describe('sticky-note transcript buffer', function () {
     const out = await tb.snapshot();
     assert.ok(out.includes('row 4999'), 'most recent line still present');
     tb.dispose();
+  });
+
+  it('tracks alternate-screen state for join-replay convergence', async function () {
+    const tb = new TranscriptBuffer();
+    assert.strictEqual(tb.isAltScreenActive(), false, 'normal screen initially');
+    tb.write('[?1049h');
+    await tb._drain();
+    assert.strictEqual(tb.isAltScreenActive(), true, 'alt after 1049h');
+    tb.write('[?1049l');
+    await tb._drain();
+    assert.strictEqual(tb.isAltScreenActive(), false, 'normal after 1049l');
+    tb.dispose();
+  });
+
+  it('isAltScreenActive never throws on a disposed buffer (fail-closed)', function () {
+    const tb = new TranscriptBuffer();
+    tb.dispose();
+    assert.strictEqual(tb.isAltScreenActive(), false);
   });
 });

@@ -340,7 +340,7 @@ All messages are JSON. The `type` field determines the handler.
 | Client Message | Description |
 |---------------|-------------|
 | `create_session` | Create a new session and join it. Fields: `name`, `workingDir`. |
-| `join_session` | Join an existing session. Fields: `sessionId`. Replays the newest stored output up to the full live-buffer cap (512 KiB / 1000 lines, `CircularBuffer.LIVE_OUTPUT_MAX_BYTES`). |
+| `join_session` | Join an existing session. Fields: `sessionId`. Replays the newest stored output up to the full live-buffer cap (512 KiB / 1000 lines, `CircularBuffer.LIVE_OUTPUT_MAX_BYTES`). When the headless transcript reports the session is in the alternate screen but the tail no longer contains the alt-enter (evicted from the ring), the replay prepends `ESC[?1049h` so fullscreen TUIs reconverge instead of drawing into the normal buffer. |
 | `leave_session` | Disconnect from current session without stopping the agent. |
 | `start_claude` | Launch Claude CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
 | `start_codex` | Launch Codex CLI in the current session. Fields: `options` (optional). Pre-checks tool availability. |
