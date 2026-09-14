@@ -52,10 +52,14 @@ test.describe('Alt-screen replay convergence on tab switch', () => {
     });
     // Enter alt-screen, flood, stay there (node exits back to the shell
     // prompt, which remains in alt-screen — exactly the opencode shape).
+    // Quoting is PowerShell/cmd/bash-portable: double-quoted arg, single-
+    // quoted JS strings, backslash-x escapes decoded by node (never a raw
+    // ESC byte, which ConPTY/PowerShell command lines mangle). Matches the
+    // proven spec-15/16 pattern. printf is NOT used (absent on Windows).
     await page.evaluate(() => {
       window.app.send({
         type: 'input',
-        data: `node -e "process.stdout.write('\\x1b[?1049h');const s='x'.repeat(1024);for(let i=0;i<700;i++)console.log('alt-'+i+'-'+s)"\n`,
+        data: 'node -e "process.stdout.write(\'\\x1b[?1049h\');const s=\'x\'.repeat(1024);for(let i=0;i<700;i++)console.log(\'alt-\'+i+\'-\'+s)"\n',
         claim: true,
         viewId: 'main',
       });
@@ -157,10 +161,11 @@ test.describe('Alt-screen replay convergence on tab switch', () => {
 
     await joinSessionAndStartTerminal(page, sessionA);
     // Small alt session: enter survives in the ring, no prepend expected.
+    // node -e (not printf) for Windows shells; see floodAltScreen quoting.
     await page.evaluate(() => {
       window.app.send({
         type: 'input',
-        data: `printf '\\x1b[?1049hshort-alt-view\\r\\n'\n`,
+        data: 'node -e "process.stdout.write(\'\\x1b[?1049hshort-alt-view\\r\\n\')"\n',
         claim: true,
         viewId: 'main',
       });

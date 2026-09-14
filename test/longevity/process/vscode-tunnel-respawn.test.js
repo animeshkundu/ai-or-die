@@ -8,17 +8,17 @@
 //
 //   1. (PASS) Backoff math: per-tunnel `retryCount` climbs per crash,
 //      backoff doubles up to the MAX_RESTART_DELAY_MS cap.
-//   2. (FAIL on main) `_restart` re-entrancy: the natural exit handler
-//      and the health-check sweep can both call `_restart(sessionId)`,
-//      double-incrementing `retryCount`. There is no `_restarting`
-//      guard. THIS IS GAP 2 IN THE MEMO.
-//   3. (SKIPPED on main) Stable-uptime reset of `retryCount`: requires
-//      a per-instance `_stabilityThresholdMs` override that does not
-//      exist on `vscode-tunnel.js`. THIS IS GAP 3 IN THE MEMO. The
-//      test is left as `it.skip` with a load-bearing TODO; it will
-//      flip to `it` once the override lands.
-//   4. (PASS) `MAX_RETRIES` (10) bound is honored — no respawn at cap;
-//      `tunnel.status === 'error'`, `_cleanupTunnel` runs.
+//   2. (FIXED) `_restart` re-entrancy: the natural exit handler
+//      and the health-check sweep share the `_restarting` guard, so the
+//      SAME death event never double-increments `retryCount`.
+//   3. (FIXED) Stable-uptime reset of `retryCount` via per-instance
+//      `_stabilityThresholdMs` override.
+//   4. Never-quit supervision (ADR-0054, supersedes the old MAX_RETRIES
+//      give-up): past retryCount 10 the manager keeps backing off at the
+//      capped delay and respawns — the tunnel record is kept (status
+//      `error` only signals the portal banner), never cleaned up by
+//      failure. MAX_RETRIES survives only as the escalated-logging
+//      threshold, not as a halt condition.
 //
 // We bypass the CLI-discovery, auth, and `code serve-web` paths by
 // calling `_spawnTunnel` (the `devtunnel host` spawn) directly with a
@@ -357,43 +357,48 @@ class StubChildProcess extends EventEmitter {
   });
 
   // -----------------------------------------------------------------------
-  // Test 4: MAX_RETRIES (10) bound is honored
+  // Test 4: never-quit supervision past MAX_RETRIES (ADR-0054)
   // -----------------------------------------------------------------------
-  it('MAX_RETRIES (10) bound is honored — tunnel.status flips to "error", _cleanupTunnel runs', async function () {
+  it('keeps respawning past MAX_RETRIES and keeps the record (never quits)', async function () {
     const spawnP = mgr._spawnTunnel(sessionId);
     emitUrlOnLatestTunnel();
     await spawnP;
     tunnel._capturedDelays.length = 0;
 
-    // 10 crashes — retryCount climbs to 10. The 11th hits the cap.
-    // Each cycle waits for _spawnTunnel to resolve so the PROC-02
-    // gap-2 `_restarting` serialisation releases before the next crash.
+    // 10 crashes — retryCount climbs to 10. Each cycle waits for _spawnTunnel
+    // to resolve so the PROC-02 gap-2 `_restarting` serialisation releases
+    // before the next crash.
     for (let i = 0; i < 10; i++) {
       crashLatestTunnel(1);
       await settleOneCycle();
     }
-    assert.strictEqual(tunnel.retryCount, 10, 'retryCount at the cap after 10 crashes');
+    assert.strictEqual(tunnel.retryCount, 10, 'retryCount at the old cap after 10 crashes');
     tunnel._capturedDelays.length = 0;
     const spawnsBefore = stubChildren.length;
 
-    // 11th crash → retryCount becomes 11, > MAX_RETRIES → fatal branch
-    // at vscode-tunnel.js:897.
+    // 11th crash → retryCount becomes 11. Under never-quit supervision a
+    // respawn IS scheduled with the delay still capped, the tunnel record
+    // is kept for the health sweep, and status is NOT terminal.
     crashLatestTunnel(1);
     for (let t = 0; t < 10; t++) {
       await new Promise((r) => process.nextTick(r));
     }
 
-    // The load-bearing assertion: past MAX_RETRIES, no NEW spawn occurs.
-    // The _capturedDelays length is a softer signal because a dangling
-    // pre-cap _restart's setTimeout may still be in flight when we
-    // reset — we tolerate at most 1 spurious capture from that source.
-    assert.ok(tunnel._capturedDelays.length <= 1,
-      `past MAX_RETRIES, at most one in-flight delay may settle (got ${tunnel._capturedDelays.length})`);
-    assert.strictEqual(stubChildren.length, spawnsBefore,
-      'past MAX_RETRIES, no new tunnelProcess must spawn');
-    assert.strictEqual(mgr.tunnels.has(sessionId), false,
-      'past MAX_RETRIES, _cleanupTunnel must drop the tunnel entry from the Map');
-    assert.strictEqual(tunnel.status, 'error',
-      'past MAX_RETRIES, tunnel.status must be "error"');
+    assert.strictEqual(tunnel.retryCount, 11);
+    assert.ok(tunnel._capturedDelays.length >= 1,
+      `past MAX_RETRIES, a respawn must be scheduled (got ${tunnel._capturedDelays.length} delays)`);
+    assert.ok(
+      tunnel._capturedDelays.every((ms) => ms <= 30000),
+      'past MAX_RETRIES, backoff stays capped at MAX_RESTART_DELAY_MS'
+    );
+    // The respawn runs on nextTick-fired delay (captured above), so a new
+    // stub child is spawned and the record survives for future sweeps.
+    for (let t = 0; t < 10; t++) {
+      await new Promise((r) => process.nextTick(r));
+    }
+    assert.strictEqual(stubChildren.length, spawnsBefore + 1,
+      'past MAX_RETRIES, a new tunnelProcess must spawn');
+    assert.strictEqual(mgr.tunnels.has(sessionId), true,
+      'past MAX_RETRIES, the tunnel record must be kept (never cleaned up by failure)');
   });
 });

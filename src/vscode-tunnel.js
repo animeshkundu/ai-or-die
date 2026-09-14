@@ -1228,7 +1228,7 @@ class VSCodeTunnelManager {
         console.warn(
           `[VSCODE-TUNNEL] Session ${sessionId}: tunnel lost after ${uptimeStr}. ` +
           `Server still running. Restarting tunnel in ${delay / 1000}s ` +
-          `(attempt ${tunnel.retryCount}/${MAX_RETRIES}).`
+          `(attempt ${tunnel.retryCount}).`
         );
       } else {
         // Server died — kill tunnel too, restart both
@@ -1246,7 +1246,7 @@ class VSCodeTunnelManager {
         });
         console.warn(
           `[VSCODE-TUNNEL] Session ${sessionId}: server lost after ${uptimeStr}. ` +
-          `Restarting in ${delay / 1000}s (attempt ${tunnel.retryCount}/${MAX_RETRIES}, ` +
+          `Restarting in ${delay / 1000}s (attempt ${tunnel.retryCount}, ` +
           `lifetime restarts: ${tunnel._totalRestarts}).`
         );
       }
