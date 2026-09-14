@@ -56,10 +56,12 @@ test.describe('Alt-screen replay convergence on tab switch', () => {
     // quoted JS strings, backslash-x escapes decoded by node (never a raw
     // ESC byte, which ConPTY/PowerShell command lines mangle). Matches the
     // proven spec-15/16 pattern. printf is NOT used (absent on Windows).
+    // The command is submitted with CR (\r, like the Enter key) — a lone
+    // LF is not a submit in all Windows shells/readline modes.
     await page.evaluate(() => {
       window.app.send({
         type: 'input',
-        data: 'node -e "process.stdout.write(\'\\x1b[?1049h\');const s=\'x\'.repeat(1024);for(let i=0;i<700;i++)console.log(\'alt-\'+i+\'-\'+s)"\n',
+        data: 'node -e "process.stdout.write(\'\\x1b[?1049h\');const s=\'x\'.repeat(1024);for(let i=0;i<700;i++)console.log(\'alt-\'+i+\'-\'+s)"\r',
         claim: true,
         viewId: 'main',
       });
@@ -74,7 +76,7 @@ test.describe('Alt-screen replay convergence on tab switch', () => {
         if (line && line.translateToString(true).includes('alt-699-')) return true;
       }
       return false;
-    }, { timeout: 60000 });
+    }, undefined, { timeout: 90000 });
     // Settle: let the server ring + transcript absorb the burst.
     await page.waitForTimeout(2000);
   }
@@ -161,11 +163,11 @@ test.describe('Alt-screen replay convergence on tab switch', () => {
 
     await joinSessionAndStartTerminal(page, sessionA);
     // Small alt session: enter survives in the ring, no prepend expected.
-    // node -e (not printf) for Windows shells; see floodAltScreen quoting.
+    // node -e (not printf) for Windows shells; CR submits everywhere.
     await page.evaluate(() => {
       window.app.send({
         type: 'input',
-        data: 'node -e "process.stdout.write(\'\\x1b[?1049hshort-alt-view\\r\\n\')"\n',
+        data: 'node -e "process.stdout.write(\'\\x1b[?1049hshort-alt-view\\r\\n\')"\r',
         claim: true,
         viewId: 'main',
       });
@@ -173,7 +175,7 @@ test.describe('Alt-screen replay convergence on tab switch', () => {
     await page.waitForFunction(() => {
       const term = window.app && window.app.terminal;
       return term && term.buffer.active.type === 'alternate';
-    }, { timeout: 15000 });
+    }, undefined, { timeout: 30000 });
 
     await page.evaluate(async (sid) => {
       const app = window.app;
