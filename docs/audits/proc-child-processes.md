@@ -14,6 +14,13 @@
 - `test/longevity/process/vscode-tunnel-respawn.test.js`
 **Date**: 2026-05-27
 
+> **Superseded in part by ADR-0054 (2026-09-14):** the MAX_RETRIES
+> give-up discipline described below (§4 backoff, §7 respawn-failure
+> branches, and the PROC-02 probes asserting halt-at-cap) no longer
+> applies to the tunnel/mesh supervisors. Automatic recovery never
+> halts; MAX_RETRIES is now only the escalated-logging threshold.
+> Listener-hygiene findings (§1–§3, §5–§6) stand unchanged.
+
 ## Summary
 
 All three child-process owners share a generally sound respawn shape:

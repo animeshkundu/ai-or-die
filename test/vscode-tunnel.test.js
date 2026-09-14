@@ -720,7 +720,7 @@ describe('VSCodeTunnelManager', function () {
       assert(failure.message.includes('only from the machine running this server'));
     });
 
-    it('surfaces a server restart failure and releases the reserved port', async function () {
+    it('surfaces a server restart failure but keeps the record for sweep retry (never quits)', async function () {
       const tunnel = restartState(null);
       tunnel._whichDied = 'server';
       manager.tunnels.set('test-session', tunnel);
@@ -738,12 +738,40 @@ describe('VSCodeTunnelManager', function () {
       const pending = manager._restart('test-session');
       await releaseRestartDelay(tunnel, pending);
 
-      assert.strictEqual(manager.tunnels.has('test-session'), false);
-      assert.strictEqual(manager._reservedPorts.has(9100), false);
+      // Record is kept (status error, port still reserved) so the health
+      // sweep retries with backoff instead of ending recovery here.
+      assert.strictEqual(manager.tunnels.has('test-session'), true);
+      assert.strictEqual(tunnel.status, 'error');
+      assert.strictEqual(manager._reservedPorts.has(9100), true);
       const failure = events.find((event) => event.type === 'vscode_tunnel_error');
       assert(failure, 'server restart failure was not surfaced');
       assert.strictEqual(failure.error, 'server_start_failed');
       assert.strictEqual(failure.fatal, true);
+    });
+
+    it('keeps respawning past the old retry budget (never quits)', async function () {
+      const serverProcess = new EventEmitter();
+      serverProcess.exitCode = null;
+      serverProcess.kill = () => {};
+      const tunnel = restartState(serverProcess);
+      tunnel.retryCount = 25; // past MAX_RETRIES
+      tunnel._whichDied = 'tunnel';
+      manager.tunnels.set('test-session', tunnel);
+      manager._reservedPorts.add(9100);
+      manager._ensureDevtunnel = async () => ({ ok: true });
+      let spawned = false;
+      manager._spawnTunnel = async () => {
+        spawned = true;
+        return { ok: true, publicUrl: 'https://test.devtunnels.ms' };
+      };
+      manager.onEvent = () => {};
+
+      const pending = manager._restart('test-session');
+      await releaseRestartDelay(tunnel, pending);
+
+      assert.strictEqual(spawned, true, 'respawn must still be attempted past budget');
+      assert.strictEqual(tunnel.retryCount, 26);
+      assert.strictEqual(manager.tunnels.has('test-session'), true);
     });
   });
 

@@ -177,7 +177,10 @@ class MeshManager {
       this.proc.on('error', (e) => { console.error(`  \x1b[31mmesh sidecar failed: ${e.message}\x1b[0m`); this.proc = null; if (!done) { done = true; clearTimeout(timer); resolve(); } });
       this.proc.on('exit', (code) => {
         this._clearStabilityTimer(); this.proc = null; this.dnsName = null; this._deletePeersFile(); this._deleteEgressFile();
-        if (!this.stopping && code !== 0) this._restart();
+        // Recover on any exit while wanted — a clean exit drops the tailnet
+        // path just as surely as a crash. See tunnel-manager: exit code and
+        // retry budget never gate automatic recovery.
+        if (this._shouldAutoRestart()) this._restart();
       });
     });
   }
@@ -388,14 +391,31 @@ class MeshManager {
   }
   _clearStabilityTimer() { if (this._stabilityTimer) { clearTimeout(this._stabilityTimer); this._stabilityTimer = null; } }
 
+  /**
+   * Whether a sidecar exit should trigger automatic recovery.
+   * Only intentional shutdown gates recovery — never the exit code.
+   */
+  _shouldAutoRestart() {
+    return !this.stopping;
+  }
+
   async _restart() {
     this._totalRestarts++; this.retryCount++;
-    if (this.retryCount > MAX_RETRIES) { console.error('  \x1b[31mMesh sidecar crashed too many times. Server continues on localhost.\x1b[0m'); return; }
+    // Never quits: keep backing off at the capped delay so an unattended
+    // daemon recovers on its own. Manual intervention is never required
+    // to resume automatic recovery.
+    if (this.retryCount > MAX_RETRIES) {
+      console.warn(`  [mesh] Still retrying after ${this.retryCount} attempts (lifetime restarts ${this._totalRestarts}) — backoff capped, recovery continues.`);
+    }
     const delay = Math.min(2 ** (this.retryCount - 1) * MIN_RESTART_DELAY_MS, MAX_RESTART_DELAY_MS);
     await new Promise((resolve) => { this._restartDelayResolve = resolve; this._restartDelayTimer = setTimeout(resolve, delay); if (this._restartDelayTimer.unref) this._restartDelayTimer.unref(); });
     this._restartDelayResolve = null;
     if (this.stopping) return;
-    await this._spawn();
+    try {
+      await this._spawn();
+    } catch (err) {
+      console.error(`  [mesh] Spawn failed: ${err && err.message}. Will retry with backoff.`);
+    }
   }
 }
 

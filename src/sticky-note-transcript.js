@@ -129,6 +129,23 @@ class TranscriptBuffer {
     return new Promise((resolve) => this._term.write('', resolve));
   }
 
+  /**
+   * True when the headless terminal is currently in the alternate screen
+   * (DECSET 1049/1047 active). Used by join replay: if the raw ring evicted
+   * the alt-enter, the replay must re-enter alt or rows misalign into the
+   * normal buffer (ghost box that only a SIGWINCH repaint heals). Never
+   * throws; false on any doubt (fail-closed = status quo ante). Sync by
+   * design — callers check settled state, not in-flight bytes.
+   */
+  isAltScreenActive() {
+    try {
+      const b = this._term && this._term.buffer;
+      return !!(b && b.active && b.alternate && b.active === b.alternate);
+    } catch {
+      return false;
+    }
+  }
+
   dispose() {
     try {
       this._term.dispose();

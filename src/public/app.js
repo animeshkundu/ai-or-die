@@ -109,6 +109,14 @@ class ClaudeCodeWebInterface {
         this._WRITE_FRAME_BUDGET = 96 * 1024;
         this._reconnectViewState = null;
         this._joinRepaintInProgress = false;
+        // Set when terminal bytes were written since the last snapshot
+        // capture — lets switch-away skip a redundant sync serialize when
+        // nothing changed, without losing fidelity when it did.
+        this._terminalDirtySinceCapture = false;
+        // Throttle per-frame DOM/regex sidecars (activity badges, timers)
+        // during heavy bursts; terminal bytes still write every frame.
+        this._lastActivitySampleAt = 0;
+        this._ACTIVITY_SAMPLE_MS = 500;
         this._outputTailSessionId = null;
         this._outputTail = '';
         this._OUTPUT_TAIL_LIMIT = 256 * 1024;
@@ -120,6 +128,10 @@ class ClaudeCodeWebInterface {
         this._inputBuffer = '';
         this._inputFlushScheduled = false;
         this._INPUT_BUFFER_MAX = 64 * 1024; // 64KB safety cap
+        // Pure pointer-motion flush floor: at most ~30 motion messages/s.
+        // Action batches (keys, clicks, edges) always flush immediately.
+        this._lastInputFlushAt = 0;
+        this._INPUT_MOTION_MIN_INTERVAL = 33;
 
         // Modal mutual exclusion: only one modal-class element open at a time
         this._activeModal = null;
@@ -1000,6 +1012,80 @@ class ClaudeCodeWebInterface {
         this.setupTerminalSearch();
         this.setupTerminalContextMenu();
         this._setupTerminalLinking(this.terminal);
+
+        // Pointer-coordinate correction for mouse-reporting TUIs under the
+        // geometry presentation transform. Inactive in the exact regime and
+        // when no mouse tracking is on (zero behavior change there); active
+        // only for non-owner pan/scale views where xterm would otherwise
+        // report the wrong cell. Rects are cached (500ms) so mousemove
+        // floods don't force layout per event.
+        try {
+            if (typeof PointerCorrection !== 'undefined') {
+                const wrapperEl = document.querySelector('.terminal-wrapper');
+                let rectCache = null;
+                const self = this;
+                this._pointerCorrectionDetach = PointerCorrection.attach(
+                    wrapperEl,
+                    () => {
+                        const pres = self._geometryPresentation;
+                        if (!pres || pres.regime === 'exact') return null;
+                        const modes = self.terminal && self.terminal.modes;
+                        if (!modes || !modes.mouseTrackingMode || modes.mouseTrackingMode === 'none') return null;
+                        if (!self._geometryApplied) return null;
+                        const nowMs = Date.now();
+                        if (!rectCache || nowMs - rectCache.at > 500) {
+                            const outerEl = document.querySelector('.terminal-wrapper');
+                            const stageEl = document.getElementById('terminal');
+                            const screenEl = document.querySelector('.xterm-screen');
+                            if (!outerEl || !screenEl) return null;
+                            let cell = null;
+                            try {
+                                const dims = self.terminal._core._renderService.dimensions;
+                                cell = dims && dims.css && dims.css.cell;
+                            } catch (_) { cell = null; }
+                            if (!cell || !(cell.width > 0) || !(cell.height > 0)) return null;
+                            // Screen-element layout inset relative to the stage
+                            // origin, in unscaled layout px (offsetParent chains
+                            // ignore transforms, so this is regime-independent).
+                            // xterm's grid starts there, not at the stage
+                            // origin; without it the remap is off by ~2 cells
+                            // at phone scales.
+                            const absOffset = (el) => {
+                                let x = 0; let y = 0; let cur = el;
+                                while (cur) {
+                                    x += cur.offsetLeft || 0;
+                                    y += cur.offsetTop || 0;
+                                    cur = cur.offsetParent;
+                                }
+                                return { x, y };
+                            };
+                            let inset = { x: 0, y: 0 };
+                            if (stageEl) {
+                                const sAbs = absOffset(screenEl);
+                                const tAbs = absOffset(stageEl);
+                                inset = { x: sAbs.x - tAbs.x, y: sAbs.y - tAbs.y };
+                            }
+                            rectCache = {
+                                at: nowMs,
+                                outerRect: outerEl.getBoundingClientRect(),
+                                screenEl,
+                                inset,
+                                cell: { width: cell.width, height: cell.height },
+                            };
+                        }
+                        return {
+                            presentation: pres,
+                            applied: self._geometryApplied,
+                            cell: rectCache.cell,
+                            outerRect: rectCache.outerRect,
+                            screenEl: rectCache.screenEl,
+                            inset: rectCache.inset,
+                        };
+                    },
+                    (typeof TerminalPresentation !== 'undefined' && TerminalPresentation.pointerToCell) || null
+                );
+            }
+        } catch (_) { /* pointer correction is best-effort */ }
 
         this.terminal.onData((data) => {
             if (this._ctrlModifierPending) {
@@ -2672,11 +2758,42 @@ class ClaudeCodeWebInterface {
         btn.style.display = needsFit ? 'inline-flex' : 'none';
     }
 
-    // Flush accumulated input buffer to server as a single batched message
+    // Flush accumulated input buffer to server as a single batched message.
+    // Motion-only batches (pointer drag with no keys/edges) go claim:false
+    // so they skip the deliberate-action owner transfer and cannot flap
+    // geometry ownership or head-of-line-block keystrokes behind 60Hz
+    // motion. Action batches keep claim:true + viewId (owner semantics
+    // identical). Motion runs are compressed to their tail first, and pure
+    // motion flushes at most every _INPUT_MOTION_MIN_INTERVAL ms (~30Hz) —
+    // position-convergent (the TUI ends at the same cell), though
+    // intermediate cells of a fast drag are intentionally not all delivered.
     _flushInput() {
         this._inputFlushScheduled = false;
         if (this._inputBuffer.length > 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
-            this.send({ type: 'input', data: this._inputBuffer, claim: true, viewId: 'main' });
+            let data = this._inputBuffer;
+            let motionOnly = false;
+            if (typeof InputSender !== 'undefined') {
+                data = InputSender.compressMotion(data);
+                motionOnly = InputSender.isPureMotion(data);
+            }
+            if (motionOnly) {
+                const nowMs = (typeof performance !== 'undefined' && performance.now)
+                    ? performance.now() : Date.now();
+                if (nowMs - this._lastInputFlushAt < this._INPUT_MOTION_MIN_INTERVAL) {
+                    // Too soon: hold the (already compressed) tail for the
+                    // next frame instead of emitting another motion message.
+                    this._inputBuffer = data;
+                    if (!this._inputFlushScheduled) {
+                        this._inputFlushScheduled = true;
+                        requestAnimationFrame(() => this._flushInput());
+                    }
+                    return;
+                }
+                this._lastInputFlushAt = nowMs;
+                this.send({ type: 'input', data, claim: false });
+            } else {
+                this.send({ type: 'input', data, claim: true, viewId: 'main' });
+            }
             this._inputBuffer = '';
         }
     }
@@ -2820,8 +2937,15 @@ class ClaudeCodeWebInterface {
         );
 
         this._writeToTerminal(combined);
+        this._terminalDirtySinceCapture = true;
 
-        if (this.sessionTabManager && this.currentClaudeSessionId) {
+        // Sampled sidecar: badges/timers/regexes at most 1x per
+        // _ACTIVITY_SAMPLE_MS during bursts. Bytes still render every frame.
+        const nowSample = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now() : Date.now();
+        if (this.sessionTabManager && this.currentClaudeSessionId &&
+            nowSample - this._lastActivitySampleAt >= this._ACTIVITY_SAMPLE_MS) {
+            this._lastActivitySampleAt = nowSample;
             this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
         }
 
@@ -2841,7 +2965,10 @@ class ClaudeCodeWebInterface {
             if (this._snapCaptureTimer) clearTimeout(this._snapCaptureTimer);
             this._snapCaptureTimer = setTimeout(() => {
                 this._snapCaptureTimer = null;
-                if (this._terminalStablyShowsSession(sid)) this.snapshotCache?.capture(sid);
+                if (this._terminalStablyShowsSession(sid)) {
+                    this.snapshotCache?.capture(sid);
+                    if (sid === this.currentClaudeSessionId) this._terminalDirtySinceCapture = false;
+                }
             }, 400);
         }
 
@@ -3221,7 +3348,7 @@ class ClaudeCodeWebInterface {
                     // with stale content (the #131 regression). So the plain-text
                     // snapshot is used ONLY for non-live (exited/idle) sessions.
                     // See join-repaint.js for the decision matrix.
-                    const replayBuffer = () => {
+                    const replayBuffer = (fullText) => {
                         // Deliberately does NOT clear _pendingWrites.
                         //
                         // An earlier revision cleared it here, reasoning that the
@@ -3240,10 +3367,18 @@ class ClaudeCodeWebInterface {
                         // scheduled. That is the correct place for it, because at
                         // that instant nothing newer than the replay can be in
                         // the queue yet.
+                        //
+                        // Batched writes: the full 512KB/1000-line buffer is
+                        // preserved byte-for-byte, but written in bounded
+                        // slices instead of one write per stored chunk (up to
+                        // 1000 xterm tasks). Same ANSI bytes, far fewer tasks.
                         this.terminal.write('\x1bc');
-                        message.outputBuffer.forEach(data => {
-                            this.terminal.write(data);
-                        });
+                        const text = typeof fullText === 'string' ? fullText : '';
+                        if (!text) return;
+                        const SLICE = 64 * 1024;
+                        for (let i = 0; i < text.length; i += SLICE) {
+                            this.terminal.write(text.slice(i, i + SLICE));
+                        }
                     };
                     const action = chooseJoinRepaint(message);
                     // Did the instant cache paint already show THIS session for
@@ -3272,7 +3407,7 @@ class ClaudeCodeWebInterface {
                             ? message.outputBuffer.join('')
                             : '';
                         if (action === 'buffer') {
-                            replayBuffer();
+                            replayBuffer(replayText);
                             this._outputTailSessionId = message.sessionId;
                             this._outputTail = replayText.slice(-this._OUTPUT_TAIL_LIMIT);
                         } else if (action === 'snapshot') {
@@ -3303,6 +3438,7 @@ class ClaudeCodeWebInterface {
                             if (this.snapshotCache && action !== 'clear'
                                 && this._terminalStablyShowsSession(sid)) {
                                 this.snapshotCache.capture(sid);
+                                this._terminalDirtySinceCapture = false;
                             }
                             const activeBuffer = this.terminal.buffer && this.terminal.buffer.active;
                             if (reconnectView && activeBuffer) {

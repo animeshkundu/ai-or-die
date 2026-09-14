@@ -13,8 +13,11 @@
 //   - Backoff delay doubles per crash and caps at 30s.
 //   - Stable uptime (> `_stabilityThresholdMs`) resets `retryCount`
 //     so a long-uptime crash gets a fresh retry budget.
-//   - `MAX_RETRIES` (10) bound is honored — beyond that the manager
-//     gives up and does not respawn.
+//   - Never-quit supervision (ADR-0054, supersedes the old MAX_RETRIES
+//     give-up): past retryCount 10 the manager keeps backing off at the
+//     capped delay and respawns — it never halts. MAX_RETRIES survives
+//     only as the escalated-logging threshold and the stability-reset
+//     accounting unit, not as a halt condition.
 //
 // We override `tunnel._spawn` (rather than monkey-patching the
 // `child_process` module's `spawn` export — that import is bound at
@@ -99,9 +102,9 @@ class StubChildProcess extends EventEmitter {
           this._clearStabilityTimer();
           this.process = null;
           if (!urlResolved) { urlResolved = true; resolve(); }
-          // Mirror tunnel-manager.js:360: auto-restart if not stopped
-          // and not user-initiated restart and exit code ≠ 0.
-          if (!this.stopping && !this._restarting && code !== 0) {
+          // Mirror tunnel-manager.js _shouldAutoRestart(): any exit while
+          // wanted recovers (exit code never gates, no retry budget).
+          if (this._shouldAutoRestart()) {
             this._restart();
           }
         });
@@ -232,38 +235,63 @@ class StubChildProcess extends EventEmitter {
   });
 
   // -----------------------------------------------------------------------
-  // Test 4: MAX_RETRIES bound is honored
+  // Test 4: never-quit supervision past MAX_RETRIES (ADR-0054)
   // -----------------------------------------------------------------------
-  it('MAX_RETRIES (10) bound is honored — no respawn at the cap', async function () {
+  it('keeps respawning past MAX_RETRIES with capped backoff (never quits)', async function () {
     const spawnP = tunnel._spawn();
     emitUrlOnLatest();
     await spawnP;
 
     // Crash 10 times rapid-fire (no stability reset). retryCount climbs
-    // to 10. The 11th crash should hit retryCount > MAX_RETRIES branch
-    // at tunnel-manager.js:405 and NOT schedule a respawn.
+    // to 10.
     for (let i = 0; i < 10; i++) {
       crashLatest(1);
       await new Promise((r) => process.nextTick(r));
       await new Promise((r) => process.nextTick(r));
       await new Promise((r) => process.nextTick(r));
     }
-    assert.strictEqual(tunnel.retryCount, 10, 'retryCount at the cap');
+    assert.strictEqual(tunnel.retryCount, 10, 'retryCount at the old cap');
     const spawnsSoFar = stubChildren.length;
     tunnel._capturedDelays.length = 0;
 
-    // 11th crash — retryCount becomes 11, > MAX_RETRIES (10), branch
-    // at line 405 fires, console errors, function returns WITHOUT
-    // scheduling a respawn.
+    // 11th crash — retryCount becomes 11. Under never-quit supervision a
+    // respawn IS scheduled, with the delay still capped at 30s.
     crashLatest(1);
     await new Promise((r) => process.nextTick(r));
     await new Promise((r) => process.nextTick(r));
     await new Promise((r) => process.nextTick(r));
 
-    assert.strictEqual(tunnel._capturedDelays.length, 0,
-      'at retryCount > MAX_RETRIES, _restart must NOT schedule a respawn');
-    assert.strictEqual(stubChildren.length, spawnsSoFar,
-      'no new child process must be spawned past MAX_RETRIES');
+    assert.strictEqual(tunnel.retryCount, 11);
+    assert.strictEqual(tunnel._capturedDelays.length, 1,
+      'past MAX_RETRIES, _restart must still schedule a respawn');
+    assert.strictEqual(tunnel._capturedDelays[0], 30000,
+      'past MAX_RETRIES, backoff stays capped at MAX_RESTART_DELAY_MS');
+    // The respawn runs on nextTick-fired delay (captured above), so a new
+    // stub child is spawned.
+    await new Promise((r) => process.nextTick(r));
+    await new Promise((r) => process.nextTick(r));
+    assert.strictEqual(stubChildren.length, spawnsSoFar + 1,
+      'a new child process must spawn past MAX_RETRIES');
+  });
+
+  it('recovers on clean exit (code 0) while wanted', async function () {
+    const spawnP = tunnel._spawn();
+    emitUrlOnLatest();
+    await spawnP;
+    const spawnsSoFar = stubChildren.length;
+    tunnel._capturedDelays.length = 0;
+
+    crashLatest(0);
+    await new Promise((r) => process.nextTick(r));
+    await new Promise((r) => process.nextTick(r));
+    await new Promise((r) => process.nextTick(r));
+
+    assert.strictEqual(tunnel._capturedDelays.length, 1,
+      'exit 0 must schedule a respawn while the tunnel is wanted');
+    await new Promise((r) => process.nextTick(r));
+    await new Promise((r) => process.nextTick(r));
+    assert.strictEqual(stubChildren.length, spawnsSoFar + 1,
+      'a new child process must spawn after a clean exit');
   });
 
   // -----------------------------------------------------------------------

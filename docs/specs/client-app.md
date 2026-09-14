@@ -37,7 +37,7 @@
 
 ## Output path
 
-Binary WebSocket output is queued without per-frame side effects. One animation-frame flush writes at most 96 KiB, decodes the batch once with streaming UTF-8 state, then performs activity, plan-detection, and snapshot bookkeeping. Main and split terminal scrollback is capped at 1,000 lines.
+Binary WebSocket output is queued without per-frame side effects. One animation-frame flush writes at most 96 KiB, decodes the batch once with streaming UTF-8 state, then performs plan-detection and snapshot bookkeeping. Tab-activity badges/timers run sampled at most once per 500 ms during bursts; terminal bytes still render every frame. Join replay writes the full server buffer byte-for-byte in bounded 64 KiB slices instead of one xterm write per stored chunk. Main and split terminal scrollback is capped at 1,000 lines. Switch-away skips the outgoing tab's synchronous serialize when nothing was written since its last capture; the instant cache paint plus authoritative `session_joined` replay always run.
 
 Split panes use the same per-frame output budget. On reconnect they rebuild from
 the bounded server replay before releasing queued live frames, then restore the
@@ -260,14 +260,18 @@ The terminal auto-resizes via `FitAddon` triggered by a `ResizeObserver` on the 
 
 Terminal input uses a breather-flush pattern to batch keystrokes per animation frame rather than sending each keystroke individually:
 
-1. Each `onData` event appends to `_inputBuffer` instead of sending immediately.
-2. A `requestAnimationFrame` callback calls `_flushInput()`, which sends the entire buffer as a single `input` message with `claim: true` and `viewId: 'main'`.
+1. Each `onData` event appends to `_inputBuffer` instead of sending immediately (main terminal and split panes alike; splits previously sent one WS message per event).
+2. A `requestAnimationFrame` callback calls `_flushInput()`, which compresses pointer-motion runs to their tail (`InputSender.compressMotion`), then sends the buffer as a single `input` message.
 3. If the buffer exceeds `_INPUT_BUFFER_MAX`, it flushes immediately without waiting for the next frame.
 4. The buffer is cleared on WebSocket reconnect to prevent ghost keystrokes.
-5. All user terminal inputs (typing, paste, on-screen extra keys bar, mobile keys dialog, input-overlay modal, and splits) include `claim: true`, enabling deliberate ownership acquisition under multi-device terminal geometry (ADR-0052).
+5. Batches holding keys, button edges, wheel ticks, or pastes include `claim: true` (+ `viewId`), enabling deliberate ownership acquisition under multi-device terminal geometry (ADR-0052). Pure pointer-motion batches send `claim: false`: same PTY bytes, no owner flap, and they flush at most every 33ms (~30Hz) with the tail always delivered. Intended side effects of the downgrade: motion-only input neither transfers geometry ownership (a non-owner dragging a mouse TUI must click/type to claim) nor orders the successor-lease heuristic.
 6. When viewing an active session as a non-owner in `pan` or `scale` presentation regime, a visible **Fit Screen** toolbar action is displayed to allow explicit ownership transfer via `geometry_take_control` before typing.
 
-This reduces WebSocket message volume during fast typing and improves perceived responsiveness during heavy output.
+This reduces WebSocket message volume during fast typing and drags, and improves perceived responsiveness during heavy output.
+
+### Pointer Correction under Pan/Scale
+
+A non-owner viewer presents the authoritative grid through a CSS transform on the inner stage, but xterm hit-tests against the transformed element with unscaled cell metrics — so mouse-reporting TUIs were told the wrong cell (measured: drawn col 26 reported as col 11 at scale 0.415). `pointer-correction.js` remaps mousedown/mousemove/mouseup coordinates so xterm reports the drawn cell (via the shared `pointerToCell` mapping, adjusted for the screen-element layout inset). Active only when the regime is not `exact` and xterm mouse tracking is on; exact-regime and non-mouse paths are untouched. Wheel events keep flowing to `terminal-wheel.js` untouched (scroll direction/count exact; reported wheel position approximate under pan/scale).
 
 ### Font Loading Strategy
 

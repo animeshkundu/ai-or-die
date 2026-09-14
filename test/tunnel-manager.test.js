@@ -212,15 +212,41 @@ describe('TunnelManager', function() {
       assert.strictEqual(tm._totalRestarts, 1);
     });
 
-    it('should stop retrying after MAX_RETRIES', async function() {
+    it('should keep retrying after MAX_RETRIES (never quits)', async function() {
       const tm = new TunnelManager();
-      tm.retryCount = MAX_RETRIES; // Already at max
+      tm.retryCount = MAX_RETRIES + 5; // already past the old budget
       tm._lastSpawnTime = Date.now();
-
-      // This should increment to MAX_RETRIES + 1 and bail
-      await tm._restart();
-      assert.strictEqual(tm.retryCount, MAX_RETRIES + 1);
+      let spawned = false;
+      let seenDelay = null;
+      tm._spawn = async () => { spawned = true; };
+      const realSetTimeout = global.setTimeout;
+      global.setTimeout = (fn, ms, ...rest) => {
+        seenDelay = ms;
+        return realSetTimeout(fn, 0, ...rest);
+      };
+      try {
+        await tm._restart();
+      } finally {
+        global.setTimeout = realSetTimeout;
+      }
+      assert.strictEqual(spawned, true, 'respawn must still be attempted past MAX_RETRIES');
+      assert.strictEqual(tm.retryCount, MAX_RETRIES + 6);
       assert.strictEqual(tm._totalRestarts, 1);
+      assert.strictEqual(seenDelay, MAX_RESTART_DELAY_MS, 'backoff stays capped past budget');
+    });
+
+    it('should not reject when spawn fails (restart chain survives)', async function() {
+      const tm = new TunnelManager();
+      tm._lastSpawnTime = Date.now();
+      tm._spawn = async () => { throw new Error('spawn ENOENT'); };
+      const realSetTimeout = global.setTimeout;
+      global.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, 0, ...rest);
+      try {
+        await tm._restart(); // must resolve, not throw
+      } finally {
+        global.setTimeout = realSetTimeout;
+      }
+      assert.strictEqual(tm.retryCount, 1);
     });
 
     it('should not restart when stopping is true', async function() {
@@ -274,6 +300,25 @@ describe('TunnelManager', function() {
 
       await tm.restart();
       assert.strictEqual(tm.retryCount, 0);
+    });
+  });
+
+  describe('_shouldAutoRestart()', function() {
+    it('should recover by default (exit code never gates)', function() {
+      const tm = new TunnelManager();
+      assert.strictEqual(tm._shouldAutoRestart(), true);
+    });
+
+    it('should not recover while stopping', function() {
+      const tm = new TunnelManager();
+      tm.stopping = true;
+      assert.strictEqual(tm._shouldAutoRestart(), false);
+    });
+
+    it('should not recover while a manual restart is in flight', function() {
+      const tm = new TunnelManager();
+      tm._restarting = true;
+      assert.strictEqual(tm._shouldAutoRestart(), false);
     });
   });
 

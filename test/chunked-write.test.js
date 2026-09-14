@@ -139,4 +139,65 @@ describe('BaseBridge chunked sendInput', function() {
       assert.strictEqual(writes.length, 0);
     });
   });
+
+  describe('queue bound under motion flood', function() {
+    const { MAX_INPUT_QUEUE_DEPTH } = require('../src/base-bridge');
+    const motion = (x) => `\x1b[<32;${x};10M`;
+
+    it('collapses superseded motion to its tail, preserves keys in order', async function() {
+      this.timeout(10000);
+      // Gate the PTY so the queue backs up behind the first write.
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      const realWrite = mockSession.process.write;
+      let first = true;
+      mockSession.process.write = (d) => {
+        if (first) {
+          first = false;
+          return gate.then(() => realWrite(d));
+        }
+        return realWrite(d);
+      };
+
+      const pending = [];
+      for (let i = 0; i < MAX_INPUT_QUEUE_DEPTH + 22; i++) {
+        pending.push(bridge.sendInput('test-session', motion(i)).catch(() => {}));
+      }
+      // A key arriving mid-flood must chain (never dropped) and land after.
+      pending.push(bridge.sendInput('test-session', 'k').catch(() => {}));
+      release();
+      await Promise.all(pending);
+      // Let the opportunistic tail drain settle.
+      await new Promise((r) => setTimeout(r, 50));
+
+      const all = writes.join('');
+      // All chained motion in order, then the coalesced tail, then the key.
+      assert.ok(all.startsWith(motion(0)), 'oldest motion first');
+      assert.ok(all.includes(motion(MAX_INPUT_QUEUE_DEPTH - 1)), 'last chained motion present');
+      assert.ok(all.endsWith('k'), 'key lands last, after the tail');
+      assert.strictEqual(mockSession._motionCoalesced, 22, 'superseded motions counted');
+      // Queue accounting returns to zero (no leak).
+      assert.strictEqual(mockSession._inputQueueDepth, 0);
+      assert.strictEqual(mockSession._motionTail, null);
+    });
+
+    it('flushes a stranded tail once the queue fully drains', async function() {
+      // Saturate via counter, then only motion (no key to carry the tail).
+      mockSession._inputQueueDepth = MAX_INPUT_QUEUE_DEPTH;
+      await bridge.sendInput('test-session', motion(999));
+      assert.strictEqual(mockSession._motionTail, motion(999));
+      mockSession._inputQueueDepth = 0;
+      // Trigger a drain cycle with a no-op chained write.
+      await bridge.sendInput('test-session', '');
+      await new Promise((r) => setTimeout(r, 50));
+      assert.ok(writes.join('').includes(motion(999)), 'stranded tail flushed on drain');
+      assert.strictEqual(mockSession._motionTail, null);
+    });
+
+    it('counts write failures instead of only console-warning', async function() {
+      mockSession.process.write = () => { throw new Error('EIO'); };
+      await bridge.sendInput('test-session', 'x');
+      assert.strictEqual(mockSession._inputWriteErrors, 1);
+    });
+  });
 });

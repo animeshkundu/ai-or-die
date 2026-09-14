@@ -126,6 +126,67 @@ const BACKPRESSURE_LIMIT_BG = 128 * 1024;
 const SESSION_OUTPUT_BUFFER_CAPACITY = 1000;
 const SESSION_OUTPUT_BUFFER_MAX_BYTES = CircularBuffer.LIVE_OUTPUT_MAX_BYTES;
 const CLAUDE_BIND_SIDECAR_MAX_BYTES = 64 * 1024;
+// Absolute eviction-heap bound: the ratio trigger below returns early when
+// live <= 100, so weeks of activity bumps on 2-3 sessions would otherwise
+// grow the heap array without limit. 5000 entries is kilobytes — a runaway
+// guard, not a memory optimization.
+const EVICTION_HEAP_MAX_ENTRIES = 5000;
+
+/**
+ * Alt-screen enter sequence re-issued when a join replay must converge into
+ * the alternate screen but the ring evicted the original enter. 1049h (save
+ * cursor + alt buffer + clear) is what Claude/Copilot/Opencode emit; it is a
+ * superset of 1047h semantics, so it also converges 1047-only apps.
+ */
+const ALT_ENTER_SEQ = '\x1b[?1049h';
+
+/**
+ * True when the replay tail already enters alt-screen after the last exit —
+ * i.e. no prepend is needed. Compares the last alt-enter marker against the
+ * last alt-exit marker over the joined text (join also heals markers split
+ * across chunk boundaries). Strings and Buffers both occur in the ring.
+ * Markers require the ESC[ prefix so prose mentioning "?1049h" (common in
+ * a coding assistant's output) can never suppress a needed prepend — only
+ * real control sequences count, and any raw ESC[?1049h bytes in the stream
+ * would have activated alt mode in the parser anyway.
+ */
+function replayHasAltEnterAfterExit(replayItems) {
+  if (!Array.isArray(replayItems) || replayItems.length === 0) return false;
+  const text = replayItems.map((item) => (
+    Buffer.isBuffer(item) ? item.toString('utf8') : String(item || '')
+  )).join('');
+  const lastEnter = Math.max(text.lastIndexOf('\x1b[?1049h'), text.lastIndexOf('\x1b[?1047h'));
+  if (lastEnter < 0) return false;
+  const lastExit = Math.max(text.lastIndexOf('\x1b[?1049l'), text.lastIndexOf('\x1b[?1047l'));
+  return lastEnter > lastExit;
+}
+
+/**
+ * Cut an over-cap input string without splitting an in-progress escape
+ * sequence (CSI/SGR mouse reports, OSC hyperlinks, single-char ESC
+ * sequences) or a UTF-16 surrogate pair. Splitting mid-sequence would
+ * inject corrupt bytes into the TUI.
+ */
+function truncateInputAtBoundary(text, cap) {
+  if (typeof text !== 'string' || text.length <= cap || cap <= 0) {
+    return cap <= 0 ? '' : text;
+  }
+  let cut = cap;
+  const esc = text.lastIndexOf('\x1b', cap - 1);
+  if (esc !== -1) {
+    const tail = text.slice(esc, cap);
+    // Incomplete CSI/SGR/SS3, or an OSC (ESC ] ... terminated by BEL or
+    // ESC \) with no terminator in range: cut before the ESC.
+    const incompleteCsi = /^\x1b(\[<?[\d;]*|\(?[0-9A-Z]?)$/.test(tail);
+    const incompleteOsc = /^\x1b[\]%][^\x07]*$/.test(tail) && !/\x07$/.test(tail) && !/\\$/.test(tail);
+    if (incompleteCsi || incompleteOsc) cut = esc;
+  }
+  if (cut > 0 && cut < text.length) {
+    const prev = text.charCodeAt(cut - 1);
+    if (prev >= 0xd800 && prev <= 0xdbff) cut -= 1;
+  }
+  return text.slice(0, cut);
+}
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -3821,7 +3882,10 @@ class ClaudeCodeWebServer {
       
       case 'input':
         if (data.data && data.data.length > 256 * 1024) {
-          data.data = data.data.slice(0, 256 * 1024);
+          // Cut at an escape/char boundary so a coalesced key+mouse buffer
+          // is never split mid-ESC-sequence (which would inject corrupt
+          // bytes into the TUI) or mid-surrogate.
+          data.data = truncateInputAtBoundary(data.data, 256 * 1024);
         }
         if (wsInfo.claudeSessionId) {
           // Verify the session exists and the WebSocket is part of it
@@ -4287,7 +4351,10 @@ class ClaudeCodeWebServer {
     }
   }
 
-  _buildJoinReplay(session, maxBytes = 256 * 1024) {
+  _buildJoinReplay(session, maxBytes = CircularBuffer.LIVE_OUTPUT_MAX_BYTES) {
+    // Full-fidelity join: at minimum the full 512KB / 1000-line live buffer.
+    // A smaller cap here would silently truncate switch/reconnect repaints
+    // even though outputBuffer retains the full tail.
     const holdingGeometry = session && Array.isArray(session._geometryOutputHold);
     const items = holdingGeometry && Array.isArray(session._geometryReplayBuffer)
       ? session._geometryReplayBuffer
@@ -4296,7 +4363,29 @@ class ClaudeCodeWebServer {
           ? session.outputBuffer.toArray()
           : []
       );
-    return CircularBuffer.newestItemsWithinBytes(items, maxBytes);
+    const replay = CircularBuffer.newestItemsWithinBytes(items, maxBytes);
+    // Alt-screen convergence: fullscreen TUIs (Claude/Copilot/Opencode all
+    // use DECSET 1049h) address rows absolutely. The ring evicts oldest
+    // chunks first, so a long session loses the alt-enter while the app is
+    // still in alt-screen — replaying the tail into the normal buffer then
+    // leaves stale rows that only a SIGWINCH repaint heals. When the
+    // headless transcript (which parses every chunk) reports alt-active
+    // but the tail no longer contains the enter, prepend it. Non-alt
+    // sessions and tails that already contain the enter are untouched.
+    let altActive = false;
+    try {
+      altActive = !!(
+        session && session._ctlTranscript &&
+        typeof session._ctlTranscript.isAltScreenActive === 'function' &&
+        session._ctlTranscript.isAltScreenActive()
+      );
+    } catch (_) {
+      altActive = false;
+    }
+    if (altActive && !replayHasAltEnterAfterExit(replay)) {
+      replay.unshift(ALT_ENTER_SEQ);
+    }
+    return replay;
   }
 
   async leaveClaudeSession(wsId) {
@@ -5926,13 +6015,21 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(claudeSessionId);
     if (!session) return;
 
+    // Stringify once per broadcast, not per recipient. With 2+ viewers on a
+    // heavy session the per-client stringify was O(viewers × msg).
+    let payload = null;
+    try { payload = JSON.stringify(data); } catch (_) { return; }
+    const isOutputDelta = data && data.type === 'output';
     session.connections.forEach(wsId => {
       const wsInfo = this.webSocketConnections.get(wsId);
       // Double-check that this WebSocket is actually part of this session
       if (wsInfo &&
           wsInfo.claudeSessionId === claudeSessionId &&
           wsInfo.ws.readyState === WebSocket.OPEN) {
-        this.sendToWebSocket(wsInfo.ws, data);
+        if (isOutputDelta && wsInfo.ws.bufferedAmount && wsInfo.ws.bufferedAmount > 512 * 1024) {
+          return; // shed output delta; client resyncs on reconnection
+        }
+        try { wsInfo.ws.send(payload); } catch (_) { /* ignore closed races */ }
       }
     });
   }
@@ -6037,9 +6134,13 @@ class ClaudeCodeWebServer {
   }
 
   broadcastToAll(data) {
+    let payload = null;
+    try { payload = JSON.stringify(data); } catch (_) { return; }
+    const isOutputDelta = data && data.type === 'output';
     for (const [, wsInfo] of this.webSocketConnections) {
       if (wsInfo.ws.readyState === WebSocket.OPEN) {
-        this.sendToWebSocket(wsInfo.ws, data);
+        if (isOutputDelta && wsInfo.ws.bufferedAmount && wsInfo.ws.bufferedAmount > 512 * 1024) continue;
+        try { wsInfo.ws.send(payload); } catch (_) { /* ignore closed races */ }
       }
     }
   }
@@ -6875,15 +6976,21 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(sessionId);
     if (!session || !session._pendingChunks || session._pendingChunks.length === 0) return;
     if (session._flushing) return; // Prevent concurrent flush
+    // Idle fast path: no live viewers. Clear the coalescer queue without
+    // paying join + focus-regex + Buffer copy — outputBuffer already retains
+    // the bytes for a later full replay. Checked BEFORE join so background
+    // heavy sessions (2-3x concurrent) don't burn CPU discarding.
+    if (!session.connections || session.connections.size === 0) {
+      session._pendingChunks = [];
+      session._pendingBytes = 0;
+      return;
+    }
     session._flushing = true;
 
     try {
       const pending = session._pendingChunks.join('');
       session._pendingChunks = [];
       session._pendingBytes = 0;
-
-      // Skip broadcast if no clients connected (idle session)
-      if (session.connections.size === 0) return;
 
       // Strip focus-tracking sequences server-side so clients can use
       // the zero-copy Uint8Array write path (no string decode needed)
@@ -7080,10 +7187,25 @@ class ClaudeCodeWebServer {
    * is 360 K pushes — without rebuild, every pop would walk past
    * tombstones forever). Cheap when sessions are few (< 100); only
    * matters for the long-running large-N case.
+   *
+   * Weeks-long single-user addition: every activity bump pushes one entry,
+   * so 2–3 chatty sessions accumulate tens of thousands of tombstones that
+   * the ratio trigger never fires on (live <= 100 returns early). The
+   * absolute cap below bounds that growth regardless of live count — it is
+   * deliberately generous (thousands of entries is kilobytes) and exists
+   * only to prevent unbounded array growth, not to save memory.
    */
   _maybeRebuildEvictionHeap() {
     const live = this.claudeSessions.size;
-    if (live <= 100) return;
+    if (live <= 100) {
+      // Small-N guard: the ratio trigger below never fires here, so weeks
+      // of activity bumps on 2-3 sessions would grow the heap array without
+      // limit. Absolute cap only; PROC-04 tuning for live > 100 is untouched.
+      if (this._evictionHeap.size > EVICTION_HEAP_MAX_ENTRIES) {
+        this._rebuildEvictionHeapNow();
+      }
+      return;
+    }
     if (this._evictionHeap.size <= 2 * live) return;
     this._rebuildEvictionHeapNow();
   }
@@ -8505,4 +8627,4 @@ async function startServer(options) {
   return await server.start();
 }
 
-module.exports = { startServer, ClaudeCodeWebServer };
+module.exports = { startServer, ClaudeCodeWebServer, truncateInputAtBoundary };

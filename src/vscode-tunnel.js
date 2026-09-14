@@ -1203,19 +1203,11 @@ class VSCodeTunnelManager {
         ? `${(uptimeMs / 60000).toFixed(1)}m`
         : `${(uptimeMs / 1000).toFixed(0)}s`;
 
+      // Never quits: for an unattended daemon the automatic loop keeps
+      // backing off at the capped delay no matter how high retryCount grows.
+      // Manual start()/Retry creates a fresh record and is never gated.
       if (tunnel.retryCount > MAX_RETRIES) {
-        tunnel.status = 'error';
-        tunnel.lastError = `Tunnel crashed ${MAX_RETRIES} times in quick succession. Giving up.`;
-        this._emitEvent(sessionId, 'vscode_tunnel_error', {
-          message: tunnel.lastError,
-          fatal: true,
-        });
-        console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: ${tunnel.lastError} Total lifetime restarts: ${tunnel._totalRestarts}. Last uptime: ${uptimeStr}.`);
-        // Kill remaining process
-        if (tunnel.serverProcess) await this._killProcess(tunnel.serverProcess);
-        if (tunnel.tunnelProcess) await this._killProcess(tunnel.tunnelProcess);
-        this._cleanupTunnel(sessionId);
-        return;
+        console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: still retrying after ${tunnel.retryCount} attempts (lifetime restarts ${tunnel._totalRestarts}, last uptime ${uptimeStr}) — backoff capped, recovery continues.`);
       }
 
       const delay = Math.min(
@@ -1236,7 +1228,7 @@ class VSCodeTunnelManager {
         console.warn(
           `[VSCODE-TUNNEL] Session ${sessionId}: tunnel lost after ${uptimeStr}. ` +
           `Server still running. Restarting tunnel in ${delay / 1000}s ` +
-          `(attempt ${tunnel.retryCount}/${MAX_RETRIES}).`
+          `(attempt ${tunnel.retryCount}).`
         );
       } else {
         // Server died — kill tunnel too, restart both
@@ -1254,7 +1246,7 @@ class VSCodeTunnelManager {
         });
         console.warn(
           `[VSCODE-TUNNEL] Session ${sessionId}: server lost after ${uptimeStr}. ` +
-          `Restarting in ${delay / 1000}s (attempt ${tunnel.retryCount}/${MAX_RETRIES}, ` +
+          `Restarting in ${delay / 1000}s (attempt ${tunnel.retryCount}, ` +
           `lifetime restarts: ${tunnel._totalRestarts}).`
         );
       }
@@ -1302,11 +1294,14 @@ class VSCodeTunnelManager {
             error: 'server_start_failed',
             message: 'VS Code Server failed to restart. Check the `code` CLI, then click Retry.',
           };
+          // Keep the record (status error) so the health sweep retries with
+          // backoff — never delete it here, or automatic recovery ends.
+          // Kill the broken server handle; its exit event clears the handle
+          // so the sweep observes a dead server and restarts both halves.
           tunnel.status = 'error';
           tunnel.lastError = failure.message;
           this._emitTunnelFailure(sessionId, failure, true);
           if (tunnel.serverProcess) await this._killProcess(tunnel.serverProcess);
-          this._cleanupTunnel(sessionId);
           return;
         }
         if (tunnel.stopping) return;
@@ -1317,12 +1312,15 @@ class VSCodeTunnelManager {
             error: 'server_start_failed',
             message: `VS Code Server restarted but did not accept connections on port ${tunnel.localPort}. Check the \`code serve-web\` output, then click Retry.`,
           };
+          // Keep the record so the health sweep retries — see above.
+          // Kill the unready server handle; its exit event clears the handle
+          // so the sweep observes a dead server and restarts both halves
+          // (otherwise the sweep would keep respawning only the tunnel
+          // against a broken server).
           tunnel.status = 'error';
           tunnel.lastError = failure.message;
-          tunnel.stopping = true;
-          if (tunnel.serverProcess) await this._killProcess(tunnel.serverProcess);
           this._emitTunnelFailure(sessionId, failure, true);
-          this._cleanupTunnel(sessionId);
+          if (tunnel.serverProcess) await this._killProcess(tunnel.serverProcess);
           return;
         }
 
@@ -1353,6 +1351,10 @@ class VSCodeTunnelManager {
 
   /**
    * Periodic health check — detect externally killed processes.
+   * Also re-sweeps stuck degraded/error tunnels (e.g. a respawn that failed
+   * mid-window): with never-quit supervision every sweep is another backoff
+   * retry, so a transient DNS/proxy blip during respawn can't strand the
+   * tunnel permanently. The _restart backoff caps the retry rate.
    */
   _ensureHealthCheck() {
     if (this._healthInterval) return;
@@ -1365,12 +1367,12 @@ class VSCodeTunnelManager {
         const tunnelDead = tunnel.status !== 'starting' && tunnel.status !== 'restarting'
           && (!tunnel.tunnelProcess || tunnel.tunnelProcess.exitCode !== null);
 
-        if (serverDead && (tunnel.status === 'running' || tunnel.status === 'degraded')) {
-          console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: server process died externally`);
+        if (serverDead && (tunnel.status === 'running' || tunnel.status === 'degraded' || tunnel.status === 'error')) {
+          console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: server process died externally (status ${tunnel.status})`);
           tunnel._whichDied = 'server';
           this._restart(sessionId);
-        } else if (tunnelDead && tunnel.status === 'running') {
-          console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: tunnel process died externally`);
+        } else if (tunnelDead && (tunnel.status === 'running' || tunnel.status === 'degraded' || tunnel.status === 'error')) {
+          console.warn(`[VSCODE-TUNNEL] Session ${sessionId}: tunnel process died externally (status ${tunnel.status})`);
           tunnel._whichDied = 'tunnel';
           this._restart(sessionId);
         }

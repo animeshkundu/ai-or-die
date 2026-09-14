@@ -79,4 +79,87 @@ describe('session join replay buffer', function () {
     });
     assert.deepStrictEqual(replay, ['before-resize']);
   });
+
+  describe('alt-screen convergence', function () {
+    const altTranscript = () => ({ isAltScreenActive: () => true });
+    const normalTranscript = () => ({ isAltScreenActive: () => false });
+
+    it('prepends alt-enter when alt-active but the enter was evicted', function () {
+      // Long alt-session: enter fell off the 1000-chunk ring, tail holds
+      // only alt drawing frames. Without the prepend the replay lands in
+      // the normal buffer (ghost rows until SIGWINCH).
+      const outputBuffer = new CircularBuffer(4);
+      outputBuffer.push('\x1b[?1049h'); // evicted below
+      for (let i = 0; i < 4; i++) outputBuffer.push(`\x1b[${i + 1};1Hframe-${i}`);
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: altTranscript(),
+      });
+      assert.strictEqual(replay[0], '\x1b[?1049h');
+      assert.ok(replay.slice(1).every((c) => c.startsWith('\x1b[')));
+    });
+
+    it('does not prepend when the tail already enters alt after the last exit', function () {
+      const outputBuffer = new CircularBuffer(10);
+      outputBuffer.push('shell noise');
+      outputBuffer.push('\x1b[?1049l'); // exited...
+      outputBuffer.push('\x1b[?1049h'); // ...and re-entered: present
+      outputBuffer.push('\x1b[5;1Htui frame');
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: altTranscript(),
+      });
+      assert.deepStrictEqual(replay, [
+        'shell noise',
+        '\x1b[?1049l',
+        '\x1b[?1049h',
+        '\x1b[5;1Htui frame',
+      ]);
+    });
+
+    it('never prepends for normal-screen sessions', function () {
+      const outputBuffer = new CircularBuffer(10);
+      outputBuffer.push('$ echo hello');
+      outputBuffer.push('hello');
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: normalTranscript(),
+      });
+      assert.deepStrictEqual(replay, ['$ echo hello', 'hello']);
+    });
+
+    it('never prepends when there is no transcript (fail-closed)', function () {
+      const outputBuffer = new CircularBuffer(10);
+      outputBuffer.push('\x1b[5;1Hmaybe-alt frame');
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({ outputBuffer });
+      assert.deepStrictEqual(replay, ['\x1b[5;1Hmaybe-alt frame']);
+    });
+
+    it('heals markers split across chunk boundaries', function () {
+      const outputBuffer = new CircularBuffer(10);
+      outputBuffer.push('shell');
+      outputBuffer.push('\x1b[?104'); // enter split...
+      outputBuffer.push('9h'); // ...across chunks
+      outputBuffer.push('\x1b[5;1Hframe');
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: altTranscript(),
+      });
+      assert.strictEqual(replay[0], 'shell', 'split enter must be detected, no prepend');
+    });
+
+    it('ignores prose mentions of ?1049h (only real ESC sequences count)', function () {
+      const outputBuffer = new CircularBuffer(4);
+      outputBuffer.push('\x1b[?1049h'); // evicted below
+      outputBuffer.push('docs: use ?1049h to enter alt-screen');
+      outputBuffer.push('\x1b[5;1Hframe');
+      outputBuffer.push('\x1b[6;1Hframe');
+      outputBuffer.push('\x1b[7;1Hframe');
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: altTranscript(),
+      });
+      assert.strictEqual(replay[0], '\x1b[?1049h', 'prose must not suppress the prepend');
+    });
+  });
 });

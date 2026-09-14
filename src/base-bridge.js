@@ -11,6 +11,20 @@ const PTY_WRITE_CHUNK_SIZE = 4096;
 /** Inter-chunk delay in ms — allows ConPTY buffer to drain */
 const PTY_WRITE_CHUNK_DELAY_MS = 10;
 /**
+ * Max not-yet-run queued input writes per session before pointer-motion
+ * coalescing kicks in. Generous runaway guard, not tuning: keys, button
+ * edges, wheel ticks and releases always chain (never dropped) — only
+ * superseded SGR motion (Cb 32-63 + M) collapses to its tail while a
+ * slow/wedged PTY falls behind a drag flood.
+ */
+const MAX_INPUT_QUEUE_DEPTH = 128;
+// SGR motion reports only (mirrors src/public/input-sender.js).
+const SGR_MOTION_BATCH_RE = /^(?:\x1b\[<(?:3[2-9]|[4-5][0-9]|6[0-3]);\d+;\d+M)+$/;
+
+function isPureMotionInput(data) {
+  return typeof data === 'string' && data.length > 0 && SGR_MOTION_BATCH_RE.test(data);
+}
+/**
  * Grace window (ms) during which a read EAGAIN with no life-sign yet is treated
  * as a benign transient startup blip and swallowed. After this, a *sustained*
  * EAGAIN flood with no output is treated as a real failure and surfaced (rather
@@ -326,6 +340,13 @@ class BaseBridge {
         lastOutputAt: Date.now(),
         killTimeout: null,
         writeQueue: Promise.resolve(),
+        // Input rate guard (see sendInput): depth of not-yet-run queued
+        // writes; motion-tail coalescing state; surfaced (not console-only)
+        // counters for drops and write failures.
+        _inputQueueDepth: 0,
+        _motionTail: null,
+        _motionCoalesced: 0,
+        _inputWriteErrors: 0,
         // PTY listener handles registered against ptyProcess.{onData,onExit,on('error')}.
         // node-pty's onData/onExit return IDisposable objects with a .dispose()
         // method; the EventEmitter-style .on('error', fn) path is wrapped in a
@@ -553,7 +574,11 @@ class BaseBridge {
   /**
    * Write input data to the session's PTY process. Large inputs are
    * chunked to prevent ConPTY buffer overflow on Windows.
-   * Writes are serialized per-session via writeQueue.
+   * Writes are serialized per-session via writeQueue. The queue is bounded:
+   * past MAX_INPUT_QUEUE_DEPTH, pure pointer-motion collapses to its latest
+   * tail (keys/edges/wheel always chain — never dropped). A pending tail is
+   * prepended to the next chained write, or flushed once the queue fully
+   * drains — either way PTY byte order is preserved exactly.
    * @param {string} sessionId - Target session UUID
    * @param {string} data - Raw terminal input to write
    * @returns {Promise<void>}
@@ -564,9 +589,51 @@ class BaseBridge {
       throw new Error(`Session ${sessionId} not found or not active`);
     }
 
+    const depth = session._inputQueueDepth || 0;
+    if (depth >= MAX_INPUT_QUEUE_DEPTH && isPureMotionInput(data)) {
+      session._motionTail = data;
+      session._motionCoalesced = (session._motionCoalesced || 0) + 1;
+      // NOTE: the returned queue does not cover the coalesced tail, which
+      // flushes on a later drain. Callers must not treat resolution as
+      // "tail delivered" — ordering vs later inputs stays exact through the
+      // single-threaded chain, but a concurrent geometry op may interleave
+      // ahead of the pending tail (inherent mouse-vs-resize race).
+      return session.writeQueue;
+    }
+
+    // A tail pending from the flood is older than this data: carry it on
+    // this link so it lands before (never after) newer bytes.
+    if (session._motionTail) {
+      data = session._motionTail + data;
+      session._motionTail = null;
+    }
+    session._inputQueueDepth = depth + 1;
     session.writeQueue = session.writeQueue.then(() =>
       this._writeChunked(session, data)
-    ).catch((err) => {
+    ).then(() => {
+      session._inputQueueDepth = Math.max(0, (session._inputQueueDepth || 1) - 1);
+      // Fully drained with a tail still pending (no newer input arrived to
+      // carry it): flush it now — nothing older remains and nothing newer
+      // is queued, so order is exact.
+      const tail = session._motionTail;
+      if (tail && (session._inputQueueDepth || 0) === 0) {
+        session._motionTail = null;
+        session._inputQueueDepth = 1;
+        session.writeQueue = session.writeQueue.then(() =>
+          this._writeChunked(session, tail)
+        ).then(() => {
+          // Decrement (not zero): keys chained during a multi-chunk tail
+          // flush must keep their count; the guard only goes briefly lax.
+          session._inputQueueDepth = Math.max(0, (session._inputQueueDepth || 1) - 1);
+        }).catch((err) => {
+          session._inputQueueDepth = Math.max(0, (session._inputQueueDepth || 1) - 1);
+          session._inputWriteErrors = (session._inputWriteErrors || 0) + 1;
+          console.warn(`Write to session ${sessionId} failed: ${err.message}`);
+        });
+      }
+    }).catch((err) => {
+      session._inputQueueDepth = Math.max(0, (session._inputQueueDepth || 1) - 1);
+      session._inputWriteErrors = (session._inputWriteErrors || 0) + 1;
       console.warn(`Write to session ${sessionId} failed: ${err.message}`);
     });
 
@@ -848,3 +915,4 @@ class BaseBridge {
 module.exports = BaseBridge;
 module.exports.PTY_WRITE_CHUNK_SIZE = PTY_WRITE_CHUNK_SIZE;
 module.exports.PTY_WRITE_CHUNK_DELAY_MS = PTY_WRITE_CHUNK_DELAY_MS;
+module.exports.MAX_INPUT_QUEUE_DEPTH = MAX_INPUT_QUEUE_DEPTH;

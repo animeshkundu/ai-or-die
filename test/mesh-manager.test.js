@@ -279,4 +279,47 @@ describe('MeshManager', function() {
       assert.ok(/NOT ENROLLED/.test(out) && /AIORDIE_TS_AUTHKEY/.test(out) && !/tskey-/.test(out));
     });
   });
+
+  describe('never-quit supervision', function() {
+    it('_shouldAutoRestart is true unless stopping', function() {
+      const m = new MeshManager();
+      assert.strictEqual(m._shouldAutoRestart(), true);
+      m.stopping = true;
+      assert.strictEqual(m._shouldAutoRestart(), false);
+    });
+
+    it('keeps respawning past the old retry budget with capped backoff', async function() {
+      const m = new MeshManager();
+      m.retryCount = 15; // past MAX_RETRIES
+      let spawned = false;
+      let seenDelay = null;
+      m._spawn = async () => { spawned = true; };
+      const realSetTimeout = global.setTimeout;
+      global.setTimeout = (fn, ms, ...rest) => {
+        seenDelay = ms;
+        return realSetTimeout(fn, 0, ...rest);
+      };
+      try {
+        await m._restart();
+      } finally {
+        global.setTimeout = realSetTimeout;
+      }
+      assert.strictEqual(spawned, true, 'respawn must still be attempted past budget');
+      assert.strictEqual(m.retryCount, 16);
+      assert.strictEqual(seenDelay, 30000, 'backoff stays capped');
+    });
+
+    it('does not reject when spawn fails', async function() {
+      const m = new MeshManager();
+      m._spawn = async () => { throw new Error('no sidecar'); };
+      const realSetTimeout = global.setTimeout;
+      global.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, 0, ...rest);
+      try {
+        await m._restart(); // must resolve, not throw
+      } finally {
+        global.setTimeout = realSetTimeout;
+      }
+      assert.strictEqual(m.retryCount, 1);
+    });
+  });
 });
