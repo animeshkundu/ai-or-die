@@ -126,6 +126,11 @@ const BACKPRESSURE_LIMIT_BG = 128 * 1024;
 const SESSION_OUTPUT_BUFFER_CAPACITY = 1000;
 const SESSION_OUTPUT_BUFFER_MAX_BYTES = CircularBuffer.LIVE_OUTPUT_MAX_BYTES;
 const CLAUDE_BIND_SIDECAR_MAX_BYTES = 64 * 1024;
+// Absolute eviction-heap bound: the ratio trigger below returns early when
+// live <= 100, so weeks of activity bumps on 2-3 sessions would otherwise
+// grow the heap array without limit. 5000 entries is kilobytes — a runaway
+// guard, not a memory optimization.
+const EVICTION_HEAP_MAX_ENTRIES = 5000;
 
 class ClaudeCodeWebServer {
   constructor(options = {}) {
@@ -7080,10 +7085,25 @@ class ClaudeCodeWebServer {
    * is 360 K pushes — without rebuild, every pop would walk past
    * tombstones forever). Cheap when sessions are few (< 100); only
    * matters for the long-running large-N case.
+   *
+   * Weeks-long single-user addition: every activity bump pushes one entry,
+   * so 2–3 chatty sessions accumulate tens of thousands of tombstones that
+   * the ratio trigger never fires on (live <= 100 returns early). The
+   * absolute cap below bounds that growth regardless of live count — it is
+   * deliberately generous (thousands of entries is kilobytes) and exists
+   * only to prevent unbounded array growth, not to save memory.
    */
   _maybeRebuildEvictionHeap() {
     const live = this.claudeSessions.size;
-    if (live <= 100) return;
+    if (live <= 100) {
+      // Small-N guard: the ratio trigger below never fires here, so weeks
+      // of activity bumps on 2-3 sessions would grow the heap array without
+      // limit. Absolute cap only; PROC-04 tuning for live > 100 is untouched.
+      if (this._evictionHeap.size > EVICTION_HEAP_MAX_ENTRIES) {
+        this._rebuildEvictionHeapNow();
+      }
+      return;
+    }
     if (this._evictionHeap.size <= 2 * live) return;
     this._rebuildEvictionHeapNow();
   }
