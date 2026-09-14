@@ -128,6 +128,10 @@ class ClaudeCodeWebInterface {
         this._inputBuffer = '';
         this._inputFlushScheduled = false;
         this._INPUT_BUFFER_MAX = 64 * 1024; // 64KB safety cap
+        // Pure pointer-motion flush floor: at most ~30 motion messages/s.
+        // Action batches (keys, clicks, edges) always flush immediately.
+        this._lastInputFlushAt = 0;
+        this._INPUT_MOTION_MIN_INTERVAL = 33;
 
         // Modal mutual exclusion: only one modal-class element open at a time
         this._activeModal = null;
@@ -1008,6 +1012,80 @@ class ClaudeCodeWebInterface {
         this.setupTerminalSearch();
         this.setupTerminalContextMenu();
         this._setupTerminalLinking(this.terminal);
+
+        // Pointer-coordinate correction for mouse-reporting TUIs under the
+        // geometry presentation transform. Inactive in the exact regime and
+        // when no mouse tracking is on (zero behavior change there); active
+        // only for non-owner pan/scale views where xterm would otherwise
+        // report the wrong cell. Rects are cached (500ms) so mousemove
+        // floods don't force layout per event.
+        try {
+            if (typeof PointerCorrection !== 'undefined') {
+                const wrapperEl = document.querySelector('.terminal-wrapper');
+                let rectCache = null;
+                const self = this;
+                this._pointerCorrectionDetach = PointerCorrection.attach(
+                    wrapperEl,
+                    () => {
+                        const pres = self._geometryPresentation;
+                        if (!pres || pres.regime === 'exact') return null;
+                        const modes = self.terminal && self.terminal.modes;
+                        if (!modes || !modes.mouseTrackingMode || modes.mouseTrackingMode === 'none') return null;
+                        if (!self._geometryApplied) return null;
+                        const nowMs = Date.now();
+                        if (!rectCache || nowMs - rectCache.at > 500) {
+                            const outerEl = document.querySelector('.terminal-wrapper');
+                            const stageEl = document.getElementById('terminal');
+                            const screenEl = document.querySelector('.xterm-screen');
+                            if (!outerEl || !screenEl) return null;
+                            let cell = null;
+                            try {
+                                const dims = self.terminal._core._renderService.dimensions;
+                                cell = dims && dims.css && dims.css.cell;
+                            } catch (_) { cell = null; }
+                            if (!cell || !(cell.width > 0) || !(cell.height > 0)) return null;
+                            // Screen-element layout inset relative to the stage
+                            // origin, in unscaled layout px (offsetParent chains
+                            // ignore transforms, so this is regime-independent).
+                            // xterm's grid starts there, not at the stage
+                            // origin; without it the remap is off by ~2 cells
+                            // at phone scales.
+                            const absOffset = (el) => {
+                                let x = 0; let y = 0; let cur = el;
+                                while (cur) {
+                                    x += cur.offsetLeft || 0;
+                                    y += cur.offsetTop || 0;
+                                    cur = cur.offsetParent;
+                                }
+                                return { x, y };
+                            };
+                            let inset = { x: 0, y: 0 };
+                            if (stageEl) {
+                                const sAbs = absOffset(screenEl);
+                                const tAbs = absOffset(stageEl);
+                                inset = { x: sAbs.x - tAbs.x, y: sAbs.y - tAbs.y };
+                            }
+                            rectCache = {
+                                at: nowMs,
+                                outerRect: outerEl.getBoundingClientRect(),
+                                screenEl,
+                                inset,
+                                cell: { width: cell.width, height: cell.height },
+                            };
+                        }
+                        return {
+                            presentation: pres,
+                            applied: self._geometryApplied,
+                            cell: rectCache.cell,
+                            outerRect: rectCache.outerRect,
+                            screenEl: rectCache.screenEl,
+                            inset: rectCache.inset,
+                        };
+                    },
+                    (typeof TerminalPresentation !== 'undefined' && TerminalPresentation.pointerToCell) || null
+                );
+            }
+        } catch (_) { /* pointer correction is best-effort */ }
 
         this.terminal.onData((data) => {
             if (this._ctrlModifierPending) {
@@ -2680,11 +2758,42 @@ class ClaudeCodeWebInterface {
         btn.style.display = needsFit ? 'inline-flex' : 'none';
     }
 
-    // Flush accumulated input buffer to server as a single batched message
+    // Flush accumulated input buffer to server as a single batched message.
+    // Motion-only batches (pointer drag with no keys/edges) go claim:false
+    // so they skip the deliberate-action owner transfer and cannot flap
+    // geometry ownership or head-of-line-block keystrokes behind 60Hz
+    // motion. Action batches keep claim:true + viewId (owner semantics
+    // identical). Motion runs are compressed to their tail first, and pure
+    // motion flushes at most every _INPUT_MOTION_MIN_INTERVAL ms (~30Hz) —
+    // position-convergent (the TUI ends at the same cell), though
+    // intermediate cells of a fast drag are intentionally not all delivered.
     _flushInput() {
         this._inputFlushScheduled = false;
         if (this._inputBuffer.length > 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
-            this.send({ type: 'input', data: this._inputBuffer, claim: true, viewId: 'main' });
+            let data = this._inputBuffer;
+            let motionOnly = false;
+            if (typeof InputSender !== 'undefined') {
+                data = InputSender.compressMotion(data);
+                motionOnly = InputSender.isPureMotion(data);
+            }
+            if (motionOnly) {
+                const nowMs = (typeof performance !== 'undefined' && performance.now)
+                    ? performance.now() : Date.now();
+                if (nowMs - this._lastInputFlushAt < this._INPUT_MOTION_MIN_INTERVAL) {
+                    // Too soon: hold the (already compressed) tail for the
+                    // next frame instead of emitting another motion message.
+                    this._inputBuffer = data;
+                    if (!this._inputFlushScheduled) {
+                        this._inputFlushScheduled = true;
+                        requestAnimationFrame(() => this._flushInput());
+                    }
+                    return;
+                }
+                this._lastInputFlushAt = nowMs;
+                this.send({ type: 'input', data, claim: false });
+            } else {
+                this.send({ type: 'input', data, claim: true, viewId: 'main' });
+            }
             this._inputBuffer = '';
         }
     }

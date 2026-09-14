@@ -132,6 +132,33 @@ const CLAUDE_BIND_SIDECAR_MAX_BYTES = 64 * 1024;
 // guard, not a memory optimization.
 const EVICTION_HEAP_MAX_ENTRIES = 5000;
 
+/**
+ * Cut an over-cap input string without splitting an in-progress escape
+ * sequence (CSI/SGR mouse reports, OSC hyperlinks, single-char ESC
+ * sequences) or a UTF-16 surrogate pair. Splitting mid-sequence would
+ * inject corrupt bytes into the TUI.
+ */
+function truncateInputAtBoundary(text, cap) {
+  if (typeof text !== 'string' || text.length <= cap || cap <= 0) {
+    return cap <= 0 ? '' : text;
+  }
+  let cut = cap;
+  const esc = text.lastIndexOf('\x1b', cap - 1);
+  if (esc !== -1) {
+    const tail = text.slice(esc, cap);
+    // Incomplete CSI/SGR/SS3, or an OSC (ESC ] ... terminated by BEL or
+    // ESC \) with no terminator in range: cut before the ESC.
+    const incompleteCsi = /^\x1b(\[<?[\d;]*|\(?[0-9A-Z]?)$/.test(tail);
+    const incompleteOsc = /^\x1b[\]%][^\x07]*$/.test(tail) && !/\x07$/.test(tail) && !/\\$/.test(tail);
+    if (incompleteCsi || incompleteOsc) cut = esc;
+  }
+  if (cut > 0 && cut < text.length) {
+    const prev = text.charCodeAt(cut - 1);
+    if (prev >= 0xd800 && prev <= 0xdbff) cut -= 1;
+  }
+  return text.slice(0, cut);
+}
+
 class ClaudeCodeWebServer {
   constructor(options = {}) {
     this.port = options.port != null ? options.port : 7777;
@@ -3826,7 +3853,10 @@ class ClaudeCodeWebServer {
       
       case 'input':
         if (data.data && data.data.length > 256 * 1024) {
-          data.data = data.data.slice(0, 256 * 1024);
+          // Cut at an escape/char boundary so a coalesced key+mouse buffer
+          // is never split mid-ESC-sequence (which would inject corrupt
+          // bytes into the TUI) or mid-surrogate.
+          data.data = truncateInputAtBoundary(data.data, 256 * 1024);
         }
         if (wsInfo.claudeSessionId) {
           // Verify the session exists and the WebSocket is part of it
@@ -8546,4 +8576,4 @@ async function startServer(options) {
   return await server.start();
 }
 
-module.exports = { startServer, ClaudeCodeWebServer };
+module.exports = { startServer, ClaudeCodeWebServer, truncateInputAtBoundary };

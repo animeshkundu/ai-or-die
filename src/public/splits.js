@@ -26,6 +26,15 @@ class Split {
         this._pendingWrites = [];
         this._rafPending = false;
         this._rafHandle = null;
+        // Input coalescing (mirrors the main terminal breather-flush): without
+        // this every mouse event became its own WS message. Motion-only
+        // batches flush claim:false (no owner flap); action batches keep
+        // claim:true + this pane's fit id.
+        this._inputBuffer = '';
+        this._inputFlushScheduled = false;
+        this._INPUT_BUFFER_MAX = 64 * 1024;
+        this._lastInputFlushAt = 0;
+        this._INPUT_MOTION_MIN_INTERVAL = 33;
         this._repainting = false;
         this._repaintTimer = null;
         this._repaintGeneration = 0;
@@ -147,7 +156,9 @@ class Split {
         // Attach keyboard copy/paste shortcuts (Ctrl+C/V, Ctrl+Shift+C/V)
         attachClipboardHandler(this.terminal, (data) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(JSON.stringify({ type: 'input', data }));
+                const filtered = (typeof InputSender !== 'undefined')
+                    ? InputSender.filterFocusBytes(data) : data;
+                this.socket.send(JSON.stringify({ type: 'input', data: filtered }));
             }
         });
 
@@ -242,14 +253,59 @@ class Split {
             });
         }
 
-        // Setup terminal input handler
+        // Setup terminal input handler: buffer per animation frame like the
+        // main terminal so drag/scroll floods coalesce instead of sending
+        // one WS message per mouse event.
         this.terminal.onData((data) => {
             if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-                this.socket.send(JSON.stringify({ type: 'input', data, claim: true, viewId: this._fitId }));
+                const filtered = (typeof InputSender !== 'undefined')
+                    ? InputSender.filterFocusBytes(data) : data;
+                if (!filtered) return;
+                this._inputBuffer += filtered;
+                if (this._inputBuffer.length > this._INPUT_BUFFER_MAX) {
+                    this._flushInput();
+                    return;
+                }
+                if (!this._inputFlushScheduled) {
+                    this._inputFlushScheduled = true;
+                    requestAnimationFrame(() => this._flushInput());
+                }
             }
         });
         
         this.fit();
+    }
+
+    // Flush the coalesced input buffer as one WS message. Motion-only
+    // batches skip the geometry claim (same policy as the main terminal)
+    // and flush at most every _INPUT_MOTION_MIN_INTERVAL ms.
+    _flushInput() {
+        this._inputFlushScheduled = false;
+        if (this._inputBuffer.length > 0 && this.socket && this.socket.readyState === WebSocket.OPEN) {
+            let data = this._inputBuffer;
+            let motionOnly = false;
+            if (typeof InputSender !== 'undefined') {
+                data = InputSender.compressMotion(data);
+                motionOnly = InputSender.isPureMotion(data);
+            }
+            if (motionOnly) {
+                const nowMs = (typeof performance !== 'undefined' && performance.now)
+                    ? performance.now() : Date.now();
+                if (nowMs - this._lastInputFlushAt < this._INPUT_MOTION_MIN_INTERVAL) {
+                    this._inputBuffer = data;
+                    if (!this._inputFlushScheduled) {
+                        this._inputFlushScheduled = true;
+                        requestAnimationFrame(() => this._flushInput());
+                    }
+                    return;
+                }
+                this._lastInputFlushAt = nowMs;
+                this.socket.send(JSON.stringify({ type: 'input', data, claim: false }));
+            } else {
+                this.socket.send(JSON.stringify({ type: 'input', data, claim: true, viewId: this._fitId }));
+            }
+            this._inputBuffer = '';
+        }
     }
 
     async setSession(sessionId) {

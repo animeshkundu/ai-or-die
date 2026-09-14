@@ -136,8 +136,13 @@ class ClaudeBridge extends BaseBridge {
       this._trustPromptHandled.set(sessionId, true);
       console.log(`Auto-accepting trust prompt for session ${sessionId}`);
       setTimeout(() => {
-        try { ptyProcess.write('1\r'); } catch (_) { /* pty may have exited */ }
-        console.log(`Sent "1" + Enter to accept trust prompt for session ${sessionId}`);
+        // Route through the per-session write queue (not a raw pty write)
+        // so the answer cannot interleave inside a queued SGR mouse report
+        // or paste under a concurrent input flood. If the session is gone,
+        // sendInput rejects and there is nothing to answer.
+        this.sendInput(sessionId, '1\r').then(() => {
+          console.log(`Sent "1" + Enter to accept trust prompt for session ${sessionId}`);
+        }).catch(() => { /* session disposed; nothing to answer */ });
       }, 500);
     }
   }

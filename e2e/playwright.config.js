@@ -200,6 +200,11 @@ module.exports = defineConfig({
       timeout: 90000,
       use: { ...devices['Pixel 7'], serviceWorkers: 'allow' },
     },
+    {
+      name: 'mouse-interaction',
+      testMatch: /(?:^|[\\/])86-.*\.spec\.js$/,
+      timeout: 120000,
+    },
     // Exploratory user-journey suite. Drives the live dev server at
     // http://127.0.0.1:11500 — start it BEFORE running:
     //   node bin/ai-or-die.js --port 11500 --no-open --disable-auth
