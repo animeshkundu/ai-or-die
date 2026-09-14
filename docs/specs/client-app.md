@@ -37,7 +37,7 @@
 
 ## Output path
 
-Binary WebSocket output is queued without per-frame side effects. One animation-frame flush writes at most 96 KiB, decodes the batch once with streaming UTF-8 state, then performs activity, plan-detection, and snapshot bookkeeping. Main and split terminal scrollback is capped at 1,000 lines.
+Binary WebSocket output is queued without per-frame side effects. One animation-frame flush writes at most 96 KiB, decodes the batch once with streaming UTF-8 state, then performs plan-detection and snapshot bookkeeping. Tab-activity badges/timers run sampled at most once per 500 ms during bursts; terminal bytes still render every frame. Join replay writes the full server buffer byte-for-byte in bounded 64 KiB slices instead of one xterm write per stored chunk. Main and split terminal scrollback is capped at 1,000 lines. Switch-away skips the outgoing tab's synchronous serialize when nothing was written since its last capture; the instant cache paint plus authoritative `session_joined` replay always run.
 
 Split panes use the same per-frame output budget. On reconnect they rebuild from
 the bounded server replay before releasing queued live frames, then restore the

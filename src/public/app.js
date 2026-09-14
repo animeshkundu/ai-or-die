@@ -109,6 +109,14 @@ class ClaudeCodeWebInterface {
         this._WRITE_FRAME_BUDGET = 96 * 1024;
         this._reconnectViewState = null;
         this._joinRepaintInProgress = false;
+        // Set when terminal bytes were written since the last snapshot
+        // capture — lets switch-away skip a redundant sync serialize when
+        // nothing changed, without losing fidelity when it did.
+        this._terminalDirtySinceCapture = false;
+        // Throttle per-frame DOM/regex sidecars (activity badges, timers)
+        // during heavy bursts; terminal bytes still write every frame.
+        this._lastActivitySampleAt = 0;
+        this._ACTIVITY_SAMPLE_MS = 500;
         this._outputTailSessionId = null;
         this._outputTail = '';
         this._OUTPUT_TAIL_LIMIT = 256 * 1024;
@@ -2820,8 +2828,15 @@ class ClaudeCodeWebInterface {
         );
 
         this._writeToTerminal(combined);
+        this._terminalDirtySinceCapture = true;
 
-        if (this.sessionTabManager && this.currentClaudeSessionId) {
+        // Sampled sidecar: badges/timers/regexes at most 1x per
+        // _ACTIVITY_SAMPLE_MS during bursts. Bytes still render every frame.
+        const nowSample = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now() : Date.now();
+        if (this.sessionTabManager && this.currentClaudeSessionId &&
+            nowSample - this._lastActivitySampleAt >= this._ACTIVITY_SAMPLE_MS) {
+            this._lastActivitySampleAt = nowSample;
             this.sessionTabManager.markSessionActivity(this.currentClaudeSessionId, true, text);
         }
 
@@ -2841,7 +2856,10 @@ class ClaudeCodeWebInterface {
             if (this._snapCaptureTimer) clearTimeout(this._snapCaptureTimer);
             this._snapCaptureTimer = setTimeout(() => {
                 this._snapCaptureTimer = null;
-                if (this._terminalStablyShowsSession(sid)) this.snapshotCache?.capture(sid);
+                if (this._terminalStablyShowsSession(sid)) {
+                    this.snapshotCache?.capture(sid);
+                    if (sid === this.currentClaudeSessionId) this._terminalDirtySinceCapture = false;
+                }
             }, 400);
         }
 
@@ -3221,7 +3239,7 @@ class ClaudeCodeWebInterface {
                     // with stale content (the #131 regression). So the plain-text
                     // snapshot is used ONLY for non-live (exited/idle) sessions.
                     // See join-repaint.js for the decision matrix.
-                    const replayBuffer = () => {
+                    const replayBuffer = (fullText) => {
                         // Deliberately does NOT clear _pendingWrites.
                         //
                         // An earlier revision cleared it here, reasoning that the
@@ -3240,10 +3258,18 @@ class ClaudeCodeWebInterface {
                         // scheduled. That is the correct place for it, because at
                         // that instant nothing newer than the replay can be in
                         // the queue yet.
+                        //
+                        // Batched writes: the full 512KB/1000-line buffer is
+                        // preserved byte-for-byte, but written in bounded
+                        // slices instead of one write per stored chunk (up to
+                        // 1000 xterm tasks). Same ANSI bytes, far fewer tasks.
                         this.terminal.write('\x1bc');
-                        message.outputBuffer.forEach(data => {
-                            this.terminal.write(data);
-                        });
+                        const text = typeof fullText === 'string' ? fullText : '';
+                        if (!text) return;
+                        const SLICE = 64 * 1024;
+                        for (let i = 0; i < text.length; i += SLICE) {
+                            this.terminal.write(text.slice(i, i + SLICE));
+                        }
                     };
                     const action = chooseJoinRepaint(message);
                     // Did the instant cache paint already show THIS session for
@@ -3272,7 +3298,7 @@ class ClaudeCodeWebInterface {
                             ? message.outputBuffer.join('')
                             : '';
                         if (action === 'buffer') {
-                            replayBuffer();
+                            replayBuffer(replayText);
                             this._outputTailSessionId = message.sessionId;
                             this._outputTail = replayText.slice(-this._OUTPUT_TAIL_LIMIT);
                         } else if (action === 'snapshot') {
@@ -3303,6 +3329,7 @@ class ClaudeCodeWebInterface {
                             if (this.snapshotCache && action !== 'clear'
                                 && this._terminalStablyShowsSession(sid)) {
                                 this.snapshotCache.capture(sid);
+                                this._terminalDirtySinceCapture = false;
                             }
                             const activeBuffer = this.terminal.buffer && this.terminal.buffer.active;
                             if (reconnectView && activeBuffer) {

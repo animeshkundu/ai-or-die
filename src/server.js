@@ -4287,7 +4287,10 @@ class ClaudeCodeWebServer {
     }
   }
 
-  _buildJoinReplay(session, maxBytes = 256 * 1024) {
+  _buildJoinReplay(session, maxBytes = CircularBuffer.LIVE_OUTPUT_MAX_BYTES) {
+    // Full-fidelity join: at minimum the full 512KB / 1000-line live buffer.
+    // A smaller cap here would silently truncate switch/reconnect repaints
+    // even though outputBuffer retains the full tail.
     const holdingGeometry = session && Array.isArray(session._geometryOutputHold);
     const items = holdingGeometry && Array.isArray(session._geometryReplayBuffer)
       ? session._geometryReplayBuffer
@@ -5926,13 +5929,21 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(claudeSessionId);
     if (!session) return;
 
+    // Stringify once per broadcast, not per recipient. With 2+ viewers on a
+    // heavy session the per-client stringify was O(viewers × msg).
+    let payload = null;
+    try { payload = JSON.stringify(data); } catch (_) { return; }
+    const isOutputDelta = data && data.type === 'output';
     session.connections.forEach(wsId => {
       const wsInfo = this.webSocketConnections.get(wsId);
       // Double-check that this WebSocket is actually part of this session
       if (wsInfo &&
           wsInfo.claudeSessionId === claudeSessionId &&
           wsInfo.ws.readyState === WebSocket.OPEN) {
-        this.sendToWebSocket(wsInfo.ws, data);
+        if (isOutputDelta && wsInfo.ws.bufferedAmount && wsInfo.ws.bufferedAmount > 512 * 1024) {
+          return; // shed output delta; client resyncs on reconnection
+        }
+        try { wsInfo.ws.send(payload); } catch (_) { /* ignore closed races */ }
       }
     });
   }
@@ -6037,9 +6048,13 @@ class ClaudeCodeWebServer {
   }
 
   broadcastToAll(data) {
+    let payload = null;
+    try { payload = JSON.stringify(data); } catch (_) { return; }
+    const isOutputDelta = data && data.type === 'output';
     for (const [, wsInfo] of this.webSocketConnections) {
       if (wsInfo.ws.readyState === WebSocket.OPEN) {
-        this.sendToWebSocket(wsInfo.ws, data);
+        if (isOutputDelta && wsInfo.ws.bufferedAmount && wsInfo.ws.bufferedAmount > 512 * 1024) continue;
+        try { wsInfo.ws.send(payload); } catch (_) { /* ignore closed races */ }
       }
     }
   }
@@ -6875,15 +6890,21 @@ class ClaudeCodeWebServer {
     const session = this.claudeSessions.get(sessionId);
     if (!session || !session._pendingChunks || session._pendingChunks.length === 0) return;
     if (session._flushing) return; // Prevent concurrent flush
+    // Idle fast path: no live viewers. Clear the coalescer queue without
+    // paying join + focus-regex + Buffer copy — outputBuffer already retains
+    // the bytes for a later full replay. Checked BEFORE join so background
+    // heavy sessions (2-3x concurrent) don't burn CPU discarding.
+    if (!session.connections || session.connections.size === 0) {
+      session._pendingChunks = [];
+      session._pendingBytes = 0;
+      return;
+    }
     session._flushing = true;
 
     try {
       const pending = session._pendingChunks.join('');
       session._pendingChunks = [];
       session._pendingBytes = 0;
-
-      // Skip broadcast if no clients connected (idle session)
-      if (session.connections.size === 0) return;
 
       // Strip focus-tracking sequences server-side so clients can use
       // the zero-copy Uint8Array write path (no string decode needed)

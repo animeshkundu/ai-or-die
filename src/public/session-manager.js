@@ -811,7 +811,18 @@ class SessionTabManager {
         const previousTabId = this.activeTabId;
         if (previousTabId && previousTabId !== sessionId &&
             !this.claudeInterface.pendingJoinSessionId) {
-            this.claudeInterface.snapshotCache?.capture(previousTabId);
+            // Skip the sync serialize when the outgoing view hasn't changed
+            // since the last capture (or settle timer already covered it).
+            // Fidelity is preserved: capture runs whenever bytes were written
+            // or no cached view exists for the outgoing tab.
+            const cache = this.claudeInterface.snapshotCache;
+            const dirty = this.claudeInterface._terminalDirtySinceCapture === true;
+            const needsCapture = !cache || !cache.has(previousTabId) || dirty ||
+                this.claudeInterface.currentClaudeSessionId === previousTabId;
+            if (needsCapture) {
+                cache?.capture(previousTabId);
+                this.claudeInterface._terminalDirtySinceCapture = false;
+            }
         }
 
         // Remove active class from all tabs
