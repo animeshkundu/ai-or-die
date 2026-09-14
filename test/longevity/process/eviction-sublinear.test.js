@@ -270,4 +270,32 @@ function injectSessions(server, count, lastActivityMs, opts) {
       `for ${server.claudeSessions.size} live sessions`
     );
   });
+
+  it('absolute rebuild trigger bounds the heap at small live counts (weeks-long single user)', async function () {
+    // Isolate from the large-N cases above: fresh map + empty heap so the
+    // small-N branch (live <= 100) is what gets exercised.
+    server.claudeSessions.clear();
+    server._rebuildEvictionHeapNow();
+    assert.strictEqual(server._evictionHeap.size, 0);
+    const now = Date.now();
+    // 3 live sessions, like a single user's trio. Without the absolute
+    // trigger the ratio guard never fires and every bump accumulates;
+    // with it, sweeps collapse the heap back to ~live.
+    injectSessions(server, 3, now - 60 * 1000, { tag: 'trio' });
+    for (let bump = 0; bump < 6000; bump++) {
+      const id = `inj-${bump % 3}-trio`;
+      const session = server.claudeSessions.get(id);
+      if (!session) continue;
+      session.lastActivity = new Date(now + bump); // fresh: never evictable
+      server._pushEvictionEntry(id);
+      if (bump % 1000 === 0) await server._evictStaleSessions();
+    }
+    await server._evictStaleSessions();
+
+    assert.strictEqual(server.claudeSessions.size, 3, 'trio sessions must survive');
+    assert.ok(
+      server._evictionHeap.size <= 5000,
+      `heap must stay bounded by the absolute trigger at small N; got ${server._evictionHeap.size}`
+    );
+  });
 });

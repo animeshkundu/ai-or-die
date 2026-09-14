@@ -440,4 +440,33 @@ describe('sticky-note summarizer scheduler', function () {
       'JSONL turns drive the summary; raw PTY is ignored'
     );
   });
+
+  it('JSONL mode: pendingText backlog is capped while the engine is down (runaway guard)', function () {
+    const { PENDING_TEXT_MAX_CHARS } = require('../src/sticky-note-summarizer');
+    const { sum } = makeSummarizer(FAST);
+    sum.enable('s1');
+    // Engine never runs (no clock advance) — every feed appends, nothing drains.
+    const big = 'x'.repeat(256 * 1024);
+    for (let i = 0; i < 8; i++) sum.feedTurns('s1', big, null);
+    const s = sum._states.get('s1');
+    assert.ok(
+      s.pendingText.length <= PENDING_TEXT_MAX_CHARS,
+      `backlog must stay capped (got ${s.pendingText.length}, cap ${PENDING_TEXT_MAX_CHARS})`
+    );
+    assert.ok(s.pendingDroppedChars > 0, 'drops are counted for observability');
+    assert.ok(s.pendingText.includes('x'), 'newest text is retained (oldest dropped)');
+  });
+
+  it('JSONL mode: healthy-path summaries are unaffected by the backlog cap', async function () {
+    const cfg = Object.assign({}, FAST, { turnDebounceMs: 100 });
+    const { sum, engine, clock, results } = makeSummarizer(cfg);
+    sum.enable('s1');
+    sum.feedTurns('s1', 'User: small healthy turn', 'T');
+    const s = sum._states.get('s1');
+    assert.strictEqual(s.pendingDroppedChars || 0, 0, 'no drops on the healthy path');
+    await clock.advance(100);
+    assert.strictEqual(engine.calls.length, 1);
+    assert.ok(engine.calls[0].prompt.includes('small healthy turn'));
+    assert.strictEqual(results.length, 1);
+  });
 });

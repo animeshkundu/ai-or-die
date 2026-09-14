@@ -356,12 +356,26 @@ class TunnelManager {
           resolve();
         }
 
-        // Auto-restart if not intentionally stopped or restarting
-        if (!this.stopping && !this._restarting && code !== 0) {
+        // Auto-restart on any exit while the tunnel is wanted. A clean exit
+        // (code 0, e.g. relay-side close) drops remote access just as surely
+        // as a crash, so the exit code must not gate recovery. Backoff in
+        // _restart() bounds the respawn rate; _spawn() never performs an
+        // interactive login, so a persistent failure just retries quietly
+        // until the cause is fixed (then it self-heals).
+        if (this._shouldAutoRestart()) {
           this._restart();
         }
       });
     });
+  }
+
+  /**
+   * Whether a process exit should trigger automatic recovery.
+   * Extracted for testability — the only gates are intentional shutdown
+   * (stop()/restart() in flight), never the exit code or a retry budget.
+   */
+  _shouldAutoRestart() {
+    return !this.stopping && !this._restarting;
   }
 
   /**
@@ -392,6 +406,12 @@ class TunnelManager {
   /**
    * Auto-restart with capped exponential backoff.
    * retryCount resets after stable uptime via _startStabilityTimer().
+   *
+   * Never quits: for an unattended weeks-long daemon a permanent halt after
+   * MAX_RETRIES strands remote access until a human intervenes. The backoff
+   * delay stays capped at MAX_RESTART_DELAY_MS no matter how high
+   * retryCount grows, so the respawn rate is bounded while recovery keeps
+   * trying. Manual restart() resets the counter and is never gated.
    */
   async _restart() {
     this._totalRestarts++;
@@ -403,15 +423,11 @@ class TunnelManager {
       : `${(uptimeMs / 1000).toFixed(0)}s`;
 
     if (this.retryCount > MAX_RETRIES) {
-      console.error(
-        `  \x1b[31mTunnel crashed ${MAX_RETRIES} times in quick succession. ` +
-        `Giving up. Server continues on localhost.\x1b[0m`
+      console.warn(
+        `  [tunnel] Still retrying after ${this.retryCount} attempts ` +
+        `(last uptime ${uptimeStr}, lifetime restarts ${this._totalRestarts}) — ` +
+        `backoff capped, recovery continues.`
       );
-      console.error(
-        `  Total lifetime restarts: ${this._totalRestarts}. ` +
-        `Last uptime before failure: ${uptimeStr}.`
-      );
-      return;
     }
 
     const delay = Math.min(
@@ -422,7 +438,7 @@ class TunnelManager {
     console.log(
       `  [tunnel] Connection lost after ${uptimeStr} uptime. ` +
       `Restarting in ${delay / 1000}s ` +
-      `(attempt ${this.retryCount}/${MAX_RETRIES}, ` +
+      `(attempt ${this.retryCount}, ` +
       `lifetime restarts: ${this._totalRestarts})...`
     );
 
@@ -438,7 +454,14 @@ class TunnelManager {
     if (this.stopping) return;
 
     this.publicUrl = null;
-    await this._spawn();
+    try {
+      await this._spawn();
+    } catch (err) {
+      // Never let a spawn failure reject the fire-and-forget restart chain
+      // (which would surface as an unhandled rejection on every cycle).
+      // Backoff + stability reset bound the rate; the next cycle retries.
+      console.error(`  [tunnel] Spawn failed: ${err && err.message}. Will retry with backoff.`);
+    }
   }
 }
 

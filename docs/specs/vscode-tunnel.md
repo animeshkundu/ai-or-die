@@ -318,7 +318,7 @@ After `STABILITY_THRESHOLD_MS` (60s) of stable uptime, the retry counter resets 
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `MAX_RETRIES` | `10` | Crash retry budget before giving up |
+| `MAX_RETRIES` | `10` | Consecutive-crash counter threshold for escalated logging; automatic recovery never halts (backoff stays capped, manual start()/Retry always works) |
 | `URL_TIMEOUT_MS` | `30000` | Max wait for URL after spawn (30s) |
 | `HEALTH_CHECK_INTERVAL_MS` | `60000` | Health check interval (60s) |
 | `STABILITY_THRESHOLD_MS` | `60000` | Uptime before retry counter resets (60s) |
@@ -335,8 +335,9 @@ After `STABILITY_THRESHOLD_MS` (60s) of stable uptime, the retry counter resets 
 
 Every 60s (`HEALTH_CHECK_INTERVAL_MS`), the health check interval inspects all active tunnels:
 
-- If the server process is dead and status is `running` or `degraded`: set `_whichDied = 'server'`, trigger restart
-- If the tunnel process is dead and status is `running`: set `_whichDied = 'tunnel'`, trigger restart
+- If the server process is dead and status is `running`, `degraded`, or `error`: set `_whichDied = 'server'`, trigger restart
+- If the tunnel process is dead and status is `running`, `degraded`, or `error`: set `_whichDied = 'tunnel'`, trigger restart
+- Respawn failures keep the tunnel record (status `error`, port still reserved) so the next sweep retries with backoff; records are only removed by explicit stop/delete, never by failure. Automatic recovery never halts regardless of `retryCount`.
 - When no tunnels remain, the health check interval is cleared
 
 The health check is started lazily on the first `start()` call via `_ensureHealthCheck()`.

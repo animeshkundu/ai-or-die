@@ -11,6 +11,13 @@
 const TranscriptBuffer = require('./sticky-note-transcript');
 const { buildPrompt, parseNote, deriveTitle, NOTE_SCHEMA } = require('./sticky-note-prompt');
 
+// Runaway guard for the JSONL-mode backlog: while the engine is down or the
+// breaker is open, feedTurns() keeps appending and nothing drains. 1M chars
+// (~1-3MB) is generous headroom for a summary input — this cap only ever
+// triggers on the failure path, never in healthy operation, so normal
+// summaries are byte-identical with or without it.
+const PENDING_TEXT_MAX_CHARS = 1024 * 1024;
+
 const DEFAULTS = {
   quietMs: 4000, // (1) quiet trigger: idle after a burst
   volumeLines: 80, // (2) volume trigger: committed lines since last summary
@@ -169,6 +176,16 @@ class StickyNoteSummarizer {
     if (!text) return; // title-only update: stored above, no mode switch / no inference
     s.jsonlMode = true;
     s.pendingText += (s.pendingText ? '\n' : '') + text;
+    // Runaway guard: while the engine is down/breaker-open, failed inferences
+    // keep needsSummary=true and every feedTurns appends. Cap the backlog by
+    // dropping the oldest text (continuity matters less than boundedness over
+    // weeks) and count the drops for observability. 1M chars is generous —
+    // this only triggers on the failure path, never in healthy operation.
+    if (s.pendingText.length > PENDING_TEXT_MAX_CHARS) {
+      const excess = s.pendingText.length - PENDING_TEXT_MAX_CHARS;
+      s.pendingText = s.pendingText.slice(excess);
+      s.pendingDroppedChars = (s.pendingDroppedChars || 0) + excess;
+    }
     s.feedSeq++;
     s.needsSummary = true;
 
@@ -446,3 +463,4 @@ class StickyNoteSummarizer {
 
 module.exports = StickyNoteSummarizer;
 module.exports.DEFAULTS = DEFAULTS;
+module.exports.PENDING_TEXT_MAX_CHARS = PENDING_TEXT_MAX_CHARS;
