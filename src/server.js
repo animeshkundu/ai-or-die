@@ -141,6 +141,13 @@ const EVICTION_HEAP_MAX_ENTRIES = 5000;
 const ALT_ENTER_SEQ = '\x1b[?1049h';
 
 /**
+ * Minimum gap between repaint assists for one session. A quick A→B→A
+ * switch plus a browser-focus bounce must not stack SIGWINCH reflows;
+ * the first assist's repaint covers the burst.
+ */
+const REPAINT_ASSIST_MIN_INTERVAL_MS = 2000;
+
+/**
  * True when the replay tail already enters alt-screen after the last exit —
  * i.e. no prepend is needed. Compares the last alt-enter marker against the
  * last alt-exit marker over the joined text (join also heals markers split
@@ -159,6 +166,66 @@ function replayHasAltEnterAfterExit(replayItems) {
   if (lastEnter < 0) return false;
   const lastExit = Math.max(text.lastIndexOf('\x1b[?1049l'), text.lastIndexOf('\x1b[?1047l'));
   return lastEnter > lastExit;
+}
+
+/**
+ * Mouse-enable sequences re-asserted when a join replay must converge into
+ * a mouse-tracking TUI but the ring evicted the app's original DECSET.
+ * The client wipes modes with RIS (`\x1bc`) before replaying, so without
+ * the re-assert xterm reports `mouseTrackingMode === 'none'` and the wheel
+ * policy suppresses every notch (zero bytes to the PTY) until the TUI
+ * repaints. Keyed by the headless transcript's settled mode class:
+ *   x10   -> 9h, vt200 -> 1000h, drag -> 1000h+1002h, any -> 1000h+1002h+1003h.
+ * SGR extended mode (1006h) rides along whenever the app had any modern
+ * tracking — it only changes the report encoding, never the event volume.
+ * 1003h (any-event/hover motion) is restored only for apps that actually
+ * had it; it is never forced onto vt200/drag apps (flood risk).
+ */
+function mouseEnableSeqForMode(mode) {
+  switch (mode) {
+    case 'x10':
+      return '\x1b[?9h';
+    case 'vt200':
+      return '\x1b[?1000h\x1b[?1006h';
+    case 'drag':
+      return '\x1b[?1000h\x1b[?1002h\x1b[?1006h';
+    case 'any':
+      return '\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h';
+    default:
+      return '';
+  }
+}
+
+/**
+ * True when the replay tail already enables mouse tracking after the last
+ * reset — i.e. no mouse prepend is needed. Resets are RIS (`\x1bc`) and the
+ * alt exits (the client always RIS-clears before replaying, so enables
+ * stranded before a reset never reach the fresh xterm modes). Markers
+ * require the ESC[ prefix (prose-proof, same contract as the alt check),
+ * and the join heals markers split across chunk boundaries. A bare `l`
+ * disable (e.g. `ESC[?1000l`) is NOT a reset here on purpose: if the app
+ * turned tracking off, the transcript reports 'none' and the caller skips
+ * the prepend entirely — only enables matter.
+ */
+function replayHasMouseEnableAfterReset(replayItems) {
+  if (!Array.isArray(replayItems) || replayItems.length === 0) return false;
+  const text = replayItems.map((item) => (
+    Buffer.isBuffer(item) ? item.toString('utf8') : String(item || '')
+  )).join('');
+  const lastEnable = Math.max(
+    text.lastIndexOf('\x1b[?9h'),
+    text.lastIndexOf('\x1b[?1000h'),
+    text.lastIndexOf('\x1b[?1002h'),
+    text.lastIndexOf('\x1b[?1003h'),
+    text.lastIndexOf('\x1b[?1006h')
+  );
+  if (lastEnable < 0) return false;
+  const lastReset = Math.max(
+    text.lastIndexOf('\x1bc'),
+    text.lastIndexOf('\x1b[?1049l'),
+    text.lastIndexOf('\x1b[?1047l')
+  );
+  return lastEnable > lastReset;
 }
 
 /**
@@ -1698,6 +1765,7 @@ class ClaudeCodeWebServer {
       if (this.terminalGeometry) this.terminalGeometry.removeSession(sessionId);
       if (this.controlEventBus) this.controlEventBus.append(sessionId, 'session_deleted');
       if (this._controlSessionSeq) this._controlSessionSeq.delete(sessionId);
+      if (this._lastRepaintAssist) this._lastRepaintAssist.delete(sessionId);
       this.activityBroadcastTimestamps.delete(sessionId);
       this.sessionStore.markDirty();
 
@@ -3990,6 +4058,30 @@ class ClaudeCodeWebServer {
         }
         break;
 
+      case 'request_repaint':
+        // Client finished replaying a join (or refocused the browser tab)
+        // and asks a live fullscreen TUI to repaint from its own model.
+        // Scoped to the socket's joined session; membership-checked like
+        // 'resize' so a tab can never nudge a session it isn't viewing.
+        // The assist itself re-gates on alt-screen + rate limit.
+        {
+          const targetId = (data && data.sessionId) || wsInfo.claudeSessionId;
+          const target = targetId && this.claudeSessions.get(targetId);
+          if (target && target.connections.has(wsId)) {
+            const result = await this._requestRepaintAssist(
+              targetId,
+              (data && data.reason) || 'client-request'
+            );
+            this.sendToWebSocket(wsInfo.ws, {
+              type: 'repaint_assisted',
+              sessionId: targetId,
+              ok: !!result.ok,
+              reason: result.reason,
+            });
+          }
+        }
+        break;
+
       case 'geometry_withdraw':
         if (wsInfo.claudeSessionId) {
           const session = this.claudeSessions.get(wsInfo.claudeSessionId);
@@ -4382,10 +4474,123 @@ class ClaudeCodeWebServer {
     } catch (_) {
       altActive = false;
     }
-    if (altActive && !replayHasAltEnterAfterExit(replay)) {
+    const altPrepended = altActive && !replayHasAltEnterAfterExit(replay);
+    if (altPrepended) {
       replay.unshift(ALT_ENTER_SEQ);
     }
+    // Mouse-mode convergence: the client RIS-clears (`\x1bc`) before
+    // replaying, which wipes xterm modes. When the transcript reports live
+    // mouse tracking but the tail no longer carries the enable, re-assert
+    // it — otherwise the fresh xterm reads 'none' and the wheel policy
+    // suppresses every notch (zero PTY bytes) until the TUI repaints.
+    // Inserted AFTER the alt-enter (modes are set inside alt-screen).
+    // Sessions without tracking and tails that already enable it are
+    // byte-identical to before.
+    let mouseMode = 'none';
+    try {
+      mouseMode = (
+        session && session._ctlTranscript &&
+        typeof session._ctlTranscript.getMouseTrackingMode === 'function' &&
+        session._ctlTranscript.getMouseTrackingMode()
+      ) || 'none';
+    } catch (_) {
+      mouseMode = 'none';
+    }
+    const mouseSeq = mouseEnableSeqForMode(mouseMode);
+    if (mouseSeq && !replayHasMouseEnableAfterReset(replay)) {
+      // Modes belong inside the alternate screen: directly after the
+      // alt-enter we just prepended, or at the head when no alt prepend
+      // was needed (the tail already converges into alt).
+      if (altPrepended) replay.splice(1, 0, mouseSeq);
+      else replay.unshift(mouseSeq);
+    }
     return replay;
+  }
+
+  /**
+   * Conditional repaint assist: nudge a live fullscreen TUI to repaint
+   * from its intact internal model after a join replay or a browser-tab
+   * refocus. Re-applies the session's CURRENT geometry through the PTY
+   * (`TIOCSWINSZ`, i.e. a real SIGWINCH on POSIX, a ConPTY resize redraw
+   * on Windows) inside the geometry output hold so live bytes can't
+   * interleave mid-resize.
+   *
+   * Gating (all must hold, otherwise returns a skip reason and resizes
+   * nothing): session exists + active + has an agent + known grid,
+   * headless transcript reports alt-screen, and no assist ran for this
+   * session within REPAINT_ASSIST_MIN_INTERVAL_MS. Same-size re-apply is
+   * the point — no dimension change is required to elicit SIGWINCH.
+   *
+   * @returns {Promise<{ok:boolean, reason:string}>}
+   */
+  async _requestRepaintAssist(sessionId, reason) {
+    const skipped = (r) => ({ ok: false, reason: r });
+    const session = this.claudeSessions && this.claudeSessions.get(sessionId);
+    if (!session) return skipped('unknown-session');
+    if (!session.active || !session.agent) return skipped('session-not-live');
+    if (!Number.isInteger(session.cols) || !Number.isInteger(session.rows)) return skipped('no-geometry');
+    // Settle the headless parser first: a fast switch can request help
+    // while the alt-enter bytes are still queued unparsed, which would
+    // read as a false 'not-alt-screen'. Bounded so a wedged parser can
+    // never stall the assist path.
+    try {
+      const transcript = session._ctlTranscript;
+      if (transcript && typeof transcript.drain === 'function') {
+        let timer = null;
+        try {
+          await Promise.race([
+            transcript.drain(),
+            new Promise((resolve) => {
+              timer = setTimeout(resolve, 300);
+              if (timer && typeof timer.unref === 'function') timer.unref();
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+    } catch (_) { /* fail-closed below */ }
+    let altActive = false;
+    try {
+      altActive = !!(
+        session._ctlTranscript &&
+        typeof session._ctlTranscript.isAltScreenActive === 'function' &&
+        session._ctlTranscript.isAltScreenActive()
+      );
+    } catch (_) {
+      altActive = false;
+    }
+    if (!altActive) return skipped('not-alt-screen');
+    const now = Date.now();
+    if (!this._lastRepaintAssist) this._lastRepaintAssist = new Map();
+    const last = this._lastRepaintAssist.get(sessionId) || 0;
+    if (now - last < REPAINT_ASSIST_MIN_INTERVAL_MS) {
+      return skipped('rate-limited');
+    }
+    this._lastRepaintAssist.set(sessionId, now);
+    const bridge = typeof this.getBridgeForAgent === 'function'
+      ? this.getBridgeForAgent(session.agent)
+      : null;
+    if (!bridge) return skipped('no-bridge');
+    // Never disturb an in-flight geometry transaction: its own resize
+    // already carries a SIGWINCH, and releasing its hold early would
+    // flush held output mid-transaction.
+    if (Array.isArray(session._geometryOutputHold)) return skipped('hold-active');
+    const geometry = { cols: session.cols, rows: session.rows };
+    this._beginGeometryOutputHold(sessionId);
+    try {
+      await bridge.resize(sessionId, geometry.cols, geometry.rows);
+      session.cols = geometry.cols;
+      session.rows = geometry.rows;
+    } catch (error) {
+      try { this._releaseGeometryOutput(sessionId); } catch (_) { /* isolate */ }
+      const msg = (error && error.message) || String(error);
+      if (this.dev) console.warn(`[repaint-assist] resize failed for ${sessionId}: ${msg}`);
+      return skipped('resize-failed');
+    }
+    try { this._releaseGeometryOutput(sessionId); } catch (_) { /* isolate */ }
+    if (this.dev) console.log(`[repaint-assist] SIGWINCH assist for ${sessionId} (${reason || 'unspecified'})`);
+    return { ok: true, reason: reason || 'assist' };
   }
 
   async leaveClaudeSession(wsId) {
@@ -7140,6 +7345,7 @@ class ClaudeCodeWebServer {
         this.claudeSessions.delete(top.id);
         this.controlEventBus.append(top.id, 'session_deleted');
         if (this._controlSessionSeq) this._controlSessionSeq.delete(top.id);
+        if (this._lastRepaintAssist) this._lastRepaintAssist.delete(top.id);
         this.activityBroadcastTimestamps.delete(top.id);
         try { this.sessionStore.markDirty(); } catch (_) { /* ignore */ }
         evictedCount++;
@@ -8627,4 +8833,4 @@ async function startServer(options) {
   return await server.start();
 }
 
-module.exports = { startServer, ClaudeCodeWebServer, truncateInputAtBoundary };
+module.exports = { startServer, ClaudeCodeWebServer, truncateInputAtBoundary, replayHasAltEnterAfterExit, mouseEnableSeqForMode, replayHasMouseEnableAfterReset, REPAINT_ASSIST_MIN_INTERVAL_MS };

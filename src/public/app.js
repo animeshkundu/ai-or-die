@@ -439,8 +439,35 @@ class ClaudeCodeWebInterface {
                     // is 1.5–3s, and a separate timer races with any in-flight
                     // pong from before the tab was hidden.
                     this.startHeartbeat();
+                    // A live fullscreen TUI diverged while hidden (rAF frozen,
+                    // coalesced/dropped output, stale WebGL atlas) and nothing
+                    // above repaints it when geometry is unchanged. Invalidate
+                    // the canvas now; the gated assist asks the PTY app to
+                    // repaint from its own model (alt-screen only, debounced).
+                    // A reconnect path replays + assists via session_joined,
+                    // so this only fires when the socket survived.
+                    if (!this._joinRepaintInProgress) {
+                        this._refreshTerminalCanvas();
+                        this._requestRepaintAssist('browser-focus');
+                    }
                 }
             }
+        });
+
+        // OS/app-level focus (Brave switch-away/switch-back often fires focus
+        // without a visibilitychange when the page stays rendered). Same
+        // gated pair as the visible branch; the debounce inside
+        // _requestRepaintAssist collapses a focus+visibilitychange double
+        // into one assist.
+        window.addEventListener('focus', () => {
+            try {
+                if (typeof document !== 'undefined' && document.hidden) return;
+                if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+                if (!this.currentClaudeSessionId) return;
+                if (this._joinRepaintInProgress) return;
+                this._refreshTerminalCanvas();
+                this._requestRepaintAssist('browser-focus');
+            } catch (_) { /* focus assist is best-effort */ }
         });
 
         // Network change handlers
@@ -3005,6 +3032,94 @@ class ClaudeCodeWebInterface {
         }
     }
 
+    /**
+     * Re-render the xterm canvas from its (now authoritative) buffer state.
+     * A backgrounded browser tab can leave the WebGL texture atlas /
+     * compositor frame stale (grey block artifacts); the replay rewrites
+     * buffer bytes but never invalidates the canvas. Same invalidate pair
+     * the font-load path already uses. Never throws into the caller.
+     */
+    _refreshTerminalCanvas() {
+        try {
+            const term = this.terminal;
+            if (!term) return;
+            if (typeof term.clearTextureAtlas === 'function') {
+                try { term.clearTextureAtlas(); } catch (_) { /* DOM renderer: no atlas */ }
+            }
+            if (typeof term.refresh === 'function') {
+                const rows = (term.rows | 0) || 0;
+                if (rows > 0) term.refresh(0, rows - 1);
+            }
+        } catch (_) { /* canvas refresh is best-effort */ }
+    }
+
+    /**
+     * Ask the server for a conditional repaint assist (real SIGWINCH to
+     * the PTY) after a replay or a browser-tab refocus. Gated client-side
+     * on alt-screen visibility and debounced per session so a quick
+     * A→B→A burst plus a focus bounce can't stack reflows; the server
+     * re-gates on liveness + alt state + its own rate limit. (Split
+     * panes assist over their own sockets via `_requestSplitRepaintAssist`
+     * — the main socket is joined to a different session.)
+     */
+    _requestRepaintAssist(reason) {
+        try {
+            const sid = this.currentClaudeSessionId;
+            if (!sid) return;
+            const term = this.terminal;
+            let alt = false;
+            try {
+                const buf = term && term.buffer;
+                alt = !!(buf && buf.active && buf.active.type === 'alternate');
+            } catch (_) {
+                alt = false;
+            }
+            if (!alt) return;
+            const now = (typeof performance !== 'undefined' && performance.now)
+                ? performance.now()
+                : Date.now();
+            if (this._lastRepaintAssistSid === sid
+                && (now - (this._lastRepaintAssistAt || 0)) < 2500) {
+                return;
+            }
+            this._lastRepaintAssistSid = sid;
+            this._lastRepaintAssistAt = now;
+            this.send({ type: 'request_repaint', sessionId: sid, reason: reason || 'client-request' });
+        } catch (_) { /* repaint assist is best-effort */ }
+    }
+
+    /**
+     * Diagnose the wheel-forwarding gate at runtime. Returns the inputs to
+     * terminal-wheel's decideWheelAction plus its verdict so a "wheel does
+     * nothing" report can be answered from the console without guessing:
+     * `{ alt, mouseTrackingMode, wheelScrollMode, verdict }`. Note the
+     * verdict assumes no DEC-1007 override (the live handler tracks the
+     * app's explicit 1007h/1007l internally, which always wins).
+     */
+    __wheelDiag() {
+        try {
+            const term = this.terminal;
+            const alt = !!(term && term.buffer && term.buffer.active
+                && term.buffer.active.type === 'alternate');
+            const mouseTrackingMode = (term && term.modes && term.modes.mouseTrackingMode) || 'none';
+            const wheelScrollMode = this._wheelScrollMode || 'dontHijack';
+            let verdict = 'unknown';
+            if (typeof window !== 'undefined' && window.terminalWheel
+                && typeof window.terminalWheel.decideWheelAction === 'function') {
+                verdict = window.terminalWheel.decideWheelAction(term, wheelScrollMode, null);
+            } else if (!alt) {
+                verdict = 'passthrough';
+            } else if (mouseTrackingMode && mouseTrackingMode !== 'none') {
+                verdict = 'passthrough';
+            } else {
+                verdict = wheelScrollMode === 'altScroll' ? 'passthrough' : 'suppress';
+            }
+            return { alt, mouseTrackingMode, wheelScrollMode, verdict };
+        } catch (e) {
+            return { error: (e && e.message) || String(e) };
+        }
+    }
+
     _flushPlanDetection() {
         this._planDetectTimer = null;
         const text = this._planDetectText.join('');
@@ -3460,7 +3575,16 @@ class ClaudeCodeWebInterface {
                                     this.terminal.select(selection.start.x, selection.start.y, length);
                                 }
                             }
+                            // The replay rewrote buffer bytes but never
+                            // invalidated the canvas (stale WebGL atlas after
+                            // backgrounding) and never told the PTY app its
+                            // screen was rebuilt (incremental TUIs need a
+                            // SIGWINCH to repaint from their own model).
+                            this._refreshTerminalCanvas();
                             this._releaseJoinRepaint(repaintGeneration);
+                            // Gated + debounced inside: alt-screen only, so
+                            // normal shells never pay a SIGWINCH per switch.
+                            this._requestRepaintAssist('tab-switch');
                         });
                     });
                 }
@@ -3668,6 +3792,12 @@ class ClaudeCodeWebInterface {
                 
             case 'pong':
                 if (this._heartbeat) this._heartbeat.onPong();
+                break;
+
+            case 'repaint_assisted':
+                // Ack for our request_repaint; the SIGWINCH already did the
+                // work. Kept explicit (not default) so it stays noise-free
+                // in the unknown-message log and e2e can await it.
                 break;
 
             case 'sticky_note_update':

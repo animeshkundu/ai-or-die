@@ -130,6 +130,20 @@ class TranscriptBuffer {
   }
 
   /**
+   * Public drain for the repaint assist: a fast switch can ask for help
+   * while the bytes that prove alt-screen/mouse state are still queued
+   * in the headless parser. Awaiting this makes the settled-state reads
+   * deterministic instead of arrival-order dependent. Never throws.
+   */
+  drain() {
+    try {
+      return this._drain();
+    } catch {
+      return Promise.resolve();
+    }
+  }
+
+  /**
    * True when the headless terminal is currently in the alternate screen
    * (DECSET 1049/1047 active). Used by join replay: if the raw ring evicted
    * the alt-enter, the replay must re-enter alt or rows misalign into the
@@ -143,6 +157,27 @@ class TranscriptBuffer {
       return !!(b && b.active && b.alternate && b.active === b.alternate);
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Current mouse-tracking class of the headless terminal
+   * ('none' | 'x10' | 'vt200' | 'drag' | 'any'). Used by join replay:
+   * the client wipes modes with RIS (`\x1bc`) before replaying, so when
+   * the ring evicted the app's mouse-enable DECSET the replay must
+   * re-assert it or wheel/click reports die (xterm `suppress` path) until
+   * the TUI repaints. Never throws; 'none' on any doubt (fail-closed =
+   * status quo ante). Sync by design — callers check settled state,
+   * not in-flight bytes.
+   */
+  getMouseTrackingMode() {
+    try {
+      const m = this._term && this._term.modes;
+      const mode = m && m.mouseTrackingMode;
+      if (mode === 'x10' || mode === 'vt200' || mode === 'drag' || mode === 'any') return mode;
+      return 'none';
+    } catch {
+      return 'none';
     }
   }
 
