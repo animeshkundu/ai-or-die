@@ -122,4 +122,16 @@ describe('sticky-note transcript buffer', function () {
     tb.dispose();
     assert.strictEqual(tb.getMouseTrackingMode(), 'none');
   });
+
+  it('drain() settles queued bytes so mode reads are deterministic', async function () {
+    const tb = new TranscriptBuffer();
+    tb.write('\x1b[?1000h\x1b[?1006h');
+    await tb.drain();
+    assert.strictEqual(tb.getMouseTrackingMode(), 'vt200');
+    assert.strictEqual(tb.isAltScreenActive(), false);
+    tb.write('\x1b[?1049h');
+    await tb.drain();
+    assert.strictEqual(tb.isAltScreenActive(), true);
+    tb.dispose();
+  });
 });

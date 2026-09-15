@@ -142,6 +142,34 @@ test.describe('Replay mode convergence + repaint assist', () => {
       return 'no-diag';
     });
     expect(verdict).toBe('passthrough');
+    // 5. A real wheel notch becomes SGR bytes (the production symptom
+    //    was zero PTY bytes here). Hook onData, dispatch one notch over
+    //    the terminal, await the 64/65 report xterm emits for tracked
+    //    wheels. Either direction counts — the assertion is that the
+    //    notch is forwarded, not swallowed.
+    await page.evaluate(() => {
+      window.__wheelReports = [];
+      window.app.terminal.onData((d) => {
+        if (d.includes('[<64;') || d.includes('[<65;')) window.__wheelReports.push(d);
+      });
+      const el = document.querySelector('#terminal .xterm-screen')
+        || document.querySelector('#terminal');
+      const r = el.getBoundingClientRect();
+      el.dispatchEvent(new WheelEvent('wheel', {
+        deltaY: 120,
+        clientX: r.x + r.width / 2,
+        clientY: r.y + r.height / 2,
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    await page.waitForFunction(
+      () => Array.isArray(window.__wheelReports) && window.__wheelReports.length > 0,
+      undefined,
+      { timeout: 30000 }
+    );
+    const report = await page.evaluate(() => window.__wheelReports[0]);
+    expect(report).toMatch(/\[<6[45];/);
   });
 
   test('request_repaint elicits a server assist ack on live alt sessions', async ({ page }) => {

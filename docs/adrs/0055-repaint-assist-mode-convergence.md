@@ -74,7 +74,9 @@ met on all three stacks (Windows/ConPTY, macOS, Linux).
   assist per 2s per session; the hold + watchdog semantics are reused,
   so no new output-interleaving or strand paths are introduced.
 - E2E `86-repaint-assist` pins both halves (evicted-enables restore +
-  assist ack); unit suites pin the prepend matrix, helper mapping, and
-  every skip reason. Verified failing pre-fix (12 failures), green
+  live SGR wheel bytes + assist ack); unit suites pin the prepend
+  matrix, helper mapping, drain ordering, and every skip reason plus
+  static wiring pins for all client triggers. Verified failing pre-fix
+  (19 unit failures; e2e `Expected "vt200", Received "none"`), green
   post-fix, with `test:core` otherwise clean (2129 passing; the single
   failure is the pre-existing msedge-binary environment gap).

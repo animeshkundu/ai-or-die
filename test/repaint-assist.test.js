@@ -43,6 +43,10 @@ describe('mouse enable helpers', function () {
       replayHasMouseEnableAfterReset(['enable ?1000h for mouse', 'frame']), false,
       'prose must not count'
     );
+    assert.strictEqual(
+      replayHasMouseEnableAfterReset([Buffer.from('\x1b[?1002h'), Buffer.from('frame')]), true,
+      'ring Buffers count like strings'
+    );
   });
 });
 
@@ -139,6 +143,35 @@ describe('repaint assist', function () {
     assert.strictEqual(r.reason, 'not-alt-screen');
     assert.strictEqual(notAlt.resizeCalls.length, 0);
     assert.strictEqual(resizeCalls.length, 0, 'nothing resized across skips');
+  });
+
+  it('settles the transcript parser before reading alt state', async function () {
+    // A fast switch can request help while the alt-enter bytes are still
+    // queued unparsed; the assist must drain first or it mis-skips as
+    // 'not-alt-screen'. The drain Razor: resize must happen only after
+    // drain() resolved.
+    const order = [];
+    const { fakeThis, resizeCalls } = makeHarness({
+      session: {
+        _ctlTranscript: {
+          isAltScreenActive: () => true,
+          drain: async () => { order.push('drain'); },
+        },
+      },
+      thisProps: {
+        getBridgeForAgent: () => ({
+          resize: async (id, cols, rows) => {
+            order.push('resize');
+            resizeCalls.push([id, cols, rows]);
+          },
+        }),
+      },
+    });
+    const result = await ClaudeCodeWebServer.prototype._requestRepaintAssist.call(
+      fakeThis, 'sess-1', 'tab-switch'
+    );
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(order, ['drain', 'resize']);
   });
 
   it('leaves an in-flight geometry transaction alone', async function () {

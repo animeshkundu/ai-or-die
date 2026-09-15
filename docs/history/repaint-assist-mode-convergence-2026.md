@@ -53,20 +53,25 @@ and nothing afterwards asks the PTY app to repaint.
 
 ## Verification
 
-- Unit: transcript mouse tracking (incl. disposed fail-closed),
-  prepend matrix (evicted/present/non-tracking/drag/prose), helper
-  mapping + reset detection, assist gating (ok/rate-limit/interval/
-  all four skips/hold-release-on-throw). Fail pre-fix (12 failures),
-  pass post-fix.
+- Unit: transcript mouse tracking + drain determinism (incl. disposed
+  fail-closed), prepend matrix (evicted/present/non-tracking/drag/
+  prose/Buffer chunks), helper mapping + reset detection, assist gating
+  (ok/drain-order/rate-limit/interval/all five skips/hold-release-on-
+  throw), and static wiring pins for every client trigger (replay drain,
+  visible/focus, split pane, ack cases, resize-ownership). Fail pre-fix
+  (19 failures on clean main), pass post-fix.
 - E2E `86-repaint-assist` (mouse-interaction project): 700KB
   alt+mouse flood + quick switch asserts alternate + `vt200` +
-  tail + `passthrough` verdict; live-alt `request_repaint` asserts
-  `repaint_assisted{ok:true}` through a real node-pty resize.
-- Suites: targeted 90 passing (replay/assist/transcript/input/
+  tail + `passthrough` verdict + a real wheel notch arriving as SGR
+  64/65 (pre-fix fails with `Expected "vt200", Received "none"` — the
+  exact production wheel-dead mechanism); live-alt `request_repaint`
+  asserts `repaint_assisted{ok:true}` through a real node-pty resize.
+- Suites: targeted 97 passing (replay/assist/wiring/transcript/input/
   wheel/fit/static incl. resize-ownership contract); full `test:core`
-  2129 passing, 1 pre-existing environmental failure (msedge binary
-  absent on this host, `test/e2e-geometry-iphone16.test.js` before-all
-  hook — unrelated, fails identically without these changes).
+  2129 passing, `test:control` 2/2, 1 pre-existing environmental
+  failure (msedge binary absent on this host,
+  `test/e2e-geometry-iphone16.test.js` before-all hook — unrelated,
+  fails identically without these changes).
 
 ## Deliberately not built
 
