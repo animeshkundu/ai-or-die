@@ -54,12 +54,15 @@ met on all three stacks (Windows/ConPTY, macOS, Linux).
    browser `visible`/`focus` with a surviving socket, the client
    invalidates the canvas (`clearTextureAtlas` + `refresh`, the same
    pair the font path uses) and sends `request_repaint`. The server
-   (`_requestRepaintAssist`) re-applies the session's *current*
-   geometry through the PTY inside the geometry output hold — a real
-   SIGWINCH on POSIX, a ConPTY resize redraw on Windows — gated on
-   live + alt-screen + known grid + a 2s per-session rate limit, and
-   acks `repaint_assisted{ok, reason}`. Same-size re-apply is the
-   point: no dimension change is required to elicit the signal.
+   (`_requestRepaintAssist`) runs a +1 bump round-trip through the PTY
+   inside the geometry output hold — a same-size resize was measured
+   to deliver zero SIGWINCH (node-pty probe: same-size → 0, any
+   change → exactly 1), so the transient cols+1 (rows+1 at the cap)
+   and back is what actually signals; the committed grid never
+   changes. Gated on live + drained-transcript alt + grid + 2s rate
+   limit + no in-flight hold, acked as
+   `repaint_assisted{ok, reason, roundTrip}`; client-side rejections
+   are console-warned with their gate reason.
 3. **No behavior change for normal shells or idle sessions.**
    Client gates on `buffer.active.type === 'alternate'`; the server
    re-gates on the transcript. `dontHijack` remains the wheel default.
@@ -74,9 +77,11 @@ met on all three stacks (Windows/ConPTY, macOS, Linux).
   assist per 2s per session; the hold + watchdog semantics are reused,
   so no new output-interleaving or strand paths are introduced.
 - E2E `86-repaint-assist` pins both halves (evicted-enables restore +
-  live SGR wheel bytes + assist ack); unit suites pin the prepend
-  matrix, helper mapping, drain ordering, and every skip reason plus
-  static wiring pins for all client triggers. Verified failing pre-fix
-  (19 unit failures; e2e `Expected "vt200", Received "none"`), green
-  post-fix, with `test:core` otherwise clean (2129 passing; the single
-  failure is the pre-existing msedge-binary environment gap).
+  live SGR wheel bytes + assist ack + a SIGWINCH-trap marker proving
+  signal delivery through the full stack); unit suites pin the
+  bump round-trip, helper mapping, drain ordering, and every skip
+  reason plus static wiring pins for all client triggers. Verified
+  failing pre-fix (19 unit failures; e2e `Expected "vt200", Received
+  "none"`), green post-fix, with `test:core` otherwise clean (2137
+  passing; the single failure is the pre-existing msedge-binary
+  environment gap).

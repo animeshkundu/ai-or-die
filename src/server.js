@@ -23,6 +23,7 @@ const SessionStore = require('./utils/session-store');
 const {
   TerminalGeometryCoordinator,
   normalizeGeometry,
+  GEOMETRY_LIMITS,
 } = require('./terminal-geometry-coordinator');
 const { getFileInfo, computeFileHash, isBinaryFile, sanitizeFileName, isBlockedExtension, formatFileSize, normalizePath, BLOCKED_EXTENSIONS } = require('./utils/file-utils');
 const UsageReader = require('./usage-reader');
@@ -4077,6 +4078,7 @@ class ClaudeCodeWebServer {
               sessionId: targetId,
               ok: !!result.ok,
               reason: result.reason,
+              roundTrip: result.roundTrip === true,
             });
           }
         }
@@ -4510,16 +4512,23 @@ class ClaudeCodeWebServer {
   /**
    * Conditional repaint assist: nudge a live fullscreen TUI to repaint
    * from its intact internal model after a join replay or a browser-tab
-   * refocus. Re-applies the session's CURRENT geometry through the PTY
-   * (`TIOCSWINSZ`, i.e. a real SIGWINCH on POSIX, a ConPTY resize redraw
-   * on Windows) inside the geometry output hold so live bytes can't
-   * interleave mid-resize.
+   * refocus. Delivers real SIGWINCHs to the PTY inside the geometry
+   * output hold so live bytes can't interleave mid-resize.
+   *
+   * Delivery mechanism (measured, not assumed): a same-size TIOCSWINSZ
+   * delivers NO signal — the kernel (Linux, macOS) and ConPTY only
+   * notify on an actual dimension change (node-pty probe: same-size →
+   * 0 SIGWINCH, any change → exactly 1). So the assist is a +1 bump
+   * round-trip: transient cols+1 (rows+1 at the col cap), then back to
+   * the real grid. Two SIGWINCHs; the TUI re-queries and converges on
+   * the final grid. The committed session grid never changes.
    *
    * Gating (all must hold, otherwise returns a skip reason and resizes
    * nothing): session exists + active + has an agent + known grid,
-   * headless transcript reports alt-screen, and no assist ran for this
-   * session within REPAINT_ASSIST_MIN_INTERVAL_MS. Same-size re-apply is
-   * the point — no dimension change is required to elicit SIGWINCH.
+   * headless transcript reports alt-screen (after a bounded drain),
+   * no assist ran for this session within
+   * REPAINT_ASSIST_MIN_INTERVAL_MS, a bridge exists, and no geometry
+   * transaction is already holding output.
    *
    * @returns {Promise<{ok:boolean, reason:string}>}
    */
@@ -4576,9 +4585,20 @@ class ClaudeCodeWebServer {
     // already carries a SIGWINCH, and releasing its hold early would
     // flush held output mid-transaction.
     if (Array.isArray(session._geometryOutputHold)) return skipped('hold-active');
+    const maxCols = (GEOMETRY_LIMITS && GEOMETRY_LIMITS.maxCols) || 1000;
+    const maxRows = (GEOMETRY_LIMITS && GEOMETRY_LIMITS.maxRows) || 500;
+    // Transient bump grid: guaranteed to differ (see delivery note
+    // above). Prefer cols+1; rows+1 when pinned at the col cap.
+    const bump = session.cols < maxCols
+      ? { cols: session.cols + 1, rows: session.rows }
+      : { cols: session.cols, rows: Math.min(session.rows + 1, maxRows) };
+    if (bump.cols === session.cols && bump.rows === session.rows) {
+      return skipped('at-max-geometry');
+    }
     const geometry = { cols: session.cols, rows: session.rows };
     this._beginGeometryOutputHold(sessionId);
     try {
+      await bridge.resize(sessionId, bump.cols, bump.rows);
       await bridge.resize(sessionId, geometry.cols, geometry.rows);
       session.cols = geometry.cols;
       session.rows = geometry.rows;
@@ -4589,8 +4609,8 @@ class ClaudeCodeWebServer {
       return skipped('resize-failed');
     }
     try { this._releaseGeometryOutput(sessionId); } catch (_) { /* isolate */ }
-    if (this.dev) console.log(`[repaint-assist] SIGWINCH assist for ${sessionId} (${reason || 'unspecified'})`);
-    return { ok: true, reason: reason || 'assist' };
+    if (this.dev) console.log(`[repaint-assist] SIGWINCH x2 assist for ${sessionId} (${reason || 'unspecified'})`);
+    return { ok: true, reason: reason || 'assist', roundTrip: true };
   }
 
   async leaveClaudeSession(wsId) {

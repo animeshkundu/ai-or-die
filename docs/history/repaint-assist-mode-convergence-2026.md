@@ -42,11 +42,19 @@ and nothing afterwards asks the PTY app to repaint.
   mouse re-assert (class-minimal sets, ordered after the alt-enter;
   prose-proof markers; byte-identical when tracking is absent or
   present). Pure server/terminal layer — identical on ConPTY.
+- First shipped as a same-size re-apply — then a node-pty probe proved
+  that delivers ZERO signals (same-size → 0 SIGWINCH, any change →
+  exactly 1, since the kernel/ConPTY only notify on change), which is
+  why the garble survived the first version. Corrected to the +1 bump
+  round-trip (transient cols+1, rows+1 at the cap, then back;
+  committed grid untouched), proven by a SIGWINCH-trap marker
+  observed end-to-end in e2e.
 - Conditional repaint assist: client canvas invalidate after every
   replay drain + `request_repaint` on tab-switch and browser
-  `visible`/`focus` (alt-only, 2.5s debounce); server same-size PTY
-  resize inside the geometry hold (2s rate limit, fail-closed skips),
-  acked as `repaint_assisted{ok, reason}`. Normal shells and idle
+  `visible`/`focus` (alt-only, 2.5s debounce); server +1 bump
+  round-trip inside the geometry hold (2s rate limit, fail-closed
+  skips), acked as `repaint_assisted{ok, reason, roundTrip}` with
+  client-side warning on rejections. Normal shells and idle
   sessions never pay a SIGWINCH.
 - `window.app.__wheelDiag()` console diagnostic for future wheel
   reports; split panes invalidate + assist independently.
@@ -65,10 +73,12 @@ and nothing afterwards asks the PTY app to repaint.
   tail + `passthrough` verdict + a real wheel notch arriving as SGR
   64/65 (pre-fix fails with `Expected "vt200", Received "none"` — the
   exact production wheel-dead mechanism); live-alt `request_repaint`
-  asserts `repaint_assisted{ok:true}` through a real node-pty resize.
-- Suites: targeted 97 passing (replay/assist/wiring/transcript/input/
+  asserts `repaint_assisted{ok:true}` plus a SIGWINCH-trap marker line
+  proving the signal reached the foreground process and its output
+  returned to the client.
+- Suites: targeted 98 passing (replay/assist/wiring/transcript/input/
   wheel/fit/static incl. resize-ownership contract); full `test:core`
-  2129 passing, `test:control` 2/2, 1 pre-existing environmental
+  2137 passing, `test:control` 2/2, 1 pre-existing environmental
   failure (msedge binary absent on this host,
   `test/e2e-geometry-iphone16.test.js` before-all hook — unrelated,
   fails identically without these changes).

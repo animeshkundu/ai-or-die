@@ -84,14 +84,32 @@ function makeHarness(overrides = {}) {
 }
 
 describe('repaint assist', function () {
-  it('re-applies the current geometry (same-size SIGWINCH) for live alt sessions', async function () {
+  it('bumps +1 and back (two SIGWINCHs) for live alt sessions', async function () {
+    // Same-size TIOCSWINSZ delivers NO signal (kernel/ConPTY only notify
+    // on change — node-pty probe: same-size → 0, any change → exactly 1),
+    // so the assist is a +1 round-trip converging on the committed grid.
     const { fakeThis, resizeCalls } = makeHarness();
     const result = await ClaudeCodeWebServer.prototype._requestRepaintAssist.call(
       fakeThis, 'sess-1', 'tab-switch'
     );
     assert.strictEqual(result.ok, true);
     assert.strictEqual(result.reason, 'tab-switch');
-    assert.deepStrictEqual(resizeCalls, [['sess-1', 120, 30]]);
+    assert.strictEqual(result.roundTrip, true);
+    assert.deepStrictEqual(resizeCalls, [['sess-1', 121, 30], ['sess-1', 120, 30]]);
+    const session = fakeThis.claudeSessions.get('sess-1');
+    assert.strictEqual(session.cols, 120, 'committed grid unchanged');
+    assert.strictEqual(session.rows, 30);
+  });
+
+  it('bumps rows when pinned at the col cap', async function () {
+    const { fakeThis, resizeCalls } = makeHarness({
+      session: { cols: 1000, rows: 30 },
+    });
+    const result = await ClaudeCodeWebServer.prototype._requestRepaintAssist.call(
+      fakeThis, 'sess-1', 'tab-switch'
+    );
+    assert.strictEqual(result.ok, true);
+    assert.deepStrictEqual(resizeCalls, [['sess-1', 1000, 31], ['sess-1', 1000, 30]]);
   });
 
   it('rate-limits a second assist within the interval', async function () {
@@ -105,7 +123,7 @@ describe('repaint assist', function () {
     );
     assert.strictEqual(second.ok, false);
     assert.strictEqual(second.reason, 'rate-limited');
-    assert.strictEqual(resizeCalls.length, 1, 'no second PTY resize');
+    assert.strictEqual(resizeCalls.length, 2, 'no second round-trip');
   });
 
   it('assists again after the interval elapses', async function () {
@@ -116,7 +134,7 @@ describe('repaint assist', function () {
       fakeThis, 'sess-1', 'browser-focus'
     );
     assert.strictEqual(result.ok, true);
-    assert.strictEqual(resizeCalls.length, 2);
+    assert.strictEqual(resizeCalls.length, 4);
   });
 
   it('skips unknown, non-live, geometry-less, and non-alt sessions without resizing', async function () {
@@ -171,7 +189,7 @@ describe('repaint assist', function () {
       fakeThis, 'sess-1', 'tab-switch'
     );
     assert.strictEqual(result.ok, true);
-    assert.deepStrictEqual(order, ['drain', 'resize']);
+    assert.deepStrictEqual(order, ['drain', 'resize', 'resize']);
   });
 
   it('leaves an in-flight geometry transaction alone', async function () {

@@ -3795,9 +3795,19 @@ class ClaudeCodeWebInterface {
                 break;
 
             case 'repaint_assisted':
-                // Ack for our request_repaint; the SIGWINCH already did the
-                // work. Kept explicit (not default) so it stays noise-free
-                // in the unknown-message log and e2e can await it.
+                // Ack for our request_repaint; the SIGWINCH round-trip
+                // already did the work. A rejection is logged with its
+                // gate reason so a "still garbled" report names the layer
+                // that said no (not-alt-screen, rate-limited, ...).
+                if (message && message.ok === false) {
+                    try {
+                        console.warn(
+                            '[repaint-assist] skipped:',
+                            message.reason,
+                            message.sessionId
+                        );
+                    } catch (_) {}
+                }
                 break;
 
             case 'sticky_note_update':

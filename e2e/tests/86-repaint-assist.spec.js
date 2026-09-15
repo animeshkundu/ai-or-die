@@ -242,5 +242,35 @@ test.describe('Replay mode convergence + repaint assist', () => {
     }
     expect(ack.sessionId).toBe(sessionA);
     expect(ack.ok, `repaint assist rejected: ${ack.reason}`).toBe(true);
+    // Signal delivery, not just the ack: arm a SIGWINCH trap in the
+    // foreground shell, request another assist (past the rate window),
+    // and await the trap's marker. A same-size resize could never
+    // produce this — the kernel only signals on change.
+    await page.evaluate(() => {
+      window.app.send({
+        type: 'input',
+        data: 'trap \'echo ASSIST-WINCH-HIT\' WINCH\r',
+        claim: true,
+        viewId: 'main',
+      });
+    });
+    await page.waitForTimeout(2300);
+    await page.evaluate(() => {
+      window.app._lastRepaintAssistAt = 0;
+      window.app._requestRepaintAssist('e2e-signal-proof');
+    });
+    await page.waitForFunction(() => {
+      const term = window.app && window.app.terminal;
+      if (!term) return false;
+      const buf = term.buffer.active;
+      for (let i = 0; i < buf.length; i++) {
+        const line = buf.getLine(i);
+        // Exact-line match: the typed trap command itself echoes and
+        // contains the marker as a substring, so only the trap's own
+        // output line counts as signal-delivery proof.
+        if (line && line.translateToString(true).trim() === 'ASSIST-WINCH-HIT') return true;
+      }
+      return false;
+    }, undefined, { timeout: 30000 });
   });
 });
