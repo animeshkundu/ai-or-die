@@ -312,6 +312,11 @@ test.describe('Replay mode convergence + repaint assist', () => {
     }
     expect(ack.sessionId).toBe(sessionA);
     expect(ack.ok, `repaint assist rejected: ${ack.reason}`).toBe(true);
+    expect(ack.roundTrip, 'assist must run the bump round-trip, not a same-size no-op').toBe(true);
+    if (isWindows) return; // below proves kernel delivery via a bash
+    // SIGWINCH trap; Windows shells (PowerShell/cmd) have no such
+    // trap semantics. The ack above already proves the server ran the
+    // round-trip end-to-end there (unit suites pin its two-call shape).
     // Signal delivery, not just the ack: arm a SIGWINCH trap in the
     // foreground shell, request another assist (past the rate window),
     // and await the trap's marker. A same-size resize could never
