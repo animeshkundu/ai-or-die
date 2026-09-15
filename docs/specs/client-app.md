@@ -45,6 +45,8 @@ pane viewport and selection.
 
 Main and split replay preserve the server's output bytes, including valid CSI cursor-control sequences. Focus reporting is disabled at both xterm instances instead of stripping ambiguous `CSI I` / `CSI O` sequences from replay output.
 
+After every replay drain the client invalidates the canvas (`clearTextureAtlas` + `refresh`, the font-path pair) and — for alternate-screen sessions only, debounced — sends `request_repaint` so the PTY app repaints from its own model without any browser-dimension change. The same gated pair runs on browser `visible`/`focus` when the socket survived backgrounding (the reconnect path replays + assists via `session_joined`). `window.app.__wheelDiag()` reports the wheel-forwarding gate for diagnostics.
+
 Desktop terminals prefer the xterm WebGL renderer only when the browser reports a hardware-backed renderer. SwiftShader, llvmpipe, lavapipe, and other software rasterizers use xterm's DOM renderer because software WebGL produces substantially longer flood and scroll tasks.
 
 ## Design and accessibility

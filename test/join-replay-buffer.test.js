@@ -162,4 +162,88 @@ describe('session join replay buffer', function () {
       assert.strictEqual(replay[0], '\x1b[?1049h', 'prose must not suppress the prepend');
     });
   });
+
+  describe('mouse-mode convergence', function () {
+    const mouseTranscript = (mode) => ({
+      isAltScreenActive: () => true,
+      getMouseTrackingMode: () => mode,
+    });
+    const noMouseTranscript = () => ({
+      isAltScreenActive: () => true,
+      getMouseTrackingMode: () => 'none',
+    });
+
+    it('re-asserts mouse tracking when both alt-enter and enables were evicted', function () {
+      // Long mouse-TUI session: 1049h + 1000h/1006h fell off the ring.
+      // Without the mouse prepend the fresh xterm reads 'none' and the
+      // wheel policy suppresses every notch until the TUI repaints.
+      const outputBuffer = new CircularBuffer(4);
+      outputBuffer.push('\x1b[?1049h'); // evicted below
+      outputBuffer.push('\x1b[?1000h'); // evicted below
+      for (let i = 0; i < 4; i++) outputBuffer.push(`\x1b[${i + 1};1Hframe-${i}`);
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: mouseTranscript('vt200'),
+      });
+      assert.strictEqual(replay[0], '\x1b[?1049h', 'alt-enter stays first');
+      assert.strictEqual(replay[1], '\x1b[?1000h\x1b[?1006h', 'mouse re-assert rides second');
+    });
+
+    it('skips the mouse prepend when the tail already enables tracking', function () {
+      const outputBuffer = new CircularBuffer(10);
+      outputBuffer.push('\x1b[?1049h');
+      outputBuffer.push('\x1b[?1000h\x1b[?1006h');
+      outputBuffer.push('\x1b[5;1Hframe');
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: mouseTranscript('vt200'),
+      });
+      assert.deepStrictEqual(replay, [
+        '\x1b[?1049h',
+        '\x1b[?1000h\x1b[?1006h',
+        '\x1b[5;1Hframe',
+      ]);
+    });
+
+    it('never prepends mouse sequences for non-tracking sessions', function () {
+      const outputBuffer = new CircularBuffer(4);
+      outputBuffer.push('\x1b[?1049h'); // evicted below
+      for (let i = 0; i < 4; i++) outputBuffer.push(`\x1b[${i + 1};1Hframe-${i}`);
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: noMouseTranscript(),
+      });
+      assert.strictEqual(replay[0], '\x1b[?1049h', 'alt prepend unaffected');
+      assert.strictEqual(replay.length, 5, 'no mouse bytes added');
+      assert.ok(!replay.slice(1).join('').includes('?1000h'));
+    });
+
+    it('restores the drag class with 1002h (not just 1000h)', function () {
+      const outputBuffer = new CircularBuffer(2);
+      outputBuffer.push('\x1b[5;1Hframe');
+      outputBuffer.push('\x1b[6;1Hframe');
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: mouseTranscript('drag'),
+      });
+      const head = replay.slice(0, 2).join('');
+      assert.ok(head.includes('\x1b[?1002h'), `drag restore must carry 1002h, got: ${JSON.stringify(head)}`);
+      assert.ok(head.includes('\x1b[?1006h'), 'SGR encoding rides along');
+    });
+
+    it('ignores prose mentions of ?1000h (only real ESC sequences count)', function () {
+      const outputBuffer = new CircularBuffer(3);
+      outputBuffer.push('docs: enable ?1000h for mouse');
+      outputBuffer.push('\x1b[5;1Hframe');
+      outputBuffer.push('\x1b[6;1Hframe');
+      const replay = ClaudeCodeWebServer.prototype._buildJoinReplay({
+        outputBuffer,
+        _ctlTranscript: mouseTranscript('vt200'),
+      });
+      assert.ok(
+        replay.slice(0, 2).join('').includes('\x1b[?1000h'),
+        'prose must not suppress the mouse prepend'
+      );
+    });
+  });
 });

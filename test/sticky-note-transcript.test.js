@@ -101,4 +101,37 @@ describe('sticky-note transcript buffer', function () {
     tb.dispose();
     assert.strictEqual(tb.isAltScreenActive(), false);
   });
+
+  it('tracks mouse-tracking mode for join-replay convergence', async function () {
+    const tb = new TranscriptBuffer();
+    assert.strictEqual(tb.getMouseTrackingMode(), 'none', 'no tracking initially');
+    tb.write('\x1b[?1000h\x1b[?1006h');
+    await tb._drain();
+    assert.strictEqual(tb.getMouseTrackingMode(), 'vt200', 'vt200 after 1000h');
+    tb.write('\x1b[?1002h');
+    await tb._drain();
+    assert.strictEqual(tb.getMouseTrackingMode(), 'drag', 'drag after 1002h');
+    tb.write('\x1b[?1000l\x1b[?1002l');
+    await tb._drain();
+    assert.strictEqual(tb.getMouseTrackingMode(), 'none', 'none after disables');
+    tb.dispose();
+  });
+
+  it('getMouseTrackingMode never throws on a disposed buffer (fail-closed)', function () {
+    const tb = new TranscriptBuffer();
+    tb.dispose();
+    assert.strictEqual(tb.getMouseTrackingMode(), 'none');
+  });
+
+  it('drain() settles queued bytes so mode reads are deterministic', async function () {
+    const tb = new TranscriptBuffer();
+    tb.write('\x1b[?1000h\x1b[?1006h');
+    await tb.drain();
+    assert.strictEqual(tb.getMouseTrackingMode(), 'vt200');
+    assert.strictEqual(tb.isAltScreenActive(), false);
+    tb.write('\x1b[?1049h');
+    await tb.drain();
+    assert.strictEqual(tb.isAltScreenActive(), true);
+    tb.dispose();
+  });
 });

@@ -464,6 +464,26 @@ class Split {
             this._rafPending = true;
             this._rafHandle = requestAnimationFrame(() => this._flushOutput());
         }
+        // Same canvas-invalidate as the main pane: the replay rewrote
+        // buffer bytes without invalidating a possibly stale WebGL atlas.
+        try {
+            if (this.terminal) {
+                if (typeof this.terminal.clearTextureAtlas === 'function') {
+                    try { this.terminal.clearTextureAtlas(); } catch (_) {}
+                }
+                if (typeof this.terminal.refresh === 'function' && (this.terminal.rows | 0) > 0) {
+                    this.terminal.refresh(0, this.terminal.rows - 1);
+                }
+            }
+        } catch (_) { /* best-effort */ }
+        // Nudge the PTY app to repaint from its own model (alt-only,
+        // debounced; the server re-gates). Split sessions have their own
+        // PTY and their own socket, so the request goes out on THIS
+        // pane's socket — the main socket is joined to a different
+        // session and the server would (correctly) drop it.
+        try {
+            this._requestSplitRepaintAssist('tab-switch');
+        } catch (_) { /* best-effort */ }
         if (restoreView === false) return;
         if (view) {
             const buffer = this.terminal.buffer && this.terminal.buffer.active;
@@ -480,6 +500,37 @@ class Split {
         }
     }
 
+    /**
+     * Split-pane repaint assist: same contract as the main pane's
+     * `_requestRepaintAssist`, but sent on this pane's own socket (each
+     * split holds a dedicated WebSocket joined to its session).
+     * Alt-screen only, debounced per session; the server re-gates.
+     */
+    _requestSplitRepaintAssist(reason) {
+        try {
+            if (!this.sessionId || !this.terminal) return;
+            const buf = this.terminal.buffer;
+            const alt = !!(buf && buf.active && buf.active.type === 'alternate');
+            if (!alt) return;
+            const now = (typeof performance !== 'undefined' && performance.now)
+                ? performance.now()
+                : Date.now();
+            if (this._lastSplitAssistSid === this.sessionId
+                && (now - (this._lastSplitAssistAt || 0)) < 2500) {
+                return;
+            }
+            this._lastSplitAssistSid = this.sessionId;
+            this._lastSplitAssistAt = now;
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.socket.send(JSON.stringify({
+                    type: 'request_repaint',
+                    sessionId: this.sessionId,
+                    reason: reason || 'client-request',
+                }));
+            }
+        } catch (_) { /* best-effort */ }
+    }
+
     handleMessage(msg) {
         switch (msg.type) {
             case 'output':
@@ -488,6 +539,12 @@ class Split {
 
             case 'pong':
                 if (this._heartbeat) this._heartbeat.onPong();
+                break;
+
+            case 'repaint_assisted':
+                // Ack for this pane's request_repaint; the SIGWINCH already
+                // did the work. Explicit so it stays out of the
+                // unknown-message path.
                 break;
 
             case 'session_joined': {
