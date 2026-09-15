@@ -447,8 +447,7 @@ class ClaudeCodeWebInterface {
                     // A reconnect path replays + assists via session_joined,
                     // so this only fires when the socket survived.
                     if (!this._joinRepaintInProgress) {
-                        this._refreshTerminalCanvas();
-                        this._requestRepaintAssist('browser-focus');
+                        this._repaintOnRefocus('browser-focus');
                     }
                 }
             }
@@ -465,8 +464,7 @@ class ClaudeCodeWebInterface {
                 if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
                 if (!this.currentClaudeSessionId) return;
                 if (this._joinRepaintInProgress) return;
-                this._refreshTerminalCanvas();
-                this._requestRepaintAssist('browser-focus');
+                this._repaintOnRefocus('browser-focus');
             } catch (_) { /* focus assist is best-effort */ }
         });
 
@@ -3084,8 +3082,48 @@ class ClaudeCodeWebInterface {
             }
             this._lastRepaintAssistSid = sid;
             this._lastRepaintAssistAt = now;
+            try {
+                console.log('[repaint-assist] requesting', reason || 'client-request', sid);
+            } catch (_) {}
             this.send({ type: 'request_repaint', sessionId: sid, reason: reason || 'client-request' });
         } catch (_) { /* repaint assist is best-effort */ }
+    }
+
+    /**
+     * Focus-time repaint: make the visible frame pleasant immediately,
+     * then ask the PTY app for the live truth. Steps:
+     *   1. Invalidate the canvas (stale WebGL atlas after backgrounding).
+     *   2. For fullscreen (alternate-screen) sessions only, repaint the
+     *      last cached screen — the snapshot cache persists to IndexedDB,
+     *      so this is a coherent, cursor-faithful frame even when the
+     *      live output diverged while hidden. Normal shells are skipped:
+     *      their scrollback is authoritative and complete, and painting
+     *      a capped serialize snapshot over it would truncate history.
+     *   3. Request the gated server assist (SIGWINCH round-trip) so the
+     *      live TUI repaints from its own model on top of the cached
+     *      frame. Mark the view dirty so the next switch-away captures
+     *      the fresh post-assist frame, not the replayed snapshot.
+     */
+    _repaintOnRefocus(reason) {
+        try {
+            this._refreshTerminalCanvas();
+            let alt = false;
+            try {
+                const buf = this.terminal && this.terminal.buffer;
+                alt = !!(buf && buf.active && buf.active.type === 'alternate');
+            } catch (_) {
+                alt = false;
+            }
+            if (alt) {
+                try {
+                    if (this.snapshotCache && this.currentClaudeSessionId) {
+                        this.snapshotCache.paintCached(this.currentClaudeSessionId);
+                    }
+                } catch (_) { /* cache paint is best-effort */ }
+                this._terminalDirtySinceCapture = true;
+            }
+            this._requestRepaintAssist(reason);
+        } catch (_) { /* refocus repaint is best-effort */ }
     }
 
     /**
@@ -7524,6 +7562,13 @@ window.focusTrap = {
 document.addEventListener('DOMContentLoaded', () => {
     const app = new ClaudeCodeWebInterface();
     window.app = app;
+    // Freshness marker for repaint-assist triage: if a garble report
+    // comes from a tab where this flag is absent, the tab runs stale
+    // (pre-fix) JS and no client-side assist exists there.
+    try {
+        window.__repaintAssistClient = true;
+        console.log('[terminal] repaint-assist client enabled');
+    } catch (_) {}
     app.startHeartbeat();
 });
 

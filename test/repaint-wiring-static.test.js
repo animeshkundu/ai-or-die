@@ -48,8 +48,23 @@ describe('repaint-assist client wiring', function () {
 
   it('repaints on browser visible and focus without racing a replay', function () {
     assert.ok(
-      appSrc.includes('this._requestRepaintAssist(\'browser-focus\')'),
-      'visible/focus path must request a browser-focus assist'
+      appSrc.includes("this._repaintOnRefocus('browser-focus')"),
+      'visible/focus path must run the refocus repaint'
+    );
+    const helperIdx = appSrc.indexOf('_repaintOnRefocus(reason)');
+    assert.ok(helperIdx > 0, 'refocus helper should exist');
+    const helperBody = appSrc.slice(helperIdx, helperIdx + 2000);
+    assert.ok(
+      helperBody.includes('this._refreshTerminalCanvas()'),
+      'refocus must invalidate the canvas'
+    );
+    assert.ok(
+      helperBody.includes('paintCached(this.currentClaudeSessionId)'),
+      'refocus must repaint the cached (IDB) screen for alt sessions'
+    );
+    assert.ok(
+      helperBody.includes('this._requestRepaintAssist(reason)'),
+      'refocus must request the server assist on top of the cached frame'
     );
     assert.ok(
       appSrc.includes('if (!this._joinRepaintInProgress)'),
