@@ -27,6 +27,20 @@
 - `test/base-bridge-locale.test.js`: fallback-only, explicit-LANG/LC_ALL precedence, LANGUAGE untouched.
 - Existing guards green: join-repaint, join-replay-buffer, snapshot-cache, repaint-assist/wiring, geometry, fit, font, chunked-write, throttle, terminal-copy (164 passing), control tests.
 
+## Follow-up (2026-09-17): opencode copy still not landing
+
+User report on the new build: opencode says "copied to clipboard" but nothing
+reaches the remote-access machine. Root cause: opencode copies via OSC 52,
+which sets the *host* clipboard; xterm.js ignores OSC 52, so without a bridge
+the toast lies. Fix: `src/public/osc52-handler.js` streaming parser
+(BEL/`ESC \` terminators, cross-chunk carry, `?` never answered, `p`/`s`
+ignored, 512KiB cap) + `createOsc52Bridge` wired into `app.js`
+`_flushWritesChunk` and `splits.js` `_flushOutput` (live output only; replay,
+tab-switch, and reconnect paths reset the parser, never bridge). Success →
+existing Copied toast; denied/missing API → `Terminal app copy blocked`
+error badge. Regression tests: `test/osc52-handler.test.js` (19 passing:
+terminators, splits, queries, caps, bridge success/denied/missing-API).
+
 ## Verification
 
 - Targeted mocha suites above; `node scripts/run-control-tests.js`.

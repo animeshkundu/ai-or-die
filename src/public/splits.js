@@ -162,6 +162,27 @@ class Split {
             }
         });
 
+        // OSC 52 bridge (same contract as the main terminal in app.js):
+        // forward live-output TUI clipboard sequences to the browser
+        // clipboard. Join-replay bytes are not bridged.
+        try {
+            const Osc52 = (typeof window !== 'undefined' && window.Osc52Handler)
+                || (typeof Osc52Handler !== 'undefined' ? Osc52Handler : null); // eslint-disable-line no-undef
+            this._osc52Bridge = Osc52 ? Osc52.createOsc52Bridge({
+                onCopied: () => {
+                    if (window.attachClipboardHandler && window.attachClipboardHandler.showCopiedToast) {
+                        window.attachClipboardHandler.showCopiedToast();
+                    }
+                },
+                onDenied: () => {
+                    if (window.showClipboardError) {
+                        window.showClipboardError('Terminal app copy blocked — allow clipboard access');
+                    }
+                },
+            }) : null;
+        } catch (_) { this._osc52Bridge = null; }
+        this._osc52Decoder = null;
+
         // Wire clickable file paths (xterm registerLinkProvider) +
         // right-click selection-based file menu, same as the main terminal.
         // CRITICAL: pass `() => this.sessionId` so the link provider's
@@ -448,6 +469,18 @@ class Split {
         if (this._repainting || this._pendingWrites.length === 0) return;
         const combined = OutputFrameBatcher.takeChunkBudget(this._pendingWrites, 96 * 1024);
         this.terminal.write(combined);
+        // OSC 52 snoop on live output only. Decode is best-effort and must
+        // not disturb the render path.
+        if (this._osc52Bridge) {
+            try {
+                if (!this._osc52Decoder && typeof TextDecoder !== 'undefined') {
+                    this._osc52Decoder = new TextDecoder();
+                }
+                if (this._osc52Decoder) {
+                    this._osc52Bridge.push(this._osc52Decoder.decode(combined, { stream: true }));
+                }
+            } catch (_) { /* ignore */ }
+        }
         if (this._pendingWrites.length > 0) {
             this._rafPending = true;
             this._rafHandle = requestAnimationFrame(() => this._flushOutput());

@@ -634,6 +634,12 @@ Uses `(e.ctrlKey \|\| e.metaKey)` directly for cross-platform Mac/Windows/Linux 
 
 Mouse-reporting TUIs (opencode, etc. enabling SGR 1000/1002/1006) route drags to the app as mouse events instead of xterm selection. Hold **Shift+drag** to bypass mouse mode and create a selectable highlight; the Copy menu item carries this hint in its `title`. The keys panel `Copy screen` button (`TerminalCopy.copyVisible`) copies selection-or-visible-screen for Canvas/mobile where long-press selection is unavailable.
 
+### OSC 52 bridge (TUI copy → browser clipboard)
+
+A fullscreen TUI on the remote host copies via OSC 52 (`ESC ] 52 ; c ; <base64> BEL`), which xterm.js ignores and which would otherwise set only the *host* clipboard — useless when the user sits at a different machine's browser. `src/public/osc52-handler.js` snoops the live decoded PTY output stream and forwards set-clipboard sequences to `navigator.clipboard.writeText`, so the app's "copied to clipboard" lands on the user's machine. Wired in `app.js:_flushWritesChunk` (main pane) and `splits.js:_flushOutput` (split panes); join-replay bytes are deliberately not bridged.
+
+Security posture: only Pc `c`/empty honored; queries (`?`) never answered (no local-clipboard exfiltration); payload capped at 512KiB base64; failures surface via `showClipboardError`, never throw into the render path.
+
 ### Utility Functions
 
 - `attachClipboardHandler.normalizeLineEndings(text)` — converts `\r\n` → `\r` and `\n` → `\r`

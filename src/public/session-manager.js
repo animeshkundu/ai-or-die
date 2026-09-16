@@ -891,6 +891,7 @@ class SessionTabManager {
             this.claudeInterface._pendingWrites.length = 0;
             this.claudeInterface._pendingWriteBytes = 0;
             this.claudeInterface._textDecoder = new TextDecoder();
+            try { this.claudeInterface._osc52Bridge?.reset(); } catch (_) { /* ignore */ }
             this.claudeInterface._planDetectText = [];
             this.claudeInterface._planDetectBytes = 0;
             if (this.claudeInterface._ingressPaused) {

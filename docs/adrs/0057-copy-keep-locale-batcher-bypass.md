@@ -24,6 +24,18 @@ Two separate user-facing issues, one shared theme (remote + Linux reliability):
 - `http://` LAN behavior changes for palette `copy-output` (async clipboard unavailable → legacy `execCommand` fallback retained).
 - Bypass rejoin trades instant paint for correctness on demand; default tab-switch path unchanged.
 
+## Addendum (2026-09-17): OSC 52 bridge
+
+User testing showed the keep-on-failure fix was insufficient for opencode:
+opencode's own copy action reports "copied to clipboard" after emitting OSC 52,
+which sets only the *remote host* clipboard — unreachable from the browser
+machine. Decision: client-side OSC 52 → `navigator.clipboard` bridge
+(`src/public/osc52-handler.js`, wired in `app.js`/`splits.js` live-output
+paths only). Only `c`/empty Pc honored, queries never answered, 512KiB cap,
+failures via existing error badge. Covered by `test/osc52-handler.test.js`
+(19 cases). This is standard emulator behavior (xterm/VS Code/iTerm all
+bridge OSC 52); the browser permission gate remains the backstop.
+
 ## References
 
 - `src/public/clipboard-handler.js`, `src/public/command-palette.js`, `src/public/index.html`, `src/public/session-manager.js`, `src/public/output-frame-batcher.js`, `src/base-bridge.js`
