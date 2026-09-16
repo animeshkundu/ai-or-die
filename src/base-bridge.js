@@ -24,6 +24,27 @@ const SGR_MOTION_BATCH_RE = /^(?:\x1b\[<(?:3[2-9]|[4-5][0-9]|6[0-3]);\d+;\d+M)+$
 function isPureMotionInput(data) {
   return typeof data === 'string' && data.length > 0 && SGR_MOTION_BATCH_RE.test(data);
 }
+
+/**
+ * UTF-8 locale fallback for PTY children (Linux/Codespaces garble fix).
+ *
+ * Minimal container images often ship with LANG=C/POSIX, so TUIs emit
+ * fallback glyphs / mis-width double-width + powerline cells that disagree
+ * with the browser's unicode11 width tables (fragmented leaders, overlapped
+ * status bars). Default LANG to C.UTF-8 only when neither LANG nor LC_ALL
+ * is set, never override an explicit setting, never touch LC_ALL/LANGUAGE,
+ * and no-op on Windows (ConPTY uses codepage/UTF-8 path, not LANG).
+ * Silent best-effort: a missing C.UTF-8 locale must not throw.
+ */
+function applyLocaleFallback(env) {
+  try {
+    if (!env || typeof env !== 'object') return env;
+    if (process.platform === 'win32') return env;
+    if (env.LANG || env.LC_ALL || process.env.LANG || process.env.LC_ALL) return env;
+    env.LANG = 'C.UTF-8';
+  } catch (_) { /* best-effort */ }
+  return env;
+}
 /**
  * Grace window (ms) during which a read EAGAIN with no life-sign yet is treated
  * as a benign transient startup blip and swallowed. After this, a *sustained*
@@ -313,13 +334,13 @@ class BaseBridge {
       // don't override buildArgs (terminal/codex) ignore these.
       const args = this.buildArgs({ sessionId, dangerouslySkipPermissions, permissionMode, agentArgs });
 
-      const env = {
+      const env = applyLocaleFallback({
         ...process.env,
         TERM: 'xterm-256color',
         FORCE_COLOR: '1',
         COLORTERM: 'truecolor',
         ...((extraEnv && typeof extraEnv === 'object') ? extraEnv : {})
-      };
+      });
 
       const ptyProcess = spawn(this.command, args, {
         cwd: workingDir,
@@ -916,3 +937,4 @@ module.exports = BaseBridge;
 module.exports.PTY_WRITE_CHUNK_SIZE = PTY_WRITE_CHUNK_SIZE;
 module.exports.PTY_WRITE_CHUNK_DELAY_MS = PTY_WRITE_CHUNK_DELAY_MS;
 module.exports.MAX_INPUT_QUEUE_DEPTH = MAX_INPUT_QUEUE_DEPTH;
+module.exports.applyLocaleFallback = applyLocaleFallback;

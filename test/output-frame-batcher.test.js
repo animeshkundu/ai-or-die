@@ -4,6 +4,7 @@ const assert = require('assert');
 const {
   takeChunkBudget,
   appendBoundedText,
+  trailingHoldbackLength,
 } = require('../src/public/output-frame-batcher');
 
 describe('output frame batching', function () {
@@ -35,5 +36,38 @@ describe('output frame batching', function () {
 
   it('keeps a bounded rendered tail', function () {
     assert.strictEqual(appendBoundedText('abcd', 'efgh', 6), 'cdefgh');
+  });
+
+  it('holds a trailing partial CSI for the next frame without losing bytes', function () {
+    const full = Buffer.from('hello\x1b[31mworld');
+    const queue = [new Uint8Array(full)];
+    const first = takeChunkBudget(queue, 8); // cuts inside ESC[31m
+    const second = takeChunkBudget(queue, 64);
+    const combined = Buffer.concat([Buffer.from(first), Buffer.from(second)]);
+    assert.strictEqual(combined.toString('utf8'), full.toString('utf8'));
+    // First frame must not end mid-escape.
+    assert.strictEqual(trailingHoldbackLength(first), 0);
+  });
+
+  it('holds a trailing incomplete UTF-8 sequence', function () {
+    const euro = Buffer.from('€'); // 3 bytes E2 82 AC
+    const queue = [new Uint8Array(Buffer.concat([Buffer.from('ab'), euro.subarray(0, 2)])),
+      new Uint8Array(euro.subarray(2))];
+    const first = takeChunkBudget(queue, 4); // 'ab' + first 2 bytes of €
+    assert.ok(first.length <= 2, 'partial multibyte tail is held, got ' + first.length);
+    const second = takeChunkBudget(queue, 64);
+    const combined = Buffer.concat([Buffer.from(first), Buffer.from(second)]);
+    assert.strictEqual(combined.toString('utf8'), 'ab€');
+  });
+
+  it('never stalls: budget smaller than the partial still makes progress', function () {
+    const queue = [new Uint8Array(Buffer.from('\x1b[31m'))];
+    const first = takeChunkBudget(queue, 1);
+    assert.ok(first.byteLength >= 1);
+  });
+
+  it('complete frames have zero holdback', function () {
+    assert.strictEqual(trailingHoldbackLength(Buffer.from('plain text')), 0);
+    assert.strictEqual(trailingHoldbackLength(Buffer.from('a\x1b[0m')), 0);
   });
 });

@@ -800,7 +800,7 @@ class SessionTabManager {
     async switchToTab(sessionId, options = {}) {
         if (!this.tabs.has(sessionId)) return;
 
-        const { skipHistoryUpdate = false } = options;
+        const { skipHistoryUpdate = false, skipCachePaint = false, evictCache = false } = options;
 
         // Cancel any pending capture-on-settle: the shared terminal is about to
         // repaint to the incoming tab, so a stale timer must not serialize it
@@ -872,7 +872,17 @@ class SessionTabManager {
         // immediately instead of lingering the previous tab's content. Record
         // that we painted so session_joined's reconcile won't blank it on a
         // 'clear' verdict (see app.js). session_joined repaints authoritatively.
-        const cachePainted = this.claudeInterface.snapshotCache?.paintCached(sessionId);
+        // Opt-in bypass (Clear cache & rejoin): skip the instant paint and
+        // optionally evict the stored snapshot so a corrupt frame cannot
+        // re-paint itself. Still clears pending frames + decoder below and
+        // re-captures after the authoritative replay (app.js post-replay
+        // capture), so the next switch is instant again.
+        if (evictCache) {
+            try { this.claudeInterface.snapshotCache?.evict(sessionId); } catch (_) { /* best-effort */ }
+        }
+        const cachePainted = (!skipCachePaint && !evictCache)
+            ? this.claudeInterface.snapshotCache?.paintCached(sessionId)
+            : false;
         this.claudeInterface._cachePaintedForSession = cachePainted ? sessionId : null;
         // Drop output frames still queued from the outgoing session before the
         // join control frame repaints the shared terminal. The server buffer

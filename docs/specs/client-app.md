@@ -625,17 +625,21 @@ Implemented in `src/public/clipboard-handler.js` and `src/public/app.js`.
 
 | Shortcut | Behavior |
 |----------|----------|
-| Ctrl+C / Cmd+C | Copy selection to clipboard (or send SIGINT if no selection) |
+| Ctrl+C / Cmd+C | Copy selection to clipboard (or send SIGINT if no selection). Selection is cleared only after the async clipboard write succeeds; on failure (denied permission, missing API on insecure `http://`, unfocused document) the selection is kept + an error badge shows so the user can retry. Never sends SIGINT when a selection existed at keydown. |
 | Ctrl+V / Cmd+V | Browser native paste → xterm handles bracketed paste → `onData` |
-| Ctrl+Shift+C | Copy selection (Linux convention) |
+| Ctrl+Shift+C | Copy selection (Linux convention, never SIGINT). Same keep-on-failure semantics. |
 | Ctrl+Shift+V | Paste (Linux convention) |
 
 Uses `(e.ctrlKey \|\| e.metaKey)` directly for cross-platform Mac/Windows/Linux support.
+
+Mouse-reporting TUIs (opencode, etc. enabling SGR 1000/1002/1006) route drags to the app as mouse events instead of xterm selection. Hold **Shift+drag** to bypass mouse mode and create a selectable highlight; the Copy menu item carries this hint in its `title`. The keys panel `Copy screen` button (`TerminalCopy.copyVisible`) copies selection-or-visible-screen for Canvas/mobile where long-press selection is unavailable.
 
 ### Utility Functions
 
 - `attachClipboardHandler.normalizeLineEndings(text)` — converts `\r\n` → `\r` and `\n` → `\r`
 - `attachClipboardHandler.wrapBracketedPaste(text)` — wraps in `ESC[200~` ... `ESC[201~`
+- `attachClipboardHandler.copySelectionKeepOnFailure(terminal, text)` — async write; clears selection only on success, keeps + error toast on failure
+- `attachClipboardHandler.showCopyErrorToast()` — `Clipboard denied — selection kept` badge + distinct `srAnnounce` string
 
 ### Context Menu
 

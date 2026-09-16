@@ -34,6 +34,54 @@ function showCopiedToast() {
 }
 
 /**
+ * Show a "copy failed, selection kept" indicator.
+ * Decoupled from DOM — app.js wires window.showClipboardError to the badge.
+ */
+function showCopyErrorToast() {
+  if (typeof window !== 'undefined' && window.showClipboardError) {
+    window.showClipboardError('Clipboard denied — selection kept');
+  } else if (typeof window !== 'undefined' && window.showCopiedFeedback) {
+    // Fallback when the error badge is unavailable; do not claim success.
+    window.showCopiedFeedback();
+  }
+  // Screen reader announcement (distinct string so aria-live re-fires)
+  var sr = typeof document !== 'undefined' ? document.getElementById('srAnnounce') : null;
+  if (sr) sr.textContent = 'Copy failed — selection kept';
+}
+
+/**
+ * Attempt an async clipboard write, clearing the xterm selection only on
+ * success. Keeps the selection + shows an error on failure (denied
+ * permission, missing API on insecure http://, unfocused document) so the
+ * user can retry instead of losing the highlight. Never resolves to SIGINT:
+ * callers must already have returned false synchronously when a selection
+ * existed at keydown time.
+ */
+function copySelectionKeepOnFailure(terminal, text) {
+  // Prefer globalThis.navigator so unit tests can mock the clipboard via
+  // globalThis assignment (Node 22 ships a read-only global `navigator`
+  // without `clipboard`; bare-identifier reads miss the mock).
+  var nav = null;
+  try {
+    if (typeof globalThis !== 'undefined' && globalThis.navigator) nav = globalThis.navigator;
+    else if (typeof navigator !== 'undefined') nav = navigator; // eslint-disable-line no-undef
+  } catch (_) { nav = null; }
+  if (!nav || !nav.clipboard || typeof nav.clipboard.writeText !== 'function') {
+    showCopyErrorToast();
+    return Promise.resolve(false);
+  }
+  var selectionAtCopy = text;
+  return nav.clipboard.writeText(selectionAtCopy).then(function () {
+    try { terminal.clearSelection(); } catch (_) { /* ignore */ }
+    showCopiedToast();
+    return true;
+  }).catch(function () {
+    showCopyErrorToast();
+    return false;
+  });
+}
+
+/**
  * Attach keyboard copy/paste shortcuts to an xterm.js terminal.
  *
  * Shortcuts:
@@ -57,11 +105,15 @@ function attachClipboardHandler(terminal, sendFn) {
 
     const mod = e.ctrlKey || e.metaKey;
 
-    // Ctrl+C / Cmd+C: copy if selection exists, else let xterm send SIGINT
+    // Ctrl+C / Cmd+C: copy if selection exists, else let xterm send SIGINT.
+    // Return false synchronously whenever a selection existed at keydown so
+    // SIGINT is suppressed even if the async clipboard write later fails
+    // (Option A: failure keeps the selection for retry, never sends ^C).
+    // Under SGR mouse-reporting TUIs (opencode, etc.) drags never create an
+    // xterm selection — use Shift+drag to bypass mouse mode and select.
     if (mod && e.key === 'c' && !e.shiftKey) {
       if (terminal.hasSelection()) {
-        navigator.clipboard.writeText(terminal.getSelection()).then(showCopiedToast).catch(() => {});
-        terminal.clearSelection();
+        copySelectionKeepOnFailure(terminal, terminal.getSelection());
         return false; // prevent xterm from sending \x03
       }
       return true; // no selection — let xterm send SIGINT
@@ -75,11 +127,10 @@ function attachClipboardHandler(terminal, sendFn) {
       return false;
     }
 
-    // Ctrl+Shift+C: copy (Linux terminal convention)
+    // Ctrl+Shift+C: copy (Linux terminal convention). Never SIGINT.
     if (e.ctrlKey && e.shiftKey && e.key === 'C') {
       if (terminal.hasSelection()) {
-        navigator.clipboard.writeText(terminal.getSelection()).then(showCopiedToast).catch(() => {});
-        terminal.clearSelection();
+        copySelectionKeepOnFailure(terminal, terminal.getSelection());
       }
       return false;
     }
@@ -97,6 +148,8 @@ function attachClipboardHandler(terminal, sendFn) {
 attachClipboardHandler.normalizeLineEndings = normalizeLineEndings;
 attachClipboardHandler.wrapBracketedPaste = wrapBracketedPaste;
 attachClipboardHandler.showCopiedToast = showCopiedToast;
+attachClipboardHandler.showCopyErrorToast = showCopyErrorToast;
+attachClipboardHandler.copySelectionKeepOnFailure = copySelectionKeepOnFailure;
 
 // Browser: expose on window
 if (typeof window !== 'undefined') {
@@ -105,5 +158,5 @@ if (typeof window !== 'undefined') {
 
 // Node.js: CommonJS export for unit testing
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { attachClipboardHandler, normalizeLineEndings, wrapBracketedPaste, showCopiedToast };
+  module.exports = { attachClipboardHandler, normalizeLineEndings, wrapBracketedPaste, showCopiedToast, showCopyErrorToast, copySelectionKeepOnFailure };
 }
