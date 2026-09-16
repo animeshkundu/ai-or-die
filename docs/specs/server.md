@@ -108,6 +108,13 @@ Hostname injection is privacy-gated because the route is pre-auth:
 
 On any read/parse/formatting error, the handler falls back to sending the static/base manifest (via `_sendSeaAsset` in SEA mode, or `res.sendFile` otherwise). The service worker treats `/manifest.json` as network-only and does not cache it, so installed-app metadata is not served stale from the PWA cache.
 
+**Fleet path prefix.** The first middleware in `setupExpress()` strips a
+per-request `/m/<id>` prefix (`req._fleetPrefix`, `req.url` rewritten,
+`req.originalUrl` preserved), so every route dual-serves root `/`
+(standalone, `--tunnel`) and `/m/<id>/` (fleet) with zero startup config.
+The manifest additionally scopes `id`/`start_url`/`scope`/`icons`/
+`shortcuts`/`screenshots` to the request prefix (see ADR-0056).
+
 #### `GET /auth-status`
 Returns whether authentication is required.
 

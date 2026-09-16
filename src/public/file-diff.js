@@ -31,16 +31,23 @@
   // Pure helpers (testable under Node)
   // ---------------------------------------------------------------------------
 
+  // Fleet path-mode: resolve the prefix lazily at call time (not load time)
+  // so tests that stub location/fleet-base per case observe the right base.
+  function _bp(p) {
+    if (typeof withBase === 'function') return withBase(p);
+    return p;
+  }
+
   function buildGitShowUrl(path, ref) {
     if (!path) return '';
     var qs = 'path=' + encodeURIComponent(path);
     if (ref && ref !== 'HEAD') qs += '&ref=' + encodeURIComponent(ref);
-    return '/api/files/git-show?' + qs;
+    return _bp('/api/files/git-show') + '?' + qs;
   }
 
   function buildContentUrl(path) {
     if (!path) return '';
-    return '/api/files/content?path=' + encodeURIComponent(path);
+    return _bp('/api/files/content') + '?path=' + encodeURIComponent(path);
   }
 
   // Map a git-show fetch response status into a user-facing classification.

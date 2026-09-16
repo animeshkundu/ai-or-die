@@ -1340,6 +1340,25 @@ class ClaudeCodeWebServer {
 
 
   setupExpress() {
+    // Fleet path-mode dual-serve: strip a `/m/<id>` prefix per request so the
+    // same instance works at root `/` (standalone, --tunnel) and under an
+    // arbitrary fleet path `/m/<id>/` with zero startup config (the machine
+    // name is unknown beforehand). Must run FIRST: every matcher below
+    // (json-parser exempt, manifest, SEA/static, auth, /api/*) sees the
+    // stripped path via req.path/req.url; req.originalUrl keeps the full path
+    // for prefix-aware responses (manifest, artifact base).
+    // NOTE: req.url includes the query string; the lookahead preserves it.
+    this.app.use((req, res, next) => {
+      const m = /^\/m\/[^/?#]+(?=\/|\?|$)/.exec(req.url);
+      if (m) {
+        req._fleetPrefix = m[0];
+        req.url = req.url.slice(m[0].length) || '/';
+        // Bare prefix with a query (`/m/<id>?token=…`) strips to `?…`;
+        // restore the leading slash so Express still routes it as `/`.
+        if (req.url.charAt(0) !== '/') req.url = '/' + req.url;
+      }
+      next();
+    });
     this.app.use(cors());
     // Global JSON parser for normal endpoints (Express default ~100kb limit).
     // The upload route mounts its own higher-limit parser (see
@@ -1383,6 +1402,19 @@ class ClaudeCodeWebServer {
           const host = os.hostname();
           manifest.name = appIdentity.formatAppIdentity({ hostname: host });
           manifest.short_name = appIdentity.formatShortName({ hostname: host });
+        }
+        // Fleet path-mode: scope all root-absolute URLs to the request's
+        // prefix so the installed PWA resolves under /m/<id>/ when served
+        // there. Root mode (no prefix) leaves the manifest untouched.
+        const _prefix = req._fleetPrefix || '';
+        if (_prefix) {
+          const _withPrefix = (u) => (typeof u === 'string' && u.startsWith('/') ? _prefix + u : u);
+          manifest.id = _withPrefix(manifest.id || '/');
+          manifest.start_url = _withPrefix(manifest.start_url || '/');
+          manifest.scope = _withPrefix(manifest.scope || '/');
+          for (const icon of manifest.icons || []) icon.src = _withPrefix(icon.src);
+          for (const sc of manifest.shortcuts || []) sc.url = _withPrefix(sc.url);
+          for (const ss of manifest.screenshots || []) ss.src = _withPrefix(ss.src);
         }
         res.send(JSON.stringify(manifest));
       } catch (err) {
@@ -3781,6 +3813,10 @@ class ClaudeCodeWebServer {
     const wsId = uuidv4(); // Unique ID for this WebSocket connection
     const url = new URL(req.url, `ws://localhost`);
     const claudeSessionId = url.searchParams.get('sessionId');
+    // Fleet path-mode: WS upgrades bypass Express middleware, so detect the
+    // /m/<id> prefix from the raw upgrade URL here (same pattern as HTTP).
+    const _fleetPrefixMatch = /^\/m\/[^/?#]+(?=\/|\?|$)/.exec(req.url || '');
+    const _fleetPrefix = _fleetPrefixMatch ? _fleetPrefixMatch[0] : '';
     
     if (this.dev) {
       console.log(`New WebSocket connection: ${wsId}`);
@@ -3794,6 +3830,7 @@ class ClaudeCodeWebServer {
       id: wsId,
       ws,
       claudeSessionId: null,
+      fleetPrefix: _fleetPrefix,
       created: new Date(),
       secure: !!req.connection.encrypted,
       capabilities: new Set(),
@@ -4425,7 +4462,7 @@ class ClaudeCodeWebServer {
         sessionId: claudeSessionId,
         key: review.key,
         file: review.file,
-        viewUrl: `/api/artifact/${encodeURIComponent(claudeSessionId)}/view`,
+        viewUrl: `${(wsInfo && wsInfo.fleetPrefix) || ''}/api/artifact/${encodeURIComponent(claudeSessionId)}/view`,
       });
     } else if (review && review.status === 'ended') {
       this.sendToWebSocket(wsInfo.ws, {

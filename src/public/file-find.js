@@ -36,7 +36,7 @@
   // Constants
   // ---------------------------------------------------------------------------
 
-  var FIND_ENDPOINT = '/api/files/find';
+  var FIND_ENDPOINT = (typeof withBase === 'function' ? withBase : function (p) { return p; })('/api/files/find');
   var DEFAULT_DEBOUNCE_MS = 120;
   var DEFAULT_LIMIT = 50;
   var MAX_RENDERED = 200;        // server caps at 200; mirror it client-side.

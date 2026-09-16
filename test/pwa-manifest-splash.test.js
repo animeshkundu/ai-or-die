@@ -72,12 +72,14 @@ describe('PWA splash + manifest hygiene', function () {
   it('splash image files exist and are real PNGs', async function () {
     const hrefs = (html.match(/rel="apple-touch-startup-image"\s+href="([^"]+)"/g) || [])
       .map(s => s.match(/href="([^"]+)"/)[1]);
-    // Fallback: also capture href-before-media ordering.
+    // Fallback: also capture href-before-media ordering (absolute or relative).
     const allHrefs = new Set(hrefs);
-    (html.match(/href="(\/splash\/[^"]+)"/g) || []).forEach(s => allHrefs.add(s.match(/href="([^"]+)"/)[1]));
+    (html.match(/href="((?:\/)?splash\/[^"]+)"/g) || []).forEach(s => allHrefs.add(s.match(/href="([^"]+)"/)[1]));
     assert.ok(allHrefs.size >= 4, `expected >=4 splash hrefs, found ${allHrefs.size}`);
     for (const href of allHrefs) {
-      const { res, buf } = await get(href);
+      // Relative hrefs resolve against the served document root.
+      const p = href.startsWith('/') ? href : `/${href}`;
+      const { res, buf } = await get(p);
       assert.strictEqual(res.status, 200, `status for ${href}`);
       assert.deepStrictEqual([...buf.slice(0, 4)], [0x89, 0x50, 0x4e, 0x47], `PNG signature for ${href}`);
     }

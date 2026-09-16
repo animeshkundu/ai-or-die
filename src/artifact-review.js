@@ -533,6 +533,8 @@ function isMarkdownFile(file) {
 function markdownArtifactShell(source, options) {
   options = options || {};
   const title = options.title ? String(options.title) : 'Markdown artifact';
+  // Fleet path-mode: absolute script URL must carry the request prefix.
+  const prefix = options.prefix && typeof options.prefix === 'string' ? options.prefix : '';
   const src = source == null ? '' : String(source);
   return [
     '<!doctype html>',
@@ -570,7 +572,7 @@ function markdownArtifactShell(source, options) {
     '<body>',
     '<main class="md-reading-column"><div id="md-artifact-root" class="fb-md-loading">Rendering markdown...</div></main>',
     '<script type="application/json" id="md-artifact-source">' + safeJson(src) + '</script>',
-    '<script src="/markdown-render.js"></script>',
+    '<script src="' + escapeAttr(prefix + '/markdown-render.js') + '"></script>',
     '<script>(function(){',
     'function boot(){',
     'var root=document.getElementById("md-artifact-root");',
@@ -725,8 +727,12 @@ function tokenQuery(req) {
   return '?token=' + encodeURIComponent(token);
 }
 
+function fleetPrefix(req) {
+  return (req && typeof req._fleetPrefix === 'string') ? req._fleetPrefix : '';
+}
+
 function artifactPath(sessionId, suffix, req) {
-  return '/api/artifact/' + encodeURIComponent(sessionId) + suffix + tokenQuery(req);
+  return fleetPrefix(req) + '/api/artifact/' + encodeURIComponent(sessionId) + suffix + tokenQuery(req);
 }
 
 function artifactAssetBase(sessionId, assetToken) {
@@ -735,6 +741,12 @@ function artifactAssetBase(sessionId, assetToken) {
     return base + '_auth/' + encodeURIComponent(assetToken) + '/';
   }
   return base;
+}
+
+// Prefix-aware variant for <base href> in served artifact HTML: the base tag
+// resolves relative asset URLs, so it must carry the fleet prefix.
+function artifactAssetBaseForReq(sessionId, assetToken, req) {
+  return fleetPrefix(req) + artifactAssetBase(sessionId, assetToken);
 }
 
 function safeEqualString(a, b) {
@@ -945,7 +957,7 @@ function createArtifactReviewRouter(options) {
       // renderer shell (never shown as raw bytes). HTML and everything else keep
       // the raw path. Both then flow through injectLavishSdk so annotation works.
       html = isMarkdownFile(validation.path)
-        ? markdownArtifactShell(raw, { title: path.basename(validation.path) })
+        ? markdownArtifactShell(raw, { title: path.basename(validation.path), prefix: fleetPrefix(req) })
         : raw;
     } catch (err) {
       if (err && err.code === 'ENOENT') return res.status(404).json({ error: 'file not found' });
@@ -956,7 +968,7 @@ function createArtifactReviewRouter(options) {
     const injected = injectLavishSdk(html, {
       sessionId,
       key: review.key,
-      assetBase: artifactAssetBase(sessionId, assetToken),
+      assetBase: artifactAssetBaseForReq(sessionId, assetToken, req),
       assetToken,
       sdkSrc: artifactPath(sessionId, '/sdk.js', req),
       eventsUrl: artifactPath(sessionId, '/events', req),

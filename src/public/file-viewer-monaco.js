@@ -22,7 +22,7 @@
   // and update both this constant AND the ALLOWED_BASES list in
   // src/public/vendor/monaco-worker-shim.js.
   var MONACO_LOADER_INTEGRITY = 'sha384-pHG02SG8pId94Np3AbPmBEJ1yPqaH0IkJGLSNGXYmuGhkazT8Lr/57WYpbkGjJtu';
-  var WORKER_SHIM_PATH = '/vendor/monaco-worker-shim.js';
+  var WORKER_SHIM_PATH = (typeof withBase === 'function' ? withBase : function (p) { return p; })('/vendor/monaco-worker-shim.js');
   var LOADER_TIMEOUT_MS = 15000; // CDN cold-start can be slow; matches Ace's old budget.
 
   // Workers Monaco actually creates per the upstream worker manifest, plus

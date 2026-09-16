@@ -1,3 +1,17 @@
+// Fleet path-mode: runtime serving prefix ('' at root, '/m/<id>' under fleet).
+// fleet-base.js loads first; fall back to identity when absent (Node tests).
+function apiPath(p) {
+    if (typeof withBase === 'function') return withBase(p);
+    return p;
+}
+function tokenStorageKey() {
+    if (typeof scopedAuthKey === 'function') return scopedAuthKey('cc-web-token');
+    return 'cc-web-token';
+}
+function wsBasePath() {
+    if (typeof getBasePrefix === 'function') return getBasePrefix();
+    return '';
+}
 class ClaudeCodeWebInterface {
     constructor() {
         this.terminal = null;
@@ -222,13 +236,13 @@ class ClaudeCodeWebInterface {
                 ...(options.headers || {})
             }
         };
-        const response = await fetch(url, mergedOptions);
-        
+        const response = await fetch(apiPath(url), mergedOptions);
+
         // If we get a 401, the token might be invalid or missing
         if (response.status === 401 && window.authManager.authRequired) {
             // Clear any invalid token
             window.authManager.token = null;
-            sessionStorage.removeItem('cc-web-token');
+            sessionStorage.removeItem(tokenStorageKey());
             // Show login prompt
             window.authManager.showLoginPrompt();
         }
@@ -2407,7 +2421,7 @@ class ClaudeCodeWebInterface {
         return new Promise((resolve, reject) => {
             this._resetFlowControlState();
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-            let wsUrl = `${protocol}//${location.host}`;
+            let wsUrl = `${protocol}//${location.host}${wsBasePath()}/`;
             if (sessionId) {
                 wsUrl += `?sessionId=${sessionId}`;
             }
@@ -3732,7 +3746,7 @@ class ClaudeCodeWebInterface {
                     this._pendingInstallToolId = null;
                     this.refreshConfig().then(() => {
                         // Auto-recheck the specific tool that was being installed
-                        fetch(`/api/tools/${pendingTool}/recheck`, { method: 'POST' })
+                        fetch(apiPath(`/api/tools/${pendingTool}/recheck`), { method: 'POST' })
                             .then(r => r.json())
                             .then(() => this.refreshConfig())
                             .catch(() => {});
@@ -4414,7 +4428,7 @@ class ClaudeCodeWebInterface {
                 verifyBtn.textContent = 'Checking...';
                 verifyBtn.disabled = true;
                 try {
-                    const resp = await fetch(`/api/tools/${toolId}/recheck`, { method: 'POST' });
+                    const resp = await fetch(apiPath(`/api/tools/${toolId}/recheck`), { method: 'POST' });
                     const result = await resp.json();
                     if (result.available) {
                         verifyBtn.textContent = 'Installed!';
@@ -7135,7 +7149,7 @@ class ClaudeCodeWebInterface {
         // Bail if this poll chain was superseded by a newer start/stop
         if (generation !== this._planPollGeneration) return;
         try {
-            const fetchFn = this.authFetch ? this.authFetch.bind(this) : fetch;
+            const fetchFn = this.authFetch ? this.authFetch.bind(this) : (u, o) => fetch(apiPath(u), o);
             const url = this._planPollScope === 'global'
                 ? '/api/plans/content?name=' + encodeURIComponent(this._planPollPath) + '&scope=global'
                 : '/api/files/stat?path=' + encodeURIComponent(this._planPollPath);

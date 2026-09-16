@@ -1,5 +1,19 @@
 // Authentication module for ai-or-die
 
+// Fleet path-mode: resolve the serving prefix at runtime (root '' standalone,
+// '/m/<id>' under fleet). fleet-base.js loads before this file in the browser;
+// under Node (unit tests) the helpers are absent and paths stay root-absolute.
+function apiPath(p) {
+    if (typeof withBase === 'function') return withBase(p);
+    if (typeof window !== 'undefined' && window.FleetBase) return window.FleetBase.withBase(p);
+    return p;
+}
+function tokenKey() {
+    if (typeof scopedAuthKey === 'function') return scopedAuthKey('cc-web-token');
+    if (typeof window !== 'undefined' && window.FleetBase) return window.FleetBase.scopedKey('cc-web-token');
+    return 'cc-web-token';
+}
+
 // ---------------------------------------------------------------------------
 // Module-level helpers — exported on `window` AND on `module.exports` (for
 // Node-side unit tests). Pure functions where possible so the URL-token
@@ -69,14 +83,14 @@ function extractAndStripUrlToken() {
 class AuthManager {
     constructor() {
         this.token = (typeof sessionStorage !== 'undefined')
-          ? sessionStorage.getItem('cc-web-token')
+          ? sessionStorage.getItem(tokenKey())
           : null;
         this.authRequired = false;
     }
 
     async checkAuthStatus() {
         try {
-            const response = await fetch('/auth-status');
+            const response = await fetch(apiPath('/auth-status'));
             if (!response.ok) {
                 throw new Error('Failed to check auth status');
             }
@@ -93,7 +107,7 @@ class AuthManager {
 
     async verifyToken(token) {
         try {
-            const response = await fetch('/auth-verify', {
+            const response = await fetch(apiPath('/auth-verify'), {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -105,7 +119,7 @@ class AuthManager {
             if (data.valid) {
                 this.token = token;
                 if (typeof sessionStorage !== 'undefined') {
-                    sessionStorage.setItem('cc-web-token', token);
+                    sessionStorage.setItem(tokenKey(), token);
                 }
             }
             return data.valid;
@@ -312,7 +326,7 @@ class AuthManager {
 
     logout() {
         this.token = null;
-        sessionStorage.removeItem('cc-web-token');
+        sessionStorage.removeItem(tokenKey());
         window.location.reload();
     }
 

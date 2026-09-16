@@ -184,7 +184,7 @@ class FeedbackManager {
           // path. /docs is mounted in src/server.js (express.static
           // on the repo's docs/ tree). Anchor matches the doc's
           // "Live CWD tracking (OSC 7)" §header slug.
-          try { window.open('/docs/specs/file-browser.md#live-cwd-tracking-osc-7', '_blank', 'noopener'); }
+          try { window.open((typeof withBase === 'function' ? withBase('/docs/specs/file-browser.md') : '/docs/specs/file-browser.md') + '#live-cwd-tracking-osc-7', '_blank', 'noopener'); }
           catch (_) { /* popup blocked — user can copy URL from console */ }
         },
       };

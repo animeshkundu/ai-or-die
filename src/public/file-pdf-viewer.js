@@ -33,8 +33,8 @@
   if (typeof window === 'undefined') return;
 
   // Path constants — loaded lazily, served same-origin.
-  var PDFJS_URL = '/vendor/pdfjs/pdf.min.mjs';
-  var PDFJS_WORKER_URL = '/vendor/pdfjs/pdf.worker.min.mjs';
+  var PDFJS_URL = (typeof withBase === 'function' ? withBase : function (p) { return p; })('/vendor/pdfjs/pdf.min.mjs');
+  var PDFJS_WORKER_URL = (typeof withBase === 'function' ? withBase : function (p) { return p; })('/vendor/pdfjs/pdf.worker.min.mjs');
 
   // -------------------------------------------------------------------------
   // CSP-safe dynamic importer (peer-review MEDIUM-1 on 913bfdd)
