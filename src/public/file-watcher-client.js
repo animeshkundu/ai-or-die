@@ -53,9 +53,14 @@
   // Constants
   // ---------------------------------------------------------------------------
 
-  var WATCH_ENDPOINT = '/api/files/watch';
-  var SUBSCRIBE_ENDPOINT = '/api/files/watch/subscribe';
-  var UNSUBSCRIBE_ENDPOINT = '/api/files/watch/unsubscribe';
+  // Fleet path-mode: prefix endpoints at load (fleet-base.js loads first;
+  // identity fallback under Node tests).
+  var _bp = (typeof withBase === 'function') ? withBase : function (p) { return p; };
+  var _tokenKey = (typeof scopedAuthKey === 'function') ? scopedAuthKey('cc-web-token') : 'cc-web-token';
+
+  var WATCH_ENDPOINT = _bp('/api/files/watch');
+  var SUBSCRIBE_ENDPOINT = _bp('/api/files/watch/subscribe');
+  var UNSUBSCRIBE_ENDPOINT = _bp('/api/files/watch/unsubscribe');
   var INITIAL_RECONNECT_MS = 1000;
   var MAX_RECONNECT_MS = 30000;
 
@@ -156,7 +161,7 @@
       : function () {
           if (window.authManager && window.authManager.token) return window.authManager.token;
           if (window.auth && window.auth.token) return window.auth.token;
-          try { return window.sessionStorage && window.sessionStorage.getItem('cc-web-token'); }
+          try { return window.sessionStorage && window.sessionStorage.getItem(_tokenKey); }
           catch (_) { return null; }
         };
     this.getSessionId = typeof options.getSessionId === 'function'

@@ -4,6 +4,12 @@ function _esc(str) {
     return d.innerHTML;
 }
 
+// Fleet path-mode shim (fleet-base.js loads first in browser; identity fallback under Node).
+function _apiPath(p) {
+    if (typeof withBase === 'function') return withBase(p);
+    return p;
+}
+
 class SessionTabManager {
     constructor(claudeInterface) {
         this.claudeInterface = claudeInterface;
@@ -592,7 +598,7 @@ class SessionTabManager {
         try {
             console.log('[SessionManager.loadSessions] Fetching sessions from server...');
             const authHeaders = window.authManager ? window.authManager.getAuthHeaders() : {};
-            const response = await fetch('/api/sessions/list', {
+            const response = await fetch(_apiPath('/api/sessions/list'), {
                 headers: authHeaders
             });
             const data = await response.json();
@@ -982,7 +988,7 @@ class SessionTabManager {
         if (!skipServerRequest) {
             this._deletingSessionIds.add(sessionId);
             const authHeaders = window.authManager ? window.authManager.getAuthHeaders() : {};
-            fetch(`/api/sessions/${sessionId}`, {
+            fetch(_apiPath(`/api/sessions/${sessionId}`), {
                 method: 'DELETE',
                 headers: authHeaders
             })

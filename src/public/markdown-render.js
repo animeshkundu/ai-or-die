@@ -33,8 +33,8 @@
   // Use absolute paths so the renderer works correctly when the app is
   // reverse-proxied at a sub-path (path-relative `vendor/...` would resolve
   // against the current document URL — wrong inside e.g. /files/notes/).
-  var MARKED_SCRIPT = '/vendor/marked.min.js';
-  var PURIFY_SCRIPT = '/vendor/purify.min.js';
+  var MARKED_SCRIPT = (typeof withBase === 'function' ? withBase : function (p) { return p; })('/vendor/marked.min.js');
+  var PURIFY_SCRIPT = (typeof withBase === 'function' ? withBase : function (p) { return p; })('/vendor/purify.min.js');
 
   // Pin Mermaid / KaTeX versions to keep CDN behaviour reproducible. Only
   // ever loaded if the document actually uses the feature.
@@ -218,7 +218,7 @@
             // so the Bearer token is threaded via `?token=` (auth
             // middleware accepts both). Without this, embedded markdown
             // images 401 in --auth mode.
-            var imgUrl = '/api/files/download?path=' + encodeURIComponent(resolvedImg) + '&inline=1';
+            var imgUrl = (typeof withBase === 'function' ? withBase('/api/files/download') : '/api/files/download') + '?path=' + encodeURIComponent(resolvedImg) + '&inline=1';
             if (typeof window !== 'undefined' && window.authManager &&
                 typeof window.authManager.appendAuthToUrl === 'function') {
               imgUrl = window.authManager.appendAuthToUrl(imgUrl);

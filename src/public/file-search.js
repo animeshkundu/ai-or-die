@@ -33,7 +33,7 @@
   // Constants
   // ---------------------------------------------------------------------------
 
-  var SEARCH_ENDPOINT = '/api/search';
+  var SEARCH_ENDPOINT = (typeof withBase === 'function' ? withBase : function (p) { return p; })('/api/search');
   var DEFAULT_DEBOUNCE_MS = 200;
   var MAX_RENDERED_MATCHES = 500;
   var FLUSH_INTERVAL_MS = 64;       // batch DOM appends ~16/frame

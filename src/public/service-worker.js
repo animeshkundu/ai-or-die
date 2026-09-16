@@ -1,65 +1,81 @@
 // Bump this version when urlsToCache entries are added or removed.
 // Content changes to existing files are handled by the network-first fetch strategy.
-const CACHE_NAME = 'ai-or-die-v14';
+const CACHE_NAME = 'ai-or-die-v15';
+// Fleet path-mode: the worker is registered with scope './', so it serves
+// either root (/) or a fleet prefix (/m/<id>/). Derive the base from the
+// worker's own location and resolve every precache entry against it —
+// root-absolute URLs would escape the prefix and break fleet installs.
+function swBase() {
+  try {
+    const u = new URL(self.location.href);
+    const m = /^\/m\/[^/?#]+/.exec(u.pathname);
+    return m ? m[0] : '';
+  } catch (_e) {
+    return '';
+  }
+}
+const SW_SCOPE_BASE = swBase(); // reserved: scope root for future absolute needs
+// Precache entries are worker-relative (no leading slash) so they resolve
+// under the registration scope in both root and /m/<id>/ modes.
 const urlsToCache = [
-  '/',
-  '/index.html',
-  '/fonts.css',
+  './',
+  './index.html',
+  './fonts.css',
   // Only pre-cache the default font (MesloLGS). Other Nerd Font families
   // are cached on-demand via the network-first fetch handler when selected.
-  '/fonts/MesloLGSNerdFont-Regular.woff2',
-  '/fonts/MesloLGSNerdFont-Bold.woff2',
-  '/fonts/MesloLGSNerdFont-Italic.woff2',
-  '/fonts/MesloLGSNerdFont-BoldItalic.woff2',
-  '/tokens.css',
-  '/base.css',
-  '/components/tabs.css',
-  '/components/terminal.css',
-  '/components/buttons.css',
-  '/components/modals.css',
-  '/components/controls.css',
-  '/components/cards.css',
-  '/components/menus.css',
-  '/components/notifications.css',
-  '/components/bottom-nav.css',
-  '/mobile.css',
-  '/style.css',
-  '/app.js',
-  '/app-identity.js',
-  '/command-palette.js',
-  '/clipboard-handler.js',
-  '/session-manager.js',
-  '/plan-detector.js',
-  '/splits.js',
-  '/icons.js',
-  '/components/extra-keys.css',
-  '/components/file-browser.css',
-  '/components/banner-base.css',
-  '/components/vscode-tunnel.css',
-  '/components/feedback.css',
-  '/components/voice-input.css',
-  '/components/input-overlay.css',
-  '/components/sticky-note.css',
-  '/components/artifact-panel.css',
-  '/components/safe-area.css',
-  '/extra-keys.js',
-  '/key-encoder.js',
-  '/keys-panel.js',
-  '/terminal-copy.js',
-  '/components/keys-panel.css',
-  '/file-browser.js',
-  '/file-editor.js',
-  '/voice-handler.js',
-  '/voice-frame.js',
-  '/voice-processor.js',
-  '/viewport-regime.js',
-  '/fit-coordinator.js',
-  '/terminal-geometry.js',
-  '/terminal-presentation.js',
-  '/image-handler.js',
-  '/input-overlay.js',
-  '/feedback-manager.js',
-  '/terminal-wheel.js'
+  './fonts/MesloLGSNerdFont-Regular.woff2',
+  './fonts/MesloLGSNerdFont-Bold.woff2',
+  './fonts/MesloLGSNerdFont-Italic.woff2',
+  './fonts/MesloLGSNerdFont-BoldItalic.woff2',
+  './tokens.css',
+  './base.css',
+  './components/tabs.css',
+  './components/terminal.css',
+  './components/buttons.css',
+  './components/modals.css',
+  './components/controls.css',
+  './components/cards.css',
+  './components/menus.css',
+  './components/notifications.css',
+  './components/bottom-nav.css',
+  './mobile.css',
+  './style.css',
+  './app.js',
+  './app-identity.js',
+  './command-palette.js',
+  './clipboard-handler.js',
+  './session-manager.js',
+  './plan-detector.js',
+  './splits.js',
+  './icons.js',
+  './components/extra-keys.css',
+  './components/file-browser.css',
+  './components/banner-base.css',
+  './components/vscode-tunnel.css',
+  './components/feedback.css',
+  './components/voice-input.css',
+  './components/input-overlay.css',
+  './components/sticky-note.css',
+  './components/artifact-panel.css',
+  './components/safe-area.css',
+  './extra-keys.js',
+  './key-encoder.js',
+  './keys-panel.js',
+  './terminal-copy.js',
+  './components/keys-panel.css',
+  './file-browser.js',
+  './file-editor.js',
+  './voice-handler.js',
+  './voice-frame.js',
+  './voice-processor.js',
+  './viewport-regime.js',
+  './fit-coordinator.js',
+  './terminal-geometry.js',
+  './terminal-presentation.js',
+  './image-handler.js',
+  './input-overlay.js',
+  './feedback-manager.js',
+  './terminal-wheel.js'
   // xterm.js is self-hosted under /vendor/xterm/ (served locally, fast) but is
   // intentionally NOT precached on install: ~900KB of addons would bloat the
   // install step (it churns on every fresh page load, and is pathologically slow
@@ -113,11 +129,13 @@ self.addEventListener('fetch', event => {
 
   // For API calls and WebSocket connections, always use network. The PWA
   // manifest is also network-only: it is built per-machine on the server and
-  // must never be served stale from cache.
-  if (url.pathname.startsWith('/api/') ||
+  // must never be served stale from cache. Paths are matched suffix-style so
+  // both root (/) and fleet (/m/<id>/) modes bypass correctly.
+  const _apiRe = /(^|\/)api\//;
+  if (_apiRe.test(url.pathname) ||
       url.pathname.startsWith('/ws') ||
-      url.pathname === '/auth-status' ||
-      url.pathname === '/manifest.json' ||
+      url.pathname.endsWith('/auth-status') ||
+      url.pathname.endsWith('/manifest.json') ||
       request.url.includes('socket.io')) {
     event.respondWith(
       fetch(request)
@@ -176,7 +194,7 @@ self.addEventListener('fetch', event => {
             }
             // If not in cache and offline, return offline page for navigation requests
             if (request.mode === 'navigate') {
-              return caches.match('/index.html');
+              return caches.match(new URL('./index.html', self.location.href).href);
             }
             // Return 404 for other requests
             return new Response('Resource not available offline', { status: 404 });
@@ -212,9 +230,10 @@ self.addEventListener('notificationclick', event => {
             return;
           }
         }
-        // No existing window — open a new one
+        // No existing window — open a new one (scope-relative: works at
+        // root and under a fleet /m/<id>/ prefix).
         if (clients.openWindow) {
-          return clients.openWindow('/');
+          return clients.openWindow(new URL('./', self.location.href).href);
         }
       })
   );

@@ -412,7 +412,8 @@
 
     // ---- token / url helpers (always the CLIENT's own token) --------------
     _authUrl(suffix, sessionId) {
-      const base = '/api/artifact/' + encodeURIComponent(sessionId) + suffix;
+      const raw = '/api/artifact/' + encodeURIComponent(sessionId) + suffix;
+      const base = (typeof withBase === 'function') ? withBase(raw) : raw;
       const am = window.authManager;
       return am && typeof am.appendAuthToUrl === 'function' ? am.appendAuthToUrl(base) : base;
     }

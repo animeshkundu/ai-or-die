@@ -19,25 +19,25 @@
     <!-- crossorigin=use-credentials: send the session cookie with the manifest (and its icon)
          fetches so they are not redirected to an auth page behind a credentialed proxy/tunnel
          (e.g. Microsoft devtunnel), which otherwise 404s the manifest and breaks installability. -->
-    <link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
-    
+    <link rel="manifest" href="manifest.json" crossorigin="use-credentials">
+
     <!-- Icons for various platforms -->
-    <link rel="icon" type="image/png" sizes="32x32" href="/icon-32.png">
-    <link rel="icon" type="image/png" sizes="16x16" href="/icon-16.png">
-    <link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="icon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="icon-16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="icon-180.png">
     <!-- iOS PWA splash screens (apple-touch-startup-image). Device-gated by
          media query. iPhone 16 (393x852 @3x), iPad gen 11 (820x1180 @2x).
          Regenerate with: node scripts/gen-splash.js  (see ADR-0037) -->
-    <link rel="apple-touch-startup-image" href="/splash/iphone16-portrait.png"
+    <link rel="apple-touch-startup-image" href="splash/iphone16-portrait.png"
           media="screen and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)">
-    <link rel="apple-touch-startup-image" href="/splash/iphone16-landscape.png"
+    <link rel="apple-touch-startup-image" href="splash/iphone16-landscape.png"
           media="screen and (device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: landscape)">
-    <link rel="apple-touch-startup-image" href="/splash/ipad11-portrait.png"
+    <link rel="apple-touch-startup-image" href="splash/ipad11-portrait.png"
           media="screen and (device-width: 820px) and (device-height: 1180px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
-    <link rel="apple-touch-startup-image" href="/splash/ipad11-landscape.png"
+    <link rel="apple-touch-startup-image" href="splash/ipad11-landscape.png"
           media="screen and (device-width: 820px) and (device-height: 1180px) and (-webkit-device-pixel-ratio: 2) and (orientation: landscape)">
     <meta name="msapplication-TileColor" content="#161b22">
-    <meta name="msapplication-TileImage" content="/icon-144.png">
+    <meta name="msapplication-TileImage" content="icon-144.png">
     
     <!-- Apply saved theme early to avoid flash -->
     <script>
@@ -111,14 +111,14 @@
          Versions: xterm 6.0.0, addon-fit 0.11.0, addon-web-links 0.12.0,
          addon-search 0.16.0, addon-unicode11 0.9.0, addon-webgl 0.19.0,
          addon-serialize 0.14.0. -->
-    <script src="/vendor/xterm/xterm.js"></script>
-    <script src="/vendor/xterm/addon-fit.js"></script>
-    <script src="/vendor/xterm/addon-web-links.js"></script>
-    <script src="/vendor/xterm/addon-search.js"></script>
-    <script src="/vendor/xterm/addon-unicode11.js"></script>
-    <script src="/vendor/xterm/addon-webgl.js"></script>
-    <script src="/vendor/xterm/addon-serialize.js"></script>
-    <link rel="stylesheet" href="/vendor/xterm/xterm.css" />
+    <script src="vendor/xterm/xterm.js"></script>
+    <script src="vendor/xterm/addon-fit.js"></script>
+    <script src="vendor/xterm/addon-web-links.js"></script>
+    <script src="vendor/xterm/addon-search.js"></script>
+    <script src="vendor/xterm/addon-unicode11.js"></script>
+    <script src="vendor/xterm/addon-webgl.js"></script>
+    <script src="vendor/xterm/addon-serialize.js"></script>
+    <link rel="stylesheet" href="vendor/xterm/xterm.css" />
     <!-- Monaco editor is loaded lazily on first file preview/editor open via
          file-viewer-monaco.js (see ADR-0016). Preconnect above warms the
          CDN handshake; we don't preload loader.js to avoid charging users
@@ -868,6 +868,9 @@
 
 
     <script type="module" src="https://unpkg.com/ninja-keys?module"></script>
+    <!-- Fleet path-mode base helper: MUST load before every other app script
+         (auth.js onwards) so withBase()/getBasePrefix() are available. -->
+    <script src="fleet-base.js"></script>
     <script src="app-identity.js"></script>
     <script src="clipboard-handler.js"></script>
     <script src="image-handler.js"></script>
@@ -922,7 +925,9 @@
     <script>
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/service-worker.js')
+                // Relative registration scopes the worker to the serving prefix:
+                // root (/) standalone, or /m/<id>/ under fleet.
+                navigator.serviceWorker.register('service-worker.js', { scope: './' })
                     .then(registration => {
                         console.log('ServiceWorker registration successful:', registration.scope);
                         

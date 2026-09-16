@@ -33,7 +33,7 @@
   // Reuse vendored DOMPurify if present (markdown-render.js loads it on
   // demand); fall back to loading it ourselves so the notebook viewer
   // works even when no markdown file has been previewed yet.
-  var PURIFY_SCRIPT = '/vendor/purify.min.js';
+  var PURIFY_SCRIPT = (typeof withBase === 'function' ? withBase : function (p) { return p; })('/vendor/purify.min.js');
 
   var SANITIZE_CONFIG = {
     USE_PROFILES: { html: true },

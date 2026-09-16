@@ -64,7 +64,7 @@
       try {
         const fetchFn = this.app && this.app.authFetch
           ? (url, opts) => this.app.authFetch(url, opts)
-          : (url, opts) => fetch(url, opts);
+          : (url, opts) => fetch((typeof withBase === 'function' ? withBase(url) : url), opts);
 
         await fetchFn('/api/tunnel/restart', { method: 'POST' });
         // Server responds 202 immediately; tunnel status updates arrive via WS
@@ -137,7 +137,7 @@
       try {
         const fetchFn = this.app && this.app.authFetch
           ? (url, opts) => this.app.authFetch(url, opts)
-          : (url, opts) => fetch(url, opts);
+          : (url, opts) => fetch((typeof withBase === 'function' ? withBase(url) : url), opts);
 
         const res = await fetchFn('/api/tunnel/status');
         if (res.ok) {

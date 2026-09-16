@@ -329,7 +329,8 @@ class Split {
 
     async connect(sessionId) {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        let wsUrl = `${protocol}//${location.host}?sessionId=${encodeURIComponent(sessionId)}`;
+        const _base = (typeof getBasePrefix === 'function') ? getBasePrefix() : '';
+        let wsUrl = `${protocol}//${location.host}${_base}/?sessionId=${encodeURIComponent(sessionId)}`;
 
         // Add auth token if needed
         if (window.authManager) {

@@ -42,7 +42,7 @@
   var MAX_FILES_PER_DROP = 10;
   var MAX_PARALLEL_UPLOADS = 4;
   var ATTACHMENTS_DIRNAME = '.claude-attachments';
-  var UPLOAD_ENDPOINT = '/api/files/upload';
+  var UPLOAD_ENDPOINT = (typeof withBase === 'function' ? withBase : function (p) { return p; })('/api/files/upload');
 
   // ---------------------------------------------------------------------------
   // Pure helpers (testable under Node)

@@ -4,6 +4,16 @@
 (function () {
   'use strict';
 
+  // Fleet path-mode shim (fleet-base.js loads first; identity fallback under Node).
+  function _bp(p) {
+    if (typeof withBase === 'function') return withBase(p);
+    return p;
+  }
+  function _tokenKey() {
+    if (typeof scopedAuthKey === 'function') return scopedAuthKey('cc-web-token');
+    return 'cc-web-token';
+  }
+
   // ---------------------------------------------------------------------------
   // Utility functions (shared, testable)
   // ---------------------------------------------------------------------------
@@ -340,7 +350,7 @@
   }
 
   function loadPanzoom() {
-    return loadVendorScript('/vendor/panzoom.min.js', 'Panzoom');
+    return loadVendorScript(_bp('/vendor/panzoom.min.js'), 'Panzoom');
   }
 
   // ---------------------------------------------------------------------------
@@ -1728,7 +1738,7 @@
           // module-eval-safe (or if this getter becomes call-time-only with
           // a defensive null-check on window.authManager), DRY this out.
           if (window.auth && window.auth.token) return window.auth.token;
-          try { return window.sessionStorage && window.sessionStorage.getItem('cc-web-token'); }
+          try { return window.sessionStorage && window.sessionStorage.getItem(_tokenKey()); }
           catch (_) { return null; }
         },
         getSearchRoot: function () {
@@ -2354,7 +2364,7 @@
       // Same auth thread-through as inline previews: window.open() spawns
       // a fresh navigation that can't carry an Authorization header, so
       // we append `?token=` if --auth is on.
-      var dlUrl = '/api/files/download?path=' + encodeURIComponent(item.path);
+      var dlUrl = _bp('/api/files/download') + '?path=' + encodeURIComponent(item.path);
       if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
         dlUrl = window.authManager.appendAuthToUrl(dlUrl);
       }
@@ -2411,7 +2421,7 @@
     // Inline asset URL — `<img src>` can't carry custom headers, so the
     // Bearer token is threaded via `?token=` (auth middleware accepts both,
     // see appendAuthToUrl). Without this, image preview 401s in --auth mode.
-    var imgUrl = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    var imgUrl = _bp('/api/files/download') + '?path=' + encodeURIComponent(item.path) + '&inline=1';
     if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
       imgUrl = window.authManager.appendAuthToUrl(imgUrl);
     }
@@ -2507,7 +2517,7 @@
     // headers, so the Bearer token is threaded via `?token=` (auth
     // middleware accepts both, see appendAuthToUrl). Without this, PDF
     // preview 401s in --auth mode.
-    var url = '/api/files/download?path=' + encodeURIComponent(item.path) + '&inline=1';
+    var url = _bp('/api/files/download') + '?path=' + encodeURIComponent(item.path) + '&inline=1';
     if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
       url = window.authManager.appendAuthToUrl(url);
     }
@@ -3751,7 +3761,7 @@
           };
           self._downloadItem.onclick = function () {
             self._hideMenu();
-            var dlUrl = '/api/files/download?path=' + encodeURIComponent(filePath);
+            var dlUrl = _bp('/api/files/download') + '?path=' + encodeURIComponent(filePath);
             if (window.authManager && typeof window.authManager.appendAuthToUrl === 'function') {
               dlUrl = window.authManager.appendAuthToUrl(dlUrl);
             }
