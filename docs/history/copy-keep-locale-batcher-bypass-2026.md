@@ -41,6 +41,20 @@ existing Copied toast; denied/missing API → `Terminal app copy blocked`
 error badge. Regression tests: `test/osc52-handler.test.js` (19 passing:
 terminators, splits, queries, caps, bridge success/denied/missing-API).
 
+## Follow-up 2 (2026-09-17): per-TUI verification
+
+- opencode source: unconditional `ESC ] 52 ; c ; <b64> BEL` (+ tmux DCS wrap
+  under TMUX/STY) → parser gained DCS unwrap (doubled-ESC-aware scanner) —
+  a naive lazy regex truncates ST-terminated inners; non-tmux DCS untouched.
+- Copilot CLI: Bubble Tea OSC 52 (`SetClipboard`, copy-on-select) — covered.
+- Claude fullscreen: OSC 52 **only over SSH** → `BaseBridge` now sets
+  loopback `SSH_CONNECTION`/`SSH_CLIENT` when no SSH vars exist (opt-out
+  `AIORDIE_NO_SSH_CLIPBOARD_HINT=1`) so SSH-gated copy takes the bridged path.
+  Pc `p` mapped to system clipboard (no browser primary selection).
+- Tests: osc52 suite grew to 25 (tmux wrap/split/ST-inner/sixel/carry),
+  plus `test/base-bridge-ssh-hint.test.js` (5: set-if-absent, real-SSH wins,
+  explicit-config wins, opt-out, null-safe).
+
 ## Verification
 
 - Targeted mocha suites above; `node scripts/run-control-tests.js`.

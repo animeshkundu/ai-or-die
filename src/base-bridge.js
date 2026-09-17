@@ -45,6 +45,42 @@ function applyLocaleFallback(env) {
   } catch (_) { /* best-effort */ }
   return env;
 }
+
+/**
+ * Remote-clipboard topology hint for PTY children (Claude/Copilot copy fix).
+ *
+ * Claude Code's fullscreen TUI (and similar SSH-gated TUIs) choose their
+ * copy path by setup: native tools locally (pbcopy/wl-copy/xclip/Set-Clipboard),
+ * tmux paste buffer under tmux, and OSC 52 over SSH. ai-or-die sessions are
+ * spawned locally via node-pty, so on a REMOTE host (Codespaces, dev server)
+ * these apps try headless-native tools that fail or set a clipboard the user
+ * can never see — and never emit the OSC 52 our browser bridge forwards.
+ *
+ * From the TUI's perspective its display genuinely IS remote (a browser on
+ * another machine), so advertising SSH topology is honest, not a spoof: it
+ * steers SSH-gated apps onto the in-band OSC 52 path that reaches the user.
+ * opencode is unaffected (it always emits OSC 52); Bubble Tea apps
+ * (Copilot CLI) emit OSC 52 unconditionally for SetClipboard.
+ *
+ * Rules: set SSH_CONNECTION/SSH_CLIENT only when none of SSH_CONNECTION,
+ * SSH_CLIENT, SSH_TTY is already present (real SSH sessions and explicit
+ * user config win), and never when AIORDIE_NO_SSH_CLIPBOARD_HINT=1.
+ * The values are loopback placeholders describing topology, not a real
+ * connection. These vars are informational-only (sshd sets them; nothing
+ * dials out based on them), so outbound ssh/scp/rsync are unaffected.
+ */
+function applySshClipboardHint(env) {
+  try {
+    if (!env || typeof env !== 'object') return env;
+    if (process.env.AIORDIE_NO_SSH_CLIPBOARD_HINT === '1') return env;
+    if (env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY ||
+        process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY) return env;
+    // "clientIP clientPort serverIP serverPort" / "clientIP clientPort serverPort".
+    env.SSH_CONNECTION = '127.0.0.1 22 127.0.0.1 22';
+    env.SSH_CLIENT = '127.0.0.1 22 22';
+  } catch (_) { /* best-effort */ }
+  return env;
+}
 /**
  * Grace window (ms) during which a read EAGAIN with no life-sign yet is treated
  * as a benign transient startup blip and swallowed. After this, a *sustained*
@@ -334,13 +370,13 @@ class BaseBridge {
       // don't override buildArgs (terminal/codex) ignore these.
       const args = this.buildArgs({ sessionId, dangerouslySkipPermissions, permissionMode, agentArgs });
 
-      const env = applyLocaleFallback({
+      const env = applySshClipboardHint(applyLocaleFallback({
         ...process.env,
         TERM: 'xterm-256color',
         FORCE_COLOR: '1',
         COLORTERM: 'truecolor',
         ...((extraEnv && typeof extraEnv === 'object') ? extraEnv : {})
-      });
+      }));
 
       const ptyProcess = spawn(this.command, args, {
         cwd: workingDir,
@@ -938,3 +974,4 @@ module.exports.PTY_WRITE_CHUNK_SIZE = PTY_WRITE_CHUNK_SIZE;
 module.exports.PTY_WRITE_CHUNK_DELAY_MS = PTY_WRITE_CHUNK_DELAY_MS;
 module.exports.MAX_INPUT_QUEUE_DEPTH = MAX_INPUT_QUEUE_DEPTH;
 module.exports.applyLocaleFallback = applyLocaleFallback;
+module.exports.applySshClipboardHint = applySshClipboardHint;

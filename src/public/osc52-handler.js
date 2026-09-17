@@ -11,10 +11,14 @@
 // sequences and forwards them to navigator.clipboard.writeText.
 //
 // Security posture (mirrors mainstream emulators):
-//   - Only Pc `c` (system clipboard) and empty Pc are honored. `p`/`s`
-//     (primary/secondary) are ignored.
+//   - Pc `c` (system clipboard), empty Pc, and Pc `p` (primary selection,
+//     mapped to the system clipboard — browsers have no primary selection)
+//     are honored. `s` and others are ignored.
 //   - Queries (`Pd == ?`) are IGNORED and never answered: replying would
 //     exfiltrate the user's local clipboard to the remote process.
+//   - tmux/screen DCS passthrough wraps (`ESC P tmux ; <inner> ESC \`, with
+//     inner ESCs doubled) are unwrapped before scanning, so copies survive
+//     a multiplexer between the app and the PTY master.
 //   - Payload capped (OSC52_MAX_B64 base64 chars); oversized sequences are
 //     dropped, never written.
 //   - Clipboard write failures (denied permission, insecure http://,
@@ -35,12 +39,52 @@
   // ~384KB decoded text cap per copy; larger copies are almost certainly a
   // runaway or abuse, not a user copy action.
   var OSC52_MAX_B64 = 512 * 1024;
-  // Longest tail retained across chunks awaiting sequence completion.
-  var OSC52_CARRY_MAX = 2048;
+  // Longest tail retained across chunks awaiting sequence completion. Sized
+  // to cover a max-size copy inside tmux DCS wrapping, not just a short
+  // prefix: DCS blocks for large copies legitimately span many chunks.
+  var OSC52_CARRY_MAX = OSC52_MAX_B64 + 1024;
   var B64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
   // A trailing fragment that could still grow into `ESC ] 52 ; ...`.
   var PARTIAL_RE = /^\x1b(\]?(5?(2?(;?([cps]?;?[A-Za-z0-9+/=]*?)?)?)?)?)?$/;
   var COMPLETE_RE = /\x1b\]52;([cps]?);([A-Za-z0-9+/=\s]*|\?)(?:\x07|\x1b\\)/g;
+  // tmux/screen DCS passthrough wrap around an OSC 52 sequence. Inner ESCs
+  // are doubled by the multiplexer and restored on unwrap. Unwrapped with a
+  // small scanner (not a lazy regex) so an ST-terminated inner sequence —
+  // whose doubled `ESC ESC \` contains a fake `ESC \` terminator — cannot
+  // truncate the match early.
+  var TMUX_PFX = '\x1bPtmux;';
+  function unwrapTmuxDcs(buf) {
+    var start = buf.indexOf(TMUX_PFX);
+    if (start === -1) return buf;
+    var out = '';
+    var i = 0;
+    while (true) {
+      start = buf.indexOf(TMUX_PFX, i);
+      if (start === -1) { out += buf.slice(i); break; }
+      out += buf.slice(i, start);
+      var j = start + TMUX_PFX.length;
+      var inner = '';
+      var closed = false;
+      while (j < buf.length) {
+        var ch = buf[j];
+        if (ch === '\x1b') {
+          if (buf[j + 1] === '\x1b') { inner += '\x1b'; j += 2; continue; }
+          if (buf[j + 1] === '\\') { j += 2; closed = true; break; }
+          inner += ch; j += 1; continue; // malformed lone ESC: keep scanning
+        }
+        inner += ch; j += 1;
+      }
+      if (!closed) {
+        // Incomplete wrap (split across chunks): leave the remainder for the
+        // carry logic below; the next push() completes it.
+        out += buf.slice(start);
+        break;
+      }
+      out += inner;
+      i = j;
+    }
+    return out;
+  }
 
   function decodeBase64Utf8(b64) {
     var clean = String(b64).replace(/\s/g, '');
@@ -71,6 +115,11 @@
     if (!text) return out;
     var buf = this._carry + text;
     this._carry = '';
+    // Unwrap tmux/screen DCS passthrough first so a multiplexer between the
+    // app and the PTY master cannot hide the inner OSC 52 sequence.
+    if (buf.indexOf('\x1bP') !== -1) {
+      buf = unwrapTmuxDcs(buf);
+    }
     COMPLETE_RE.lastIndex = 0;
     var m;
     var lastEnd = 0;
@@ -79,13 +128,26 @@
       var pc = m[1];
       var data = m[2];
       if (data === '?') continue; // query: never answer (no exfiltration)
-      if (pc !== 'c' && pc !== '') continue; // only system clipboard
+      // `c`/empty = system clipboard; `p` = primary, mapped onto it
+      // (browsers have no primary selection). `s`/others ignored.
+      if (pc !== 'c' && pc !== '' && pc !== 'p') continue;
       var decoded = decodeBase64Utf8(data);
       if (decoded) out.push(decoded);
     }
     // Retain a possibly-incomplete trailing prefix for the next chunk.
     var rest = buf.slice(lastEnd);
     if (rest) {
+      // Unterminated DCS passthrough (e.g. a large tmux-wrapped copy split
+      // across chunks). Only retained while genuinely incomplete (no ST yet)
+      // so complete sixel/DCS blocks never pin memory.
+      var pIdx = rest.lastIndexOf('\x1bP');
+      if (pIdx !== -1) {
+        var dcsTail = rest.slice(pIdx);
+        if (dcsTail.length <= OSC52_CARRY_MAX && dcsTail.indexOf('\x1b\\') === -1) {
+          this._carry = dcsTail;
+          return out;
+        }
+      }
       var idx = rest.lastIndexOf('\x1b');
       if (idx !== -1) {
         var tail = rest.slice(idx);
@@ -159,6 +221,7 @@
     Osc52Parser: Osc52Parser,
     createOsc52Bridge: createOsc52Bridge,
     decodeBase64Utf8: decodeBase64Utf8,
+    unwrapTmuxDcs: unwrapTmuxDcs,
     OSC52_MAX_B64: OSC52_MAX_B64,
     OSC52_CARRY_MAX: OSC52_CARRY_MAX,
   };

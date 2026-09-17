@@ -5,6 +5,7 @@ const {
   Osc52Parser,
   createOsc52Bridge,
   decodeBase64Utf8,
+  unwrapTmuxDcs,
   OSC52_MAX_B64,
 } = require('../src/public/osc52-handler');
 
@@ -69,9 +70,13 @@ describe('osc52-handler', function () {
       assert.deepStrictEqual(p.push('\x1b]52;c;?\x07'), []);
     });
 
-    it('ignores primary/secondary selections', function () {
+    it('maps primary (p) onto the system clipboard', function () {
       const p = new Osc52Parser();
-      assert.deepStrictEqual(p.push('\x1b]52;p;' + b64('primary') + '\x07'), []);
+      assert.deepStrictEqual(p.push('\x1b]52;p;' + b64('primary') + '\x07'), ['primary']);
+    });
+
+    it('ignores secondary (s) selections', function () {
+      const p = new Osc52Parser();
       assert.deepStrictEqual(p.push('\x1b]52;s;' + b64('secondary') + '\x07'), []);
     });
 
@@ -107,6 +112,46 @@ describe('osc52-handler', function () {
       p.reset();
       assert.strictEqual(p._carry, '');
       assert.deepStrictEqual(p.push('rest\x07'), []);
+    });
+  });
+
+  describe('tmux DCS passthrough', function () {
+    // opencode emits this exact shape under TMUX/STY (BEL inner).
+    function tmuxWrap(innerOsc52) {
+      return '\x1bPtmux;' + innerOsc52.replace(/\x1b/g, '\x1b\x1b') + '\x1b\\';
+    }
+
+    it('unwrapTmuxDcs restores a BEL-terminated inner sequence', function () {
+      const inner = '\x1b]52;c;' + b64('via-tmux') + '\x07';
+      assert.strictEqual(unwrapTmuxDcs(tmuxWrap(inner)), inner);
+    });
+
+    it('extracts a tmux-wrapped copy', function () {
+      const p = new Osc52Parser();
+      const out = p.push('noise' + tmuxWrap('\x1b]52;c;' + b64('wrapped-copy') + '\x07') + 'tail');
+      assert.deepStrictEqual(out, ['wrapped-copy']);
+    });
+
+    it('extracts a tmux-wrapped ST-terminated inner sequence', function () {
+      const p = new Osc52Parser();
+      const out = p.push(tmuxWrap('\x1b]52;c;' + b64('st-inner') + '\x1b\\'));
+      assert.deepStrictEqual(out, ['st-inner']);
+    });
+
+    it('reassembles a tmux wrap split across chunks', function () {
+      const p = new Osc52Parser();
+      const seq = tmuxWrap('\x1b]52;c;' + b64('split-wrap-copy-payload') + '\x07');
+      let out = [];
+      for (let i = 0; i < seq.length; i += 7) out = out.concat(p.push(seq.slice(i, i + 7)));
+      assert.deepStrictEqual(out, ['split-wrap-copy-payload']);
+    });
+
+    it('leaves non-tmux DCS (e.g. sixel) untouched and carries nothing', function () {
+      const p = new Osc52Parser();
+      const sixel = '\x1bPq"1;1;100;100#0;2;0;0;0#1;2;100;100;100-@\x1b\\';
+      assert.deepStrictEqual(p.push(sixel), []);
+      assert.strictEqual(p._carry, '');
+      assert.strictEqual(unwrapTmuxDcs(sixel), sixel);
     });
   });
 

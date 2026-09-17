@@ -638,7 +638,18 @@ Mouse-reporting TUIs (opencode, etc. enabling SGR 1000/1002/1006) route drags to
 
 A fullscreen TUI on the remote host copies via OSC 52 (`ESC ] 52 ; c ; <base64> BEL`), which xterm.js ignores and which would otherwise set only the *host* clipboard — useless when the user sits at a different machine's browser. `src/public/osc52-handler.js` snoops the live decoded PTY output stream and forwards set-clipboard sequences to `navigator.clipboard.writeText`, so the app's "copied to clipboard" lands on the user's machine. Wired in `app.js:_flushWritesChunk` (main pane) and `splits.js:_flushOutput` (split panes); join-replay bytes are deliberately not bridged.
 
-Security posture: only Pc `c`/empty honored; queries (`?`) never answered (no local-clipboard exfiltration); payload capped at 512KiB base64; failures surface via `showClipboardError`, never throw into the render path.
+Security posture: only Pc `c`/empty/`p` honored (`p` mapped to the system clipboard — browsers have no primary selection); queries (`?`) never answered (no local-clipboard exfiltration); tmux/screen DCS passthrough unwrapped; payload capped at 512KiB base64; failures surface via `showClipboardError`, never throw into the render path.
+
+Per-app copy matrix (verified against upstream sources, 2026-09-17):
+
+| App | Copy mechanism | Bridge path | Notes |
+|-----|---------------|-------------|-------|
+| opencode | Always emits `OSC 52;c;<b64>BEL` on copy when TTY, plus native host tools; tmux/screen wraps in DCS passthrough | ✅ plain + DCS-wrapped forms parsed | Native tools may also set the unreachable host clipboard; harmless |
+| Copilot CLI (Bubble Tea) | `SetClipboard` / copy-on-select via OSC 52 writes (v1.0.20+) | ✅ terminator-agnostic (BEL/ST) | Shift+drag bypass still works for xterm selection |
+| Claude fullscreen TUI | Local: native tools; tmux: paste buffer; **SSH: OSC 52**; screen: clipboard for long selections | ✅ via SSH hint below | Toast names the path used — expect the SSH/OSC 52 path |
+| Generic (nvim `unnamedplus`, `cb`-style scripts, tmux `copy-pipe`) | OSC 52 | ✅ | |
+
+SSH topology hint: `BaseBridge.startSession` sets `SSH_CONNECTION`/`SSH_CLIENT` (loopback placeholders) when none of `SSH_CONNECTION`/`SSH_CLIENT`/`SSH_TTY` is present, unless `AIORDIE_NO_SSH_CLIPBOARD_HINT=1`. The TUI display genuinely is remote, so this steers SSH-gated apps (Claude) onto the in-band OSC 52 path the bridge forwards. Informational-only vars — outbound ssh/scp/rsync unaffected; real SSH sessions and explicit config always win. Paste direction is unchanged: OSC 52 queries are never answered; use Ctrl+V / menu paste.
 
 ### Utility Functions
 

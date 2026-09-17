@@ -36,6 +36,35 @@ failures via existing error badge. Covered by `test/osc52-handler.test.js`
 (19 cases). This is standard emulator behavior (xterm/VS Code/iTerm all
 bridge OSC 52); the browser permission gate remains the backstop.
 
+## Addendum 2 (2026-09-17): per-TUI verification (opencode/Copilot/Claude)
+
+Researched upstream implementations rather than assuming one OSC 52 shape:
+
+- **opencode** (`tui/util/clipboard.ts`): always writes `ESC ] 52 ; c ; <b64> BEL`
+  on copy when stdout is a TTY, plus native host tools; wraps in tmux DCS
+  passthrough (`ESC P tmux ; … ESC \`, ESCs doubled) under `$TMUX`/`$STY`.
+- **Copilot CLI** (Bubble Tea `SetClipboard`, copy-on-select since v1.0.20):
+  OSC 52 writes for clipboard operations.
+- **Claude Code fullscreen TUI** (docs: `/tui fullscreen`): native tools on
+  local sessions, tmux paste buffer under tmux, **OSC 52 only over SSH**
+  (SSH-env-gated), screen clipboard for long selections; toast names the path.
+
+Decisions from this:
+1. Parser unwraps tmux DCS passthrough with a precise scanner (a lazy regex
+   truncates ST-terminated inner sequences whose doubled `ESC ESC \` mimics
+   the wrap terminator); non-tmux DCS (sixel) passes through untouched and
+   carries nothing. Pc `p` mapped onto the system clipboard.
+2. `BaseBridge` sets loopback `SSH_CONNECTION`/`SSH_CLIENT` when no SSH vars
+   exist (opt-out `AIORDIE_NO_SSH_CLIPBOARD_HINT=1`). The display genuinely is
+   remote, so this is a topology hint, not a spoof; it steers SSH-gated apps
+   onto the bridged path. Vars are informational-only (nothing dials out on
+   them); real SSH sessions and explicit config always win.
+3. Paste direction unchanged: queries never answered; native/browser paste
+   remains the paste path.
+
+Covered by `test/osc52-handler.test.js` (25 cases incl. tmux wrap/split/ST-inner/sixel)
+and `test/base-bridge-ssh-hint.test.js` (5 cases).
+
 ## References
 
 - `src/public/clipboard-handler.js`, `src/public/command-palette.js`, `src/public/index.html`, `src/public/session-manager.js`, `src/public/output-frame-batcher.js`, `src/base-bridge.js`
