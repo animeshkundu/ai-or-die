@@ -44,6 +44,7 @@ const urlsToCache = [
   './app-identity.js',
   './command-palette.js',
   './clipboard-handler.js',
+  './osc52-handler.js',
   './session-manager.js',
   './plan-detector.js',
   './splits.js',

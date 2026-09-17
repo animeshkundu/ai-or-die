@@ -313,13 +313,58 @@ class CommandPaletteManager {
     actions.push({
       id: 'copy-output',
       title: 'Copy Terminal Output',
-      description: 'Select and copy all terminal content to clipboard',
+      description: 'Select and copy all terminal content to clipboard (Shift+drag to select in TUIs with mouse mode)',
       section: 'Actions',
       handler: () => {
         if (app.terminal) {
           app.terminal.selectAll();
-          document.execCommand('copy');
-          app.terminal.clearSelection();
+          const text = app.terminal.getSelection();
+          if (!text) {
+            if (window.feedback) window.feedback.warning('Nothing to copy');
+            return;
+          }
+          const copyFn = (window.attachClipboardHandler && window.attachClipboardHandler.copySelectionKeepOnFailure)
+            ? window.attachClipboardHandler.copySelectionKeepOnFailure
+            : null;
+          if (copyFn) {
+            copyFn(app.terminal, text);
+          } else if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+              try { app.terminal.clearSelection(); } catch (_) {}
+              if (window.attachClipboardHandler && window.attachClipboardHandler.showCopiedToast) {
+                window.attachClipboardHandler.showCopiedToast();
+              }
+            }).catch(() => {
+              if (window.attachClipboardHandler && window.attachClipboardHandler.showCopyErrorToast) {
+                window.attachClipboardHandler.showCopyErrorToast();
+              }
+            });
+          } else {
+            // Legacy insecure-context fallback (execCommand works where
+            // async clipboard is unavailable on http:// LAN URLs).
+            try {
+              document.execCommand('copy');
+              app.terminal.clearSelection();
+            } catch (_) {
+              if (window.attachClipboardHandler && window.attachClipboardHandler.showCopyErrorToast) {
+                window.attachClipboardHandler.showCopyErrorToast();
+              }
+            }
+          }
+        }
+      }
+    });
+
+    actions.push({
+      id: 'clear-terminal-cache-rejoin',
+      title: 'Clear Terminal Cache & Rejoin',
+      description: 'Discard the cached snapshot and replay the session from the server (fixes garbled output)',
+      section: 'Actions',
+      handler: () => {
+        if (app.sessionTabManager && app.currentClaudeSessionId) {
+          app.sessionTabManager.switchToTab(app.currentClaudeSessionId, { skipCachePaint: true, evictCache: true });
+        } else if (app.reconnect) {
+          app.reconnect();
         }
       }
     });

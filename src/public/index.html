@@ -339,7 +339,7 @@
             </div>
             <!-- Context menu shared by main terminal and split panes -->
             <div id="termContextMenu" class="term-context-menu" style="display:none" role="menu" data-tid="context-menu">
-                <div class="ctx-item" data-action="copy" role="menuitem" tabindex="-1">
+                <div class="ctx-item" data-action="copy" role="menuitem" tabindex="-1" title="In TUIs with mouse mode (opencode, etc.), hold Shift and drag to select">
                     <span class="ctx-icon"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>
                     <span>Copy</span><span class="shortcut">Ctrl+C</span>
                 </div>
@@ -873,6 +873,7 @@
     <script src="fleet-base.js"></script>
     <script src="app-identity.js"></script>
     <script src="clipboard-handler.js"></script>
+    <script src="osc52-handler.js"></script>
     <script src="image-handler.js"></script>
     <script src="generic-drop-handler.js"></script>
     <script src="terminal-wheel.js"></script>

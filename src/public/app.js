@@ -987,6 +987,28 @@ class ClaudeCodeWebInterface {
             }
         });
 
+        // OSC 52 bridge: TUI apps (opencode, etc.) on the remote host copy via
+        // OSC 52, which xterm.js ignores and which would otherwise set only
+        // the *host* clipboard. Forward live-output sequences to the browser
+        // clipboard so "copied to clipboard" lands on the user's machine.
+        // Join-replay bytes are deliberately not bridged (no stale re-copies).
+        try {
+            const Osc52 = (typeof window !== 'undefined' && window.Osc52Handler)
+                || (typeof Osc52Handler !== 'undefined' ? Osc52Handler : null); // eslint-disable-line no-undef
+            this._osc52Bridge = Osc52 ? Osc52.createOsc52Bridge({
+                onCopied: () => {
+                    if (window.attachClipboardHandler && window.attachClipboardHandler.showCopiedToast) {
+                        window.attachClipboardHandler.showCopiedToast();
+                    }
+                },
+                onDenied: () => {
+                    if (window.showClipboardError) {
+                        window.showClipboardError('Terminal app copy blocked — allow clipboard access');
+                    }
+                },
+            }) : null;
+        } catch (_) { this._osc52Bridge = null; }
+
         // Attach image paste/drop handler
         const termContainer = document.getElementById('terminal');
         if (window.imageHandler && termContainer) {
@@ -2690,6 +2712,7 @@ class ClaudeCodeWebInterface {
         this._planDetectText = [];
         this._planDetectBytes = 0;
         this._textDecoder = new TextDecoder();
+        try { this._osc52Bridge?.reset(); } catch (_) { /* ignore */ }
         if (this._planDetectTimer) {
             clearTimeout(this._planDetectTimer);
             this._planDetectTimer = null;
@@ -2977,6 +3000,12 @@ class ClaudeCodeWebInterface {
 
         this._writeToTerminal(combined);
         this._terminalDirtySinceCapture = true;
+
+        // OSC 52 snoop on live output only (never join-replay). Best-effort;
+        // failures must not disturb the render path.
+        if (this._osc52Bridge) {
+            try { this._osc52Bridge.push(text); } catch (_) { /* ignore */ }
+        }
 
         // Sampled sidecar: badges/timers/regexes at most 1x per
         // _ACTIVITY_SAMPLE_MS during bursts. Bytes still render every frame.
@@ -3507,6 +3536,7 @@ class ClaudeCodeWebInterface {
                     this._pendingWrites.length = 0;
                     this._pendingWriteBytes = 0;
                     this._textDecoder = new TextDecoder();
+                    try { this._osc52Bridge?.reset(); } catch (_) { /* ignore */ }
                     // For a LIVE session, replay the raw outputBuffer (real ANSI +
                     // cursor codes) so the agent's live TUI redraw aligns. The
                     // server's renderedSnapshot is rendered PLAIN TEXT (no cursor/
