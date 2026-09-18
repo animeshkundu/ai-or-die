@@ -188,8 +188,14 @@ async function run() {
   // excluded, which is worth stating because it was my first (wrong) suspect.
   // v0.1.51's 206-file regression was a separate issue (different file class);
   // 190 stays clear of it and restores the headroom 180 no longer had.
+  // Raised to 210 for the autoupdating service (ADR-0058): +11 runtime
+  // modules (10 under src/supervisor/ + bin/supervisor-service.js), taking
+  // the tarball 188 -> 199. Verified by listing the pack: the additions are
+  // exactly those modules — no stray class of file crept in. The same change
+  // also stops .opencode/ shipping (2 draft docs that matched no .npmignore
+  // rule — same leak class as the earlier .docs/ exclusion).
   const entryCount = entry.entryCount || 0;
-  assert(entryCount > 0 && entryCount <= 190, `Tarball file count ${entryCount} <= 190`);
+  assert(entryCount > 0 && entryCount <= 210, `Tarball file count ${entryCount} <= 210`);
 
   // Step 2: Install in temp directory
   console.log('\nStep 2: Installing tarball in temp directory');

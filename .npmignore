@@ -35,6 +35,9 @@ docs/
 # (10 files of local research plus scratch HTML). Contents are developer-local
 # and sometimes private, so this is a leak, not just bloat.
 .docs/
+# Agent scratch (opencode plans). Same leak class as .docs/ above: local
+# drafts that must never ship (the canonical ADR/spec live in docs/).
+.opencode/
 site/
 AGENTS.md
 CLAUDE.md
