@@ -643,11 +643,34 @@ class ClaudeCodeWebServer {
 
   setupIpcListener() {
     if (!this.supervised) return;
-    // When running under the supervisor, listen for graceful shutdown via IPC
+    // When running under the supervisor, listen for graceful shutdown via IPC.
+    // Extended for the autoupdating supervisor (src/supervisor/ipc-protocol.js):
+    //   update_ready  -> broadcast to Settings UI so "Apply Now" appears
+    //   handoff_start -> adopt PTY descriptors, reply HANDOFF_COMPLETE
     this._ipcMessageHandler = (msg) => {
-      if (msg && msg.type === 'shutdown') {
+      if (!msg || !msg.type) return;
+      if (msg.type === 'shutdown') {
         console.log('Received shutdown request via IPC');
         this.handleShutdown();
+        return;
+      }
+      if (msg.type === 'update_ready' && msg.version) {
+        try {
+          this.broadcastToAll({ type: 'update_ready', version: msg.version });
+        } catch (_) { /* best-effort */ }
+        return;
+      }
+      if (msg.type === 'handoff_start') {
+        // Adopt-only handshake (v1): record the incoming PTY descriptors so
+        // the new Server knows which sessions the supervisor will re-parent
+        // to it. Raw fd/handle passing is the platform follow-up; the
+        // processes themselves never die because the supervisor owns them.
+        try {
+          this._handoffDescriptors = Array.isArray(msg.ptys) ? msg.ptys : [];
+          if (typeof process.send === 'function') {
+            process.send({ type: 'handoff_complete', receivedPtys: this._handoffDescriptors.length });
+          }
+        } catch (_) { /* best-effort */ }
       }
     };
     process.on('message', this._ipcMessageHandler);
@@ -676,6 +699,29 @@ class ClaudeCodeWebServer {
 
   setMeshManager(mm) {
     this.meshManager = mm;
+  }
+
+  /**
+   * Attach the autoupdating-supervisor bridge (src/supervisor/index.js).
+   * The bridge exposes updateStatus()/autoUpdater/applyUpdate() and the
+   * /api/update/* routes delegate to it. Null = unsupervised (plain
+   * `node bin/ai-or-die.js`); routes report { supervised: false }.
+   */
+  setSupervisorBridge(bridge) {
+    this.supervisorBridge = bridge;
+  }
+
+  /**
+   * Best-effort notify to the supervisor over the IPC channel (server ->
+   * supervisor direction). Used for pty_register/pty_unregister and
+   * update_apply_request. No-op when unsupervised. Never throws.
+   */
+  notifySupervisor(msg) {
+    try {
+      if (this.supervised && typeof process.send === 'function' && msg && msg.type) {
+        process.send(msg);
+      }
+    } catch (_) { /* best-effort */ }
   }
 
   async saveSessionsToDisk(force = false) {
@@ -1622,6 +1668,13 @@ class ClaudeCodeWebServer {
         });
       });
     });
+
+    // Autoupdate surface (Settings UI "Update Ready / Apply Now").
+    // Delegates to the supervisor bridge when supervised; reports
+    // { supervised: false } for plain `node bin/ai-or-die.js` runs.
+    this.app.use('/api/update', require('./supervisor/update-routes').createUpdateRouter({
+      getSupervisor: () => this.supervisorBridge || null,
+    }));
 
     // Get session persistence info
     this.app.get('/api/sessions/persistence', async (req, res) => {

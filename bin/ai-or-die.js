@@ -15,6 +15,55 @@ const { ClaudeCodeWebServer } = require('../src/server');
 const { isBun } = require('../src/utils/runtime');
 const { NON_RETRYABLE_EXIT_CODE } = require('../src/restart-manager');
 
+// `ai-or-die service <install|uninstall|status|logs>` — user-level service
+// management. Intercepted BEFORE commander parsing so `service install`
+// works identically via npx / bunx / npm-global: the installer copies the
+// supervisor to the stable path (~/.ai-or-die/bin/) and the generated unit
+// references ONLY that path (never the npx/bunx cache).
+if (process.argv[2] === 'service') {
+  const sub = process.argv[3];
+  const { ServiceInstaller } = require('../src/supervisor/service-installer');
+  const installer = new ServiceInstaller();
+  (async () => {
+    try {
+      if (sub === 'install') {
+        // Always install the supervisor-service entry (the stable anchor),
+        // never argv[1] itself (which may be an npx/bunx cache path or the
+        // CLI file). The unit references the stable copy only.
+        const path = require('path');
+        const entry = path.join(__dirname, 'supervisor-service.js');
+        const result = installer.install(entry);
+        console.log(`ai-or-die service installed (${result.platform})`);
+        console.log(`  supervisor: ${result.supervisorPath}`);
+        if (result.unitFile) console.log(`  unit: ${result.unitFile}`);
+        if (result.taskXml) console.log(`  task: ${result.taskXml}`);
+        console.log('  Windows: keep-awake assertion ON; hibernation guard ON by default.');
+        console.log('  Opt out: AIORDIE_DISABLE_HIBERNATION=1 ai-or-die service install');
+      } else if (sub === 'uninstall') {
+        console.log(JSON.stringify(installer.uninstall()));
+      } else if (sub === 'status') {
+        console.log(JSON.stringify({ service: 'ai-or-die', ...installer.status() }, null, 2));
+      } else if (sub === 'logs') {
+        const fs = require('fs');
+        const { SUPERVISOR_LOG_FILE } = require('../src/supervisor/constants');
+        try {
+          const lines = fs.readFileSync(SUPERVISOR_LOG_FILE, 'utf8').split('\n').slice(-100);
+          console.log(lines.join('\n'));
+        } catch (e) {
+          console.log(`No supervisor log yet at ${SUPERVISOR_LOG_FILE}`);
+        }
+      } else {
+        console.error('Usage: ai-or-die service <install|uninstall|status|logs>');
+        process.exit(2);
+      }
+    } catch (e) {
+      console.error('service command failed:', e && e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
 const program = new Command();
 
 program

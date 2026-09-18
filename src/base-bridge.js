@@ -423,6 +423,15 @@ class BaseBridge {
       // atomically on stopSession. No-op elsewhere.
       this._attachPtyJob(session, ptyProcess);
 
+      // Notify the autoupdating supervisor (if present) so it can own this
+      // PTY's lifecycle across Server binary swaps. process.send exists only
+      // under a supervisor (SUPERVISED=1); unsupervised runs skip silently.
+      try {
+        if (typeof process.send === 'function' && ptyProcess && ptyProcess.pid) {
+          process.send({ type: 'pty_register', ptyId: sessionId, pid: ptyProcess.pid, bridgeType: this.toolName || 'unknown' });
+        }
+      } catch (_) { /* best-effort */ }
+
       // Spawn watchdog: if no data, exit, or error arrives within 30s, treat as failure
       let receivedLifeSign = false;
       const ptyStartedAt = Date.now();
@@ -849,6 +858,14 @@ class BaseBridge {
     // Mark inactive and remove from map immediately so onExit guard skips
     session.active = false;
     this.sessions.delete(sessionId);
+
+    // Tell the autoupdating supervisor (if present) that this PTY is gone so
+    // it drops the ownership record. Best-effort; unsupervised runs skip.
+    try {
+      if (typeof process.send === 'function') {
+        process.send({ type: 'pty_unregister', ptyId: sessionId });
+      }
+    } catch (_) { /* ignore */ }
 
     if (session.killTimeout) {
       clearTimeout(session.killTimeout);
