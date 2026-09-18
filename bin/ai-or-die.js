@@ -15,6 +15,55 @@ const { ClaudeCodeWebServer } = require('../src/server');
 const { isBun } = require('../src/utils/runtime');
 const { NON_RETRYABLE_EXIT_CODE } = require('../src/restart-manager');
 
+// `ai-or-die service <install|uninstall|status|logs>` — user-level service
+// management. Intercepted BEFORE commander parsing so `service install`
+// works identically via npx / bunx / npm-global: the installer copies the
+// supervisor to the stable path (~/.ai-or-die/bin/) and the generated unit
+// references ONLY that path (never the npx/bunx cache).
+if (process.argv[2] === 'service') {
+  const sub = process.argv[3];
+  const { ServiceInstaller } = require('../src/supervisor/service-installer');
+  const installer = new ServiceInstaller();
+  (async () => {
+    try {
+      if (sub === 'install') {
+        // Always install the supervisor-service entry (the stable anchor),
+        // never argv[1] itself (which may be an npx/bunx cache path or the
+        // CLI file). The unit references the stable copy only.
+        const path = require('path');
+        const entry = path.join(__dirname, 'supervisor-service.js');
+        const result = installer.install(entry);
+        console.log(`ai-or-die service installed (${result.platform})`);
+        console.log(`  supervisor: ${result.supervisorPath}`);
+        if (result.unitFile) console.log(`  unit: ${result.unitFile}`);
+        if (result.taskXml) console.log(`  task: ${result.taskXml}`);
+        console.log('  Windows: keep-awake assertion ON; hibernation guard ON by default.');
+        console.log('  Opt out: AIORDIE_DISABLE_HIBERNATION=1 ai-or-die service install');
+      } else if (sub === 'uninstall') {
+        console.log(JSON.stringify(installer.uninstall()));
+      } else if (sub === 'status') {
+        console.log(JSON.stringify({ service: 'ai-or-die', ...installer.status() }, null, 2));
+      } else if (sub === 'logs') {
+        const fs = require('fs');
+        const { SUPERVISOR_LOG_FILE } = require('../src/supervisor/constants');
+        try {
+          const lines = fs.readFileSync(SUPERVISOR_LOG_FILE, 'utf8').split('\n').slice(-100);
+          console.log(lines.join('\n'));
+        } catch (e) {
+          console.log(`No supervisor log yet at ${SUPERVISOR_LOG_FILE}`);
+        }
+      } else {
+        console.error('Usage: ai-or-die service <install|uninstall|status|logs>');
+        process.exit(2);
+      }
+    } catch (e) {
+      console.error('service command failed:', e && e.message);
+      process.exit(1);
+    }
+  })();
+  return;
+}
+
 const program = new Command();
 
 program
@@ -76,8 +125,10 @@ async function main() {
   try {
     const port = parseInt(options.port, 10);
 
-    if (isNaN(port) || port < 1 || port > 65535) {
-      console.error('Error: Port must be a number between 1 and 65535');
+    // Port 0 = ephemeral (used by the autoupdating supervisor to boot an
+    // update candidate for validation before the port takeover).
+    if (isNaN(port) || port < 0 || port > 65535) {
+      console.error('Error: Port must be a number between 0 and 65535 (0 = ephemeral)');
       process.exit(NON_RETRYABLE_EXIT_CODE);
     }
 
@@ -177,6 +228,21 @@ async function main() {
 
     const app = new ClaudeCodeWebServer(serverOptions);
     await app.start();
+
+    // Signal READY to the autoupdating supervisor (src/supervisor/ipc-protocol.js):
+    // the server is listening. Supervised-only; plain CLI runs have no channel.
+    // The connected guard avoids an ERR_IPC_CHANNEL_CLOSED uncaught throw when
+    // the supervisor died between spawn and listen.
+    try {
+      if (typeof process.send === 'function' && process.connected !== false) {
+        process.send({
+          type: 'ready',
+          pid: process.pid,
+          sessionCount: 0,
+          version: require('../package.json').version,
+        });
+      }
+    } catch (_) { /* best-effort */ }
 
     const protocol = serverOptions.https ? 'https' : 'http';
     const baseUrl = `${protocol}://localhost:${port}`;

@@ -4139,8 +4139,14 @@ class ClaudeCodeWebInterface {
                 this._showMemoryWarning(message);
                 break;
 
+            case 'update_ready':
+                console.log('[update_ready] Server update staged:', message.version);
+                this._showServerUpdateBanner(message.version);
+                break;
+
             case 'server_restarting':
                 console.log('[server_restarting] Server restart imminent');
+                this._hideServerUpdateBanner();
                 this._serverRestarting = true;
                 this._restartReconnectAttempts = 0;
                 this.reconnectAttempts = 0;
@@ -5211,6 +5217,8 @@ class ClaudeCodeWebInterface {
         }
 
         this._populateSettingsForm(this.loadSettings());
+        // Surface a staged server update (if any) when Settings opens.
+        this._checkServerUpdate();
         if (window.focusTrap) window.focusTrap.activate(modal);
     }
 
@@ -5566,6 +5574,76 @@ class ClaudeCodeWebInterface {
         } catch (err) {
             console.error('Install prompt error:', err);
             this._setInstallState('unavailable');
+        }
+    }
+
+    // ---- Server autoupdate (hybrid model: auto-download, user applies) ----
+    // The supervisor polls GitHub Releases in the background and broadcasts
+    // `update_ready` when a new Server binary is staged. The swap itself
+    // preserves every PTY (supervisor-owned handoff), so Apply is safe
+    // mid-session. Unsupervised servers report { supervised: false } and the
+    // banner never appears.
+    async _checkServerUpdate() {
+        try {
+            const resp = await this.authFetch('/api/update/status');
+            if (!resp.ok) return;
+            const status = await resp.json();
+            if (status && status.supervised && status.pending && status.pending.version) {
+                this._showServerUpdateBanner(status.pending.version);
+            }
+        } catch (_) { /* unsupervised or offline — no banner */ }
+    }
+
+    _showServerUpdateBanner(version) {
+        let banner = document.getElementById('serverUpdateBanner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'serverUpdateBanner';
+            banner.setAttribute('role', 'status');
+            banner.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:9999;display:flex;gap:12px;align-items:center;padding:10px 16px;border-radius:10px;background:#161b22;border:1px solid #ff6b00;color:#c9d1d9;font:13px system-ui,sans-serif;box-shadow:0 4px 24px rgba(0,0,0,.5);';
+            const label = document.createElement('span');
+            label.id = 'serverUpdateBannerText';
+            const apply = document.createElement('button');
+            apply.id = 'serverUpdateApplyBtn';
+            apply.textContent = 'Apply Now';
+            apply.style.cssText = 'padding:6px 12px;border-radius:6px;border:none;background:#ff6b00;color:#fff;cursor:pointer;font-weight:600;';
+            apply.addEventListener('click', () => this._applyServerUpdate());
+            const dismiss = document.createElement('button');
+            dismiss.textContent = 'Later';
+            dismiss.setAttribute('aria-label', 'Dismiss update notification');
+            dismiss.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid #484f58;background:transparent;color:#c9d1d9;cursor:pointer;';
+            dismiss.addEventListener('click', () => this._hideServerUpdateBanner());
+            banner.append(label, apply, dismiss);
+            document.body.appendChild(banner);
+        }
+        const label = document.getElementById('serverUpdateBannerText');
+        if (label) label.textContent = `Server update ${version} ready — sessions stay connected.`;
+        banner.style.display = 'flex';
+        const apply = document.getElementById('serverUpdateApplyBtn');
+        if (apply) apply.disabled = false;
+    }
+
+    _hideServerUpdateBanner() {
+        const banner = document.getElementById('serverUpdateBanner');
+        if (banner) banner.style.display = 'none';
+    }
+
+    async _applyServerUpdate() {
+        const apply = document.getElementById('serverUpdateApplyBtn');
+        if (apply) { apply.disabled = true; apply.textContent = 'Applying…'; }
+        try {
+            const resp = await this.authFetch('/api/update/apply', { method: 'POST' });
+            const result = await resp.json();
+            if (result && result.applied) {
+                this.updateStatus('Server updated — reconnecting…');
+                if (apply) apply.textContent = 'Applied ✓';
+            } else {
+                if (apply) { apply.disabled = false; apply.textContent = 'Apply Now'; }
+                this.showError(`Update could not be applied (${(result && result.reason) || 'unknown error'}). Your sessions are unaffected.`);
+            }
+        } catch (err) {
+            if (apply) { apply.disabled = false; apply.textContent = 'Apply Now'; }
+            this.showError('Update request failed. Your sessions are unaffected.');
         }
     }
 

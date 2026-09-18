@@ -423,6 +423,13 @@ class BaseBridge {
       // atomically on stopSession. No-op elsewhere.
       this._attachPtyJob(session, ptyProcess);
 
+      // Notify the autoupdating supervisor (if present) so it can own this
+      // PTY's lifecycle across Server binary swaps. process.send exists only
+      // under a supervisor (SUPERVISED=1); unsupervised runs skip silently.
+      this._supervisorSend(ptyProcess && ptyProcess.pid
+        ? { type: 'pty_register', ptyId: sessionId, pid: ptyProcess.pid, bridgeType: this.toolName || 'unknown' }
+        : null);
+
       // Spawn watchdog: if no data, exit, or error arrives within 30s, treat as failure
       let receivedLifeSign = false;
       const ptyStartedAt = Date.now();
@@ -516,6 +523,8 @@ class BaseBridge {
           session.active = false;
           this.sessions.delete(sessionId);
         }
+        // Natural exit also ends supervisor ownership (best-effort).
+        this._supervisorSend({ type: 'pty_unregister', ptyId: sessionId });
         try {
           this.onSessionDisposed(sessionId);
         } catch (e) {
@@ -614,6 +623,20 @@ class BaseBridge {
     // Override in subclasses for tool-specific state teardown
   }
 
+  /**
+   * Best-effort notify to the autoupdating supervisor over the IPC channel.
+   * The `process.connected` guard matters: after a supervisor-death
+   * disconnect, process.send can throw ERR_IPC_CHANNEL_CLOSED, which would
+   * otherwise surface as an uncaught exception during teardown. Never throws.
+   */
+  _supervisorSend(msg) {
+    try {
+      if (msg && msg.type && typeof process.send === 'function' && process.connected !== false) {
+        process.send(msg);
+      }
+    } catch (_) { /* best-effort */ }
+  }
+
   // Override in subclasses for tool-specific argument construction
   buildArgs(options = {}) {
     const prefix = this._prefixArgs || [];
@@ -621,6 +644,17 @@ class BaseBridge {
       return [...prefix, this.dangerousFlag];
     }
     return [...prefix];
+  }
+
+  /**
+   * Extra argv for update-adopt respawn (ADR-0058): relaunch the same
+   * session so the conversation continues under a new PTY. `persisted` is
+   * the session's last-saved record (stickyClaudeSessionId, launchOptions).
+   * Default: [] — plain respawn in the same working directory (terminal
+   * shells, and CLIs without a verified resume flag).
+   */
+  resumeArgsForAdopt(persisted) {
+    return [];
   }
 
   // Override in subclasses for tool-specific output processing (e.g., trust prompt)
@@ -849,6 +883,10 @@ class BaseBridge {
     // Mark inactive and remove from map immediately so onExit guard skips
     session.active = false;
     this.sessions.delete(sessionId);
+
+    // Tell the autoupdating supervisor (if present) that this PTY is gone so
+    // it drops the ownership record. Best-effort; unsupervised runs skip.
+    this._supervisorSend({ type: 'pty_unregister', ptyId: sessionId });
 
     if (session.killTimeout) {
       clearTimeout(session.killTimeout);
