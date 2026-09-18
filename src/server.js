@@ -742,6 +742,20 @@ class ClaudeCodeWebServer {
       }
     };
     process.on('message', this._ipcMessageHandler);
+    // Auto-attach the IPC proxy bridge so /api/update/* works in the real
+    // supervised topology (parent Supervisor process + child Server
+    // process). The child can never hold the Supervisor object directly
+    // across the process boundary, so SupervisorProxy answers each route
+    // via an id-correlated IPC round-trip to the parent. This runs for
+    // `node bin/ai-or-die.js`, npx/bunx, and installed-service boots alike
+    // (all spawn the same child). An explicitly attached bridge (tests)
+    // always wins.
+    if (!this.supervisorBridge) {
+      try {
+        const { SupervisorProxy } = require('./supervisor/remote-bridge');
+        this.setSupervisorBridge(new SupervisorProxy());
+      } catch (_) { /* proxy unavailable — routes report unsupervised */ }
+    }
     // If the supervisor's IPC channel drops, the supervisor died. Per the
     // "everything dies when the main process dies" contract, this server must NOT
     // keep running standalone (the old behavior) — it tears down its own PTY trees

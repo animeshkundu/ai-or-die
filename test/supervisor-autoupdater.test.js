@@ -129,6 +129,32 @@ describe('supervisor/autoupdater', function () {
     }
   });
 
+  it('apply(opts) forwards swap options (e.g. onPreShutdown) to the supervisor', async function () {
+    const dir = sandbox();
+    try {
+      const staged = path.join(dir, 'staging', 'ai-or-die-server-0.1.109');
+      fs.mkdirSync(path.dirname(staged), { recursive: true });
+      fs.writeFileSync(staged, 'new-binary');
+      let seenOpts = null;
+      const updater = new AutoUpdater({
+        currentVersion: '0.1.108',
+        stagingDir: path.join(dir, 'staging'),
+        serverBin: path.join(dir, 'bin', 'ai-or-die-server'),
+        supervisor: {
+          swapServer: async (bin, args, env, opts) => { seenOpts = opts; return { swapped: true, ptys: 0 }; },
+          onUpdateApplied: () => {},
+        },
+      });
+      updater.pendingUpdate = { version: '0.1.109', binaryPath: staged, downloadedAt: Date.now() };
+      const hook = () => {};
+      const result = await updater.apply({ onPreShutdown: hook });
+      assert.strictEqual(result.applied, true);
+      assert.strictEqual(seenOpts && seenOpts.onPreShutdown, hook, 'hook threaded through');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('maybeAutoApply() waits for the idle window', async function () {
     const updater = new AutoUpdater({
       currentVersion: '0.1.108',

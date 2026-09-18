@@ -17,13 +17,17 @@ function createUpdateRouter(deps = {}) {
   const router = express.Router();
   const getSupervisor = deps.getSupervisor || (() => null);
 
-  router.get('/status', (req, res) => {
+  router.get('/status', async (req, res) => {
     const supervisor = getSupervisor();
     if (!supervisor || typeof supervisor.updateStatus !== 'function') {
       return res.json({ supervised: false, updatable: false });
     }
     try {
-      return res.json({ supervised: true, updatable: true, ...supervisor.updateStatus() });
+      // Awaited (not spread synchronously): the production bridge is a
+      // SupervisorProxy whose updateStatus() is an IPC round-trip promise.
+      // Awaiting a plain-object return (in-process bridge, tests) is a no-op.
+      const status = await supervisor.updateStatus();
+      return res.json({ supervised: true, updatable: true, ...status });
     } catch (err) {
       return res.status(500).json({ error: (err && err.message) || 'status failed' });
     }

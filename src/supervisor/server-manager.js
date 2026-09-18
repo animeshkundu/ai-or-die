@@ -223,6 +223,27 @@ class ServerManager {
       }
     }
 
+    // The swap is now decided: the new server is validated, owns the PTY
+    // records, and (port path) serves the public port. Before tearing the
+    // old server down, offer the caller a last word with the living old
+    // child — used by the Supervisor to deliver the update_apply_response
+    // to the HTTP client that triggered the apply. That client is pinned to
+    // the OLD server's socket, so answering after its shutdown would hang
+    // up. The beat after the hook lets the old child flush the response
+    // (LAN RTT) before its graceful shutdown begins. Never throws.
+    if (opts && typeof opts.onPreShutdown === 'function') {
+      try {
+        await opts.onPreShutdown({
+          swapped: true,
+          fresh: false,
+          version: newRecord.version,
+          ptys: descriptors.length,
+          portTakeover: !!port,
+        });
+      } catch (_) { /* ignore */ }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+
     // Graceful shutdown of old, then promote.
     await this.gracefulShutdown(oldRecord, 'update');
     try {

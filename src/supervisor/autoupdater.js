@@ -106,15 +106,17 @@ class AutoUpdater {
 
   /**
    * Apply a staged update via seamless Server swap. Safe to call when no
-   * update is staged (returns { applied: false }).
+   * update is staged (returns { applied: false }). `opts` (e.g.
+   * onPreShutdown) is forwarded to the swap so the caller gets a last word
+   * with the living old server before its teardown.
    */
-  async apply() {
+  async apply(opts) {
     if (!this.pendingUpdate) return { applied: false, reason: 'nothing_staged' };
     const { version, binaryPath } = this.pendingUpdate;
     if (!this._supervisor || typeof this._supervisor.swapServer !== 'function') {
       return { applied: false, reason: 'no_supervisor' };
     }
-    const result = await this._supervisor.swapServer(binaryPath);
+    const result = await this._supervisor.swapServer(binaryPath, undefined, undefined, opts);
     if (!result || !result.swapped) {
       return { applied: false, reason: (result && result.reason) || 'swap_failed', version };
     }

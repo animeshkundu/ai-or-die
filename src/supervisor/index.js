@@ -104,7 +104,71 @@ class Supervisor {
         this.ptyManager.confirmUnregister(msg.ptyId);
       }
       if (msg.type === 'update_apply_request') {
-        this.applyUpdate().catch(() => { /* surfaced via status endpoint */ });
+        // Legacy fire-and-forget senders omit `id` (no reply possible).
+        // New children (SupervisorProxy) attach `id` and await the matching
+        // update_apply_response — this is what powers POST /api/update/apply.
+        //
+        // Delivery subtlety: the requesting HTTP client is pinned to the OLD
+        // server's socket, and the swap shuts the old server down. Answering
+        // after teardown would hang up, so the provisional result goes out
+        // via onPreShutdown while the old child is still alive (the swap is
+        // decided by then; only the local promote copy remains). The proxy
+        // settles on the first reply and ignores the post-apply send below.
+        if (msg.id === null || typeof msg.id === 'undefined') {
+          this.applyUpdate().catch(() => { /* surfaced via status endpoint */ });
+          return;
+        }
+        let answered = false;
+        const answerEarly = (preview) => {
+          if (answered) return;
+          answered = true;
+          // Micro-race accepted by design: promote (local file copy) runs
+          // after this send; on the near-impossible promote failure the
+          // pending update is retained, the error is logged, and the status
+          // endpoint reports the truth for a retry.
+          try {
+            proc.send(ipc.updateApplyResponse(msg.id, true, {
+              applied: true,
+              promoted: true,
+              version: preview.version,
+              ptys: preview.ptys,
+              portTakeover: preview.portTakeover,
+            }));
+          } catch (_) { /* ignore */ }
+        };
+        (async () => {
+          try {
+            const result = await this.applyUpdate({ onPreShutdown: answerEarly });
+            if (!answered) {
+              answered = true;
+              try { proc.send(ipc.updateApplyResponse(msg.id, true, result)); } catch (_) { /* ignore */ }
+            }
+          } catch (err) {
+            if (!answered) {
+              answered = true;
+              try { proc.send(ipc.updateApplyResponse(msg.id, false, (err && err.message) || 'apply failed')); } catch (_) { /* ignore */ }
+            }
+          }
+        })();
+        return;
+      }
+      if (msg.type === ipc.MSG.UPDATE_STATUS_REQUEST && msg.id !== null && typeof msg.id !== 'undefined') {
+        // Synchronous and infallible by construction (updateStatus builds a
+        // plain object); still guarded so a bug here can never break IPC.
+        try {
+          proc.send(ipc.updateStatusResponse(msg.id, true, this.updateStatus()));
+        } catch (_) { /* ignore */ }
+        return;
+      }
+      if (msg.type === ipc.MSG.UPDATE_CHECK_REQUEST && msg.id !== null && typeof msg.id !== 'undefined') {
+        (async () => {
+          try {
+            const result = await this.autoUpdater.check();
+            try { proc.send(ipc.updateCheckResponse(msg.id, true, result)); } catch (_) { /* ignore */ }
+          } catch (err) {
+            try { proc.send(ipc.updateCheckResponse(msg.id, false, (err && err.message) || 'check failed')); } catch (_) { /* ignore */ }
+          }
+        })();
       }
     });
     proc.on('exit', (code) => {
@@ -150,19 +214,26 @@ class Supervisor {
       args || this.serverArgs,
       env || {},
       {
+        // Forward caller hooks (e.g. onPreShutdown for the apply-response
+        // flush) alongside the internal wiring below.
         ...(opts || {}),
         // Wire the candidate the moment it is READY (before handoff), so
         // adopt-respawn pty_register frames attribute to the new server.
         // (Re-wiring here post-promote would double-register handlers.)
-        onRecord: (rec) => this._wireServerEvents(rec),
+        onRecord: (rec) => {
+          this._wireServerEvents(rec);
+          if (opts && typeof opts.onRecord === 'function') {
+            try { opts.onRecord(rec); } catch (_) { /* ignore */ }
+          }
+        },
       }
     );
     await this.fleetClient.reportHealthy().catch(() => { /* ignore */ });
     return result;
   }
 
-  async applyUpdate() {
-    const result = await this.autoUpdater.apply();
+  async applyUpdate(opts) {
+    const result = await this.autoUpdater.apply(opts);
     for (const fn of this._updateListeners) {
       try { fn(result); } catch (_) { /* ignore */ }
     }

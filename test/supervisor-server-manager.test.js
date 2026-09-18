@@ -223,4 +223,48 @@ describe('supervisor/server-manager', function () {
     proc.emit('message', { type: 'shutdown_complete', savedSessions: true });
     assert.strictEqual(await pending, true);
   });
+
+  it('swapServer calls onPreShutdown with the preview while old is still alive', async function () {
+    const newProc = fakeProc();
+    newProc.pid = 200;
+    const oldProc = fakeProc();
+    oldProc.pid = 100;
+    oldProc.exitCode = null;
+    const mgr = new ServerManager({
+      ptyManager: { describeForHandoff: () => [], transferOwnership: () => ({ transferred: 0, failed: 0 }) },
+      readyTimeoutMs: 1000,
+      handoffTimeoutMs: 1000,
+      shutdownGraceMs: 50,
+    });
+    mgr.spawnServer = async (bin) => ({ proc: newProc, pid: 200, binary: bin, version: '0.1.109' });
+    mgr._requestHandoff = async () => true;
+    mgr.gracefulShutdown = async () => true;
+    mgr.current = { proc: oldProc, pid: 100, binary: '/bin/old' };
+    let preview = null;
+    let oldAliveAtHook = null;
+    const result = await mgr.swapServer('/bin/new', [], {}, {
+      onPreShutdown: (p) => { preview = p; oldAliveAtHook = !oldProc.killed; },
+    });
+    assert.strictEqual(result.swapped, true);
+    assert.ok(preview, 'hook fired');
+    assert.strictEqual(preview.version, '0.1.109');
+    assert.strictEqual(preview.ptys, 0);
+    assert.strictEqual(oldAliveAtHook, true, 'old child living when the hook runs');
+  });
+
+  it('swapServer skips onPreShutdown on rollback paths', async function () {
+    const oldProc = fakeProc();
+    oldProc.pid = 100;
+    const mgr = new ServerManager({
+      spawn: () => fakeProc(),
+      readyTimeoutMs: 20,
+      handoffTimeoutMs: 20,
+      shutdownGraceMs: 20,
+    });
+    mgr.current = { proc: oldProc, pid: 100, binary: '/bin/old' };
+    let fired = false;
+    const result = await mgr.swapServer('/bin/new', [], {}, { onPreShutdown: () => { fired = true; } });
+    assert.strictEqual(result.swapped, false);
+    assert.strictEqual(fired, false, 'no early answer on a refused swap');
+  });
 });

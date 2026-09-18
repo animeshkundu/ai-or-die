@@ -26,6 +26,21 @@ const MSG = {
   STATUS: 'status',                   // { rss, sessions, uptime }
   ERROR: 'error',                     // { code, message }
   UPDATE_READY: 'update_ready',       // { version } (supervisor -> server -> UI broadcast)
+  // Update-API round-trips (child Server -> parent Supervisor). Every
+  // request carries a numeric `id`; the supervisor replies with the matching
+  // response type + same `id`. Unknown types are ignored, so old and new
+  // binaries interoperate (a request to an old supervisor simply times out
+  // on the child instead of breaking the swap path).
+  UPDATE_STATUS_REQUEST: 'update_status_request',   // { id }
+  UPDATE_STATUS_RESPONSE: 'update_status_response', // { id, ok, result|error }
+  UPDATE_CHECK_REQUEST: 'update_check_request',     // { id }
+  UPDATE_CHECK_RESPONSE: 'update_check_response',   // { id, ok, result|error }
+  // NB: the apply request type predates the id convention and keeps its
+  // wire string so old/new binaries interoperate. New children attach `id`
+  // and await UPDATE_APPLY_RESPONSE; legacy fire-and-forget senders (no id)
+  // keep the old behavior (no reply).
+  UPDATE_APPLY_REQUEST: 'update_apply_request',     // { id? }
+  UPDATE_APPLY_RESPONSE: 'update_apply_response',   // { id, ok, result|error }
 };
 
 function isValidFrame(msg) {
@@ -56,6 +71,36 @@ function updateReady(version) {
   return { type: MSG.UPDATE_READY, version };
 }
 
+function updateStatusRequest(id) {
+  return { type: MSG.UPDATE_STATUS_REQUEST, id };
+}
+
+function updateStatusResponse(id, ok, resultOrError) {
+  return ok
+    ? { type: MSG.UPDATE_STATUS_RESPONSE, id, ok: true, result: resultOrError }
+    : { type: MSG.UPDATE_STATUS_RESPONSE, id, ok: false, error: resultOrError };
+}
+
+function updateCheckRequest(id) {
+  return { type: MSG.UPDATE_CHECK_REQUEST, id };
+}
+
+function updateCheckResponse(id, ok, resultOrError) {
+  return ok
+    ? { type: MSG.UPDATE_CHECK_RESPONSE, id, ok: true, result: resultOrError }
+    : { type: MSG.UPDATE_CHECK_RESPONSE, id, ok: false, error: resultOrError };
+}
+
+function updateApplyRequest(id) {
+  return { type: MSG.UPDATE_APPLY_REQUEST, id };
+}
+
+function updateApplyResponse(id, ok, resultOrError) {
+  return ok
+    ? { type: MSG.UPDATE_APPLY_RESPONSE, id, ok: true, result: resultOrError }
+    : { type: MSG.UPDATE_APPLY_RESPONSE, id, ok: false, error: resultOrError };
+}
+
 module.exports = {
   MSG,
   isValidFrame,
@@ -65,4 +110,10 @@ module.exports = {
   shutdownComplete,
   handoffComplete,
   updateReady,
+  updateStatusRequest,
+  updateStatusResponse,
+  updateCheckRequest,
+  updateCheckResponse,
+  updateApplyRequest,
+  updateApplyResponse,
 };
