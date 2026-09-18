@@ -98,7 +98,10 @@ class Supervisor {
         this.ptyManager.register(msg.ptyId, msg.pid, msg.bridgeType, record.pid);
       }
       if (msg.type === 'pty_unregister' && msg.ptyId) {
-        this.ptyManager.destroy(msg.ptyId);
+        // confirmUnregister swallows the old server's post-handoff death
+        // rattle (first unregister after a transfer) and reaps the record
+        // only on a genuine session end.
+        this.ptyManager.confirmUnregister(msg.ptyId);
       }
       if (msg.type === 'update_apply_request') {
         this.applyUpdate().catch(() => { /* surfaced via status endpoint */ });
@@ -106,6 +109,9 @@ class Supervisor {
     });
     proc.on('exit', (code) => {
       if (this._shuttingDown) return;
+      // A superseded record (a swap promoted a newer server while this one
+      // was still tearing down) must not trigger respawn logic.
+      if (this.serverManager.current && this.serverManager.current.proc !== proc) return;
       const serverPid = record.pid;
       // Reap ONLY PTYs owned by the dead server; handed-off PTYs belong to
       // the new server and survive. During swapServer the records move first.
@@ -137,12 +143,20 @@ class Supervisor {
     }, delay);
   }
 
-  async swapServer(newBinary) {
+  async swapServer(newBinary, args, env, opts) {
     await this.fleetClient.reportUpdating().catch(() => { /* ignore */ });
-    const result = await this.serverManager.swapServer(newBinary, this.serverArgs);
-    if (result.swapped && this.serverManager.current) {
-      this._wireServerEvents(this.serverManager.current);
-    }
+    const result = await this.serverManager.swapServer(
+      newBinary,
+      args || this.serverArgs,
+      env || {},
+      {
+        ...(opts || {}),
+        // Wire the candidate the moment it is READY (before handoff), so
+        // adopt-respawn pty_register frames attribute to the new server.
+        // (Re-wiring here post-promote would double-register handlers.)
+        onRecord: (rec) => this._wireServerEvents(rec),
+      }
+    );
     await this.fleetClient.reportHealthy().catch(() => { /* ignore */ });
     return result;
   }

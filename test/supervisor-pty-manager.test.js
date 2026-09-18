@@ -62,6 +62,28 @@ describe('supervisor/pty-manager', function () {
     assert.deepStrictEqual(mgr.describeForHandoff(999), []);
   });
 
+  it('confirmUnregister swallows the post-handoff death rattle once', function () {
+    const killed = [];
+    const mgr = new PtyManager({
+      jobGuard: fakeJobGuard(),
+      platform: 'linux',
+      killTreeSync: (pid) => { killed.push(pid); return true; },
+    });
+    mgr.register('pty-1', 4242, 'claude', 100);
+    mgr.transferOwnership(100, 200);
+    assert.strictEqual(mgr.confirmUnregister('pty-1'), 'ignored', 'old server echo consumed');
+    assert.ok(mgr.get('pty-1'), 'record survives the death rattle');
+    assert.deepStrictEqual(killed, [], 'no teardown on the echo');
+    assert.strictEqual(mgr.confirmUnregister('pty-1'), 'destroyed', 'genuine end reaps');
+    assert.strictEqual(mgr.get('pty-1'), null);
+    assert.deepStrictEqual(killed, [4242]);
+  });
+
+  it('confirmUnregister reports unknown for missing records', function () {
+    const mgr = new PtyManager({ jobGuard: fakeJobGuard(), platform: 'linux' });
+    assert.strictEqual(mgr.confirmUnregister('nope'), 'unknown');
+  });
+
   it('destroy is idempotent', function () {
     const mgr = new PtyManager({ jobGuard: fakeJobGuard(), platform: 'linux' });
     mgr.register('pty-1', 4242, 'claude', 100);

@@ -125,8 +125,10 @@ async function main() {
   try {
     const port = parseInt(options.port, 10);
 
-    if (isNaN(port) || port < 1 || port > 65535) {
-      console.error('Error: Port must be a number between 1 and 65535');
+    // Port 0 = ephemeral (used by the autoupdating supervisor to boot an
+    // update candidate for validation before the port takeover).
+    if (isNaN(port) || port < 0 || port > 65535) {
+      console.error('Error: Port must be a number between 0 and 65535 (0 = ephemeral)');
       process.exit(NON_RETRYABLE_EXIT_CODE);
     }
 
@@ -226,6 +228,21 @@ async function main() {
 
     const app = new ClaudeCodeWebServer(serverOptions);
     await app.start();
+
+    // Signal READY to the autoupdating supervisor (src/supervisor/ipc-protocol.js):
+    // the server is listening. Supervised-only; plain CLI runs have no channel.
+    // The connected guard avoids an ERR_IPC_CHANNEL_CLOSED uncaught throw when
+    // the supervisor died between spawn and listen.
+    try {
+      if (typeof process.send === 'function' && process.connected !== false) {
+        process.send({
+          type: 'ready',
+          pid: process.pid,
+          sessionCount: 0,
+          version: require('../package.json').version,
+        });
+      }
+    } catch (_) { /* best-effort */ }
 
     const protocol = serverOptions.https ? 'https' : 'http';
     const baseUrl = `${protocol}://localhost:${port}`;

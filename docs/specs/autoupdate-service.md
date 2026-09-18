@@ -14,6 +14,20 @@ Stable **Supervisor** anchor (`src/supervisor/`, `bin/supervisor-service.js`)
 owns PTY lifecycles; updatable **Server** (SEA binary,
 `~/.ai-or-die/bin/ai-or-die-server`) is a stateless frontend.
 
+Validated live on port 11433 with an isolated session dir (20/20 E2E
+checks): swap with port takeover, uniform teardown, adopt-respawn with
+rejoin + interactive echo, sessions.json in the custom dir.
+
+## Session continuity model (ADR-0058)
+
+Processes do NOT survive a swap (POSIX SIGHUP, proven). uniform teardown
+runs on every platform; the new Server adopt-respawns each transferred
+session (`_adoptHandoffSessions` → `_controlStartAgent`): same session id
+and cwd, persisted launch options, CLI-native resume argv (claude
+`--resume <id>`, copilot `--continue`). Terminal/codex/gemini respawn
+fresh in place. Adopted sessions are fully joinable (fresh geometry lease
++ live output fan-out).
+
 ## Components
 
 - **PtyManager** — PTY registry; per-PTY kill-on-close jobs (Windows) /
@@ -41,10 +55,17 @@ owns PTY lifecycles; updatable **Server** (SEA binary,
 
 ## IPC (supervisor ↔ server)
 
-`shutdown` / `handoff_start` / `config_update` →
-`ready` / `shutdown_complete` / `handoff_complete` / `status` /
+`shutdown` / `handoff_start` / `release_port` / `listen_port` /
+`config_update` → `ready` / `shutdown_complete` / `handoff_complete` /
+`port_released` / `listen_port_ok` / `listen_port_failed` / `status` /
 `pty_register` / `pty_unregister` / `update_apply_request`.
 See `src/supervisor/ipc-protocol.js`.
+
+Swap order: v2 boots ephemeral → READY → HANDOFF_START → HANDOFF_COMPLETE
+(+ fire-and-forget adopt) → ownership records move → v1 `release_port` →
+supervisor polls the port free → v2 `listen_port` (close-then-relisten the
+same front object) → v1 graceful shutdown → promote. Round-trips use
+persistent listeners (never `once` — a stray frame would eat the waiter).
 
 ## File paths
 
@@ -62,5 +83,7 @@ See `src/supervisor/ipc-protocol.js`.
 
 ## Tests
 
-`test/supervisor-*.test.js` (38) + `test/server-update-banner.test.js` (6).
-Longevity gate: 100 consecutive swaps, zero PTY death; 7-day soak.
+`test/supervisor-*.test.js` + `test/server-update-banner.test.js` (60 unit).
+Live E2E (port 11433, isolated session dir, real PTY + real swap): 20/20 —
+see validation notes in ADR-0058. Longevity gate: 100 consecutive swaps
+with adopt verified each round; 7-day soak.

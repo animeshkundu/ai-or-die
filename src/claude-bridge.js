@@ -117,6 +117,24 @@ class ClaudeBridge extends BaseBridge {
     return out;
   }
 
+  /**
+   * Adopt-respawn argv: resume the exact claude session when its id is
+   * known (durable stickyClaudeSessionId / pinned id), else a fresh claude.
+   * Never duplicates a user-supplied --resume/-r/--continue/-c already in
+   * the persisted launch options.
+   */
+  resumeArgsForAdopt(persisted) {
+    const prior = (persisted && persisted.launchOptions && persisted.launchOptions.agentArgs) || [];
+    if (prior.some((a) => a === '--resume' || a === '-r' || a === '--continue' || a === '-c')) {
+      return [];
+    }
+    const id = (persisted && (persisted.stickyClaudeSessionId || persisted.claudePinnedSessionId)) || null;
+    if (id && typeof id === 'string' && id.length > 0) {
+      return ['--resume', id];
+    }
+    return [];
+  }
+
   processOutput(sessionId, ptyProcess, dataBuffer) {
     if (this._trustPromptHandled.get(sessionId)) return;
     // Strip ANSI first: claude's Ink TUI interleaves escape codes between words,

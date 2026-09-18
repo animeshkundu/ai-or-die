@@ -49,12 +49,17 @@ class PtyManager {
     if (!ptyId || !pid) return null;
     // Defensive: close a stale handle before overwriting (never leak kernel handles).
     this._closeJobFor(ptyId);
+    const prior = this._ptys.get(ptyId);
     const record = {
       pid,
       bridgeType: bridgeType || 'unknown',
       jobHandle: null,
       ownerServerPid: ownerServerPid || null,
       registeredAt: Date.now(),
+      // Preserve a pending death-rattle guard across re-registration: the
+      // adopted respawn's pty_register can arrive BEFORE the old server's
+      // teardown echo for the same ptyId. Either order must converge.
+      handedOff: !!(prior && prior.handedOff),
     };
     if (this._platform === 'win32' && this._jobGuard.isAvailable()) {
       try {
@@ -99,6 +104,11 @@ class PtyManager {
           try { this._jobGuard.assignPid(newServerJob, rec.pid); } catch (_) { /* ignore */ }
         }
         rec.ownerServerPid = newServerPid;
+        // Arm the death-rattle guard: the OLD server's teardown sends
+        // pty_unregister for sessions it just released. The first
+        // unregister after a transfer is that echo — consume it. A later
+        // unregister is a genuine session end.
+        rec.handedOff = true;
         transferred += 1;
       } catch (_) {
         failed += 1;
@@ -135,6 +145,24 @@ class PtyManager {
       }
     }
     return reaped;
+  }
+
+  /**
+   * Confirm an unregister notice from a Server. Returns:
+   *   'ignored'   — the old server's post-handoff death rattle (first
+   *                 unregister after a transfer); record kept alive.
+   *   'destroyed' — genuine session end; record reaped + subtree torn down.
+   *   'unknown'   — no such record; nothing to do.
+   */
+  confirmUnregister(ptyId) {
+    const rec = this._ptys.get(ptyId);
+    if (!rec) return 'unknown';
+    if (rec.handedOff) {
+      rec.handedOff = false;
+      return 'ignored';
+    }
+    this.destroy(ptyId);
+    return 'destroyed';
   }
 
   /**

@@ -661,16 +661,84 @@ class ClaudeCodeWebServer {
         return;
       }
       if (msg.type === 'handoff_start') {
-        // Adopt-only handshake (v1): record the incoming PTY descriptors so
-        // the new Server knows which sessions the supervisor will re-parent
-        // to it. Raw fd/handle passing is the platform follow-up; the
-        // processes themselves never die because the supervisor owns them.
+        // Adopt-respawn handshake (ADR-0058): record the incoming PTY
+        // descriptors, confirm immediately, then relaunch each session
+        // headlessly (same cwd, persisted launch options, CLI-native
+        // resume argv). The old Server's processes are gone by design;
+        // continuity lives in the respawned sessions.
         try {
           this._handoffDescriptors = Array.isArray(msg.ptys) ? msg.ptys : [];
-          if (typeof process.send === 'function') {
-            process.send({ type: 'handoff_complete', receivedPtys: this._handoffDescriptors.length });
+          this._supervisorSend({ type: 'handoff_complete', receivedPtys: this._handoffDescriptors.length });
+          if (this._handoffDescriptors.length > 0) {
+            Promise.resolve()
+              .then(() => this._adoptHandoffSessions(this._handoffDescriptors))
+              .catch((err) => console.warn('[adopt] failed:', err && err.message));
           }
         } catch (_) { /* best-effort */ }
+        return;
+      }
+      if (msg.type === 'release_port') {
+        // Port takeover step 1 (seamless update): stop ACCEPTING on the
+        // front listener so the incoming Server can bind the same port.
+        // Existing WS/HTTP connections stay up until gracefulShutdown;
+        // server.close() only stops the accept loop, so reply immediately
+        // rather than waiting for the close callback (open sockets would
+        // hold it pending forever).
+        try {
+          if (this.server && typeof this.server.close === 'function') {
+            try { this.server.close(); } catch (_) { /* already closing */ }
+          }
+          this._supervisorSend({ type: 'port_released' });
+        } catch (_) {
+          this._supervisorSend({ type: 'port_release_failed' });
+        }
+        return;
+      }
+      if (msg.type === 'listen_port' && Number.isFinite(msg.port)) {
+        // Port takeover step 2: move the front server from its (ephemeral)
+        // boot port to the real port. A Node server object cannot listen
+        // twice without closing first (ERR_SERVER_ALREADY_LISTEN), so close
+        // the current listener, then re-listen the SAME object on the
+        // target: Express routes, WS upgrades, and the TLS stack all ride
+        // along untouched. Mirror start()'s bindHost discipline.
+        // Nothing ever connects to the ephemeral port, so the close is
+        // immediate; a 5s guard covers a hypothetical stray connection.
+        const front = this.server;
+        if (!front || typeof front.close !== 'function' || typeof front.listen !== 'function') {
+          this._supervisorSend({ type: 'listen_port_failed', error: 'no front server' });
+          return;
+        }
+        try {
+          const target = Number(msg.port);
+          let settled = false;
+          const replyOk = () => {
+            if (settled) return;
+            settled = true;
+            this.port = target;
+            this._supervisorSend({ type: 'listen_port_ok', port: target });
+          };
+          const replyFail = (err) => {
+            if (settled) return;
+            settled = true;
+            this._supervisorSend({ type: 'listen_port_failed', error: (err && err.message) || 'listen failed' });
+          };
+          const guard = setTimeout(() => replyFail(new Error('front close timed out')), 5000);
+          if (guard.unref) guard.unref();
+          front.close(() => {
+            clearTimeout(guard);
+            const onErr = (err) => replyFail(err);
+            try {
+              if (this.bindHost) front.listen(target, this.bindHost, replyOk);
+              else front.listen(target, replyOk);
+              front.once('error', onErr);
+              front.once('listening', () => front.off('error', onErr));
+            } catch (err) {
+              replyFail(err);
+            }
+          });
+        } catch (err) {
+          this._supervisorSend({ type: 'listen_port_failed', error: (err && err.message) || 'listen failed' });
+        }
       }
     };
     process.on('message', this._ipcMessageHandler);
@@ -717,8 +785,18 @@ class ClaudeCodeWebServer {
    * update_apply_request. No-op when unsupervised. Never throws.
    */
   notifySupervisor(msg) {
+    this._supervisorSend(msg);
+  }
+
+  /**
+   * Single choke point for every supervisor-bound IPC send. The
+   * `process.connected` guard matters: after a supervisor-death
+   * disconnect, process.send can throw ERR_IPC_CHANNEL_CLOSED, which
+   * would otherwise surface as an uncaught exception mid-teardown.
+   */
+  _supervisorSend(msg) {
     try {
-      if (this.supervised && typeof process.send === 'function' && msg && msg.type) {
+      if (msg && msg.type && typeof process.send === 'function' && process.connected !== false) {
         process.send(msg);
       }
     } catch (_) { /* best-effort */ }
@@ -832,6 +910,9 @@ class ClaudeCodeWebServer {
     ]);
     await this.close();
     clearTimeout(forceExitTimer);
+    // Tell the autoupdating supervisor the ordered teardown finished (sessions
+    // saved to disk). Supervised-only; unsupervised runs have no IPC channel.
+    this._supervisorSend({ type: 'shutdown_complete', savedSessions: true });
     process.exit(exitCode);
   }
 
@@ -5385,6 +5466,13 @@ class ClaudeCodeWebServer {
     try { session._ctlTranscript = new TranscriptBuffer({ cols, rows }); } catch (_) { session._ctlTranscript = null; }
     session.active = true;
     session.agent = toolName;
+    // Persist launch options so an update-adopt respawn relaunches with the
+    // same permission mode / agent args (ADR-0058).
+    session.launchOptions = {
+      dangerouslySkipPermissions: !!opts.dangerouslySkipPermissions,
+      permissionMode: opts.permissionMode != null ? opts.permissionMode : null,
+      agentArgs: Array.isArray(opts.agentArgs) ? opts.agentArgs.map((a) => String(a)) : null,
+    };
     session._geometrySpawning = true;
     this.activityBroadcastTimestamps.set(sessionId, Date.now());
     try {
@@ -5406,6 +5494,10 @@ class ClaudeCodeWebServer {
           // authoritative there).
           try { this._controlRecordPtyOutput(sessionId); } catch (_) { /* isolate */ }
           this.sessionStore.markDirty();
+          // Live WS fan-out (no-op with zero viewers): update-adopted
+          // sessions are headless-spawned but browser-joinable (ADR-0058),
+          // so their output must reach joined sockets like interactive ones.
+          try { this._broadcastOrHoldSessionOutput(sessionId, data); } catch (_) { /* isolate */ }
           try {
             if (this.stickyNoteSummarizer &&
                 this.stickyNoteSummarizer.isEnabled(sessionId) &&
@@ -5474,6 +5566,109 @@ class ClaudeCodeWebServer {
       this.activityBroadcastTimestamps.delete(sessionId);
       throw this._controlError('UPSTREAM_ERROR', `Failed to start ${toolName}: ${error.message}`, 500);
     }
+  }
+
+  /**
+   * Adopt-respawn sessions handed off by the supervisor during a binary
+   * update (ADR-0058). The old Server's PTY processes are gone by design
+   * (POSIX SIGHUP on master close; uniform teardown on all platforms), so
+   * continuity means RELAUNCHING each transferred session: same working
+   * directory, same persisted launch options, plus CLI-native resume argv
+   * where the bridge knows one (claude --resume <id>, copilot --continue;
+   * terminal/codex/gemini respawn fresh in place).
+   *
+   * Reads sessions.json FRESH (the old server autosaves ≤30s stale, and its
+   * final shutdown save may not have landed yet) and reuses
+   * _controlStartAgent — the headless, WS-independent spawn path — so the
+   * adopted sessions behave exactly like fleet-spawned ones. Fire-and-forget
+   * from the handoff IPC handler; returns { adopted, skipped }.
+   */
+  async _adoptHandoffSessions(descriptors) {
+    let fresh = null;
+    try {
+      fresh = await this.sessionStore.loadSessions();
+    } catch (_) {
+      fresh = null;
+    }
+    let adopted = 0;
+    let skipped = 0;
+    for (const d of descriptors || []) {
+      const ptyId = d && d.ptyId;
+      const agent = d && typeof d.bridgeType === 'string' ? d.bridgeType.toLowerCase() : null;
+      const bridge = (agent && typeof this.getBridgeForAgent === 'function')
+        ? this.getBridgeForAgent(agent)
+        : null;
+      if (!ptyId || !bridge) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        const persisted = (fresh && fresh.get(ptyId)) || this.claudeSessions.get(ptyId);
+        if (!persisted || !persisted.workingDir) {
+          skipped += 1;
+          continue;
+        }
+        let session = this.claudeSessions.get(ptyId);
+        if (!session) {
+          // Fresh entry from the just-read store snapshot (CircularBuffer
+          // outputBuffer, empty connections — same shape loadSessions builds).
+          session = {
+            ...persisted,
+            id: ptyId,
+            active: false,
+            connections: new Set(),
+          };
+          if (!session.outputBuffer || typeof session.outputBuffer.push !== 'function') {
+            session.outputBuffer = new CircularBuffer(
+              SESSION_OUTPUT_BUFFER_CAPACITY, SESSION_OUTPUT_BUFFER_MAX_BYTES
+            );
+          }
+          this.claudeSessions.set(ptyId, session);
+        }
+        if (session.active) {
+          skipped += 1;
+          continue;
+        }
+        if (this.terminalGeometry) {
+          // Fresh (NOT restored) init: the adopted session gets a NEW live
+          // PTY, so the first viewer to advertise geometry receives the
+          // automatic ownership lease — exactly like a brand-new session.
+          // restored:true would suppress the lease forever (no live viewers
+          // exist at adopt time to take control explicitly), leaving the
+          // session silent to joiners.
+          try { this.terminalGeometry.initializeSession(ptyId, session); } catch (_) { /* ignore */ }
+        }
+        const launchOpts = (persisted && persisted.launchOptions) || {};
+        let resumeArgs = [];
+        try {
+          if (typeof bridge.resumeArgsForAdopt === 'function') {
+            resumeArgs = bridge.resumeArgsForAdopt(persisted) || [];
+          }
+        } catch (_) {
+          resumeArgs = [];
+        }
+        const priorArgs = Array.isArray(launchOpts.agentArgs) ? launchOpts.agentArgs.map((a) => String(a)) : [];
+        await this._controlStartAgent(ptyId, agent, {
+          cols: 80,
+          rows: 24,
+          dangerouslySkipPermissions: !!launchOpts.dangerouslySkipPermissions,
+          permissionMode: launchOpts.permissionMode != null ? launchOpts.permissionMode : undefined,
+          agentArgs: [...priorArgs, ...resumeArgs],
+        });
+        adopted += 1;
+        this.broadcastToSession(ptyId, {
+          type: `${agent}_started`,
+          sessionId: ptyId,
+          workingDir: session.workingDir,
+          resumed: true,
+        });
+      } catch (err) {
+        if (this.dev) console.warn(`[adopt] session ${ptyId} skipped:`, err && err.message);
+        skipped += 1;
+      }
+    }
+    console.log(`[adopt] handoff adopt complete: ${adopted} respawned, ${skipped} skipped`);
+    return { adopted, skipped };
   }
 
   async _controlStopSession(id, mode, idempotencyKey) {
@@ -6064,6 +6259,13 @@ class ClaudeCodeWebServer {
     // session.active check above and spawn duplicate PTY processes.
     session.active = true;
     session.agent = toolName;
+    // Persist launch options so an update-adopt respawn relaunches with the
+    // same permission mode / agent args (ADR-0058).
+    session.launchOptions = {
+      dangerouslySkipPermissions: !!(options && options.dangerouslySkipPermissions),
+      permissionMode: (options && options.permissionMode != null) ? options.permissionMode : null,
+      agentArgs: (options && Array.isArray(options.agentArgs)) ? options.agentArgs.map((a) => String(a)) : null,
+    };
     session._geometrySpawning = true;
     this.activityBroadcastTimestamps.set(sessionId, Date.now());
 
@@ -8340,7 +8542,12 @@ class ClaudeCodeWebServer {
       try { this._httpRedirectServer.close(); } catch (_) { /* ignore */ }
     }
 
-    // Flush pending output and stop all sessions with a 5-second timeout
+    // Flush pending output and stop all sessions with a 5-second timeout.
+    // NOTE (ADR-0058): update-shutdown also tears PTY processes down, on
+    // every platform. POSIX kernels deliver SIGHUP to the shell when the
+    // server holding the PTY master exits, so process survival is not on
+    // the table; continuity comes from adopt-respawn on the new Server
+    // (_adoptHandoffSessions: same cwd, CLI-native --resume where known).
     const stopPromises = [];
     for (const [sessionId, session] of this.claudeSessions.entries()) {
       this._flushAndClearOutputTimer(session, sessionId);

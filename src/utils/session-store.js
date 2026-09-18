@@ -261,7 +261,11 @@ class SessionStore {
                 claudePinnedSessionId: session.claudePinnedSessionId || null,
                 autoTitle: session.autoTitle || null,
                 nameIsUserSet: session.nameIsUserSet || false,
-                stickyNotesEnabled: session.stickyNotesEnabled === true
+                stickyNotesEnabled: session.stickyNotesEnabled === true,
+                // Launch options so an update-adopt respawn relaunches with
+                // the same permission mode / agent args (ADR-0058). Restored
+                // automatically by loadSessions' spread; null when unset.
+                launchOptions: session.launchOptions || null
             }));
 
             const data = {
