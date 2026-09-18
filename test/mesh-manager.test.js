@@ -292,11 +292,17 @@ describe('MeshManager', function() {
       const m = new MeshManager();
       m.retryCount = 15; // past MAX_RETRIES
       let spawned = false;
-      let seenDelay = null;
+      // Record EVERY delay: this runs in a shared mocha process where an
+      // unrelated ambient timer can fire during the awaited restart and
+      // overwrite a last-write-wins capture (observed: stray 300ms on a
+      // loaded Windows runner). The restart backoff at retryCount=16 is
+      // min(2^15*1000, 30000) = 30000 — by far the largest — so assert on
+      // the max instead of the last write.
+      const seenDelays = [];
       m._spawn = async () => { spawned = true; };
       const realSetTimeout = global.setTimeout;
       global.setTimeout = (fn, ms, ...rest) => {
-        seenDelay = ms;
+        seenDelays.push(ms);
         return realSetTimeout(fn, 0, ...rest);
       };
       try {
@@ -306,7 +312,8 @@ describe('MeshManager', function() {
       }
       assert.strictEqual(spawned, true, 'respawn must still be attempted past budget');
       assert.strictEqual(m.retryCount, 16);
-      assert.strictEqual(seenDelay, 30000, 'backoff stays capped');
+      assert.ok(seenDelays.length > 0, 'expected at least one scheduled delay');
+      assert.strictEqual(Math.max(...seenDelays), 30000, `backoff stays capped (saw [${seenDelays.join(', ')}])`);
     });
 
     it('does not reject when spawn fails', async function() {
