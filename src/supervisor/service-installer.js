@@ -24,15 +24,35 @@ const { STABLE_BASE } = require('./constants');
 const SERVICE_NAME = process.env.AIORDIE_SERVICE_NAME || 'ai-or-die';
 const LAUNCHD_LABEL = 'com.ai-or-die';
 
+function isUnderTempRoot(s) {
+  const roots = [os.tmpdir(), '/tmp', '/private/tmp'];
+  if (process.platform === 'win32') {
+    if (process.env.TEMP) roots.push(process.env.TEMP);
+    if (process.env.TMP) roots.push(process.env.TMP);
+  }
+  const low = String(s).toLowerCase();
+  return roots.some((r) => {
+    if (!r) return false;
+    const base = String(r).replace(/[\\/]+$/, '').toLowerCase();
+    return low === base || low.startsWith(base + '/') || low.startsWith(base + '\\');
+  });
+}
+
+// True when a package path is ephemeral (npx/bunx cache) rather than a
+// stable install location. Matches ONLY precise runner markers — never a
+// bare temp dir: the test sandbox itself (and a user checkout under /tmp)
+// lives under os.tmpdir(), and misclassifying it would copy the supervisor
+// on every install. Runners always execute from inside a node_modules
+// tree, so temp-root + node_modules is the fallback signal.
 function isTempPackagePath(p) {
   if (!p) return true;
   const s = String(p);
-  return /\.npm[\\/]_npx/i.test(s)
-    || /\.bun[\\/]install[\\/]cache/i.test(s)
-    || /node_modules[\\/]\.cache/i.test(s)
-    || /(^|[\\/])tmp[\\/]/i.test(s)
-    || /AppData[\\/]Local[\\/]Temp/i.test(s)
-    || /\/tmp\//.test(s);
+  if (/\.npm[\\/]_npx/i.test(s)) return true;      // npm npx cache (default or --cache)
+  if (/[\\/]_npx[\\/]/i.test(s)) return true;      // any _npx dir
+  if (/\.bun[\\/]install[\\/]cache/i.test(s)) return true; // bunx cache
+  if (/node_modules[\\/]\.cache/i.test(s)) return true;    // generic build cache
+  if (/node_modules[\\/]/i.test(s) && isUnderTempRoot(s)) return true;
+  return false;
 }
 
 class ServiceInstaller {

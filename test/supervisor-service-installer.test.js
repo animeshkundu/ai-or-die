@@ -24,9 +24,16 @@ function installerFor(platform, dir) {
 describe('supervisor/service-installer', function () {
   it('detects ephemeral npx/bunx package paths', function () {
     assert.strictEqual(isTempPackagePath('/root/.npm/_npx/abc123/node_modules/ai-or-die/bin/ai-or-die.js'), true);
-    assert.strictEqual(isTempPackagePath('C:\\Users\\u\\AppData\\Local\\Temp\\x\\bin\\ai-or-die.js'), true);
+    assert.strictEqual(isTempPackagePath('/home/u/.bun/install/cache/ai-or-die/bin/x.js'), true);
     assert.strictEqual(isTempPackagePath('/usr/lib/node_modules/ai-or-die/bin/ai-or-die.js'), false);
     assert.strictEqual(isTempPackagePath('/home/u/.ai-or-die/bin/ai-or-die-supervisor.js'), false);
+    // A bare temp dir is NOT ephemeral (the test sandbox itself lives
+    // there) — only temp + node_modules together signal a staged runner.
+    assert.strictEqual(isTempPackagePath(require('os').tmpdir() + '/plain-checkout/bin/x.js'), false);
+    assert.strictEqual(
+      isTempPackagePath(require('path').join(require('os').tmpdir(), 'pkg', 'node_modules', 'ai-or-die', 'bin', 'x.js')),
+      true
+    );
   });
 
   it('copies an npx-cache entry point to the stable path', function () {

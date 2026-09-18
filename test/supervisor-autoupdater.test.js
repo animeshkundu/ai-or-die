@@ -28,7 +28,9 @@ describe('supervisor/autoupdater', function () {
   it('check() stages a newer release and reports staged', async function () {
     const dir = sandbox();
     try {
-      const stagedFile = path.join(dir, 'staging', 'ai-or-die-server-0.1.109');
+      // Staged binaries carry .exe on Windows (mirrors _stageRelease).
+      const stagedFile = path.join(dir, 'staging',
+        `ai-or-die-server-0.1.109${process.platform === 'win32' ? '.exe' : ''}`);
       const updater = new AutoUpdater({
         currentVersion: '0.1.108',
         stagingDir: path.join(dir, 'staging'),
