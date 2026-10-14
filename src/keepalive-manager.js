@@ -173,6 +173,7 @@ class KeepaliveManager {
         shell: false,
       });
       this._child = child;
+      this._acquired = false;
 
       // Never let the helper independently keep the parent's event loop alive
       // (or revive the exit-134 native-teardown abort this repo has fought).
@@ -206,7 +207,10 @@ class KeepaliveManager {
       const finishReady = (ok) => {
         if (settled) return;
         settled = true;
-        if (ok) acquired = true;
+        if (ok) {
+          acquired = true;
+          if (this._child === child) this._acquired = true;
+        }
         this._safe(() => clearTimeout(timer));
         if (this._readyTimer === timer) this._readyTimer = null;
         resolveReady(ok);
@@ -234,6 +238,7 @@ class KeepaliveManager {
       const onGone = () => {
         if (this._child !== child) return;
         this._child = null;
+        this._acquired = false;
         this._started = false;
         this._safe(() => clearTimeout(timer));
         if (this._readyTimer === timer) this._readyTimer = null;
@@ -289,6 +294,27 @@ class KeepaliveManager {
     return Promise.resolve();
   }
 
+  // True while the helper process is alive and (as far as we know) holding
+  // the assertion. Used by the supervisor watchdog to respawn a helper that
+  // an AV/EDR kill or CLM block took down mid-service.
+  isActive() {
+    try {
+      return !!(this._started && this._acquired && this._child && !this._child.killed);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Public capability query for the supervisor watchdog/status (avoids
+  // reaching into privates).
+  isEnabled() {
+    try {
+      return !!(this._enabled && this._platform === 'win32');
+    } catch (_) {
+      return false;
+    }
+  }
+
   // Drop the assertion: closing stdin makes the helper hit EOF on ReadLine(),
   // run its explicit clear, and exit; kill() is belt-and-suspenders. Idempotent
   // and safe to call when never started or when the child is already dead (its
@@ -296,6 +322,7 @@ class KeepaliveManager {
   releaseSync() {
     const child = this._child;
     this._child = null;
+    this._acquired = false;
     this._started = false;
     if (this._readyTimer) { this._safe(() => clearTimeout(this._readyTimer)); this._readyTimer = null; }
     if (this._exitHandler) this._safe(() => process.removeListener('exit', this._exitHandler));

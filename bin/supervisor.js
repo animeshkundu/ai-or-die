@@ -2,6 +2,13 @@
 
 'use strict';
 
+// `ai-or-die service …` — handled BEFORE any supervise logic so the packaged
+// bin (`package.json` maps here) runs the one-shot installer instead of
+// spawning a supervised child. Shared with bin/ai-or-die.js.
+try {
+  if (require('../src/supervisor/service-cli').handleServiceArgv(process.argv, console)) return;
+} catch (_) { /* fall through to normal supervise path */ }
+
 const { spawn } = require('child_process');
 const path = require('path');
 const { RESTART_EXIT_CODE, NON_RETRYABLE_EXIT_CODE } = require('../src/restart-manager');
