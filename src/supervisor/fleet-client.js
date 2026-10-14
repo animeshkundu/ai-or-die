@@ -106,7 +106,7 @@ class FleetClient {
   _version() {
     try {
       if (this._supervisor && this._supervisor.version) return this._supervisor.version;
-      return require('../../package.json').version;
+      return require('./constants').supervisorVersion();
     } catch (_) {
       return 'unknown';
     }

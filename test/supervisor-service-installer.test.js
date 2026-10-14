@@ -11,6 +11,7 @@ function sandbox() {
 }
 
 function installerFor(platform, dir) {
+  const silent = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
   return new ServiceInstaller({
     platform,
     homedir: path.join(dir, 'home'),
@@ -18,6 +19,8 @@ function installerFor(platform, dir) {
     stableSupervisor: path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'),
     metaFile: path.join(dir, 'aod', 'service.json'),
     execFileSync: () => Buffer.from(''), // never touch systemctl/launchctl/schtasks
+    spawnSync: () => ({ status: 0, stdout: '' }),
+    logger: silent,
   });
 }
 
@@ -53,7 +56,9 @@ describe('supervisor/service-installer', function () {
     }
   });
 
-  it('references a global install directly (already stable)', function () {
+  it('stages a global install into the stable tree (never references it directly)', function () {
+    // A global npm path is pruned on upgrade, so the installer always stages
+    // the supervisor closure under the stable base instead of referencing it.
     const dir = sandbox();
     try {
       const globalBin = path.join(dir, 'global', 'bin');
@@ -62,8 +67,13 @@ describe('supervisor/service-installer', function () {
       fs.writeFileSync(entry, '// supervisor');
       const installer = installerFor('linux', dir);
       const result = installer.ensureStableBinary(entry);
-      assert.strictEqual(result.copied, false);
-      assert.strictEqual(result.path, entry);
+      assert.strictEqual(result.copied, true);
+      assert.strictEqual(result.path, path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'));
+      assert.ok(fs.existsSync(result.path), 'stable copy exists');
+      assert.ok(
+        fs.existsSync(path.join(dir, 'aod', 'src', 'supervisor', 'index.js')),
+        'staged src closure exists (require must resolve)'
+      );
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -121,6 +131,8 @@ describe('supervisor/service-installer', function () {
         stableSupervisor: path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'),
         metaFile: path.join(dir, 'aod', 'service.json'),
         execFileSync: (...args) => { calls.push(args); return Buffer.from(''); },
+        spawnSync: () => ({ status: 0, stdout: '' }),
+        logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
       });
       const entry = path.join(dir, 'pkg', 'supervisor-service.js');
       fs.mkdirSync(path.dirname(entry), { recursive: true });

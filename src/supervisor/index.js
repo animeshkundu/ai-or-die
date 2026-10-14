@@ -19,20 +19,28 @@ const path = require('path');
 const { PtyManager } = require('./pty-manager');
 const { ServerManager } = require('./server-manager');
 const { AutoUpdater } = require('./autoupdater');
-const { ServiceInstaller } = require('./service-installer');
+const { ServiceInstaller, isServiceRuntime } = require('./service-installer');
 const { WakeHandler } = require('./wake-handler');
 const { FleetClient } = require('./fleet-client');
 const KeepaliveManager = require('../keepalive-manager');
 const HibernationGuard = require('../hibernation-guard');
 const ipc = require('./ipc-protocol');
-const { STABLE_SERVER_BIN } = require('./constants');
+const { STABLE_SERVER_BIN, supervisorVersion } = require('./constants');
 
 const RESTART_DELAY_MS = parseInt(process.env.RESTART_DELAY_MS, 10) || 1000;
 const CRASH_RESTART_DELAY_MS = parseInt(process.env.CRASH_RESTART_DELAY_MS, 10) || 3000;
+// Tiered backoff (mirrors bin/supervisor.js PROC-01): tight loop and slow churn.
+const TIER1_WINDOW_MS = parseInt(process.env.SUPERVISOR_TIER1_WINDOW_MS, 10) || 30000;
+const TIER1_MAX = parseInt(process.env.SUPERVISOR_TIER1_MAX, 10) || 3;
+const TIER1_DELAY_MS = parseInt(process.env.SUPERVISOR_TIER1_DELAY_MS, 10) || 60000;
+const TIER2_WINDOW_MS = parseInt(process.env.SUPERVISOR_TIER2_WINDOW_MS, 10) || 3600000;
+const TIER2_MAX = parseInt(process.env.SUPERVISOR_TIER2_MAX, 10) || 5;
+const TIER2_DELAY_MS = parseInt(process.env.SUPERVISOR_TIER2_DELAY_MS, 10) || 300000;
+const CRASH_TIMESTAMPS_CAP = parseInt(process.env.SUPERVISOR_CRASH_CAP, 10) || 1024;
 
 class Supervisor {
   constructor(options = {}) {
-    this.version = options.version || require('../../package.json').version;
+    this.version = options.version || supervisorVersion();
     this.serverBinary = options.serverBinary || STABLE_SERVER_BIN;
     this.serverArgs = options.serverArgs || process.argv.slice(2).filter((a) => a !== 'supervise');
     this.ptyManager = options.ptyManager || new PtyManager();
@@ -43,7 +51,12 @@ class Supervisor {
       onWake: ({ gapMs }) => this._onWake(gapMs),
     });
     this.fleetClient = options.fleetClient || new FleetClient({ supervisor: this });
-    const isService = process.env.AIORDIE_SERVICE === '1';
+    // Service detection: explicit env (systemd/launchd units) OR the staged
+    // stable-supervisor + service.json sentinel (Task Scheduler Exec has no
+    // env block, so the task cannot pass AIORDIE_SERVICE=1).
+    const isService = options.isService !== undefined
+      ? !!options.isService
+      : (process.env.AIORDIE_SERVICE === '1' || isServiceRuntime());
     // Windows service: keep-awake always ON; hibernation guard DEFAULT ON
     // (opt OUT with AIORDIE_DISABLE_HIBERNATION=1). Interactive CLI keeps the
     // existing opt-in behavior (--disable-hibernation).
@@ -73,11 +86,54 @@ class Supervisor {
     this.autoUpdater.start();
     // Fleet registration is best-effort; the daemon runs standalone offline.
     this.fleetClient.start().catch(() => { /* ignore */ });
+    this._startKeepaliveWatchdog();
     process.on('SIGINT', () => this.shutdown('SIGINT'));
     process.on('SIGTERM', () => this.shutdown('SIGTERM'));
     process.on('message', (msg) => {
       if (msg && msg.type === 'shutdown') this.shutdown('ipc');
     });
+  }
+
+  // The keepalive helper can die hours in (AV/EDR kill, CLM block) while the
+  // supervisor lives on — and then the machine silently becomes sleepable.
+  // Watchdog: every minute, respawn a helper that died without a release.
+  // Bounded with backoff: after 5 fast failures (e.g. permanent CLM block),
+  // retry every ~10th tick to avoid fork+Add-Type compile spam; the degraded
+  // state stays visible via updateStatus()/`service status`.
+  _startKeepaliveWatchdog() {
+    if (this._keepaliveWatchdog) return;
+    this._keepaliveWatchdogFails = 0;
+    this._keepaliveWatchdog = setInterval(() => {
+      try {
+        if (this._shuttingDown) return;
+        const km = this.keepaliveManager;
+        if (!km || typeof km.isEnabled !== 'function' || typeof km.isActive !== 'function') return;
+        if (!km.isEnabled()) return;
+        if (km.isActive()) {
+          this._keepaliveWatchdogFails = 0;
+          return;
+        }
+        this._keepaliveWatchdogFails += 1;
+        if (this._keepaliveWatchdogFails <= 5) {
+          console.warn('[supervisor] keepalive helper gone; respawning wake assertion');
+        } else if (this._keepaliveWatchdogFails % 10 !== 0) {
+          return; // back off: retry ~every 10 min while permanently blocked
+        }
+        km.start();
+      } catch (_) { /* never break the daemon */ }
+    }, 60000);
+    if (this._keepaliveWatchdog.unref) this._keepaliveWatchdog.unref();
+  }
+
+  keepaliveStatus() {
+    try {
+      const km = this.keepaliveManager;
+      if (!km || typeof km.isEnabled !== 'function' || !km.isEnabled()) return { enabled: false };
+      const active = typeof km.isActive === 'function' ? km.isActive() : undefined;
+      return { enabled: true, active: !!active, watchdogFails: this._keepaliveWatchdogFails || 0 };
+    } catch (_) {
+      return { enabled: false };
+    }
   }
 
   async _bootServer() {
@@ -96,12 +152,16 @@ class Supervisor {
       }
       if (msg.type === 'pty_register' && msg.ptyId && msg.pid) {
         this.ptyManager.register(msg.ptyId, msg.pid, msg.bridgeType, record.pid);
+        // Coarse activity signal (see maybeAutoApply gate): a session event
+        // proves the machine is not idle even when no STATUS frame arrives.
+        try { this.autoUpdater.markPtyActivity(); } catch (_) {}
       }
       if (msg.type === 'pty_unregister' && msg.ptyId) {
         // confirmUnregister swallows the old server's post-handoff death
         // rattle (first unregister after a transfer) and reaps the record
         // only on a genuine session end.
         this.ptyManager.confirmUnregister(msg.ptyId);
+        try { this.autoUpdater.markPtyActivity(); } catch (_) {}
       }
       if (msg.type === 'update_apply_request') {
         // Legacy fire-and-forget senders omit `id` (no reply possible).
@@ -192,12 +252,34 @@ class Supervisor {
       return;
     }
     const now = Date.now();
-    this._crashTimestamps.push(now);
-    this._crashTimestamps = this._crashTimestamps.filter((t) => now - t < 3600000);
-    const tight = this._crashTimestamps.filter((t) => now - t < 30000).length;
-    const delay = code === 75 ? RESTART_DELAY_MS
-      : tight >= 3 ? 60000
-      : CRASH_RESTART_DELAY_MS;
+    // Intentional restarts (exit 75) are not crashes: counting them would let
+    // five routine restarts in an hour push the NEXT genuine crash straight
+    // into the Tier-2 5-minute throttle.
+    if (code !== 75) {
+      this._crashTimestamps.push(now);
+    }
+    this._crashTimestamps = this._crashTimestamps.filter((t) => now - t < TIER2_WINDOW_MS);
+    if (this._crashTimestamps.length > CRASH_TIMESTAMPS_CAP) {
+      this._crashTimestamps = this._crashTimestamps.slice(-CRASH_TIMESTAMPS_CAP);
+    }
+    const tight = this._crashTimestamps.filter((t) => now - t < TIER1_WINDOW_MS).length;
+    const sustained = this._crashTimestamps.length;
+    let delay;
+    if (code === 75) {
+      delay = RESTART_DELAY_MS;
+    } else if (sustained >= TIER2_MAX) {
+      console.error(
+        `[supervisor] TIER 2: ${sustained} crashes in 1h; throttling restart to ${Math.round(TIER2_DELAY_MS / 60000)}m`
+      );
+      delay = TIER2_DELAY_MS;
+    } else if (tight >= TIER1_MAX) {
+      console.error(
+        `[supervisor] TIER 1: ${tight} crashes in 30s; throttling restart to ${Math.round(TIER1_DELAY_MS / 1000)}s`
+      );
+      delay = TIER1_DELAY_MS;
+    } else {
+      delay = CRASH_RESTART_DELAY_MS;
+    }
     setTimeout(() => {
       if (this._shuttingDown) return;
       this._bootServer().catch((err) => {
@@ -264,6 +346,7 @@ class Supervisor {
       supervisorPid: process.pid,
       serverPid: this.serverManager.current && this.serverManager.current.pid,
       ptys: this.ptyManager.size,
+      keepalive: this.keepaliveStatus(),
     };
   }
 
@@ -278,6 +361,8 @@ class Supervisor {
     if (this._shuttingDown) return;
     this._shuttingDown = true;
     console.log(`[supervisor] shutting down (${reason})`);
+    try { if (this._keepaliveWatchdog) clearInterval(this._keepaliveWatchdog); } catch (_) {}
+    this._keepaliveWatchdog = null;
     this.autoUpdater.stop();
     this.wakeHandler.stop();
     try { await this.fleetClient.stop(); } catch (_) { /* ignore */ }

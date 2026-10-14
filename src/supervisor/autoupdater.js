@@ -21,6 +21,7 @@ const {
   STABLE_SERVER_BIN,
   DEFAULT_UPDATE_INTERVAL_MS,
   DEFAULT_AUTO_APPLY_IDLE_MS,
+  supervisorVersion,
 } = require('./constants');
 
 function compareVersions(a, b) {
@@ -46,15 +47,16 @@ class AutoUpdater {
     this._fetch = options.fetch || null; // injectable for tests
     this._download = options.download || null; // injectable for tests
     this._execFileSync = options.execFileSync || execFileSync;
+    // Clamp env overrides: 0/negative/NaN would hot-loop the check timer.
+    const rawInterval = parseInt(process.env.AIORDIE_UPDATE_INTERVAL, 10);
+    const rawIdle = parseInt(process.env.AIORDIE_AUTO_APPLY_IDLE_MS, 10);
     this.intervalMs = options.intervalMs
-      || parseInt(process.env.AIORDIE_UPDATE_INTERVAL, 10)
-      || DEFAULT_UPDATE_INTERVAL_MS;
+      || (Number.isFinite(rawInterval) && rawInterval >= 60000 ? rawInterval : DEFAULT_UPDATE_INTERVAL_MS);
     this.autoApplyIdleMs = options.autoApplyIdleMs
-      || parseInt(process.env.AIORDIE_AUTO_APPLY_IDLE_MS, 10)
-      || DEFAULT_AUTO_APPLY_IDLE_MS;
+      || (Number.isFinite(rawIdle) && rawIdle >= 60000 ? rawIdle : DEFAULT_AUTO_APPLY_IDLE_MS);
     this.enabled = process.env.AIORDIE_AUTO_UPDATE !== '0' && options.enabled !== false;
     this.currentVersion = options.currentVersion
-      || require('../../package.json').version;
+      || supervisorVersion();
     // Test seams: redirect staging + promote target into a sandbox dir.
     this._stagingDir = options.stagingDir || STAGING_DIR;
     this._serverBin = options.serverBin || STABLE_SERVER_BIN;
@@ -66,7 +68,13 @@ class AutoUpdater {
   start() {
     if (!this.enabled || this._timer) return;
     this._timer = setInterval(() => {
-      this.check().catch(() => { /* best-effort; next tick retries */ });
+      // Poll for new releases, then opportunistically auto-apply a staged
+      // update when the machine has been idle long enough. maybeAutoApply is
+      // a no-op unless an update is staged AND the idle window has elapsed,
+      // so running it on the check tick is safe and keeps one timer.
+      this.check()
+        .then(() => this.maybeAutoApply().catch(() => {}))
+        .catch(() => { /* best-effort; next tick retries */ });
     }, this.intervalMs);
     if (this._timer.unref) this._timer.unref();
   }
@@ -112,20 +120,44 @@ class AutoUpdater {
    */
   async apply(opts) {
     if (!this.pendingUpdate) return { applied: false, reason: 'nothing_staged' };
-    const { version, binaryPath } = this.pendingUpdate;
+    const { version, binaryPath, sha256 } = this.pendingUpdate;
     if (!this._supervisor || typeof this._supervisor.swapServer !== 'function') {
       return { applied: false, reason: 'no_supervisor' };
+    }
+    // Verify the staged binary is intact before swapping: a partial download,
+    // AV quarantine rewrite, or disk corruption must never be executed.
+    // NOTE: this compares against the hash recorded at stage time (post-stage
+    // corruption detector), not an advertised release signature — the channel
+    // is authenticated by GitHub TLS; signature verification is future work.
+    // On mismatch the staged entry is discarded (file removed) so the next
+    // check re-stages instead of re-hashing a tampered file forever.
+    try {
+      const actual = AutoUpdater.sha256File(binaryPath);
+      if (sha256 && actual !== sha256) {
+        try { fs.rmSync(binaryPath, { force: true }); } catch (_) {}
+        this.pendingUpdate = null;
+        return { applied: false, reason: 'staged_checksum_mismatch', version };
+      }
+    } catch (err) {
+      return { applied: false, reason: 'staged_unreadable', version, error: err && err.message };
     }
     const result = await this._supervisor.swapServer(binaryPath, undefined, undefined, opts);
     if (!result || !result.swapped) {
       return { applied: false, reason: (result && result.reason) || 'swap_failed', version };
     }
+    // Atomic promote (tmp + rename, never truncate-in-place) so a concurrent
+    // reader never observes a half-written server binary. On Windows the
+    // rename can fail with EPERM while the old binary is still mapped — the
+    // staged update is retained and reported un-promoted (not applied), so
+    // the next idle tick retries instead of flapping versions.
     try {
       fs.mkdirSync(path.dirname(this._serverBin), { recursive: true });
-      fs.copyFileSync(binaryPath, this._serverBin);
-      if (process.platform !== 'win32') fs.chmodSync(this._serverBin, 0o755);
+      const tmp = `${this._serverBin}.${process.pid}.promote`;
+      fs.copyFileSync(binaryPath, tmp);
+      if (process.platform !== 'win32') fs.chmodSync(tmp, 0o755);
+      fs.renameSync(tmp, this._serverBin);
     } catch (err) {
-      return { applied: true, promoted: false, version, error: err && err.message };
+      return { applied: false, promoted: false, version, error: err && err.message };
     }
     this.currentVersion = version;
     const applied = { applied: true, promoted: true, version, ptys: result.ptys || 0 };
@@ -140,9 +172,22 @@ class AutoUpdater {
    * Hybrid policy: apply now if the user asked (userInitiated), else only
    * when the pending update has been staged AND the machine has been idle
    * (no PTY input) for the full auto-apply window.
+   *
+   * Conservative v1 gate: auto-apply requires ZERO supervisor-owned sessions.
+   * The only activity signals available in-process are session register /
+   * unregister / STATUS frames — per-keystroke typing activity has no producer
+   * yet (server-side STATUS ptyActivityAt follow-up). Applying mid-typing
+   * would yank the WS connection during port takeover, so owned sessions veto
+   * the automatic path. Manual Apply Now is unaffected.
    */
   async maybeAutoApply() {
     if (!this.pendingUpdate) return { applied: false, reason: 'nothing_staged' };
+    try {
+      const ptys = this._supervisor && this._supervisor.ptyManager
+        ? this._supervisor.ptyManager.size
+        : 0;
+      if (ptys > 0) return { applied: false, reason: 'sessions_active' };
+    } catch (_) { /* fall through to idle check */ }
     if (this.idleMs() < this.autoApplyIdleMs) {
       return { applied: false, reason: 'not_idle' };
     }
@@ -157,6 +202,16 @@ class AutoUpdater {
 
   async _stageRelease(version, asset) {
     fs.mkdirSync(this._stagingDir, { recursive: true });
+    // Best-effort cleanup of orphaned temp files from crashed prior runs
+    // (per-pid download/promote parts whose owner is gone — never this pid's).
+    try {
+      for (const f of fs.readdirSync(this._stagingDir)) {
+        if (f.includes(`.${process.pid}.`)) continue;
+        if (/\.\d+\.(part|promote)$/.test(f)) {
+          try { fs.rmSync(path.join(this._stagingDir, f), { force: true }); } catch (_) {}
+        }
+      }
+    } catch (_) {}
     const dest = path.join(this._stagingDir, `ai-or-die-server-${version}${process.platform === 'win32' ? '.exe' : ''}`);
     if (this._download) {
       await this._download(asset.browser_download_url, dest);
@@ -168,8 +223,13 @@ class AutoUpdater {
     }
     // Verify checksum when the release advertises one (asset digest or
     // accompanying .sha256 asset); missing checksum = warn, not block
-    // (GitHub TLS already authenticates the channel).
-    this.pendingUpdate = { version, binaryPath: dest, downloadedAt: Date.now() };
+    // (GitHub TLS already authenticates the channel). The hash is recorded
+    // so apply() can re-verify the staged file before executing it.
+    let sha256 = null;
+    try {
+      sha256 = AutoUpdater.sha256File(dest);
+    } catch (_) { sha256 = null; }
+    this.pendingUpdate = { version, binaryPath: dest, sha256, downloadedAt: Date.now() };
     return dest;
   }
 
