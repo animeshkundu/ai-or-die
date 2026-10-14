@@ -23,6 +23,12 @@ const MESH_PEERS_JSON_MAX = 256 * 1024;
 // egress.json stale past a short TTL (~120s). Re-stamp its updatedAt on this
 // cadence while the sidecar lives so a healthy egress never looks stale.
 const MESH_EGRESS_REFRESH_MS = 30000;
+// Auto-update poll: converge the running sidecar to the build pinned by the
+// installed npm lock. 24h is enough — restart-time verify (start()) covers
+// fresh launches; this covers long-lived daemons upgraded underneath via
+// `npm i -g`. Jitter spreads fleet fetch; env override is a test seam.
+const MESH_UPDATE_CHECK_MS = 24 * 60 * 60 * 1000;
+const MESH_UPDATE_JITTER_MS = 15 * 60 * 1000;
 
 class MeshManager {
   constructor(options = {}) {
@@ -67,21 +73,42 @@ class MeshManager {
     this._untaggedWarned = false;
     this._egress = null;
     this._egressRefreshTimer = null;
+    // Auto-update state. ON by default; kill-switches AIORDIE_MESH_AUTO_UPDATE=0
+    // (specific) and AIORDIE_AUTO_UPDATE=0 (existing global updater flag).
+    this._updating = false;
+    this._updateTimer = null;
+    this._stagedHash = null;         // lock contentHash of the staged .new build
+    this._activeHash = null;         // lock contentHash the stable build verified against
+    this._lastUpdateCheck = null;
+    this._lastUpdateResult = null;
+    this._failedUpdateVersions = new Set();
+    this._updateIntervalMs = options._updateIntervalMs
+      || parseInt(process.env.AIORDIE_MESH_UPDATE_INTERVAL_MS, 10)
+      || MESH_UPDATE_CHECK_MS;
+    this._autoUpdateEnabled = options.autoUpdate !== false
+      && process.env.AIORDIE_MESH_AUTO_UPDATE !== '0'
+      && process.env.AIORDIE_AUTO_UPDATE !== '0';
   }
 
   /** Never throws — degrades to localhost/devtunnel on any failure. */
   async start() {
     console.log('\n  Connecting mesh (Tailscale userspace)...');
     this.stopping = false;
+    this._updating = false;
     // Clear any egress.json left by a crashed/kill -9'd prior run BEFORE (re)spawn,
     // so a consumer can't route to a freed loopback port a local process squatted.
     this._deleteEgressFile();
-    if (!fs.existsSync(this.sidecar)) {
-      if (!(await this._ensureSidecar())) { this._printMissing(this._lastError); return; }
-    }
-    if (!this._authKey && !this._enrolled()) { this._printNotEnrolled(); return; }
+    // Activate a previously staged update while the image is free (prior sidecar
+    // has exited at process start — on Windows a running .exe cannot be renamed).
+    await this._promoteStagedIfValid();
+    // Always verify: a stale binary must not survive `npm i -g` + restart.
+    // ensureSidecar short-circuits with no network when the file already matches.
+    if (!(await this._ensureSidecar())) { this._printMissing(this._lastError); return; }
+    this._recordActiveHash();
+    if (!this._authKey && !this._enrolled()) { this._printNotEnrolled(); this._startUpdateTimer(); return; }
     try { fs.mkdirSync(this.stateDir, { recursive: true }); } catch (_) {}
     await this._spawn();
+    this._startUpdateTimer();
   }
 
   /** Stable, hash-free sidecar path from the installer; safe fallback. */
@@ -97,7 +124,7 @@ class MeshManager {
   /** Download + verify the sidecar from the matching release. Best-effort. */
   async _ensureSidecar() {
     try {
-      console.log('  [mesh] fetching sidecar binary...');
+      if (this.dev) console.log('  [mesh] verifying sidecar binary...');
       await this._installer.ensureSidecar(this.sidecar);
       this._lastError = null;
       return fs.existsSync(this.sidecar);
@@ -108,11 +135,44 @@ class MeshManager {
     }
   }
 
+  /** Best-effort promotion of a staged (.new) build. Never throws. */
+  async _promoteStagedIfValid() {
+    try {
+      if (typeof this._installer.promoteStagedSidecar !== 'function') return { promoted: false };
+      const res = await this._installer.promoteStagedSidecar(this.sidecar);
+      if (res && res.promoted) {
+        this._stagedHash = null;
+        this._recordActiveHash();
+        console.log('  [mesh] sidecar updated to staged build.');
+      }
+      return res || { promoted: false };
+    } catch (e) {
+      this._lastError = e;
+      if (this.dev) console.error('  [mesh] staged promote failed:', e && e.message);
+      return { promoted: false, error: e };
+    }
+  }
+
+  /** Record the lock contentHash the current install verified against. */
+  _recordActiveHash() {
+    try {
+      const lock = this._installer.loadLock ? this._installer.loadLock() : null;
+      if (lock && typeof lock.contentHash === 'string' && lock.contentHash) {
+        this._activeHash = lock.contentHash;
+      }
+    } catch (_) { /* lock mid-write during npm upgrade — keep last known */ }
+  }
+
   getStatus() {
     return {
       running: this.proc !== null && !this.stopping && !!this.dnsName,
       publicUrl: this.dnsName ? `${this.scheme || 'https'}://${this.dnsName}` : null,
       peers: this.peers ? this.peers.peers : [],
+      activeVersion: this._activeHash || null,
+      stagedVersion: this._stagedHash || null,
+      updateAvailable: !!this._stagedHash && this._stagedHash !== this._activeHash,
+      lastUpdateCheck: this._lastUpdateCheck || null,
+      lastUpdateResult: this._lastUpdateResult || null,
     };
   }
 
@@ -122,6 +182,7 @@ class MeshManager {
 
   async stop() {
     this.stopping = true;
+    this._stopUpdateTimer();
     this._deletePeersFile();
     this._deleteEgressFile();
     this._clearStabilityTimer();
@@ -393,10 +454,171 @@ class MeshManager {
 
   /**
    * Whether a sidecar exit should trigger automatic recovery.
-   * Only intentional shutdown gates recovery — never the exit code.
+   * Only intentional shutdown (stop()) or an in-flight versioned update gates
+   * recovery — never the exit code.
    */
   _shouldAutoRestart() {
-    return !this.stopping;
+    return !this.stopping && !this._updating;
+  }
+
+  // Stop ONLY the sidecar child (server stays up). Unlike stop(), this does not
+  // set stopping, clear the update timer, or delete files directly — the exit
+  // handler does the cleanup, and _updating suppresses the crash-restart.
+  _stopSidecarProc() {
+    if (!this.proc) return Promise.resolve();
+    return new Promise((resolve) => {
+      const child = this.proc;
+      const t = setTimeout(() => { try { child.kill('SIGKILL'); } catch (_) {} resolve(); }, 5000);
+      child.once('exit', () => { clearTimeout(t); resolve(); });
+      try { child.kill(); } catch (_) {}
+    });
+  }
+
+  _startUpdateTimer() {
+    if (!this._autoUpdateEnabled || this._updateTimer) return;
+    const jitter = Math.floor(Math.random() * MESH_UPDATE_JITTER_MS);
+    const ms = this._updateIntervalMs + jitter;
+    this._updateTimer = setInterval(() => { this._updateTick().catch(() => {}); }, ms);
+    if (this._updateTimer.unref) this._updateTimer.unref();
+  }
+
+  _stopUpdateTimer() {
+    if (this._updateTimer) { clearInterval(this._updateTimer); this._updateTimer = null; }
+  }
+
+  _autoUpdateDisabled() {
+    return !this._autoUpdateEnabled;
+  }
+
+  // 24h poll: stage the lock-pinned build when the stable file drifts (npm was
+  // upgraded underneath a long-lived daemon), then recycle ONLY the sidecar.
+  // Never throws; any failure keeps the old sidecar running for the next cycle.
+  async _updateTick() {
+    if (!this._autoUpdateEnabled || this.stopping || this._updating) return { checked: false };
+    this._lastUpdateCheck = Date.now();
+    try {
+      let lock;
+      try {
+        lock = this._installer.loadLock ? this._installer.loadLock() : null;
+      } catch (_) {
+        this._lastUpdateResult = { ok: false, reason: 'lock-unreadable' };
+        return { checked: true, update: false };
+      }
+      if (!lock || typeof lock !== 'object') {
+        this._lastUpdateResult = { ok: false, reason: 'lock-unreadable' };
+        return { checked: true, update: false };
+      }
+      const name = this._installer.assetName ? this._installer.assetName() : null;
+      const want = name && lock.assets ? (lock.assets[name] || '').toLowerCase() : '';
+      if (!want) {
+        this._lastUpdateResult = { ok: false, reason: 'lock-unfinalized' };
+        return { checked: true, update: false };
+      }
+      const wantVersion = typeof lock.contentHash === 'string' ? lock.contentHash : null;
+      if (wantVersion && this._failedUpdateVersions.has(wantVersion)) {
+        this._lastUpdateResult = { ok: false, reason: 'version-failed-before', version: wantVersion };
+        return { checked: true, update: false };
+      }
+      let current = null;
+      try {
+        current = this._installer.sha256File
+          ? (await this._installer.sha256File(this.sidecar)).toLowerCase()
+          : null;
+      } catch (_) { current = null; }
+      if (current === want) {
+        this._recordActiveHash();
+        if (this._stagedHash && this._stagedHash !== this._activeHash) {
+          // Stable caught up via another path (e.g. restart-time promote) —
+          // drop the redundant stage best-effort.
+          try {
+            const staged = this._installer.stagedSidecarPath
+              ? this._installer.stagedSidecarPath(this.sidecar) : null;
+            if (staged) fs.rmSync(staged, { force: true });
+          } catch (_) {}
+          this._stagedHash = null;
+        }
+        this._lastUpdateResult = { ok: true, upToDate: true };
+        return { checked: true, update: false };
+      }
+      if (typeof this._installer.stageSidecar !== 'function') {
+        this._lastUpdateResult = { ok: false, reason: 'no-stage-support' };
+        return { checked: true, update: false };
+      }
+      await this._installer.stageSidecar(this.sidecar);
+      this._stagedHash = wantVersion;
+      this._lastUpdateResult = { ok: true, staged: true, version: wantVersion };
+      if (this.dev) console.log(`  [mesh] staged sidecar update ${(wantVersion || '').slice(0, 12)} — recycling sidecar.`);
+      await this._recycleSidecarForUpdate(wantVersion);
+      return { checked: true, update: true };
+    } catch (e) {
+      this._lastUpdateResult = { ok: false, reason: (e && e.code) || 'error', message: e && e.message };
+      if (this.dev) console.error('  [mesh] update check failed:', e && e.message);
+      return { checked: true, update: false };
+    }
+  }
+
+  // Sidecar-only recycle: stop old child (frees the image lock on Windows),
+  // promote staged → stable, respawn. Server, sessions and localhost clients
+  // never drop; only the tailnet path blips. Rolls back to .prev once when the
+  // new build fails to report MESH-URL. Never throws.
+  async _recycleSidecarForUpdate(wantVersion) {
+    if (this._updating || this.stopping) return { recycled: false, reason: 'busy' };
+    if (!this.proc) {
+      // Not running (not enrolled / degraded) — promote file-free now; the
+      // next start() spawns the new build.
+      await this._promoteStagedIfValid();
+      return { recycled: false, reason: 'not_running' };
+    }
+    try {
+      if (!fs.existsSync(this.stateDir)) {
+        this._lastUpdateResult = { ok: false, reason: 'no-state-dir' };
+        return { recycled: false, reason: 'no-state-dir' };
+      }
+    } catch (_) {
+      this._lastUpdateResult = { ok: false, reason: 'no-state-dir' };
+      return { recycled: false, reason: 'no-state-dir' };
+    }
+    this._updating = true;
+    const prevDns = this.dnsName;
+    try {
+      await this._stopSidecarProc();
+      if (this.stopping) return { recycled: false, reason: 'stopping' };
+      await this._promoteStagedIfValid();
+      if (this.stopping) return { recycled: false, reason: 'stopping' };
+      await this._spawn();
+      if (this.stopping) {
+        try { await this._stopSidecarProc(); } catch (_) {}
+        return { recycled: false, reason: 'stopping' };
+      }
+      if (this.dnsName) {
+        this._activeHash = wantVersion;
+        this._stagedHash = null;
+        const sameUrl = prevDns ? prevDns === this.dnsName : null;
+        this._lastUpdateResult = { ok: true, updated: true, reconnected: true, sameUrl };
+        console.log(`  [mesh] sidecar updated, tailnet path re-established (${this.scheme}://${this.dnsName}).`);
+        return { recycled: true };
+      }
+      // New build failed to come up — roll back once to .prev.
+      console.warn('  [mesh] updated sidecar failed to come up — rolling back.');
+      try { await this._stopSidecarProc(); } catch (_) {}
+      if (this.stopping) return { recycled: false, reason: 'stopping' };
+      try {
+        if (typeof this._installer.rollbackSidecar === 'function') {
+          await this._installer.rollbackSidecar(this.sidecar);
+        }
+      } catch (e) {
+        if (this.dev) console.error('  [mesh] rollback failed:', e && e.message);
+      }
+      if (wantVersion) this._failedUpdateVersions.add(wantVersion);
+      this._stagedHash = null;
+      await this._spawn();
+      const restored = !!this.dnsName;
+      this._lastUpdateResult = { ok: false, reason: 'rollback', restored };
+      if (restored) this._recordActiveHash();
+      return { recycled: false, reason: 'rollback', restored };
+    } finally {
+      this._updating = false;
+    }
   }
 
   async _restart() {
@@ -410,7 +632,7 @@ class MeshManager {
     const delay = Math.min(2 ** (this.retryCount - 1) * MIN_RESTART_DELAY_MS, MAX_RESTART_DELAY_MS);
     await new Promise((resolve) => { this._restartDelayResolve = resolve; this._restartDelayTimer = setTimeout(resolve, delay); if (this._restartDelayTimer.unref) this._restartDelayTimer.unref(); });
     this._restartDelayResolve = null;
-    if (this.stopping) return;
+    if (this.stopping || this._updating) return;
     try {
       await this._spawn();
     } catch (err) {
@@ -419,4 +641,4 @@ class MeshManager {
   }
 }
 
-module.exports = { MeshManager, _constants: { URL_TIMEOUT_MS, MAX_RETRIES } };
+module.exports = { MeshManager, _constants: { URL_TIMEOUT_MS, MAX_RETRIES, MESH_UPDATE_CHECK_MS, MESH_UPDATE_JITTER_MS } };
