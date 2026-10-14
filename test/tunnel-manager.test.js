@@ -217,11 +217,16 @@ describe('TunnelManager', function() {
       tm.retryCount = MAX_RETRIES + 5; // already past the old budget
       tm._lastSpawnTime = Date.now();
       let spawned = false;
-      let seenDelay = null;
+      // Record EVERY delay: an unrelated ambient timer can fire during the
+      // awaited restart and overwrite a last-write-wins capture (same flake
+      // already hardened against in mesh-manager.test.js). The restart backoff
+      // past budget is min(2^15*1000, 30000) = 30000 — by far the largest —
+      // so assert on the max instead of the last write.
+      const seenDelays = [];
       tm._spawn = async () => { spawned = true; };
       const realSetTimeout = global.setTimeout;
       global.setTimeout = (fn, ms, ...rest) => {
-        seenDelay = ms;
+        seenDelays.push(ms);
         return realSetTimeout(fn, 0, ...rest);
       };
       try {
@@ -232,7 +237,8 @@ describe('TunnelManager', function() {
       assert.strictEqual(spawned, true, 'respawn must still be attempted past MAX_RETRIES');
       assert.strictEqual(tm.retryCount, MAX_RETRIES + 6);
       assert.strictEqual(tm._totalRestarts, 1);
-      assert.strictEqual(seenDelay, MAX_RESTART_DELAY_MS, 'backoff stays capped past budget');
+      assert.ok(seenDelays.length > 0, 'expected at least one scheduled delay');
+      assert.strictEqual(Math.max(...seenDelays), MAX_RESTART_DELAY_MS, `backoff stays capped past budget (saw [${seenDelays.join(', ')}])`);
     });
 
     it('should not reject when spawn fails (restart chain survives)', async function() {
