@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Mesh sidecar auto-update (on by default, Win11-first): the manager
+  verifies the lock-pinned binary on every start (promoting a staged build
+  while the image is free) and re-checks every 24h (±15m jitter) for
+  long-lived daemons. On drift it stages the verified download and recycles
+  only the sidecar — server and sessions never drop, the same tailnet URL is
+  re-established with no re-enroll. Failed builds roll back to a `.prev`
+  backup once and are quarantined in-process. Kill-switches:
+  `AIORDIE_MESH_AUTO_UPDATE=0`, `AIORDIE_AUTO_UPDATE=0`. See ADR-0059 and
+  `docs/specs/mesh.md`. Covers the Tailscale client bump to v1.104.1 (#171)
+  on the next restart/cycle with zero operator action.
+
 ### Performance
 - HOT-06 — TerminalBridge OSC 7: added a process-wide validated-path
   cache (LRU 256 entries, 5 s TTL) on top of the existing per-session

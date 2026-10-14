@@ -30,10 +30,12 @@ See ADR-0034 for rationale and the alternatives that were tested and rejected.
 
 ## Install flow (zero manual steps)
 
-1. `ai-or-die --mesh` checks `%LOCALAPPDATA%\ai-or-die\bin\ai-or-die-mesh-<hash>.exe`
-   (`~/.ai-or-die/bin/ai-or-die-mesh-<hash>` on POSIX). The path is content-addressed,
-   so a new build installs alongside the old one (never overwrites a running `.exe`).
-2. If missing, it fetches `ai-or-die-mesh-<plat>-<arch>[.exe]` from
+1. `ai-or-die --mesh` verifies `%LOCALAPPDATA%\ai-or-die\bin\ai-or-die-mesh.exe`
+   (`~/.ai-or-die/bin/ai-or-die-mesh` on POSIX) against the lock on **every
+   start** — promoting a previously staged (`.new`) build first while the image
+   is free, then re-verifying via `ensureSidecar` (no network when it already
+   matches). A stale binary never survives `npm i -g ai-or-die@latest` + restart.
+2. If missing or stale, it fetches `ai-or-die-mesh-<plat>-<arch>[.exe]` from
    `https://github.com/animeshkundu/ai-or-die/releases/download/mesh-<contentHash>/`
    and verifies its SHA-256 against the checksum embedded in `mesh-sidecar.lock.json`.
 3. If `AIORDIE_TS_AUTHKEY` is set (reusable + tagged), it enrolls; otherwise it
@@ -42,6 +44,22 @@ See ADR-0034 for rationale and the alternatives that were tested and rejected.
 
 `AIORDIE_MESH_REF` (or `AIORDIE_MESH_VERSION`) overrides the release tag for
 dev/testing (announced loudly).
+
+## Auto-update (on by default)
+
+Long-lived daemons converge without a restart: every 24h (±15m jitter) the
+manager compares the stable file's hash to the installed lock. On drift it
+stages the download to a `.new` sibling (verified before it lands), then
+recycles **only the sidecar** — stop child (frees the Windows image lock),
+promote `.new` → stable (previous stable kept as single `.prev` backup),
+respawn. Server, sessions and localhost clients never drop; the tailnet URL is
+re-established from the persisted `stateDir` identity (no re-enroll). A build
+that yields no `MESH-URL` rolls back to `.prev` once and that version is never
+retried in-process. Any staging/download failure keeps the old sidecar running
+for the next cycle. Kill-switches: `AIORDIE_MESH_AUTO_UPDATE=0` (specific),
+`AIORDIE_AUTO_UPDATE=0` (existing global flag). Status (`getStatus()`) exposes
+`activeVersion`, `stagedVersion`, `updateAvailable`, `lastUpdateCheck` and
+`lastUpdateResult`.
 
 ## Versioning & publishing (content-addressed)
 

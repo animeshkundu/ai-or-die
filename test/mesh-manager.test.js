@@ -62,15 +62,27 @@ describe('MeshManager', function() {
 
   describe('getStatus', function() {
     it('not running until a name binds', function() {
-      assert.deepStrictEqual(new MeshManager().getStatus(), { running: false, publicUrl: null, peers: [] });
+      assert.deepStrictEqual(new MeshManager().getStatus(), {
+        running: false, publicUrl: null, peers: [],
+        activeVersion: null, stagedVersion: null, updateAvailable: false,
+        lastUpdateCheck: null, lastUpdateResult: null,
+      });
     });
     it('reports https url once up', function() {
       const m = new MeshManager(); m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'https';
-      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'https://h.tail.ts.net', peers: [] });
+      assert.deepStrictEqual(m.getStatus(), {
+        running: true, publicUrl: 'https://h.tail.ts.net', peers: [],
+        activeVersion: null, stagedVersion: null, updateAvailable: false,
+        lastUpdateCheck: null, lastUpdateResult: null,
+      });
     });
     it('reports the http url when the edge degraded (no certs)', function() {
       const m = new MeshManager(); m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'http';
-      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'http://h.tail.ts.net', peers: [] });
+      assert.deepStrictEqual(m.getStatus(), {
+        running: true, publicUrl: 'http://h.tail.ts.net', peers: [],
+        activeVersion: null, stagedVersion: null, updateAvailable: false,
+        lastUpdateCheck: null, lastUpdateResult: null,
+      });
     });
     it('includes cached mesh peers', function() {
       const m = new MeshManager();
@@ -281,10 +293,12 @@ describe('MeshManager', function() {
   });
 
   describe('never-quit supervision', function() {
-    it('_shouldAutoRestart is true unless stopping', function() {
+    it('_shouldAutoRestart is true unless stopping or updating', function() {
       const m = new MeshManager();
       assert.strictEqual(m._shouldAutoRestart(), true);
       m.stopping = true;
+      assert.strictEqual(m._shouldAutoRestart(), false);
+      m.stopping = false; m._updating = true;
       assert.strictEqual(m._shouldAutoRestart(), false);
     });
 
@@ -327,6 +341,228 @@ describe('MeshManager', function() {
         global.setTimeout = realSetTimeout;
       }
       assert.strictEqual(m.retryCount, 1);
+    });
+
+    it('does not spawn while an update is in flight', async function() {
+      const m = new MeshManager();
+      m._updating = true;
+      let spawned = false;
+      m._spawn = async () => { spawned = true; };
+      const realSetTimeout = global.setTimeout;
+      global.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, 0, ...rest);
+      try {
+        await m._restart();
+      } finally {
+        global.setTimeout = realSetTimeout;
+      }
+      assert.strictEqual(spawned, false, 'crash-restart must not race an update');
+    });
+  });
+
+  describe('auto-update', function() {
+    function tempDir() {
+      return fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-update-'));
+    }
+
+    it('is on by default and honors the kill-switches', function() {
+      const prevMesh = process.env.AIORDIE_MESH_AUTO_UPDATE;
+      const prevGlobal = process.env.AIORDIE_AUTO_UPDATE;
+      try {
+        delete process.env.AIORDIE_MESH_AUTO_UPDATE;
+        delete process.env.AIORDIE_AUTO_UPDATE;
+        assert.strictEqual(new MeshManager()._autoUpdateEnabled, true);
+        process.env.AIORDIE_MESH_AUTO_UPDATE = '0';
+        assert.strictEqual(new MeshManager()._autoUpdateEnabled, false);
+        delete process.env.AIORDIE_MESH_AUTO_UPDATE;
+        process.env.AIORDIE_AUTO_UPDATE = '0';
+        assert.strictEqual(new MeshManager()._autoUpdateEnabled, false);
+      } finally {
+        if (prevMesh === undefined) delete process.env.AIORDIE_MESH_AUTO_UPDATE; else process.env.AIORDIE_MESH_AUTO_UPDATE = prevMesh;
+        if (prevGlobal === undefined) delete process.env.AIORDIE_AUTO_UPDATE; else process.env.AIORDIE_AUTO_UPDATE = prevGlobal;
+      }
+    });
+
+    it('start() verifies the sidecar even when the file already exists', async function() {
+      const dir = tempDir();
+      try {
+        const sidecar = path.join(dir, 'ai-or-die-mesh');
+        fs.writeFileSync(sidecar, 'old-bytes');
+        let ensured = null;
+        const installer = {
+          stableSidecarPath: () => sidecar,
+          ensureSidecar: async (d) => { ensured = d; return sidecar; },
+          promoteStagedSidecar: async () => ({ promoted: false }),
+          loadLock: () => ({ contentHash: 'h1', assets: {} }),
+        };
+        const m = new MeshManager({ stateDir: path.join(dir, 'ts-state'), sidecar, _installer: installer, authKey: 'k' });
+        m._appBase = dir;
+        let spawned = false;
+        m._spawn = async () => {
+          spawned = true;
+          m.proc = { pid: 2, kill() {}, once(ev, cb) { if (ev === 'exit') setImmediate(cb); } };
+          m.dnsName = 'h.tail';
+        };
+        await m.start();
+        assert.strictEqual(ensured, sidecar, 'ensureSidecar must run on every start, not just when missing');
+        assert.strictEqual(spawned, true);
+        m._stopUpdateTimer();
+        await m.stop();
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('start() promotes a staged build while the image is free', async function() {
+      const dir = tempDir();
+      try {
+        const sidecar = path.join(dir, 'ai-or-die-mesh');
+        fs.writeFileSync(sidecar, 'stable-old');
+        let promoted = false;
+        const installer = {
+          stableSidecarPath: () => sidecar,
+          ensureSidecar: async () => sidecar,
+          promoteStagedSidecar: async () => { promoted = true; return { promoted: true }; },
+          loadLock: () => ({ contentHash: 'newver', assets: {} }),
+        };
+        const m = new MeshManager({ stateDir: path.join(dir, 'ts-state'), sidecar, _installer: installer, authKey: 'k' });
+        m._appBase = dir;
+        m._spawn = async () => {
+          m.proc = { pid: 3, kill() {}, once(ev, cb) { if (ev === 'exit') setImmediate(cb); } };
+          m.dnsName = 'h.tail';
+        };
+        await m.start();
+        assert.strictEqual(promoted, true, 'staged build must promote at start when free');
+        assert.strictEqual(m._activeHash, 'newver');
+        m._stopUpdateTimer();
+        await m.stop();
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('_updateTick is a quiet no-op when the binary matches the lock', async function() {
+      const m = new MeshManager({
+        sidecar: path.join('nowhere', 'ai-or-die-mesh'),
+        _installer: {
+          loadLock: () => ({ contentHash: 'abc', assets: { 'test-asset': 'want-hash' } }),
+          assetName: () => 'test-asset',
+          sha256File: async () => 'WANT-HASH',
+          stageSidecar: async () => { throw new Error('must not stage when current'); },
+        },
+      });
+      let recycled = false;
+      m._recycleSidecarForUpdate = async () => { recycled = true; return { recycled: false }; };
+      const res = await m._updateTick();
+      assert.strictEqual(res.checked, true);
+      assert.strictEqual(recycled, false);
+      assert.deepStrictEqual(m._lastUpdateResult, { ok: true, upToDate: true });
+      m._stopUpdateTimer();
+    });
+
+    it('_updateTick skips when auto-update is disabled', async function() {
+      const m = new MeshManager({
+        autoUpdate: false,
+        _installer: { stageSidecar: async () => { throw new Error('must not run'); } },
+      });
+      const res = await m._updateTick();
+      assert.deepStrictEqual(res, { checked: false });
+      assert.strictEqual(m._lastUpdateCheck, null);
+    });
+
+    it('_updateTick stages and recycles on drift, preserving the tailnet URL', async function() {
+      const dir = tempDir();
+      try {
+        const stateDir = path.join(dir, 'ts-state');
+        fs.mkdirSync(stateDir, { recursive: true });
+        const sidecar = path.join(dir, 'ai-or-die-mesh');
+        fs.writeFileSync(sidecar, 'old');
+        let staged = false;
+        const installer = {
+          loadLock: () => ({ contentHash: 'newver', assets: { 'test-asset': 'new-hash' } }),
+          assetName: () => 'test-asset',
+          sha256File: async () => 'old-hash',
+          stageSidecar: async () => { staged = true; return sidecar + '.new'; },
+          promoteStagedSidecar: async () => ({ promoted: true }),
+          rollbackSidecar: async () => { throw new Error('must not roll back on success'); },
+        };
+        const m = new MeshManager({ stateDir, sidecar, _installer: installer });
+        m._appBase = dir;
+        m.proc = { pid: 1 };
+        m.dnsName = 'host.tail.ts.net';
+        m.scheme = 'https';
+        m._stopSidecarProc = async () => { m.proc = null; m.dnsName = null; };
+        m._spawn = async () => { m.proc = { pid: 2 }; m.dnsName = 'host.tail.ts.net'; m.scheme = 'https'; };
+        await m._updateTick();
+        assert.strictEqual(staged, true, 'drift must trigger staging');
+        assert.strictEqual(m.dnsName, 'host.tail.ts.net', 'same tailnet URL must be re-established');
+        assert.strictEqual(m._updating, false, 'update flag must clear');
+        assert.deepStrictEqual(m._lastUpdateResult, { ok: true, updated: true, reconnected: true, sameUrl: true });
+        m._stopUpdateTimer();
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('_updateTick keeps the old sidecar when staging fails', async function() {
+      const m = new MeshManager({
+        sidecar: path.join('nowhere', 'ai-or-die-mesh'),
+        _installer: {
+          loadLock: () => ({ contentHash: 'newver', assets: { 'test-asset': 'new-hash' } }),
+          assetName: () => 'test-asset',
+          sha256File: async () => 'old-hash',
+          stageSidecar: async () => { const e = new Error('offline'); e.code = 'network'; throw e; },
+        },
+      });
+      m.proc = { pid: 1 };
+      m.dnsName = 'host.tail.ts.net';
+      await m._updateTick();
+      assert.ok(m.proc, 'old sidecar must keep running');
+      assert.strictEqual(m.dnsName, 'host.tail.ts.net');
+      assert.strictEqual(m._lastUpdateResult.ok, false);
+      assert.strictEqual(m._lastUpdateResult.reason, 'network');
+      m._stopUpdateTimer();
+    });
+
+    it('recycle rolls back to .prev when the new build yields no URL', async function() {
+      const dir = tempDir();
+      try {
+        const stateDir = path.join(dir, 'ts-state');
+        fs.mkdirSync(stateDir, { recursive: true });
+        const sidecar = path.join(dir, 'ai-or-die-mesh');
+        fs.writeFileSync(sidecar, 'old');
+        let rolledBack = false;
+        const installer = {
+          promoteStagedSidecar: async () => ({ promoted: true }),
+          rollbackSidecar: async () => { rolledBack = true; return { restored: true }; },
+        };
+        const m = new MeshManager({ stateDir, sidecar, _installer: installer });
+        m._appBase = dir;
+        m.proc = { pid: 1 };
+        m.dnsName = 'host.tail.ts.net';
+        m._stopSidecarProc = async () => { m.proc = null; m.dnsName = null; };
+        let spawns = 0;
+        m._spawn = async () => {
+          spawns += 1;
+          if (spawns === 1) { m.proc = { pid: 2 }; /* no dnsName: new build failed */ }
+          else { m.proc = { pid: 3 }; m.dnsName = 'host.tail.ts.net'; m.scheme = 'https'; }
+        };
+        const res = await m._recycleSidecarForUpdate('badver');
+        assert.strictEqual(rolledBack, true, 'failed update must roll back');
+        assert.strictEqual(m.dnsName, 'host.tail.ts.net', 'old path must be restored');
+        assert.ok(m._failedUpdateVersions.has('badver'), 'bad version must not be retried');
+        assert.strictEqual(res.reason, 'rollback');
+        m._stopUpdateTimer();
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('stop() clears the update timer', async function() {
+      const m = new MeshManager({ _updateIntervalMs: 50 });
+      m._startUpdateTimer();
+      assert.ok(m._updateTimer, 'timer must be armed');
+      await m.stop();
+      assert.strictEqual(m._updateTimer, null, 'stop must clear the timer');
     });
   });
 });
