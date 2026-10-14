@@ -76,11 +76,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version-file: mesh/go.mod
       - name: go mod tidy + vet + test + build
         working-directory: mesh
         run: |
           go mod tidy
+          # Fail if the committed go.mod/go.sum was not tidy-clean, so the
+          # reviewed module pins are exactly what gets vetted/tested/built.
+          git diff --exit-code -- go.mod go.sum
           go vet ./...
           go test ./...
           CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=ci" -o /tmp/aiordie-mesh .

@@ -65,6 +65,11 @@ in `.github/workflows/release-on-main.yml`:
 Build locally with `bash scripts/build-mesh-sidecar.sh` (regenerates the lock's
 asset checksums); run `npm run mesh:lock` after changing `mesh/` source.
 
+> **Platform floor (Tailscale v1.104.x, Go 1.27 toolchain):** the sidecar
+> binaries require **macOS 13+** (Go 1.27 no longer runs on macOS Monterey 12;
+> Windows/Linux floors unchanged). Build with the Go version in `mesh/go.mod`
+> (CI reads it via `go-version-file`).
+
 > **Dev note:** the in-repo lock keeps `assets: {}` — CI embeds the per-platform
 > checksums into the lock at publish, so they ship only in the npm tarball.
 > Running `--mesh` from a raw `git` checkout (no published `mesh-<hash>` release

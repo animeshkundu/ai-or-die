@@ -74,7 +74,7 @@ jobs:
       - uses: actions/setup-go@v5
         if: steps.check.outputs.complete != 'true'
         with:
-          go-version: '1.23'
+          go-version-file: mesh/go.mod
 
       - name: Cross-build sidecar + checksums
         if: steps.check.outputs.complete != 'true'
