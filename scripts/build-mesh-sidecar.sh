@@ -9,15 +9,19 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 
+cd "$root/mesh"
+out="$root/dist/mesh"; rm -rf "$out"; mkdir -p "$out"
+
+# Ensure go.mod/go.sum are current FIRST: the content hash below is stamped into
+# the binary and names the release tag, so it must describe the exact source
+# being built — never a pre-tidy tree.
+go mod tidy
+git diff --exit-code -- go.mod go.sum
+
 # Content hash (Go-free) identifies this sidecar build; stamp it into the binary
 # so `ai-or-die-mesh --version` is traceable and the release tag is mesh-<hash>.
 version="$(node "$root/scripts/mesh-lock.js" --print-hash)"
 echo "mesh content hash: $version"
-
-cd "$root/mesh"
-out="$root/dist/mesh"; rm -rf "$out"; mkdir -p "$out"
-
-go mod tidy   # generate go.sum for a reproducible build
 
 emit() {  # <goos> <goarch> <plat> <arch> <ext>
   local name="ai-or-die-mesh-$3-$4$5"
