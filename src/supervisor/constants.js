@@ -32,6 +32,18 @@ const DEFAULT_AUTO_APPLY_IDLE_MS = 14400000;
 const SERVER_READY_TIMEOUT_MS = 30000;
 const SHUTDOWN_GRACE_MS = 15000;
 
+// Version of the running supervisor. In a source checkout this is the
+// package version; in the staged stable tree (~/.ai-or-die/, which has no
+// package.json by design) it falls back to the env override or a sentinel.
+// Never throws — version must never break startup.
+function supervisorVersion() {
+  try {
+    return require('../../package.json').version;
+  } catch (_) {
+    return process.env.AIORDIE_VERSION || '0.0.0-staged';
+  }
+}
+
 module.exports = {
   RESTART_EXIT_CODE,
   NON_RETRYABLE_EXIT_CODE,
@@ -49,4 +61,5 @@ module.exports = {
   HANDOFF_TIMEOUT_MS,
   SERVER_READY_TIMEOUT_MS,
   SHUTDOWN_GRACE_MS,
+  supervisorVersion,
 };
