@@ -61,21 +61,27 @@ describe('MeshManager', function() {
   });
 
   describe('getStatus', function() {
+    const freshSidecar = { ref: null, tsVersion: null, contentHash: null, refreshDisabled: false };
     it('not running until a name binds', function() {
-      assert.deepStrictEqual(new MeshManager().getStatus(), { running: false, publicUrl: null, peers: [] });
+      assert.deepStrictEqual(new MeshManager().getStatus(), { running: false, publicUrl: null, peers: [], sidecar: freshSidecar });
     });
     it('reports https url once up', function() {
       const m = new MeshManager(); m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'https';
-      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'https://h.tail.ts.net', peers: [] });
+      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'https://h.tail.ts.net', peers: [], sidecar: freshSidecar });
     });
     it('reports the http url when the edge degraded (no certs)', function() {
       const m = new MeshManager(); m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'http';
-      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'http://h.tail.ts.net', peers: [] });
+      assert.deepStrictEqual(m.getStatus(), { running: true, publicUrl: 'http://h.tail.ts.net', peers: [], sidecar: freshSidecar });
     });
     it('includes cached mesh peers', function() {
       const m = new MeshManager();
       m.peers = { self: { hostname: 'self', dnsName: 'self.tail' }, peers: [{ hostname: 'p', dnsName: 'p.tail', online: true }] };
       assert.deepStrictEqual(m.getStatus().peers, [{ hostname: 'p', dnsName: 'p.tail', online: true }]);
+    });
+    it('reports sidecar versions once MESH-VERSION arrives', function() {
+      const m = new MeshManager();
+      m._handleStdoutData(Buffer.from('MESH-VERSION v1.104.1 abc123\n'));
+      assert.deepStrictEqual(m.getStatus().sidecar, { ref: null, tsVersion: 'v1.104.1', contentHash: 'abc123', refreshDisabled: false });
     });
   });
 

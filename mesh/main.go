@@ -14,6 +14,8 @@
 // post-advertise failure would otherwise hang the browser.
 //
 // stdout protocol (parsed by src/mesh-manager.js):
+//   MESH-VERSION <tailscaleVersion> <contentHash>  build identity, printed
+//                                first so the manager learns it even on NEEDLOGIN
 //   MESH-URL https://<name>      node is up, serving real TLS at the edge
 //   MESH-URL http://<name>       node is up, but TLS certs unavailable (degraded)
 //   MESH-NOCERT                  hint: enable HTTPS Certificates in the tailnet
@@ -51,7 +53,16 @@ import (
 )
 
 // version is stamped at build time via -ldflags "-X main.version=<contentHash>".
+// tsVersion is the pinned tailscale.com client version from mesh/go.mod,
+// stamped via -ldflags "-X main.tsVersion=<version>" (see
+// scripts/build-mesh-sidecar.sh). Both default to "dev" for local `go run`.
 var version = "dev"
+var tsVersion = "dev"
+
+// meshVersionLine renders the MESH-VERSION protocol line. Pure (unit-tested).
+func meshVersionLine() string {
+	return "MESH-VERSION " + tsVersion + " " + version
+}
 
 const (
 	certWaitTimeout   = 20 * time.Second
@@ -70,8 +81,13 @@ func main() {
 
 	if *showVersion {
 		fmt.Println(version)
+		fmt.Println("tailscale " + tsVersion)
 		return
 	}
+
+	// Build identity first: the manager parses MESH-VERSION even when the
+	// node never comes up (missing key → NEEDLOGIN below).
+	fmt.Println(meshVersionLine())
 
 	proxyBearer := os.Getenv("AIORDIE_PROXY_BEARER")
 

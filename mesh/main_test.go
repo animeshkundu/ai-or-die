@@ -121,3 +121,14 @@ func TestRedirectToHTTPS(t *testing.T) {
 		t.Fatalf("Location=%q, want https://node.tailnet.ts.net/path?q=1", loc)
 	}
 }
+
+func TestMeshVersionLine(t *testing.T) {
+	line := meshVersionLine()
+	if !strings.HasPrefix(line, "MESH-VERSION ") {
+		t.Fatalf("version line must start with MESH-VERSION, got %q", line)
+	}
+	parts := strings.Split(line, " ")
+	if len(parts) != 3 || parts[1] == "" || parts[2] == "" {
+		t.Fatalf("version line must be 'MESH-VERSION <tsVersion> <hash>', got %q", line)
+	}
+}

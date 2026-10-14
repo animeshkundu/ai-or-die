@@ -84,6 +84,39 @@ before it is ever placed at the runnable path, and an existing file is
 re-verified rather than trusted blindly. A signed manifest (Sigstore/GPG) is the
 follow-up for end-to-end provenance.
 
+## Auto-refresh (newer Tailscale client)
+
+While `--mesh` runs, the manager polls the `mesh-*` releases (default every
+6h; `AIORDIE_MESH_REFRESH_INTERVAL_MS`, floor 30min; off via
+`AIORDIE_MESH_NO_REFRESH=1`) and, when a newer build exists, refreshes the
+sidecar **without operator action** — the usual reason a newer build exists is
+a `tailscale.com` bump in `mesh/go.mod` (which flips the content hash and
+publishes a new `mesh-<hash>` tag).
+
+- **Discovery:** newest published, non-draft `mesh-*` release by publish date.
+  Skipped while a dev ref is pinned (`AIORDIE_MESH_REF`/`_VERSION` wins).
+- **Verify:** the new asset is downloaded to temp and checked against that
+  release's `ai-or-die-mesh-checksums.txt`, which must list the full platform
+  matrix (a truncated manifest fails). Honest trust note: manifest and binary
+  share an origin (GitHub TLS), so this protects against corruption and
+  partial downloads — not a compromised release pipeline, which could equally
+  ship a malicious npm tarball. The shipped-lock path (`ensureSidecar` at
+  startup) remains the strict anchor. A signed manifest is the follow-up.
+- **Swap + reconnect:** the sidecar is stopped (releasing the Windows .exe
+  lock), the stable path is swapped atomically (previous kept as `.prev`),
+  provenance (`mesh/sidecar.json`) is updated, and the sidecar respawns —
+  reconnecting with the persisted tailnet identity, so **no new auth key** is
+  needed. Exit-handler restarts are held during the swap (no double-spawn).
+- **Rollback:** if the new build never yields `MESH-URL` and its process is
+  gone, `.prev` is restored, provenance is reverted, and refresh latches off
+  for the session (no flapping). A live-but-URL-less child (e.g. `NEEDLOGIN`
+  after a key rotation) is left alone — the binary works; it needs a key.
+- **Visibility:** the sidecar prints `MESH-VERSION <tailscaleVersion>
+  <contentHash>` first at startup (even on `NEEDLOGIN`); `getStatus()` exposes
+  `{ ref, tsVersion, contentHash, refreshDisabled }` (additive key — snapshot
+  monitors will see it once). During a refresh swap the last-good versions
+  stand until the new child's line arrives (no null flap).
+
 ## HTTPS & secure context
 
 The mesh is for **remote** access, and ai-or-die's microphone (STT) and PWA
