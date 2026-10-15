@@ -30,10 +30,12 @@ See ADR-0034 for rationale and the alternatives that were tested and rejected.
 
 ## Install flow (zero manual steps)
 
-1. `ai-or-die --mesh` checks `%LOCALAPPDATA%\ai-or-die\bin\ai-or-die-mesh-<hash>.exe`
-   (`~/.ai-or-die/bin/ai-or-die-mesh-<hash>` on POSIX). The path is content-addressed,
-   so a new build installs alongside the old one (never overwrites a running `.exe`).
-2. If missing, it fetches `ai-or-die-mesh-<plat>-<arch>[.exe]` from
+1. `ai-or-die --mesh` verifies `%LOCALAPPDATA%\ai-or-die\bin\ai-or-die-mesh.exe`
+   (`~/.ai-or-die/bin/ai-or-die-mesh` on POSIX) against the lock on **every
+   start** — promoting a previously staged (`.new`) build first while the image
+   is free, then re-verifying via `ensureSidecar` (no network when it already
+   matches). A stale binary never survives `npm i -g ai-or-die@latest` + restart.
+2. If missing or stale, it fetches `ai-or-die-mesh-<plat>-<arch>[.exe]` from
    `https://github.com/animeshkundu/ai-or-die/releases/download/mesh-<contentHash>/`
    and verifies its SHA-256 against the checksum embedded in `mesh-sidecar.lock.json`.
 3. If `AIORDIE_TS_AUTHKEY` is set (reusable + tagged), it enrolls; otherwise it
@@ -42,6 +44,54 @@ See ADR-0034 for rationale and the alternatives that were tested and rejected.
 
 `AIORDIE_MESH_REF` (or `AIORDIE_MESH_VERSION`) overrides the release tag for
 dev/testing (announced loudly).
+
+## Auto-update (on by default)
+
+Long-lived daemons converge without a restart or operator action. Every 24h
+(±15m jitter) the manager runs two tiers on one tick:
+
+- **Tier 1 — lock convergence.** The stable file's hash is compared to the
+  installed lock (catches `npm i -g` upgrades underneath the daemon). On
+  drift the verified download is staged to a `.new` sibling, then **only the
+  sidecar is recycled** — stop child (frees the Windows image lock), promote
+  `.new` → stable (previous stable kept as single `.prev` backup), respawn.
+  Server, sessions and localhost clients never drop; the tailnet URL is
+  re-established from the persisted `stateDir` identity (no re-enroll).
+- **Tier 2 — release freshness** (only when tier 1 is current). The newest
+  published, non-draft `mesh-*` release is checked — the usual reason a newer
+  build exists is a `tailscale.com` bump in `mesh/go.mod`, which flips the
+  content hash and publishes a new tag. A newer tag is downloaded to the
+  `.new` path and checked against that release's
+  `ai-or-die-mesh-checksums.txt`, which must name the full platform matrix
+  (a truncated manifest fails), then flows through the same pre-flight →
+  recycle path with the manifest hash overriding the lock comparison.
+  Skipped while a dev ref is pinned (`AIORDIE_MESH_REF`/`_VERSION` wins).
+
+Before any recycle, the staged build is **pre-flighted**: `<staged> --version`
+must exit 0 with the expected content hash in its output (30s timeout). A
+failed pre-flight deletes the stage and quarantines the version with the old
+child untouched.
+
+A build that yields no `MESH-URL` from a **dead** child rolls back to `.prev`
+once (provenance reverted truthfully, restore accounted) and that version is
+quarantined in `mesh/quarantine.json` (30-day TTL; any successful recycle
+clears the slate) — a newer build still applies later, and a bad build stays
+stood down across restarts even after its only backup was consumed. A **live**
+child without a URL (e.g. `NEEDLOGIN` while the operator enrolls) is left
+alone; the binary works. Any staging/download failure keeps the old sidecar
+running for the next cycle. Crash-restarts stand down during updates and never
+double-spawn over a live child. Ticks are mutex-guarded and re-check
+`stopping` after every slow await, so an operator stop is never resurrected.
+
+Kill-switches: `AIORDIE_MESH_AUTO_UPDATE=0` (specific),
+`AIORDIE_AUTO_UPDATE=0` (existing global flag). Interval override:
+`AIORDIE_MESH_UPDATE_INTERVAL_MS` (floor 30min).
+
+Status (`getStatus()`) exposes `activeVersion`, `stagedVersion`,
+`updateAvailable`, `lastUpdateCheck`, `lastUpdateResult`, plus `tsVersion`
+and `sidecarRef` (learned from the sidecar's `MESH-VERSION
+<tailscaleVersion> <contentHash>` line, printed first at startup even on
+`NEEDLOGIN`). Last-good versions stand across a swap (no null flap).
 
 ## Versioning & publishing (content-addressed)
 
@@ -78,44 +128,15 @@ asset checksums); run `npm run mesh:lock` after changing `mesh/` source.
 > `bash scripts/build-mesh-sidecar.sh` (requires Go) to populate it.
 
 **Trust model:** the per-platform SHA-256 ships inside the signed npm package, so
-the binary is verified against a checksum the release **cannot** tamper with
-(unlike fetching `checksums.txt` from the same release). The binary is verified
-before it is ever placed at the runnable path, and an existing file is
-re-verified rather than trusted blindly. A signed manifest (Sigstore/GPG) is the
-follow-up for end-to-end provenance.
-
-## Auto-refresh (newer Tailscale client)
-
-While `--mesh` runs, the manager polls the `mesh-*` releases (default every
-6h; `AIORDIE_MESH_REFRESH_INTERVAL_MS`, floor 30min; off via
-`AIORDIE_MESH_NO_REFRESH=1`) and, when a newer build exists, refreshes the
-sidecar **without operator action** — the usual reason a newer build exists is
-a `tailscale.com` bump in `mesh/go.mod` (which flips the content hash and
-publishes a new `mesh-<hash>` tag).
-
-- **Discovery:** newest published, non-draft `mesh-*` release by publish date.
-  Skipped while a dev ref is pinned (`AIORDIE_MESH_REF`/`_VERSION` wins).
-- **Verify:** the new asset is downloaded to temp and checked against that
-  release's `ai-or-die-mesh-checksums.txt`, which must list the full platform
-  matrix (a truncated manifest fails). Honest trust note: manifest and binary
-  share an origin (GitHub TLS), so this protects against corruption and
-  partial downloads — not a compromised release pipeline, which could equally
-  ship a malicious npm tarball. The shipped-lock path (`ensureSidecar` at
-  startup) remains the strict anchor. A signed manifest is the follow-up.
-- **Swap + reconnect:** the sidecar is stopped (releasing the Windows .exe
-  lock), the stable path is swapped atomically (previous kept as `.prev`),
-  provenance (`mesh/sidecar.json`) is updated, and the sidecar respawns —
-  reconnecting with the persisted tailnet identity, so **no new auth key** is
-  needed. Exit-handler restarts are held during the swap (no double-spawn).
-- **Rollback:** if the new build never yields `MESH-URL` and its process is
-  gone, `.prev` is restored, provenance is reverted, and refresh latches off
-  for the session (no flapping). A live-but-URL-less child (e.g. `NEEDLOGIN`
-  after a key rotation) is left alone — the binary works; it needs a key.
-- **Visibility:** the sidecar prints `MESH-VERSION <tailscaleVersion>
-  <contentHash>` first at startup (even on `NEEDLOGIN`); `getStatus()` exposes
-  `{ ref, tsVersion, contentHash, refreshDisabled }` (additive key — snapshot
-  monitors will see it once). During a refresh swap the last-good versions
-  stand until the new child's line arrives (no null flap).
+the tier-1 binary is verified against a checksum the release **cannot** tamper
+with (unlike fetching `checksums.txt` from the same release). Tier-2 freshness
+checks manifest + binary share one origin (GitHub TLS): they prove
+integrity-in-transit, not pipeline compromise — a release pipeline attacker
+could equally ship a malicious npm tarball, so the shipped-lock startup path
+stays the strict anchor. The binary is verified before it is ever placed at
+the runnable path, and an existing file is re-verified rather than trusted
+blindly. A signed manifest (Sigstore/GPG) is the follow-up for end-to-end
+provenance.
 
 ## HTTPS & secure context
 

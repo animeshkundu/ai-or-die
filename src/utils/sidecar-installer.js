@@ -63,24 +63,49 @@ function stableSidecarPath() {
   return path.join(baseDir(), 'bin', `ai-or-die-mesh${ext}`);
 }
 
-// Provenance: which release ref the runnable binary was verified against.
-// The stable path is replaced in place across versions, so the bytes alone
-// cannot tell the manager what is running. Written on every successful
+// Staged (.new) + backup (.prev) siblings of the stable path, kept on the same
+// volume so promotion is an atomic rename. On Windows the suffix is inserted
+// BEFORE .exe so the staged file stays directly executable for `--version`
+// pre-flight. The staged file is NEVER launched as the long-lived child until
+// promoted; the stable path remains the only launched image (ADR-0036).
+function stagedSidecarPath(stable) {
+  const s = stable || stableSidecarPath();
+  if (process.platform === 'win32' && /\.exe$/i.test(s)) {
+    return s.replace(/\.exe$/i, '.new.exe');
+  }
+  return `${s}.new`;
+}
+
+function prevSidecarPath(stable) {
+  const s = stable || stableSidecarPath();
+  if (process.platform === 'win32' && /\.exe$/i.test(s)) {
+    return s.replace(/\.exe$/i, '.prev.exe');
+  }
+  return `${s}.prev`;
+}
+
+// Install provenance: which release ref the runnable binary was verified
+// against. The stable path is replaced in place across versions, so the bytes
+// alone cannot tell the manager what is running. Written on every successful
 // install/verify; read by MeshManager to decide whether a refresh is due.
-// Best-effort, never throws. Mode 0600 (no secrets inside, but cheap).
+// Skipped unless dest lives under a `bin/` dir (real installs) so unit tests
+// with temp dests never pollute the real home dir. Best-effort, never throws.
 function provenancePath(dest) {
   try {
-    const binDir = path.dirname(dest || stableSidecarPath());
-    const base = path.basename(binDir) === 'bin' ? path.dirname(binDir) : baseDir();
-    return path.join(base, 'mesh', 'sidecar.json');
+    const d = dest || stableSidecarPath();
+    const binDir = path.dirname(d);
+    if (path.basename(binDir) !== 'bin') return null;
+    return path.join(path.dirname(binDir), 'mesh', 'sidecar.json');
   } catch (_) {
-    return path.join(baseDir(), 'mesh', 'sidecar.json');
+    return null;
   }
 }
 
 function loadProvenance(dest) {
   try {
-    return JSON.parse(fs.readFileSync(provenancePath(dest), 'utf8'));
+    const p = provenancePath(dest);
+    if (!p) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
   } catch (_) {
     return null;
   }
@@ -89,6 +114,7 @@ function loadProvenance(dest) {
 function writeProvenance(dest, info) {
   try {
     const p = provenancePath(dest);
+    if (!p) return;
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(
       p,
@@ -144,8 +170,9 @@ async function _sha256(file) {
 
 async function _download(url, tmp, ms = 120000, fetchImpl) {
   const t0 = Date.now();
-  // Total deadline covers the body stream too (headers-only timeout would let
-  // a slow-drip body hold the caller — and the refresh in-flight flag — forever).
+  // Total deadline covers the body stream too (a headers-only timeout would
+  // let a slow-drip body hold the caller — and a refresh in-flight flag —
+  // forever).
   const totalMs = ms * 5;
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), ms);
@@ -199,13 +226,13 @@ async function ensureSidecar(dest, opts = {}) {
   }
 
   dest = dest || stableSidecarPath();
-  const ref = meshRef(lock);
+  const lockRef = meshRef(lock);
 
   // Existing file: trust only if it matches; otherwise replace it.
   if (fs.existsSync(dest)) {
     if ((await _sha256(dest)).toLowerCase() === want) {
       stripProvenance(dest);
-      writeProvenance(dest, { ref, contentHash: lock.contentHash || null, sha256: want });
+      writeProvenance(dest, { ref: lockRef, contentHash: lock.contentHash || null, sha256: want });
       return dest;
     }
     try { await fsp.unlink(dest); }
@@ -218,13 +245,13 @@ async function ensureSidecar(dest, opts = {}) {
   }
 
   await fsp.mkdir(path.dirname(dest), { recursive: true });
-  const url = `https://github.com/${REPO}/releases/download/${ref}/${name}`;
+  const url = `https://github.com/${REPO}/releases/download/${lockRef}/${name}`;
   const tmp = `${dest}.${crypto.randomBytes(8).toString('hex')}.incomplete`;
   try {
     await _download(url, tmp);
     // Verify BEFORE the bytes ever reach the runnable path (no TOCTOU window).
     if ((await _sha256(tmp)).toLowerCase() !== want) {
-      throw new SidecarError('checksum-mismatch', `checksum mismatch for ${name} from ${ref}`);
+      throw new SidecarError('checksum-mismatch', `checksum mismatch for ${name} from ${lockRef}`);
     }
     if (process.platform !== 'win32') { try { await fsp.chmod(tmp, 0o755); } catch (_) {} }
     try {
@@ -242,12 +269,160 @@ async function ensureSidecar(dest, opts = {}) {
     try { await fsp.unlink(tmp); } catch (_) {}
   }
   stripProvenance(dest);
-  writeProvenance(dest, { ref, contentHash: lock.contentHash || null, sha256: want });
+  writeProvenance(dest, { ref: lockRef, contentHash: lock.contentHash || null, sha256: want });
   return dest;
 }
 
-// Release metadata for the auto-refresh check (MeshManager): the newest
-// published, non-draft `mesh-*` release. `fetchImpl` injects fetch (tests).
+// Download + verify the sidecar pinned by the lock into the STAGED sibling
+// path, never touching the stable (possibly running) image. Existing valid
+// staged file short-circuits with no network. Returns the staged path.
+// `opts.lock` injects a lock object (tests); production reads the committed lock.
+async function stageSidecar(stable, opts = {}) {
+  const dest = stable || stableSidecarPath();
+  const staged = stagedSidecarPath(dest);
+  const lock = opts.lock || loadLock();
+  const name = assetName();
+  if (!name) throw new SidecarError('unsupported-platform', `unsupported platform ${process.platform}/${process.arch}`);
+
+  const want = (lock.assets && lock.assets[name] || '').toLowerCase();
+  if (!want) {
+    throw new SidecarError('lock-unfinalized', `mesh-sidecar.lock.json has no checksum for ${name} (built without the mesh asset pipeline?)`);
+  }
+
+  if (fs.existsSync(staged)) {
+    try {
+      if ((await _sha256(staged)).toLowerCase() === want) { stripProvenance(staged); return staged; }
+    } catch (_) { /* fall through to re-download */ }
+    try { await fsp.unlink(staged); } catch (e) {
+      if (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES') {
+        throw new SidecarError('locked-binary', `cannot replace staged sidecar at ${staged} (${e.code})`);
+      }
+      // Best-effort cleanup of a corrupt stage; a real fault surfaces below.
+      try { await fsp.unlink(staged); } catch (_) {}
+    }
+  }
+
+  await fsp.mkdir(path.dirname(staged), { recursive: true });
+  const ref = meshRef(lock);
+  const url = `https://github.com/${REPO}/releases/download/${ref}/${name}`;
+  const tmp = `${staged}.${crypto.randomBytes(8).toString('hex')}.incomplete`;
+  try {
+    await _download(url, tmp);
+    // Verify BEFORE the bytes ever reach the staged path (no TOCTOU window).
+    if ((await _sha256(tmp)).toLowerCase() !== want) {
+      throw new SidecarError('checksum-mismatch', `checksum mismatch for ${name} from ${ref}`);
+    }
+    if (process.platform !== 'win32') { try { await fsp.chmod(tmp, 0o755); } catch (_) {} }
+    try {
+      await fsp.rename(tmp, staged);
+    } catch (e) {
+      if (fs.existsSync(staged)) {
+        try {
+          if ((await _sha256(staged)).toLowerCase() === want) { stripProvenance(staged); return staged; }
+        } catch (_) {}
+      }
+      if (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES') {
+        throw new SidecarError('locked-binary', `cannot stage sidecar at ${staged} (${e.code})`);
+      }
+      throw e;
+    }
+  } finally {
+    try { await fsp.unlink(tmp); } catch (_) {}
+  }
+  stripProvenance(staged);
+  return staged;
+}
+
+// Promote a previously staged build to the stable path. The caller MUST ensure
+// no sidecar process is running (file is free — on Windows a running .exe
+// cannot be renamed). Moves current stable → .prev (single backup, overwritten),
+// staged → stable. Returns { promoted } and never leaves a half-moved state
+// without attempting restore. Throws SidecarError on lock problems, staged
+// corruption, or platform file locks.
+//
+// `opts.expectedSha256` overrides the lock comparison for release-tier builds
+// staged by fetchSidecarRef (whose hash is manifest-verified, not lock-pinned).
+// `opts.lock` injects a lock object (tests).
+async function promoteStagedSidecar(stable, opts = {}) {
+  const dest = stable || stableSidecarPath();
+  const staged = stagedSidecarPath(dest);
+  const prev = prevSidecarPath(dest);
+  if (!fs.existsSync(staged)) return { promoted: false, reason: 'nothing_staged' };
+
+  const lock = opts.lock || loadLock();
+  const name = assetName();
+  if (!name) throw new SidecarError('unsupported-platform', `unsupported platform ${process.platform}/${process.arch}`);
+  const want = (opts.expectedSha256 || (lock.assets && lock.assets[name]) || '').toLowerCase();
+  if (!want) {
+    throw new SidecarError('lock-unfinalized', `mesh-sidecar.lock.json has no checksum for ${name} (built without the mesh asset pipeline?)`);
+  }
+
+  if ((await _sha256(staged)).toLowerCase() !== want) {
+    try { await fsp.unlink(staged); } catch (_) {}
+    throw new SidecarError('checksum-mismatch', `staged sidecar at ${staged} does not match the expected checksum — deleted`);
+  }
+
+  if (fs.existsSync(dest)) {
+    try {
+      if ((await _sha256(dest)).toLowerCase() === want) {
+        // Already current — drop the redundant stage.
+        try { await fsp.unlink(staged); } catch (_) {}
+        return { promoted: false, reason: 'already_current' };
+      }
+    } catch (_) { /* unreadable stable — proceed to replace */ }
+    try { await fsp.unlink(prev); } catch (_) { /* no prior backup — fine */ }
+    try {
+      await fsp.rename(dest, prev);
+    } catch (e) {
+      if (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES') {
+        throw new SidecarError('locked-binary', `cannot replace in-use sidecar at ${dest} (${e.code})`);
+      }
+      throw e;
+    }
+  }
+
+  try {
+    await fsp.rename(staged, dest);
+  } catch (e) {
+    // Attempt restore so we never strand the stable path missing.
+    try { if (fs.existsSync(prev) && !fs.existsSync(dest)) await fsp.rename(prev, dest); } catch (_) {}
+    if (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES') {
+      throw new SidecarError('locked-binary', `cannot install sidecar at ${dest} (${e.code})`);
+    }
+    throw e;
+  }
+  stripProvenance(dest);
+  return { promoted: true, prev: fs.existsSync(prev) ? prev : null };
+}
+
+// Restore the .prev backup over a bad stable build (post-update rollback).
+// Deliberately does NOT verify against the lock: .prev is by definition the
+// pre-update build and will mismatch a newer lock. Returns { restored }.
+async function rollbackSidecar(stable) {
+  const dest = stable || stableSidecarPath();
+  const prev = prevSidecarPath(dest);
+  if (!fs.existsSync(prev)) return { restored: false, reason: 'no_backup' };
+  try { if (fs.existsSync(dest)) await fsp.unlink(dest); } catch (e) {
+    if (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES') {
+      throw new SidecarError('locked-binary', `cannot remove bad sidecar at ${dest} (${e.code})`);
+    }
+    throw e;
+  }
+  try {
+    await fsp.rename(prev, dest);
+  } catch (e) {
+    if (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES') {
+      throw new SidecarError('locked-binary', `cannot restore sidecar backup at ${dest} (${e.code})`);
+    }
+    throw e;
+  }
+  stripProvenance(dest);
+  return { restored: true };
+}
+
+// Release metadata for the freshness tier (MeshManager): the newest
+// published, non-draft `mesh-*` releases, newest first. `fetchImpl` injects
+// fetch (tests); production uses global fetch.
 async function listMeshReleases(fetchImpl) {
   const impl = fetchImpl || fetch;
   const url = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
@@ -287,14 +462,15 @@ function parseChecksums(text) {
   return out;
 }
 
-// Fetch one sidecar asset from an explicit release ref into a temp path and
-// verify it against that release's checksums manifest. Used by the
-// auto-refresh path, where no shipped lock covers the new ref: trust here is
-// GitHub-TLS + manifest consistency (asset present AND the manifest lists the
-// full platform matrix, so a truncated/forged-single-entry manifest fails),
-// documented in docs/specs/mesh.md. Returns { path, sha256, ref }.
-// Never writes the runnable path; the caller swaps after stopping the child.
-async function fetchSidecarRef(ref, tmpPath, opts = {}) {
+// Fetch one sidecar asset from an explicit release ref to `destPath` and
+// verify it against that release's checksums manifest. Used by the freshness
+// tier, where no shipped lock covers the new ref: trust here is GitHub-TLS +
+// exact-matrix manifest consistency (the manifest must name EXACTLY the
+// expected platform matrix — a count check would pass victim+filler), so this
+// proves integrity-in-transit, not pipeline compromise (documented in
+// docs/specs/mesh.md). Returns { path, sha256, ref }. Never writes the
+// runnable or staged paths; the caller stages then promotes.
+async function fetchSidecarRef(ref, destPath, opts = {}) {
   if (!/^mesh-[A-Za-z0-9._-]+$/.test(ref)) {
     throw new SidecarError('unsupported-platform', `invalid mesh ref ${JSON.stringify(ref)}`);
   }
@@ -312,10 +488,6 @@ async function fetchSidecarRef(ref, tmpPath, opts = {}) {
   if (manifestRes.status === 404) throw new SidecarError('assets-missing', `HTTP 404 for ${manifestUrl}`);
   if (!manifestRes.ok) throw new SidecarError('network', `HTTP ${manifestRes.status} for ${manifestUrl}`);
   const manifest = parseChecksums(await manifestRes.text());
-  const want = manifest[name];
-  // The manifest must cover EXACTLY the expected platform matrix — a count
-  // check is vacuous (victim asset + filler lines would pass). A same-origin
-  // manifest that cannot name every platform binary is rejected.
   let expected = null;
   try {
     expected = require('../../scripts/mesh-lock').ASSET_NAMES;
@@ -329,29 +501,36 @@ async function fetchSidecarRef(ref, tmpPath, opts = {}) {
       'ai-or-die-mesh-darwin-arm64',
     ];
   }
+  const want = manifest[name];
   const complete = want && Array.isArray(expected)
     && expected.length > 0
     && expected.every((n) => manifest[n]);
   if (!complete) {
     throw new SidecarError('checksum-mismatch', `checksums manifest from ${ref} is incomplete (no entry for ${name})`);
   }
-  // Stale tmp from a killed prior run would fail the exclusive create below
-  // permanently (predictable refresh path) — clear it before downloading.
-  try { await fsp.unlink(tmpPath); } catch (_) {}
-  await _download(`${base}/${name}`, tmpPath, 120000, fetchImpl);
-  if ((await _sha256(tmpPath)).toLowerCase() !== want) {
-    try { await fsp.unlink(tmpPath); } catch (_) {}
+  // The staged path is predictable; clear a stale tmp from a killed prior run
+  // so the exclusive create below cannot fail permanently.
+  try { await fsp.unlink(destPath); } catch (_) {}
+  await _download(`${base}/${name}`, destPath, 120000, fetchImpl);
+  if ((await _sha256(destPath)).toLowerCase() !== want) {
+    try { await fsp.unlink(destPath); } catch (_) {}
     throw new SidecarError('checksum-mismatch', `checksum mismatch for ${name} from ${ref}`);
   }
-  if (process.platform !== 'win32') { try { await fsp.chmod(tmpPath, 0o755); } catch (_) {} }
-  return { path: tmpPath, sha256: want, ref };
+  if (process.platform !== 'win32') { try { await fsp.chmod(destPath, 0o755); } catch (_) {} }
+  return { path: destPath, sha256: want, ref };
 }
 
 module.exports = {
   ensureSidecar,
+  stageSidecar,
+  promoteStagedSidecar,
+  rollbackSidecar,
   stableSidecarPath,
+  stagedSidecarPath,
+  prevSidecarPath,
   assetName,
   loadLock,
+  sha256File: _sha256,
   SidecarError,
   provenancePath,
   loadProvenance,
