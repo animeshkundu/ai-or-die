@@ -23,9 +23,20 @@ git diff --exit-code -- go.mod go.sum
 version="$(node "$root/scripts/mesh-lock.js" --print-hash)"
 echo "mesh content hash: $version"
 
+# Pinned Tailscale client version, read from the module graph (not parsed from
+# go.mod text, where single-line vs block require forms differ). A tailscale
+# bump flips the content hash too (go.mod is hashed), so it always ships a new
+# mesh-<hash> tag. Fails closed with a clear message, never an opaque pipefail.
+tsversion="$(go list -m tailscale.com 2>/dev/null | awk '{print $2}')"
+if ! [[ "${tsversion:-}" =~ ^v[0-9]+\.[0-9]+ ]]; then
+  echo "could not determine tailscale.com version via 'go list -m tailscale.com'" >&2
+  exit 1
+fi
+echo "tailscale client: $tsversion"
+
 emit() {  # <goos> <goarch> <plat> <arch> <ext>
   local name="ai-or-die-mesh-$3-$4$5"
-  GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$version" -o "$out/$name" .
+  GOOS=$1 GOARCH=$2 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$version -X main.tsVersion=$tsversion" -o "$out/$name" .
   echo "built $name"
 }
 emit windows amd64 windows amd64 .exe

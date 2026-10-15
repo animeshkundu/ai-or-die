@@ -158,4 +158,104 @@ describe('sidecar-installer', function () {
       assert.ok(e instanceof Error);
     });
   });
+
+  describe('staged/prev paths', function () {
+    it('staged + prev are same-dir siblings preserving .exe on Windows', function () {
+      const stable = installer.stableSidecarPath();
+      const staged = installer.stagedSidecarPath(stable);
+      const prev = installer.prevSidecarPath(stable);
+      assert.strictEqual(path.dirname(staged), path.dirname(stable));
+      assert.strictEqual(path.dirname(prev), path.dirname(stable));
+      if (process.platform === 'win32') {
+        assert.ok(/\.new\.exe$/.test(staged), staged);
+        assert.ok(/\.prev\.exe$/.test(prev), prev);
+      } else {
+        assert.ok(staged.endsWith('.new'), staged);
+        assert.ok(prev.endsWith('.prev'), prev);
+      }
+    });
+  });
+
+  describe('stageSidecar', function () {
+    it('downloads to the staged path and leaves stable untouched', async function () {
+      const stable = path.join(tmpDir, `stable-mesh${process.platform === 'win32' ? '.exe' : ''}`);
+      fs.writeFileSync(stable, Buffer.from('stable-old'));
+      global.fetch = async () => okResponse(BYTES);
+      const staged = await installer.stageSidecar(stable, { lock: lockFor(BYTES) });
+      assert.strictEqual(staged, installer.stagedSidecarPath(stable));
+      assert.strictEqual(sha256(fs.readFileSync(staged)), sha256(BYTES));
+      assert.strictEqual(fs.readFileSync(stable).toString(), 'stable-old', 'stable must not be touched by staging');
+    });
+
+    it('short-circuits when a valid staged file already exists', async function () {
+      const stable = path.join(tmpDir, `stable2${process.platform === 'win32' ? '.exe' : ''}`);
+      const staged = installer.stagedSidecarPath(stable);
+      fs.writeFileSync(staged, BYTES);
+      let called = false;
+      global.fetch = async () => { called = true; return okResponse(BYTES); };
+      const out = await installer.stageSidecar(stable, { lock: lockFor(BYTES) });
+      assert.strictEqual(out, staged);
+      assert.strictEqual(called, false, 'must not fetch when staged already matches');
+    });
+  });
+
+  describe('promoteStagedSidecar + rollbackSidecar', function () {
+    it('promotes staged → stable keeping a .prev backup', async function () {
+      const stable = path.join(tmpDir, `p-stable${process.platform === 'win32' ? '.exe' : ''}`);
+      const lock = lockFor(BYTES);
+      fs.writeFileSync(stable, Buffer.from('old-stable'));
+      global.fetch = async () => okResponse(BYTES);
+      await installer.stageSidecar(stable, { lock });
+      const res = await installer.promoteStagedSidecar(stable, { lock });
+      assert.strictEqual(res.promoted, true);
+      assert.strictEqual(sha256(fs.readFileSync(stable)), sha256(BYTES));
+      const prev = installer.prevSidecarPath(stable);
+      assert.ok(fs.existsSync(prev), '.prev backup must exist');
+      assert.strictEqual(fs.readFileSync(prev).toString(), 'old-stable');
+      assert.ok(!fs.existsSync(installer.stagedSidecarPath(stable)), 'staged must be consumed');
+    });
+
+    it('returns already_current and cleans a redundant stage', async function () {
+      const stable = path.join(tmpDir, `p-cur${process.platform === 'win32' ? '.exe' : ''}`);
+      const lock = lockFor(BYTES);
+      fs.writeFileSync(stable, BYTES);
+      global.fetch = async () => okResponse(BYTES);
+      await installer.stageSidecar(stable, { lock });
+      const res = await installer.promoteStagedSidecar(stable, { lock });
+      assert.deepStrictEqual(res, { promoted: false, reason: 'already_current' });
+    });
+
+    it('returns nothing_staged when absent', async function () {
+      const stable = path.join(tmpDir, `p-abs${process.platform === 'win32' ? '.exe' : ''}`);
+      const res = await installer.promoteStagedSidecar(stable, { lock: lockFor(BYTES) });
+      assert.deepStrictEqual(res, { promoted: false, reason: 'nothing_staged' });
+    });
+
+    it('rejects a corrupt stage and deletes it', async function () {
+      const stable = path.join(tmpDir, `p-bad${process.platform === 'win32' ? '.exe' : ''}`);
+      fs.writeFileSync(stable, Buffer.from('stable-ok'));
+      const staged = installer.stagedSidecarPath(stable);
+      fs.writeFileSync(staged, Buffer.from('corrupt-stage'));
+      await assert.rejects(
+        installer.promoteStagedSidecar(stable, { lock: lockFor(BYTES) }),
+        (e) => e instanceof SidecarError && e.code === 'checksum-mismatch');
+      assert.ok(!fs.existsSync(staged), 'corrupt stage must be deleted');
+    });
+
+    it('rollbackSidecar restores .prev over a bad stable', async function () {
+      const stable = path.join(tmpDir, `p-rb${process.platform === 'win32' ? '.exe' : ''}`);
+      const prev = installer.prevSidecarPath(stable);
+      fs.writeFileSync(stable, Buffer.from('bad-new'));
+      fs.writeFileSync(prev, Buffer.from('good-old'));
+      const res = await installer.rollbackSidecar(stable);
+      assert.deepStrictEqual(res, { restored: true });
+      assert.strictEqual(fs.readFileSync(stable).toString(), 'good-old');
+    });
+
+    it('rollbackSidecar reports no_backup when absent', async function () {
+      const stable = path.join(tmpDir, `p-nb${process.platform === 'win32' ? '.exe' : ''}`);
+      const res = await installer.rollbackSidecar(stable);
+      assert.deepStrictEqual(res, { restored: false, reason: 'no_backup' });
+    });
+  });
 });
