@@ -563,11 +563,17 @@ describe('MeshManager', function() {
     });
 
     it('stop() clears the update timer', async function() {
-      const m = new MeshManager({ _updateIntervalMs: 50 });
-      m._startUpdateTimer();
-      assert.ok(m._updateTimer, 'timer must be armed');
-      await m.stop();
-      assert.strictEqual(m._updateTimer, null, 'stop must clear the timer');
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-update-'));
+      try {
+        const m = new MeshManager({ _updateIntervalMs: 50 });
+        m._appBase = dir; // hermetic: stop() deletes peers/egress files
+        m._startUpdateTimer();
+        assert.ok(m._updateTimer, 'timer must be armed');
+        await m.stop();
+        assert.strictEqual(m._updateTimer, null, 'stop must clear the timer');
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 });
