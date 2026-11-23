@@ -4,7 +4,9 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { AutoUpdater, compareVersions, platformAssetPattern } = require('../src/supervisor/autoupdater');
+const { assetNameFor } = require('../src/supervisor/server-provisioner');
 
 function sandbox() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'aod-updater-'));
@@ -18,11 +20,14 @@ describe('supervisor/autoupdater', function () {
     assert.strictEqual(compareVersions('v0.1.109', '0.1.108') > 0, true);
   });
 
-  it('platformAssetPattern matches this platform’s asset', function () {
-    const plat = process.platform === 'win32' ? 'win32' : process.platform;
-    const name = `ai-or-die-server-${plat}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`;
+  it('platformAssetPattern matches this platform’s published asset', function () {
+    // Live release assets are ai-or-die-windows-x64.exe / ai-or-die-linux-x64.
+    // The old ai-or-die-server-<plat>-<arch> pattern matched nothing published,
+    // which is why the staged server binary never appeared.
+    const name = assetNameFor(process.platform, process.arch);
     assert.strictEqual(platformAssetPattern().test(name), true);
     assert.strictEqual(platformAssetPattern().test('ai-or-die-server-solaris-sparc'), false);
+    assert.strictEqual(platformAssetPattern().test('ai-or-die-server-win32-x64.exe'), false);
   });
 
   it('check() stages a newer release and reports staged', async function () {
@@ -31,6 +36,8 @@ describe('supervisor/autoupdater', function () {
       // Staged binaries carry .exe on Windows (mirrors _stageRelease).
       const stagedFile = path.join(dir, 'staging',
         `ai-or-die-server-0.1.109${process.platform === 'win32' ? '.exe' : ''}`);
+      const payload = Buffer.from('binary');
+      const assetName = assetNameFor(process.platform, process.arch);
       const updater = new AutoUpdater({
         currentVersion: '0.1.108',
         stagingDir: path.join(dir, 'staging'),
@@ -39,9 +46,13 @@ describe('supervisor/autoupdater', function () {
           tag_name: 'v0.1.109',
           prerelease: false,
           draft: false,
-          assets: [{ name: `ai-or-die-server-${process.platform === 'win32' ? 'win32' : process.platform}-${process.arch}${process.platform === 'win32' ? '.exe' : ''}`, browser_download_url: 'https://example.invalid/x' }],
+          assets: [{
+            name: assetName,
+            browser_download_url: 'https://example.invalid/x',
+            digest: `sha256:${crypto.createHash('sha256').update(payload).digest('hex')}`,
+          }],
         }],
-        download: async (url, dest) => { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, 'binary'); },
+        download: async (url, dest) => { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, payload); },
       });
       let notified = null;
       updater._supervisor = { notifyUpdateReady: (v) => { notified = v; } };
@@ -50,6 +61,37 @@ describe('supervisor/autoupdater', function () {
       assert.strictEqual(result.version, '0.1.109');
       assert.strictEqual(notified, '0.1.109');
       assert.ok(fs.existsSync(stagedFile));
+      assert.strictEqual(
+        updater.pendingUpdate.releaseSha256,
+        crypto.createHash('sha256').update(payload).digest('hex'),
+        'release digest recorded for apply()'
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('check() discards a download whose bytes fail the release digest', async function () {
+    const dir = sandbox();
+    try {
+      const updater = new AutoUpdater({
+        currentVersion: '0.1.108',
+        stagingDir: path.join(dir, 'staging'),
+        serverBin: path.join(dir, 'bin', 'ai-or-die-server'),
+        fetch: async () => [{
+          tag_name: 'v0.1.109',
+          prerelease: false,
+          draft: false,
+          assets: [{
+            name: assetNameFor(process.platform, process.arch),
+            browser_download_url: 'https://example.invalid/x',
+            digest: `sha256:${'0'.repeat(64)}`,
+          }],
+        }],
+        download: async (url, dest) => { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, 'tampered'); },
+      });
+      await assert.rejects(() => updater.check(), /checksum mismatch|digest/i);
+      assert.strictEqual(updater.pendingUpdate, null, 'nothing staged from bad bytes');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

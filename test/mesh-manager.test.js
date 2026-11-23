@@ -61,31 +61,48 @@ describe('MeshManager', function() {
   });
 
   describe('getStatus', function() {
+    // The constructor reads install provenance from the REAL app dir, so a
+    // developer machine with an installed sidecar reports its ref here. Point
+    // the sidecar at a temp path: no provenance, deterministic status.
+    function isolated(options) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-status-'));
+      return { m: new MeshManager({ ...options, sidecar: path.join(dir, 'bin', 'ai-or-die-mesh') }), dir };
+    }
+
     it('not running until a name binds', function() {
-      assert.deepStrictEqual(new MeshManager().getStatus(), {
-        running: false, publicUrl: null, peers: [],
-        activeVersion: null, stagedVersion: null, updateAvailable: false,
-        lastUpdateCheck: null, lastUpdateResult: null,
-        tsVersion: null, sidecarRef: null,
-      });
+      const { m, dir } = isolated();
+      try {
+        assert.deepStrictEqual(m.getStatus(), {
+          running: false, publicUrl: null, peers: [],
+          activeVersion: null, stagedVersion: null, updateAvailable: false,
+          lastUpdateCheck: null, lastUpdateResult: null,
+          tsVersion: null, sidecarRef: null,
+        });
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     });
     it('reports https url once up', function() {
-      const m = new MeshManager(); m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'https';
-      assert.deepStrictEqual(m.getStatus(), {
-        running: true, publicUrl: 'https://h.tail.ts.net', peers: [],
-        activeVersion: null, stagedVersion: null, updateAvailable: false,
-        lastUpdateCheck: null, lastUpdateResult: null,
-        tsVersion: null, sidecarRef: null,
-      });
+      const { m, dir } = isolated();
+      try {
+        m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'https';
+        assert.deepStrictEqual(m.getStatus(), {
+          running: true, publicUrl: 'https://h.tail.ts.net', peers: [],
+          activeVersion: null, stagedVersion: null, updateAvailable: false,
+          lastUpdateCheck: null, lastUpdateResult: null,
+          tsVersion: null, sidecarRef: null,
+        });
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     });
     it('reports the http url when the edge degraded (no certs)', function() {
-      const m = new MeshManager(); m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'http';
-      assert.deepStrictEqual(m.getStatus(), {
-        running: true, publicUrl: 'http://h.tail.ts.net', peers: [],
-        activeVersion: null, stagedVersion: null, updateAvailable: false,
-        lastUpdateCheck: null, lastUpdateResult: null,
-        tsVersion: null, sidecarRef: null,
-      });
+      const { m, dir } = isolated();
+      try {
+        m.proc = {}; m.dnsName = 'h.tail.ts.net'; m.scheme = 'http';
+        assert.deepStrictEqual(m.getStatus(), {
+          running: true, publicUrl: 'http://h.tail.ts.net', peers: [],
+          activeVersion: null, stagedVersion: null, updateAvailable: false,
+          lastUpdateCheck: null, lastUpdateResult: null,
+          tsVersion: null, sidecarRef: null,
+        });
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     });
     it('includes cached mesh peers', function() {
       const m = new MeshManager();

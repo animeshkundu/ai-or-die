@@ -70,6 +70,24 @@ if (isSea) {
   global.__SEA_MODE__ = true;
   global.__SEA_TEMP_DIR__ = tempDir;
 
+  // Acquire a `gc` function in-process. When the .js entry points are run
+  // under `node`, the supervisor adds --expose-gc to the child; a SEA binary is
+  // exec'd directly and CANNOT receive that flag (there is no Node CLI in
+  // front of it), so src/restart-manager.js would silently skip every forced
+  // collection and the memory guard would degrade to "do nothing".
+  // v8.setFlagsFromString + a fresh context resolving the `gc` global is the
+  // documented way to expose the builtin at runtime. Guarded and never fatal:
+  // if a future Node removes it, the memory guard degrades exactly as before.
+  try {
+    if (typeof global.gc !== 'function') {
+      const v8 = require('v8');
+      const vm = require('vm');
+      v8.setFlagsFromString('--expose_gc');
+      const gcFn = vm.runInNewContext('gc');
+      if (typeof gcFn === 'function') global.gc = gcFn;
+    }
+  } catch (_) { /* memory guard degrades to no forced GC */ }
+
   // Cleanup temp directory on exit
   process.on('exit', () => {
     try {

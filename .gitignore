@@ -33,3 +33,7 @@ playwright-report/
 screenshots/
 .claude-attachments/
 .recovered-logs/
+
+# Local agent state (plans, todos, review briefs) — never part of the product
+.github-router/
+.pi/

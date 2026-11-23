@@ -16,6 +16,9 @@ const STABLE_SUPERVISOR_JS = path.join(STABLE_BIN, 'ai-or-die-supervisor.js');
 const STABLE_SERVER_BIN = path.join(STABLE_BIN,
   process.platform === 'win32' ? 'ai-or-die-server.exe' : 'ai-or-die-server');
 const STAGING_DIR = path.join(STABLE_BASE, 'staging');
+const RUN_DIR = path.join(STABLE_BASE, 'run');
+const HEARTBEAT_FILE = path.join(RUN_DIR, 'heartbeat.json');
+const WATCHDOG_STATE_FILE = path.join(RUN_DIR, 'watchdog.json');
 const SERVICE_META_FILE = path.join(STABLE_BASE, 'service.json');
 const FLEET_TOKEN_FILE = path.join(STABLE_BASE, 'fleet-token');
 const SUPERVISOR_LOG_FILE = path.join(STABLE_BASE, 'logs', 'supervisor.log');
@@ -52,6 +55,9 @@ module.exports = {
   STABLE_SUPERVISOR_JS,
   STABLE_SERVER_BIN,
   STAGING_DIR,
+  RUN_DIR,
+  HEARTBEAT_FILE,
+  WATCHDOG_STATE_FILE,
   SERVICE_META_FILE,
   FLEET_TOKEN_FILE,
   SUPERVISOR_LOG_FILE,

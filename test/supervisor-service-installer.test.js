@@ -107,20 +107,24 @@ describe('supervisor/service-installer', function () {
     }
   });
 
-  it('task scheduler XML has logon + unlock triggers and wake-to-run', function () {
+  it('task scheduler XML has logon + wake triggers and wake-to-run', function () {
     const dir = sandbox();
     try {
       const installer = installerFor('win32', dir);
       const xml = installer.buildUnit('C:\\Users\\u\\.ai-or-die\\bin\\ai-or-die-supervisor.js');
       assert.ok(xml.includes('LogonTrigger'));
-      assert.ok(xml.includes('ConsoleUnlock'), 'workstation-unlock wake trigger');
+      // `ConsoleUnlock` is NOT a valid StateChange value (schtasks rejects the
+      // whole XML with (19,36):StateChange:ConsoleUnlock). ConsoleConnect is the
+      // enum member that fires when a session attaches.
+      assert.ok(xml.includes('<StateChange>ConsoleConnect</StateChange>'), 'console-connect wake trigger');
+      assert.ok(!xml.includes('ConsoleUnlock'), 'never emits the invalid enum');
       assert.ok(xml.includes('<WakeToRun>true</WakeToRun>'));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('install() writes the unit file and metadata without touching the OS', function () {
+  it('install() writes the unit file and metadata without touching the OS', async function () {
     const dir = sandbox();
     try {
       const calls = [];
@@ -133,14 +137,133 @@ describe('supervisor/service-installer', function () {
         execFileSync: (...args) => { calls.push(args); return Buffer.from(''); },
         spawnSync: () => ({ status: 0, stdout: '' }),
         logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+        provisionServer: () => ({
+          provisioned: true,
+          path: path.join(dir, 'aod', 'bin', 'ai-or-die-server'),
+          version: '0.1.112',
+          sha256: 'deadbeef',
+          verified: 'stub',
+          releaseTag: 'v0.1.112',
+        }),
       });
       const entry = path.join(dir, 'pkg', 'supervisor-service.js');
       fs.mkdirSync(path.dirname(entry), { recursive: true });
       fs.writeFileSync(entry, '// supervisor');
-      const result = installer.install(entry);
+      const result = await installer.install(entry);
       assert.ok(result.unitFile.endsWith('ai-or-die.service'));
       assert.ok(fs.existsSync(result.unitFile));
       assert.ok(calls.some((c) => c[0] === 'systemctl'), 'enables via systemctl');
+      assert.strictEqual(result.serverVersion, '0.1.112', 'server version recorded');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls the sentinel back when the unit cannot be registered', async function () {
+    const dir = sandbox();
+    try {
+      const metaFile = path.join(dir, 'aod', 'service.json');
+      fs.mkdirSync(path.dirname(metaFile), { recursive: true });
+      fs.writeFileSync(metaFile, JSON.stringify({
+        platform: 'win32', mode: 'login', serverArgs: ['--mesh'], supervisorPath: path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'),
+      }));
+      const installer = new ServiceInstaller({
+        platform: 'win32',
+        homedir: path.join(dir, 'home'),
+        baseDir: path.join(dir, 'aod'),
+        stableSupervisor: path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'),
+        metaFile,
+        // Registration fails; everything else succeeds.
+        execFileSync: (cmd) => {
+          if (cmd === 'schtasks') throw new Error('ERROR: Access is denied.');
+          return Buffer.from('');
+        },
+        spawnSync: () => ({ status: 0, stdout: '' }),
+        logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+        provisionServer: () => ({
+          provisioned: true,
+          path: path.join(dir, 'aod', 'bin', 'ai-or-die-server'),
+          version: '0.1.112',
+          sha256: 'deadbeef',
+          verified: 'stub',
+          releaseTag: 'v0.1.112',
+        }),
+      });
+      const entry = path.join(dir, 'pkg', 'supervisor-service.js');
+      fs.mkdirSync(path.dirname(entry), { recursive: true });
+      fs.copyFileSync(path.join(__dirname, '..', 'bin', 'supervisor-service.js'), entry);
+      await assert.rejects(() => installer.install(entry, { mode: 'boot', userId: 'S-1-5-21-1-2-3-1001' }), /Access is denied/);
+      const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+      // The early write exists so the FIRST start knows its mode; if the unit
+      // never registered, keeping mode=boot would silently change how the still
+      // installed login task's daemon behaves.
+      assert.strictEqual(meta.mode, 'login', 'mode rolled back to the installed one');
+      assert.deepStrictEqual(meta.serverArgs, ['--mesh'], 'previous args preserved');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls the sentinel back when the install is interrupted after the early write', async function () {
+    const dir = sandbox();
+    try {
+      const metaFile = path.join(dir, 'aod', 'service.json');
+      fs.mkdirSync(path.dirname(metaFile), { recursive: true });
+      // A working login-mode install whose recorded mode must survive.
+      fs.writeFileSync(metaFile, JSON.stringify({
+        platform: 'win32',
+        mode: 'login',
+        serverArgs: ['--mesh'],
+        supervisorPath: path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'),
+      }));
+      const installer = new ServiceInstaller({
+        platform: 'win32',
+        homedir: path.join(dir, 'home'),
+        baseDir: path.join(dir, 'aod'),
+        stableSupervisor: path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'),
+        metaFile,
+        execFileSync: () => Buffer.from(''),
+        spawnSync: () => ({ status: 0, stdout: '' }),
+        logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+        provisionServer: (ctx) => ({
+          provisioned: true,
+          path: ctx.dest,
+          version: '0.1.112',
+          sha256: 'deadbeef',
+          verified: 'stub',
+          releaseTag: 'v0.1.112',
+        }),
+      });
+      // Simulate the interrupt (Ctrl-C, SIGTERM surfaced as an exception, OOM
+      // kill) landing in the window AFTER the early sentinel write persisted and
+      // BEFORE the unit is registered. The early write is the one carrying
+      // `mode` but no serverArgs; if it sits outside the try, the new boot mode
+      // survives with no unit change and no rollback: status() then reports boot
+      // mode for a login install, and the running login task's daemon applies
+      // boot-mode defaults (hibernation guard off).
+      const realWrite = installer._writeMeta.bind(installer);
+      let interrupted = false;
+      installer._writeMeta = (meta) => {
+        // The early write is the FIRST one that carries the new boot mode (the
+        // staging write above it still carries the installed login mode).
+        const early = !!meta && meta.mode === 'boot';
+        const result = realWrite(meta);
+        if (early && !interrupted) {
+          interrupted = true;
+          throw new Error('interrupted before unit registration');
+        }
+        return result;
+      };
+      const entry = path.join(dir, 'pkg', 'supervisor-service.js');
+      fs.mkdirSync(path.dirname(entry), { recursive: true });
+      fs.copyFileSync(path.join(__dirname, '..', 'bin', 'supervisor-service.js'), entry);
+      await assert.rejects(
+        () => installer.install(entry, { mode: 'boot', userId: 'S-1-5-21-1-2-3-1001' }),
+        /interrupted before unit registration/
+      );
+      const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+      assert.strictEqual(meta.mode, 'login', 'the failed boot install does not outlive the rollback');
+      assert.deepStrictEqual(meta.serverArgs, ['--mesh'], 'the installed record is untouched');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

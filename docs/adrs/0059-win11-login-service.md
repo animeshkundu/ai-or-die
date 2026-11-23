@@ -1,8 +1,18 @@
 # ADR-0059: Win11 User-Login Service Hardening (npx service install)
 
-**Status:** Accepted (implemented)
+**Status:** Accepted (implemented); **amended by ADR-0062**
 **Date:** 2026-10-14
 **Extends:** ADR-0058 (autoupdating user-level service)
+
+> **Amendment (ADR-0062):** the Task XML values fixed here were themselves
+> invalid — `StateChange>ConsoleUnlock` is not in the Task Scheduler enum and
+> `RestartOnFailure/Count 999` exceeds `xsd:unsignedByte`, so Windows rejected
+> the whole definition. `P3D` also hard-killed the daemon every three days, the
+> staged tree omitted `service-logging.js`, and nothing ever created the Server
+> binary the unit launches. ADR-0062 replaces those values (`ConsoleConnect`,
+> `Count 255`, `ExecutionTimeLimit PT0S`, `PT5M` repeat trigger, verified staged
+> closure, install-time provisioning) and adds `--boot` (S4U + `BootTrigger`)
+> and the out-of-process watchdog. Sections below are otherwise still accurate.
 
 ## Context
 

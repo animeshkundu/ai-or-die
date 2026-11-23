@@ -1685,6 +1685,11 @@ class ClaudeCodeWebServer {
     this.app.get('/api/health', (req, res) => {
       res.json({
         status: 'ok',
+        // Identity for the out-of-process service watchdog
+        // (src/supervisor/service-watchdog.js): a 200 from the RIGHT PORT is not
+        // proof the daemon is healthy — a stale dev server or another user's
+        // instance can own the port. No secrets, no paths.
+        pid: process.pid,
         claudeSessions: this.claudeSessions.size,
         activeConnections: this.webSocketConnections.size
       });

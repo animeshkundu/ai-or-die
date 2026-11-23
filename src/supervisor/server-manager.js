@@ -31,6 +31,8 @@ class ServerManager {
     this._readyTimeoutMs = options.readyTimeoutMs || SERVER_READY_TIMEOUT_MS;
     this._handoffTimeoutMs = options.handoffTimeoutMs || HANDOFF_TIMEOUT_MS;
     this._shutdownGraceMs = options.shutdownGraceMs || SHUTDOWN_GRACE_MS;
+    // Only meaningful for a `.js` server target (see childCommand).
+    this._exposeGc = options.exposeGc !== false;
     this.current = null; // { proc, pid, binary, version }
   }
 
@@ -38,11 +40,39 @@ class ServerManager {
     return !!(this.current && this.current.proc && !this.current.proc.killed);
   }
 
+  /**
+   * Build the argv/exec pair for the Server child.
+   *
+   * The Server is normally a SEA executable (~/.ai-or-die/bin/ai-or-die-server
+   * [+.exe]): it must be exec'd DIRECTLY. Spawning it as
+   * `node <binary> [args]` makes Node parse a 166 MB PE image as JavaScript
+   * (SyntaxError) — the reason a freshly provisioned service never reached
+   * READY. A `.js` target (in-repo tests, dev runs, `AIORDIE_SERVER_BIN=head`)
+   * keeps the historical `node --expose-gc <file>` shape.
+   *
+   * Returns { file, argv } where `file` is the executable and `argv` its
+   * arguments (no script-file indirection beyond what is explicit here).
+   */
+  static childCommand(binary, args = [], options = {}) {
+    const target = String(binary || '');
+    const list = Array.isArray(args) ? args.map(String) : [];
+    if (/\.(c?js)$/i.test(target)) {
+      const nodeArgs = [];
+      // `--expose-gc` lets the memory guard force a collection. Service runs
+      // acquire gc in-process instead (see sea-bootstrap.js), because the unit
+      // launches the supervisor, not this child.
+      if (options.exposeGc !== false) nodeArgs.push('--expose-gc');
+      return { file: process.execPath, argv: [...nodeArgs, target, ...list] };
+    }
+    return { file: target, argv: list };
+  }
+
   spawnServer(binary, args = [], env = {}) {
     return new Promise((resolve, reject) => {
       let proc;
+      const cmd = ServerManager.childCommand(binary, args, { exposeGc: this._exposeGc });
       try {
-        proc = this._spawn(process.execPath, [binary, ...args], {
+        proc = this._spawn(cmd.file, cmd.argv, {
           stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
           env: {
             ...process.env,

@@ -535,6 +535,9 @@ module.exports = {
   provenancePath,
   loadProvenance,
   writeProvenance,
+  // Shared MOTW/quarantine strip: the supervisor's server provisioning applies
+  // the same treatment to a freshly downloaded SEA binary.
+  stripProvenance,
   listMeshReleases,
   parseChecksums,
   fetchSidecarRef,
