@@ -160,6 +160,44 @@ ai-or-die --stt
 | `--stt-model-dir <path>` | Custom model directory | `~/.ai-or-die/models/` |
 | `--stt-threads <number>` | CPU threads for STT inference | auto (max 4) |
 
+## Run as a service
+
+Install ai-or-die as a per-user daemon that restarts itself. No admin rights required —
+the unit is a user-level systemd service, a launchd agent, or a Task Scheduler task.
+
+```bash
+# Start when you log on (default)
+ai-or-die service install --mesh --disable-auth
+
+# Start at boot, before anyone logs in (Windows: S4U principal, no stored password)
+ai-or-die service install --boot --mesh --disable-auth
+
+ai-or-die service status     # mode, task state, server build, heartbeat age
+ai-or-die service logs          # tail the supervisor log (--lines N for more)
+ai-or-die service uninstall
+```
+
+Install downloads the matching release binary (Windows/Linux x64), verifies its
+SHA-256 against the GitHub release digest, and only reports success after the daemon
+writes a heartbeat. It exits non-zero with the task state and log tail if the daemon
+does not come up.
+
+| Flag | Description |
+|------|-------------|
+| `--login` | Start at user logon (default) |
+| `--boot` | Start at boot before login (Windows) |
+| `--server-binary <path>` | Use an existing binary instead of downloading |
+| `--offline` | Never download; fail if no binary is available |
+| `--release-version <tag>` | Pin a specific release |
+| `--no-verify` | Skip the post-install heartbeat check |
+| `--force` | Re-provision an already-installed server binary |
+| `--no-hibernation-guard` | Skip the hibernation remediation prompt |
+
+See [docs/specs/autoupdate-service.md](docs/specs/autoupdate-service.md) for the full
+contract and [ADR-0062](docs/adrs/0062-boot-start-service-provisioning-watchdog.md) for
+the design, including S4U caveats (no network credentials in the logon session) and the
+`SeBatchLogonRight` requirement for standard users.
+
 ## Supported Tools
 
 | Tool | Command | Install |

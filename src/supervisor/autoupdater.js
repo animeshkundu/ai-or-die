@@ -23,6 +23,7 @@ const {
   DEFAULT_AUTO_APPLY_IDLE_MS,
   supervisorVersion,
 } = require('./constants');
+const { assetNameFor, parseDigest, ProvisionError } = require('./server-provisioner');
 
 function compareVersions(a, b) {
   const pa = String(a || '').replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0);
@@ -35,10 +36,14 @@ function compareVersions(a, b) {
 }
 
 function platformAssetPattern(platform = process.platform, arch = process.arch) {
-  // Release assets are named like: ai-or-die-server-win32-x64.exe,
-  // ai-or-die-server-darwin-arm64, ai-or-die-server-linux-x64
-  const plat = platform === 'win32' ? 'win32' : platform;
-  return new RegExp(`ai-or-die-server-${plat}-${arch}(\\.exe)?$`);
+  // Published release assets are named after the PLATFORM, not the server role
+  // (see the release matrix in .github/workflows/release-on-main.yml):
+  //   ai-or-die-windows-x64.exe, ai-or-die-linux-x64
+  // The historical pattern here was ai-or-die-server-<plat>-<arch>, which
+  // matched nothing that was ever published — so the update check downloaded
+  // nothing and the stable server binary was never created.
+  const name = assetNameFor(platform, arch);
+  return new RegExp(`${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 }
 
 class AutoUpdater {
@@ -221,15 +226,30 @@ class AutoUpdater {
     if (process.platform !== 'win32') {
       try { fs.chmodSync(dest, 0o755); } catch (_) { /* ignore */ }
     }
-    // Verify checksum when the release advertises one (asset digest or
-    // accompanying .sha256 asset); missing checksum = warn, not block
-    // (GitHub TLS already authenticates the channel). The hash is recorded
-    // so apply() can re-verify the staged file before executing it.
+    // Verify against the release-advertised digest FIRST (GitHub computes it on
+    // upload, so it authenticates the bytes rather than merely detecting local
+    // corruption). Fall back to a locally computed hash when a release predates
+    // asset digests; apply() re-checks whichever hash is recorded here.
     let sha256 = null;
+    const want = parseDigest(asset);
     try {
       sha256 = AutoUpdater.sha256File(dest);
     } catch (_) { sha256 = null; }
-    this.pendingUpdate = { version, binaryPath: dest, sha256, downloadedAt: Date.now() };
+    if (want && sha256 && want !== sha256) {
+      try { fs.rmSync(dest, { force: true }); } catch (_) { /* ignore */ }
+      throw new ProvisionError(
+        'checksum-mismatch',
+        `staged ${asset.name} for ${version} failed digest verification ` +
+        `(expected ${want}, got ${sha256}); the download was discarded`
+      );
+    }
+    this.pendingUpdate = {
+      version,
+      binaryPath: dest,
+      sha256,
+      releaseSha256: want || null,
+      downloadedAt: Date.now(),
+    };
     return dest;
   }
 

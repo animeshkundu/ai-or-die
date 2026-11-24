@@ -36,6 +36,16 @@ function installerFor(platform, dir, extra = {}) {
     execFileSync: () => Buffer.from(''),
     spawnSync: () => ({ status: 0, stdout: '' }),
     logger: silent,
+    // Never download in unit tests: install() provisions the Server binary
+    // before writing the unit, and a 166 MB fetch is not a unit test.
+    provisionServer: (ctx) => ({
+      provisioned: true,
+      path: ctx.dest,
+      version: '0.1.112',
+      sha256: 'stub',
+      verified: 'stub',
+      releaseTag: 'v0.1.112',
+    }),
     ...extra,
   });
 }
@@ -150,14 +160,24 @@ describe('win11/task xml', function () {
       assert.ok(xml.includes('<RunLevel>LeastPrivilege</RunLevel>'));
       assert.ok(xml.includes('<Actions Context="Author">'), 'principal ref');
       assert.ok(xml.includes('<LogonTrigger>'), 'logon trigger');
-      assert.ok(xml.includes('<StateChange>ConsoleUnlock</StateChange>'));
+      // Valid StateChange enum members only. ConsoleUnlock is not one of them:
+      // schtasks rejects the entire XML with (19,36):StateChange:ConsoleUnlock.
+      assert.ok(xml.includes('<StateChange>ConsoleConnect</StateChange>'));
       assert.ok(xml.includes('<StateChange>SessionUnlock</StateChange>'));
       assert.ok(xml.includes('<StateChange>RemoteConnect</StateChange>'));
+      assert.ok(!xml.includes('ConsoleUnlock'), 'never emits the invalid enum');
+      assert.ok(!xml.includes('<BootTrigger>'), 'login mode does not boot-start');
       assert.ok(xml.includes('<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>'));
       assert.ok(xml.includes('<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>'));
       assert.ok(xml.includes('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>'));
       assert.ok(xml.includes('<AllowHardTerminate>true</AllowHardTerminate>'));
-      assert.ok(xml.includes('<Count>999</Count>'), 'restart backstop');
+      // RestartOnFailure/Count is xsd:unsignedByte (1-255); 999 is rejected.
+      assert.ok(xml.includes('<Count>255</Count>'), 'restart backstop within range');
+      // PT0S = no time limit. P3D silently killed the daemon every 3 days.
+      assert.ok(xml.includes('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>'));
+      assert.ok(!xml.includes('<ExecutionTimeLimit>P3D</ExecutionTimeLimit>'));
+      // 5-minute self-healing tick; a no-op while an instance runs.
+      assert.ok(/<TimeTrigger>[\s\S]*<Interval>PT5M<\/Interval>/.test(xml), 'repeat trigger');
       assert.ok(xml.includes('<WorkingDirectory>'), 'no system32 cwd');
       assert.ok(xml.includes('--port') && xml.includes('8888') && xml.includes('--mesh'), 'args persisted');
       assert.ok(!xml.includes('%USERPROFILE%'), 'absolute paths in Exec (no env expansion gamble)');
@@ -179,7 +199,7 @@ describe('win11/task xml', function () {
     }
   });
 
-  it('never persists --auth into the unit', function () {
+  it('never persists --auth into the unit', async function () {
     const dir = sandbox();
     try {
       const calls = [];
@@ -191,9 +211,10 @@ describe('win11/task xml', function () {
         metaFile: path.join(dir, 'aod', 'service.json'),
         execFileSync: (...a) => { calls.push(a); return Buffer.from(''); },
         spawnSync: () => ({ status: 0, stdout: '' }),
+        provisionServer: (ctx) => ({ provisioned: true, path: ctx.dest, version: null, sha256: null, verified: 'stub', releaseTag: null }),
       });
       const entry = fakeEntry(dir);
-      const result = inst.install(entry, { serverArgs: ['--port', '8888', '--auth', 'sekret'] });
+      const result = await inst.install(entry, { serverArgs: ['--port', '8888', '--auth', 'sekret'] });
       assert.deepStrictEqual(result.serverArgs, ['--port', '8888']);
       const xml = fs.readFileSync(result.taskXml, 'utf16le').replace(/^﻿/, '');
       assert.ok(!xml.includes('sekret'), 'secret not in task xml');
@@ -206,7 +227,7 @@ describe('win11/task xml', function () {
 });
 
 describe('win11/install lifecycle', function () {
-  it('writes UTF-16LE+BOM and runs create then run', function () {
+  it('writes UTF-16LE+BOM and runs create then run', async function () {
     const dir = sandbox();
     try {
       const calls = [];
@@ -219,52 +240,182 @@ describe('win11/install lifecycle', function () {
         execFileSync: (...a) => { calls.push(a); return Buffer.from(''); },
         spawnSync: () => ({ status: 0, stdout: '' }),
         logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+        provisionServer: (ctx) => ({ provisioned: true, path: ctx.dest, version: '0.1.112', sha256: 'stub', verified: 'stub', releaseTag: 'v0.1.112' }),
       });
       const entry = fakeEntry(dir);
-      const result = inst.install(entry, { serverArgs: ['--port', '8888'] });
+      const result = await inst.install(entry, { serverArgs: ['--port', '8888'] });
       assert.ok(result.taskXml.endsWith('ai-or-die-task.xml'));
       const raw = fs.readFileSync(result.taskXml);
       assert.strictEqual(raw[0], 0xFF, 'BOM lo');
       assert.strictEqual(raw[1], 0xFE, 'BOM hi');
       const text = raw.toString('utf16le').replace(/^﻿/, '');
       assert.ok(text.startsWith('<?xml'), 'xml decodes');
-      const verbs = calls.filter((c) => c[0] === 'schtasks').map((c) => c[1][0]);
-      assert.deepStrictEqual(verbs, ['/create', '/run'], 'create then run');
+      const schtasks = calls.filter((c) => c[0] === 'schtasks').map((c) => c[1]);
+      const taskName = (args) => args[args.indexOf('/tn') + 1];
+      // /query is read-only diagnosis, so it is filtered rather than asserted:
+      // install probes the task to decide whether a live daemon must be stopped
+      // first, and the exact probe count is not this test's contract.
+      const serviceVerbs = schtasks
+        .filter((a) => taskName(a) === 'ai-or-die')
+        .map((a) => a[0])
+        .filter((v) => v !== '/query');
+      assert.ok(serviceVerbs.includes('/create'), `the task is registered: ${serviceVerbs.join(',')}`);
+      assert.ok(
+        serviceVerbs.indexOf('/create') < serviceVerbs.indexOf('/run'),
+        `create then run (saw ${serviceVerbs.join(',')})`
+      );
+      // The watchdog is a separate task in both modes, so it must be created
+      // from the same install (uninstall removes it again).
+      assert.ok(
+        schtasks.some((a) => a[0] === '/create' && taskName(a) === 'ai-or-die-watchdog'),
+        'watchdog task registered'
+      );
       assert.ok(result.nodePath, 'node baked into result');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('reinstall with identical content is a no-op (no daemon restart)', function () {
+  it('reinstall with identical content does not restart a running daemon', async function () {
     const dir = sandbox();
     try {
-      let n = 0;
+      const verbs = [];
+      // The task reports Running, so an identical reinstall must not /create,
+      // /end or /run anything: a restart would kill live PTYs for no reason.
+      // Only the SERVICE task matters here; the watchdog is re-registered on
+      // every install by design and never touches live PTYs.
+      const serviceVerbs = (a) => a[0] === 'schtasks' && a[1][a[1].indexOf('/tn') + 1] === 'ai-or-die';
       const inst = new ServiceInstaller({
         platform: 'win32',
         homedir: path.join(dir, 'home'),
         baseDir: path.join(dir, 'aod'),
         stableSupervisor: path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'),
         metaFile: path.join(dir, 'aod', 'service.json'),
-        execFileSync: (...a) => { n += 1; return Buffer.from(''); },
+        execFileSync: (...a) => {
+          if (serviceVerbs(a)) {
+            verbs.push(a[1][0]);
+            if (a[1][0] === '/query') {
+              // A real `/end` is followed by the task reporting Ready, and the
+              // stop poll depends on that: answering "Running" forever burns its
+              // whole 5s budget and looks like a hang. Same shape as the real
+              // command, so the /end-then-Ready sequence is exercised here.
+              const status = verbs.includes('/end') ? 'Ready' : 'Running';
+              return Buffer.from(`TaskName:      \\ai-or-die\r\nStatus:        ${status}\r\n`);
+            }
+          }
+          return Buffer.from('');
+        },
         spawnSync: () => ({ status: 0, stdout: '' }),
         logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+        provisionServer: (ctx) => ({ provisioned: true, path: ctx.dest, version: '0.1.112', sha256: 'stub', verified: 'stub', releaseTag: 'v0.1.112' }),
       });
       const entry = fakeEntry(dir);
-      const first = inst.install(entry, { serverArgs: ['--port', '8888'] });
+      const first = await inst.install(entry, { serverArgs: ['--port', '8888'] });
       assert.strictEqual(first.unchanged, undefined);
-      const before = n;
-      const second = inst.install(entry, { serverArgs: ['--port', '8888'] });
+      verbs.length = 0;
+      const second = await inst.install(entry, { serverArgs: ['--port', '8888'] });
       assert.strictEqual(second.unchanged, true);
-      assert.strictEqual(n, before, 'no OS calls on identical reinstall');
-      const third = inst.install(entry, { serverArgs: ['--port', '9999'] });
+      assert.strictEqual(second.restarted, 'running');
+      for (const verb of ['/create', '/run', '/end']) {
+        assert.ok(!verbs.includes(verb), `no ${verb} on an identical reinstall (saw ${verbs.join(',')})`);
+      }
+      const third = await inst.install(entry, { serverArgs: ['--port', '9999'] });
       assert.strictEqual(third.unchanged, undefined, 'changed args reinstall');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('uninstall ends before delete and removes the xml', function () {
+  it('a supervisor-tree upgrade re-creates the task even with identical args', async function () {
+    const dir = sandbox();
+    try {
+      const verbs = [];
+      const serviceVerbs = (a) => a[0] === 'schtasks' && a[1][a[1].indexOf('/tn') + 1] === 'ai-or-die';
+      const inst = new ServiceInstaller({
+        platform: 'win32',
+        homedir: path.join(dir, 'home'),
+        baseDir: path.join(dir, 'aod'),
+        stableSupervisor: path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'),
+        metaFile: path.join(dir, 'aod', 'service.json'),
+        execFileSync: (...a) => {
+          if (serviceVerbs(a)) {
+            verbs.push(a[1][0]);
+            if (a[1][0] === '/query') {
+              // A real `/end` is followed by the task reporting Ready, and the
+              // stop poll depends on that: answering "Running" forever burns its
+              // whole 5s budget and looks like a hang. Same shape as the real
+              // command, so the /end-then-Ready sequence is exercised here.
+              const status = verbs.includes('/end') ? 'Ready' : 'Running';
+              return Buffer.from(`TaskName:      \\ai-or-die\r\nStatus:        ${status}\r\n`);
+            }
+          }
+          return Buffer.from('');
+        },
+        spawnSync: () => ({ status: 0, stdout: '' }),
+        logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+        provisionServer: (ctx) => ({ provisioned: true, path: ctx.dest, version: '0.1.112', sha256: 'stub', verified: 'stub', releaseTag: 'v0.1.112' }),
+      });
+      const entry = fakeEntry(dir);
+      await inst.install(entry, { serverArgs: ['--port', '8888'] });
+      // Represent an install performed by an OLDER package: the task XML is
+      // byte-identical, args and node are identical, only the recorded bundle
+      // version differs. Without comparing against the version captured BEFORE
+      // staging (ensureStableBinary re-stamps it), this reads back as a no-op
+      // and the new supervisor code never starts.
+      const metaFile = path.join(dir, 'aod', 'service.json');
+      const meta = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+      fs.writeFileSync(metaFile, JSON.stringify({ ...meta, bundleVersion: '0.0.1' }));
+      verbs.length = 0;
+      const upgraded = await inst.install(entry, { serverArgs: ['--port', '8888'] });
+      assert.notStrictEqual(upgraded.unchanged, true, 'an upgrade is not a no-op');
+      assert.ok(verbs.includes('/create'), `task re-created on upgrade (saw ${verbs.join(',')})`);
+      // And the recorded version is the current one again.
+      const after = JSON.parse(fs.readFileSync(metaFile, 'utf8'));
+      assert.notStrictEqual(after.bundleVersion, '0.0.1');
+      assert.ok(!('prevBundleVersion' in after), 'comparison scaffolding never persisted');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reinstall on a dead daemon starts it instead of leaving it down', async function () {
+    const dir = sandbox();
+    try {
+      const verbs = [];
+      // Only the SERVICE task matters here; the watchdog is re-registered on
+      // every install by design and never touches live PTYs.
+      const serviceVerbs = (a) => a[0] === 'schtasks' && a[1][a[1].indexOf('/tn') + 1] === 'ai-or-die';
+      const inst = new ServiceInstaller({
+        platform: 'win32',
+        homedir: path.join(dir, 'home'),
+        baseDir: path.join(dir, 'aod'),
+        stableSupervisor: path.join(dir, 'aod', 'bin', 'ai-or-die-supervisor.js'),
+        metaFile: path.join(dir, 'aod', 'service.json'),
+        execFileSync: (...a) => {
+          if (serviceVerbs(a)) {
+            verbs.push(a[1][0]);
+            if (a[1][0] === '/query') return Buffer.from('Status:        Ready\r\n');
+          }
+          return Buffer.from('');
+        },
+        spawnSync: () => ({ status: 0, stdout: '' }),
+        logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+        provisionServer: (ctx) => ({ provisioned: true, path: ctx.dest, version: '0.1.112', sha256: 'stub', verified: 'stub', releaseTag: 'v0.1.112' }),
+      });
+      const entry = fakeEntry(dir);
+      await inst.install(entry, { serverArgs: ['--port', '8888'] });
+      verbs.length = 0;
+      const second = await inst.install(entry, { serverArgs: ['--port', '8888'] });
+      assert.strictEqual(second.unchanged, true);
+      assert.strictEqual(second.restarted, 'started');
+      assert.ok(verbs.includes('/run'), 'a stopped task is started');
+      assert.ok(!verbs.includes('/create'), 'the definition is not re-registered');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('uninstall ends before delete and removes the xml', async function () {
     const dir = sandbox();
     try {
       const calls = [];
@@ -277,9 +428,10 @@ describe('win11/install lifecycle', function () {
         execFileSync: (...a) => { calls.push(a); return Buffer.from(''); },
         spawnSync: () => ({ status: 0, stdout: '' }),
         logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+        provisionServer: (ctx) => ({ provisioned: true, path: ctx.dest, version: '0.1.112', sha256: 'stub', verified: 'stub', releaseTag: 'v0.1.112' }),
       });
       const entry = fakeEntry(dir);
-      const result = inst.install(entry, {});
+      const result = await inst.install(entry, {});
       assert.ok(fs.existsSync(result.taskXml));
       inst.uninstall();
       const verbs = calls.filter((c) => c[0] === 'schtasks').map((c) => c[1][0]);
@@ -291,7 +443,7 @@ describe('win11/install lifecycle', function () {
     }
   });
 
-  it('rolls back the xml when schtasks is missing', function () {
+  it('rolls back the xml when schtasks is missing', async function () {
     const dir = sandbox();
     try {
       const inst = new ServiceInstaller({
@@ -303,9 +455,10 @@ describe('win11/install lifecycle', function () {
         execFileSync: () => { const e = new Error('spawn schtasks ENOENT'); e.code = 'ENOENT'; throw e; },
         spawnSync: () => ({ status: 0, stdout: '' }),
         logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+        provisionServer: (ctx) => ({ provisioned: true, path: ctx.dest, version: '0.1.112', sha256: 'stub', verified: 'stub', releaseTag: 'v0.1.112' }),
       });
       const entry = fakeEntry(dir);
-      assert.throws(() => inst.install(entry, {}), /schtasks|service manager/i);
+      await assert.rejects(() => inst.install(entry, {}), /schtasks|service manager/i);
       assert.ok(!fs.existsSync(path.join(dir, 'aod', 'ai-or-die-task.xml')), 'xml rolled back');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -344,6 +497,54 @@ describe('win11/status', function () {
       assert.strictEqual(s.active, false);
       assert.strictEqual(s.taskState, 'Ready');
     } finally { fs.rmSync(b.dir, { recursive: true, force: true }); }
+  });
+
+  it('status reports the live server identity from the heartbeat payload', function () {
+    const dir = sandbox();
+    try {
+      const base = path.join(dir, 'aod');
+      fs.mkdirSync(path.join(base, 'run'), { recursive: true });
+      fs.writeFileSync(path.join(base, 'service.json'), JSON.stringify({
+        platform: 'win32', mode: 'boot', userId: 'S-1-5-21-1', serverArgs: ['--port', '7777'],
+        serverBinary: path.join(base, 'bin', 'ai-or-die-server.exe'), serverVersion: '0.1.112',
+        installedAt: '2026-01-01T00:00:00.000Z',
+      }));
+      // The heartbeat shape index.js actually writes: identity nested in
+      // `status`, not at the top level.
+      fs.writeFileSync(path.join(base, 'run', 'heartbeat.json'), JSON.stringify({
+        pid: 4242, phase: 'ready', updatedAt: new Date().toISOString(), updatedAtMs: Date.now(),
+        status: { serverPid: 5151, serverVersion: '0.1.112', version: '0.1.112', ptys: 2 },
+      }));
+      const inst = new ServiceInstaller({
+        platform: 'win32',
+        homedir: path.join(dir, 'home'),
+        baseDir: base,
+        stableSupervisor: path.join(base, 'bin', 'ai-or-die-supervisor.js'),
+        metaFile: path.join(base, 'service.json'),
+        execFileSync: (cmd, args) => {
+          if (cmd === 'schtasks' && args && args[0] === '/query') {
+            if (String(args[2]).includes('watchdog')) throw new Error('not found');
+            return Buffer.from('HostName: X\r\nTaskName: \\ai-or-die\r\nStatus: Running\r\n');
+          }
+          return Buffer.from('');
+        },
+        spawnSync: () => ({ status: 0, stdout: '' }),
+        logger: { log() {}, info() {}, warn() {}, error() {}, debug() {} },
+      });
+      const s = inst.status();
+      assert.strictEqual(s.mode, 'boot');
+      assert.strictEqual(s.userId, 'S-1-5-21-1');
+      assert.strictEqual(s.heartbeat.present, true);
+      assert.strictEqual(s.heartbeat.phase, 'ready');
+      // These three were permanently null when read off the top level.
+      assert.strictEqual(s.heartbeat.serverPid, 5151);
+      assert.strictEqual(s.heartbeat.serverVersion, '0.1.112');
+      assert.strictEqual(s.heartbeat.ptys, 2);
+      assert.strictEqual(s.serverBinary, path.join(base, 'bin', 'ai-or-die-server.exe'));
+      assert.strictEqual(s.watchdog.installed, false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('missing task -> not installed', function () {
@@ -481,10 +682,110 @@ describe('win11/units (systemd/launchd) + entry + bins', function () {
     assert.ok(src.includes('uncaughtException'), 'never-exit guard');
   });
 
-  it('both packaged bins route `service` through the shared handler', function () {
-    for (const bin of ['bin/supervisor.js', 'bin/ai-or-die.js']) {
+  it('every entry point routes `service` through the shared handler', function () {
+    // bin/supervisor-service.js matters most: the watchdog task invokes it as
+    // `node <supervisor-service> service watchdog`, and without the
+    // interception those argv would boot a second supervisor instead.
+    for (const bin of ['bin/supervisor.js', 'bin/ai-or-die.js', 'bin/supervisor-service.js']) {
       const src = fs.readFileSync(path.join(__dirname, '..', bin), 'utf8');
-      assert.ok(src.includes('service-cli'), `${bin} uses shared service handler`);
+      assert.ok(src.includes('handleServiceArgv'), `${bin} uses the shared service handler`);
+    }
+    // The interception must fail CLOSED. A synchronous throw here (incomplete
+    // staged service-cli closure) used to fall through and boot a second
+    // supervisor; on the 5-minute watchdog task that fights the daemon for the
+    // port. The catch has to exit, never continue into the boot.
+    const entry = fs.readFileSync(path.join(__dirname, '..', 'bin', 'supervisor-service.js'), 'utf8');
+    const guard = /handleServiceArgv[\s\S]*?\} catch \(([\s\S]*?)\n\}/.exec(entry);
+    assert.ok(guard, 'the service interception is wrapped in try/catch');
+    assert.ok(
+      guard[1].includes('process.exit(1)'),
+      `the catch on the service path must exit instead of booting a supervisor: ${guard[1]}`
+    );
+    assert.ok(
+      !/catch \(_\) \{ \/\* fall through/.test(entry),
+      'the silent fall-through on the service path is gone'
+    );
+  });
+
+  it('fails closed when the service handler throws instead of booting a supervisor', function () {
+    // Executed, not grepped: the old `catch (_) { /* fall through */ }` booted a
+    // SECOND supervisor from the watchdog task, which then fights the running
+    // daemon for the port every 5 minutes.
+    const dir = sandbox();
+    try {
+      const root = path.join(dir, 'tree');
+      const srcDir = path.join(root, 'src', 'supervisor');
+      const binDir = path.join(root, 'bin');
+      fs.mkdirSync(srcDir, { recursive: true });
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.copyFileSync(
+        path.join(__dirname, '..', 'bin', 'supervisor-service.js'),
+        path.join(binDir, 'supervisor-service.js')
+      );
+      // The install defect under test: a staged service-cli closure that throws
+      // while being required.
+      fs.writeFileSync(path.join(srcDir, 'service-cli.js'), "throw new Error('staged closure incomplete');\n");
+      // Stubs whose only job is to prove the supervisor was (not) started.
+      fs.writeFileSync(
+        path.join(srcDir, 'index.js'),
+        "class Supervisor { constructor() {} start() { console.log('[supervisor] STARTED'); return Promise.resolve(); } }\n"
+        + 'module.exports = { Supervisor };\n'
+      );
+      fs.writeFileSync(
+        path.join(srcDir, 'constants.js'),
+        "module.exports = { STABLE_SERVER_BIN: '/nonexistent/server', supervisorVersion: () => '0.0.0', SERVICE_META_FILE: 'no-such-file.json' };\n"
+      );
+      fs.writeFileSync(
+        path.join(srcDir, 'service-logging.js'),
+        'module.exports = { setupFileLogging: () => ({ active: false }) };\n'
+      );
+      const { spawnSync } = require('child_process');
+      const run = (argv) => spawnSync(process.execPath, [path.join(binDir, 'supervisor-service.js'), ...argv], {
+        encoding: 'utf8', timeout: 20000, cwd: dir, env: { ...process.env, AI_OR_DIE_HOME: path.join(dir, 'aod') },
+      });
+      const serviced = run(['service', 'watchdog']);
+      assert.strictEqual(serviced.status, 1, `service path exits 1 (got ${serviced.status})`);
+      assert.ok(/fail closed/.test(serviced.stderr || ''), `the reason is logged: ${serviced.stderr}`);
+      assert.ok(
+        !/\[supervisor\] STARTED/.test(serviced.stdout || ''),
+        'no supervisor was booted in place of the service command'
+      );
+      // Control: without `service` argv the same tree MUST boot the supervisor,
+      // otherwise this test would pass on a file that never starts anything.
+      const normal = run(['--port', '1234']);
+      assert.ok(/\[supervisor\] STARTED/.test(normal.stdout || ''), `normal path still boots: ${normal.stdout}${normal.stderr}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('the staged entry runs the watchdog verb without starting a supervisor', function () {
+    // Prove it by execution, not by substring: the staged entry must handle
+    // `service watchdog` itself.
+    const dir = sandbox();
+    try {
+      const base = path.join(dir, 'aod');
+      const inst = installerFor('win32', dir);
+      const staged = inst.ensureStableBinary(path.join(__dirname, '..', 'bin', 'supervisor-service.js'));
+      assert.ok(staged.path.startsWith(base), 'staged under the sandbox base');
+      const { execFileSync } = require('child_process');
+      let out = '';
+      try {
+        out = execFileSync(process.execPath, [staged.path, 'service', 'watchdog', '--dry-run'], {
+          encoding: 'utf8',
+          timeout: 20000,
+          env: { ...process.env, AI_OR_DIE_HOME: base, AIORDIE_SERVICE_NAME: 'aod-staged-probe' },
+        });
+      } catch (err) {
+        out = String((err && (err.stdout || err.message)) || '');
+      }
+      // The watchdog on a POSIX host (or a win32 host with nothing installed)
+      // answers with its JSON verdict; either way it must NOT be a supervisor
+      // start-up banner.
+      assert.ok(/not-applicable|heartbeat-fresh|would-restart|debounced|booting|healthy-but-stale/.test(out), `watchdog ran: ${out.slice(0, 400)}`);
+      assert.ok(!/\[supervisor\]/.test(out), 'no supervisor was started');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

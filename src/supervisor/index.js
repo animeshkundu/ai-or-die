@@ -26,6 +26,7 @@ const KeepaliveManager = require('../keepalive-manager');
 const HibernationGuard = require('../hibernation-guard');
 const ipc = require('./ipc-protocol');
 const { STABLE_SERVER_BIN, supervisorVersion } = require('./constants');
+const { Heartbeat } = require('./heartbeat');
 
 const RESTART_DELAY_MS = parseInt(process.env.RESTART_DELAY_MS, 10) || 1000;
 const CRASH_RESTART_DELAY_MS = parseInt(process.env.CRASH_RESTART_DELAY_MS, 10) || 3000;
@@ -73,16 +74,31 @@ class Supervisor {
       enabled: hibernationEnabled,
     });
     this.meshUrl = options.meshUrl || null;
+    // Liveness beacon for the out-of-process watchdog (service-watchdog.js).
+    // The OS-level triggers can only see process death; a wedged-but-alive
+    // daemon is invisible to them. Tests inject a file to avoid touching the
+    // user's real ~/.ai-or-die/run.
+    this.heartbeat = options.heartbeat || new Heartbeat({
+      ...(options.heartbeatFile ? { file: options.heartbeatFile } : {}),
+      status: () => ({
+        serverPid: this.serverManager.current && this.serverManager.current.pid,
+        serverVersion: this.serverManager.current && this.serverManager.current.version,
+        version: this.version,
+        ptys: this.ptyManager.size,
+      }),
+    });
     this._shuttingDown = false;
     this._crashTimestamps = [];
     this._updateListeners = [];
   }
 
   async start() {
+    this.heartbeat.beat('boot');
     this.keepaliveManager.start();
     this.hibernationGuard.run();
     this.wakeHandler.start();
     await this._bootServer();
+    this.heartbeat.start('ready');
     this.autoUpdater.start();
     // Fleet registration is best-effort; the daemon runs standalone offline.
     this.fleetClient.start().catch(() => { /* ignore */ });
@@ -140,6 +156,7 @@ class Supervisor {
     const record = await this.serverManager.spawnServer(this.serverBinary, this.serverArgs);
     this.serverManager.current = record;
     this._wireServerEvents(record);
+    try { this.heartbeat.beat('ready'); } catch (_) { /* never break boot */ }
     return record;
   }
 
@@ -361,6 +378,9 @@ class Supervisor {
     if (this._shuttingDown) return;
     this._shuttingDown = true;
     console.log(`[supervisor] shutting down (${reason})`);
+    // Deliberate stop, not a wedge: retire the beacon BEFORE tearing down so
+    // the watchdog does not race a restart against a clean shutdown.
+    try { this.heartbeat.beat('shutdown'); this.heartbeat.stop(); } catch (_) { /* ignore */ }
     try { if (this._keepaliveWatchdog) clearInterval(this._keepaliveWatchdog); } catch (_) {}
     this._keepaliveWatchdog = null;
     this.autoUpdater.stop();

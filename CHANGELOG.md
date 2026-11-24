@@ -24,6 +24,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AIORDIE_MESH_AUTO_UPDATE=0`, `AIORDIE_AUTO_UPDATE=0`. See ADR-0061 and
   `docs/specs/mesh.md`. Covers the Tailscale client bump to v1.104.1 (#171)
   on the next restart/cycle with zero operator action.
+- `ai-or-die service install --boot` registers the daemon as an S4U task
+  with a `BootTrigger`, so it starts at boot **before anyone logs on** — no
+  admin, no stored password. `--login` (the default) keeps the historical
+  interactive task. ADR-0062.
+- The Server binary is provisioned at install time from the pinned release,
+  verified against GitHub's per-asset `sha256:` digest, byte-counted and
+  probed with `--version` before promotion. A release that publishes no
+  digest is refused. `--server-binary <path>`, `--offline`,
+  `--release-version <tag>` and `--force` cover offline and pinned installs.
+- `ai-or-die-watchdog` scheduled task: restarts the daemon only when the
+  heartbeat is stale, the recorded pid is dead and `/api/health` fails,
+  accepting a 200 only when the body's `pid` matches the heartbeat.
+- `run/heartbeat.json` liveness file, written atomically every 15s by the
+  supervisor.
+- Install self-test: `service install` polls the heartbeat for up to 90s and
+  exits non-zero with the task state and log tail rather than reporting a
+  false success.
+
+### Fixed
+- `service install` registered a task that never ran, on every platform: the
+  staged tree was missing `src/supervisor/service-logging.js`, nothing created
+  the Server binary the unit launches, and `ServerManager` spawned
+  `node <166 MB SEA binary>` instead of exec'ing it.
+- `schtasks /create` rejected the whole task definition (`StateChange:
+  ConsoleUnlock`, `RestartOnFailure/Count: 999`), and `ExecutionTimeLimit`
+  defaulted to three days, hard-terminating the daemon and every PTY under it.
+- A no-op reinstall now starts a stopped unit/task on all three platforms
+  instead of reporting success over a dead daemon.
+- A failed upgrade no longer deletes a working task or its `service.json`
+  sentinel: `/create` compensation only runs when nothing was registered
+  before, and the sentinel is restored to its pre-staging record.
 
 ### Performance
 - HOT-06 — TerminalBridge OSC 7: added a process-wide validated-path
