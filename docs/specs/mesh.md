@@ -45,6 +45,28 @@ See ADR-0034 for rationale and the alternatives that were tested and rejected.
 `AIORDIE_MESH_REF` (or `AIORDIE_MESH_VERSION`) overrides the release tag for
 dev/testing (announced loudly).
 
+## Running a second node on one machine
+
+A tsnet node owns two exclusive resources: its `--statedir` identity and its
+tailnet `--hostname`. A second `--mesh` instance (e.g. a boot/LaunchAgent
+gateway alongside an interactive one) therefore needs both to differ. Two
+opt-in env vars, read in the `MeshManager` constructor; **both default to the
+previous behavior**, so existing installs are unchanged:
+
+| Var | Default | Effect |
+|---|---|---|
+| `AIORDIE_MESH_HOSTNAME_SUFFIX` | unset | Appended to the derived `aiordie-<os.hostname()>` (`-boot` → `aiordie-anilocal-boot`). Sanitized after joining, so odd input can't produce an invalid tailnet name. |
+| `AIORDIE_MESH_STATE_DIR` | `<base>/ts-state` | Relocates `--statedir` (e.g. `~/.ai-or-die/ts-state-boot`). |
+
+A fresh state dir means the new node is **not enrolled** — it prints the enroll
+block and runs localhost-only until `AIORDIE_TS_AUTHKEY` (reusable, tagged) is
+supplied once. Do not copy an existing `tailscaled.state` between dirs: one
+identity must not be presented by two nodes.
+
+Unrelated but required alongside a second instance: a distinct `--port` and a
+distinct `AI_OR_DIE_SESSION_DIR` (`sessions.json` is rewritten whole, so two
+servers sharing it clobber each other's session list).
+
 ## Auto-update (on by default)
 
 Long-lived daemons converge without a restart or operator action. Every 24h

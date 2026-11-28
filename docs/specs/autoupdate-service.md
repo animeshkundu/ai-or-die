@@ -116,6 +116,22 @@ creates a per-user Task (`ai-or-die`, overridable via `AIORDIE_SERVICE_NAME`):
 - **Scope:** single active user per machine; supervisor fixes require
   reinstall (server autoupdate does not re-stage the tree).
 
+## macOS status (as of 2026-11-27)
+
+The supervisor path is **not installable on macOS**: `bin/supervisor-service.js`
+spawns the prebuilt SEA binary `~/.ai-or-die/bin/ai-or-die-server`, and releases
+carry only `ai-or-die-linux-x64` + `ai-or-die-windows-x64.exe`. On darwin
+`AutoUpdater._pickAsset()` matches nothing, so the updater cannot self-heal a
+missing binary either. `bin/supervisor.js` (the npm bin) is unaffected — it
+spawns `bin/ai-or-die.js` from the package — which is why `npx ai-or-die …`
+works on macOS while `ai-or-die service install` cannot start.
+
+Workaround in use on the maintainer's Mac (not a supported feature): a
+hand-written launchd LaunchAgent running
+`node <abs> …/npx-cli.js --yes ai-or-die@latest --mesh --disable-auth`.
+See `docs/history/macos-launchagent-boot-2026.md`. Making the supported path
+work needs darwin assets in `build-binaries.yml` plus a spec/ADR change.
+
 ## Environment
 
 `AIORDIE_UPDATE_INTERVAL` (1h), `AIORDIE_AUTO_APPLY_IDLE_MS` (4h),
