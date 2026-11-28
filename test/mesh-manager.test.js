@@ -31,6 +31,72 @@ describe('MeshManager', function() {
       assert.ok(/ts-state$/.test(m.stateDir));
     });
 
+    it('suffixes the tailnet hostname and relocates the state dir for a 2nd node', function() {
+      // A second --mesh instance on one machine needs its OWN tsnet identity:
+      // tsnet owns its state dir and its hostname, so sharing either collides
+      // with the first node. Both overrides are env-only (no CLI flag).
+      const prevSuffix = process.env.AIORDIE_MESH_HOSTNAME_SUFFIX;
+      const prevDir = process.env.AIORDIE_MESH_STATE_DIR;
+      try {
+        process.env.AIORDIE_MESH_HOSTNAME_SUFFIX = 'Boot';
+        process.env.AIORDIE_MESH_STATE_DIR = path.join(os.tmpdir(), 'aod-ts-state-boot');
+        const m = new MeshManager();
+        assert.ok(/-boot$/.test(m.hostname), m.hostname);
+        assert.ok(/^aiordie-[a-z0-9-]+$/.test(m.hostname), 'sanitized');
+        assert.strictEqual(m.stateDir, path.join(os.tmpdir(), 'aod-ts-state-boot'));
+      } finally {
+        if (prevSuffix === undefined) delete process.env.AIORDIE_MESH_HOSTNAME_SUFFIX;
+        else process.env.AIORDIE_MESH_HOSTNAME_SUFFIX = prevSuffix;
+        if (prevDir === undefined) delete process.env.AIORDIE_MESH_STATE_DIR;
+        else process.env.AIORDIE_MESH_STATE_DIR = prevDir;
+      }
+    });
+
+    it('ignores an empty suffix and leaves overrides unset by default', function() {
+      const prevSuffix = process.env.AIORDIE_MESH_HOSTNAME_SUFFIX;
+      const prevDir = process.env.AIORDIE_MESH_STATE_DIR;
+      try {
+        delete process.env.AIORDIE_MESH_HOSTNAME_SUFFIX;
+        delete process.env.AIORDIE_MESH_STATE_DIR;
+        const plain = new MeshManager();
+        assert.ok(/^aiordie-/.test(plain.hostname));
+        assert.ok(!/aiordie-.+-$/.test(plain.hostname), 'no trailing dash');
+        assert.ok(/ts-state$/.test(plain.stateDir));
+        process.env.AIORDIE_MESH_HOSTNAME_SUFFIX = '   ';
+        const blank = new MeshManager();
+        assert.ok(/^aiordie-[a-z0-9-]*[a-z0-9]$/.test(blank.hostname), blank.hostname);
+      } finally {
+        if (prevSuffix === undefined) delete process.env.AIORDIE_MESH_HOSTNAME_SUFFIX;
+        else process.env.AIORDIE_MESH_HOSTNAME_SUFFIX = prevSuffix;
+        if (prevDir === undefined) delete process.env.AIORDIE_MESH_STATE_DIR;
+        else process.env.AIORDIE_MESH_STATE_DIR = prevDir;
+      }
+    });
+
+    it('keeps the second node\'s derived files out of the first node\'s dir', function() {
+      // peers.json / egress.json describe ONE sidecar (hostname, loopback
+      // proxy port+token) and stop() deletes them, so two managers sharing
+      // `<base>/mesh` would clobber and then erase each other's view.
+      const prevDir = process.env.AIORDIE_MESH_STATE_DIR;
+      try {
+        delete process.env.AIORDIE_MESH_STATE_DIR;
+        const first = new MeshManager();
+        const sharedBase = path.join(first._appBase, 'mesh');
+        assert.strictEqual(first.peersFilePath(), path.join(sharedBase, 'peers.json'));
+        assert.strictEqual(first.egressFilePath(), path.join(sharedBase, 'egress.json'));
+
+        const relocated = path.join(os.tmpdir(), 'aod-2nd-node', 'ts-state-boot');
+        process.env.AIORDIE_MESH_STATE_DIR = relocated;
+        const second = new MeshManager();
+        assert.strictEqual(second.peersFilePath(), path.join(path.dirname(relocated), 'mesh', 'peers.json'));
+        assert.strictEqual(second.egressFilePath(), path.join(path.dirname(relocated), 'mesh', 'egress.json'));
+        assert.notStrictEqual(second.peersFilePath(), first.peersFilePath());
+      } finally {
+        if (prevDir === undefined) delete process.env.AIORDIE_MESH_STATE_DIR;
+        else process.env.AIORDIE_MESH_STATE_DIR = prevDir;
+      }
+    });
+
     it('launches a stable, hash-free sidecar path (single-file allow-list match)', function() {
       const m = new MeshManager();
       // The manager LAUNCHES the stable path so a WDAC/AppLocker path rule matches

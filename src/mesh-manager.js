@@ -37,6 +37,17 @@ const MESH_UPDATE_MIN_INTERVAL_MS = 30 * 60 * 1000;
 // clears the slate on success anyway).
 const QUARANTINE_TTL_MS = 30 * 24 * 3600 * 1000;
 
+/**
+ * Append a caller-supplied suffix to a derived tailnet hostname.
+ * Pure + never throws. The whole result is sanitized by the constructor after
+ * this, so "Boot" or a leading dash can't produce an invalid tailnet name.
+ */
+function joinHostSuffix(base, suffix) {
+  const s = String(suffix == null ? '' : suffix).trim();
+  if (!s) return base;
+  return `${base}-${s}`;
+}
+
 class MeshManager {
   constructor(options = {}) {
     this.port = options.port || 7777;          // the ai-or-die port to expose
@@ -55,14 +66,28 @@ class MeshManager {
     this._appBase = process.platform === 'win32'
       ? path.join(localApp, 'ai-or-die')
       : path.join(os.homedir(), '.ai-or-die');
-    this.stateDir = options.stateDir || path.join(this._appBase, 'ts-state');
+    // Concurrent-instance overrides (opt-in, default off → behavior unchanged):
+    // a tsnet node owns its state dir and its tailnet hostname, so a second
+    // gateway instance on the same machine needs BOTH a distinct state dir and
+    // a distinct hostname. Set these in the second unit's EnvironmentVariables.
+    this.stateDir = options.stateDir
+      || process.env.AIORDIE_MESH_STATE_DIR
+      || path.join(this._appBase, 'ts-state');
     // The sidecar is LAUNCHED from a stable, hash-free path (ai-or-die-mesh[.exe])
     // so a single-file WDAC/AppLocker allow-list rule matches the executed image
     // across versions (ADR-0036). The installer verifies + replaces it in place.
     this._installer = options._installer || require('./utils/sidecar-installer');
     this.sidecar = options.sidecar || this._stableSidecarPath(this._appBase);
-    this.hostname = (options.hostname || `aiordie-${os.hostname()}`).toLowerCase().replace(/[^a-z0-9-]/g, '');
-
+    this.hostname = (
+      options.hostname
+      || joinHostSuffix(`aiordie-${os.hostname()}`, process.env.AIORDIE_MESH_HOSTNAME_SUFFIX)
+    ).toLowerCase().replace(/[^a-z0-9-]/g, '');
+    // Remember whether the state dir was relocated explicitly: _auxDir() moves
+    // the derived peers/egress/quarantine files beside it so two nodes on one
+    // machine never overwrite each other's view of the mesh. Captured for BOTH
+    // sources — reading the env again later would attribute the FIRST node's
+    // aux files to a second node that merely set the var afterwards.
+    this._explicitStateDir = options.stateDir || process.env.AIORDIE_MESH_STATE_DIR || null;
     this.proc = null;
     this.dnsName = null;
     this.scheme = null;          // 'https' (edge TLS) or 'http' (degraded)
@@ -224,8 +249,26 @@ class MeshManager {
     };
   }
 
+  /**
+   * Directory for the manager's derived state files (peers/egress/quarantine).
+   * Defaults to `<appBase>/mesh`. A SECOND node on one machine must not share
+   * these with the first: `peers.json` and `egress.json` describe one specific
+   * sidecar (hostname, loopback proxy port+token), and `stop()` deletes them —
+   * so two managers would overwrite and then delete each other's view of the
+   * mesh. When AIORDIE_MESH_STATE_DIR relocates the identity, the aux files
+   * follow it (sibling dir named `mesh`) instead of staying in the shared base.
+   */
+  _auxDir() {
+    if (!this._auxDirCache) {
+      this._auxDirCache = this._explicitStateDir
+        ? path.join(path.dirname(this._explicitStateDir), 'mesh')
+        : path.join(this._appBase, 'mesh');
+    }
+    return this._auxDirCache;
+  }
+
   peersFilePath() {
-    return path.join(this._appBase, 'mesh', 'peers.json');
+    return path.join(this._auxDir(), 'peers.json');
   }
 
   async stop() {
@@ -388,7 +431,7 @@ class MeshManager {
   }
 
   egressFilePath() {
-    return path.join(this._appBase, 'mesh', 'egress.json');
+    return path.join(this._auxDir(), 'egress.json');
   }
 
   // Parse `MESH-EGRESS <url> <token>` and persist the loopback CONNECT-proxy
@@ -681,7 +724,7 @@ class MeshManager {
   // slate (a good build proves the pipeline healthy again).
   _quarantineFile() {
     try {
-      return path.join(this._appBase, 'mesh', 'quarantine.json');
+      return path.join(this._auxDir(), 'quarantine.json');
     } catch (_) {
       return null;
     }
@@ -1090,4 +1133,4 @@ class MeshManager {
   }
 }
 
-module.exports = { MeshManager, _constants: { URL_TIMEOUT_MS, MAX_RETRIES, MESH_UPDATE_CHECK_MS, MESH_UPDATE_JITTER_MS } };
+module.exports = { MeshManager, joinHostSuffix, _constants: { URL_TIMEOUT_MS, MAX_RETRIES, MESH_UPDATE_CHECK_MS, MESH_UPDATE_JITTER_MS } };

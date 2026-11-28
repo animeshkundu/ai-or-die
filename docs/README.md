@@ -50,3 +50,4 @@ Central documentation for the ai-or-die project -- a Node.js web application tha
 
 - [Changelog](history/README.md)
 - [File Browser Bugs](history/file-browser-bugs.md)
+- [macOS Boot Service via LaunchAgent (2026)](history/macos-launchagent-boot-2026.md)

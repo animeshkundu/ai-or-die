@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Mesh: run a second node on one machine. `AIORDIE_MESH_HOSTNAME_SUFFIX`
+  appends to the derived tailnet name (`boot` → `aiordie-anilocal-boot`) and
+  `AIORDIE_MESH_STATE_DIR` relocates `--statedir`, so an always-on gateway and
+  an interactive instance can both be on the tailnet with distinct identities,
+  certs and endpoints. A relocated state dir also owns its derived
+  `peers.json` / `egress.json` / `quarantine.json`; previously those lived in a
+  single `<base>/mesh` shared by every manager, which two nodes overwrote and
+  `stop()` then deleted. Both knobs default to the existing behavior. A fresh
+  state dir is unenrolled and needs one tagged `AIORDIE_TS_AUTHKEY` (see
+  `docs/specs/mesh.md`); do not copy `tailscaled.state` between dirs. See
+  ADR-0062.
 - Mesh sidecar auto-update (on by default, Win11-first): the manager
   verifies the lock-pinned binary on every start (promoting a staged build
   while the image is free) and re-checks every 24h (±15m jitter) for
